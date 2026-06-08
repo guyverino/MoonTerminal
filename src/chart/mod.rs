@@ -44,6 +44,11 @@ pub struct Chart {
     // какую ревизию данных уже залили в GPU-буферы этой панели
     last_ticks_rev: u64,
     last_book_rev: u64,
+    // Скретч-буфер инстансов стакана: нормировка зависит от видимого окна ЭТОЙ
+    // панели, поэтому строим локально (книга-модель шарится между панелями).
+    glass_scratch: Vec<crate::chart::data::LevelInstance>,
+    last_glass_lo: f32,
+    last_glass_hi: f32,
 }
 
 /// Ширина зоны стакана справа (как BOOK_WIDTH_CSS стенда = 220), физ. пиксели.
@@ -73,6 +78,9 @@ impl Chart {
             cursor_pos: None,
             last_ticks_rev: u64::MAX,
             last_book_rev: u64::MAX,
+            glass_scratch: Vec::new(),
+            last_glass_lo: f32::NAN,
+            last_glass_hi: f32::NAN,
         }
     }
 
@@ -191,9 +199,21 @@ impl Chart {
                 self.crosses.upload(device, queue, d.ring.instances());
                 self.last_ticks_rev = d.ticks_rev;
             }
-            if d.book_rev != self.last_book_rev {
-                self.glass.upload(device, queue, d.book.instances());
+            // Нормировка стакана зависит от видимого ценового окна → пере-
+            // строить инстансы при смене книги ИЛИ при смене окна (зум/пан).
+            // render_* кусочно-постоянны, так что окно меняется редко.
+            let half = self.view.render_range * 0.5;
+            let lo = self.view.render_center - half;
+            let hi = self.view.render_center + half;
+            let eps = (hi - lo).abs() * 1e-3;
+            let window_changed = !((lo - self.last_glass_lo).abs() <= eps
+                && (hi - self.last_glass_hi).abs() <= eps);
+            if d.book_rev != self.last_book_rev || window_changed {
+                d.book.build_instances(lo, hi, &mut self.glass_scratch);
+                self.glass.upload(device, queue, &self.glass_scratch);
                 self.last_book_rev = d.book_rev;
+                self.last_glass_lo = lo;
+                self.last_glass_hi = hi;
             }
         }
         // Перекрестие живёт над всей plot-областью (чарт + стакан): шкала цены

@@ -13,6 +13,8 @@ const MAX_BUTTONS: usize = 48;
 
 struct RibbonItem {
     core: CoreId,
+    /// Имя ядра-источника (подпись справа на кнопке).
+    core_name: String,
     /// Полный символ рынка (для подписки при клике и тултипа).
     market: String,
     /// Подпись кнопки — монета без quote подключения (`ADAUSDT` → `ADA`).
@@ -67,6 +69,7 @@ impl DetectRibbon {
                 } else {
                     self.items.push_back(RibbonItem {
                         core: ci.id,
+                        core_name: ci.name.clone(),
                         market: det.market.clone(),
                         base: crate::symbol::base_symbol(&det.market, &ci.quote).to_string(),
                         color: ci.color,
@@ -102,10 +105,7 @@ impl DetectRibbon {
         for (idx, it) in self.items.iter().enumerate().rev() {
             let secs_left = ((it.ttl_ms - (now_ms - it.born_ms)) / 1000.0).ceil().max(0.0) as u32;
             let glow = egui::Color32::from_rgb(it.color[0], it.color[1], it.color[2]);
-            if detect_button(ui, &it.base, secs_left, glow)
-                .on_hover_text(&it.market)
-                .clicked()
-            {
+            if detect_button(ui, &it.base, secs_left, &it.core_name, glow).clicked() {
                 clicked = Some(idx);
             }
         }
@@ -122,12 +122,19 @@ impl DetectRibbon {
 /// • радиальный spotlight под курсором (следует за мышью при наведении);
 /// • токен крупно ярко сверху, остаток `Ns` мелко тускло снизу.
 /// Возвращает `Response` (клик/ховер/тултип).
-fn detect_button(ui: &mut egui::Ui, base: &str, secs: u32, glow: egui::Color32) -> egui::Response {
+fn detect_button(
+    ui: &mut egui::Ui,
+    base: &str,
+    secs: u32,
+    core: &str,
+    glow: egui::Color32,
+) -> egui::Response {
     use crate::shell::theme;
     use egui::{vec2, Align2, Color32, Pos2, Rounding, Sense, Stroke};
 
-    let h = 40.0;
-    let radius = 6.0;
+    // Высота как у остальных кнопок (seg_btn = 28), радиус 4.
+    let h = 28.0;
+    let radius = 4.0;
     let w = ui.available_width();
     let (rect, resp) = ui.allocate_exact_size(vec2(w, h), Sense::click());
     if !ui.is_rect_visible(rect) {
@@ -143,7 +150,8 @@ fn detect_button(ui: &mut egui::Ui, base: &str, secs: u32, glow: egui::Color32) 
     let lift = if hovered { theme::LIFT_HOVER } else { theme::LIFT };
     let tint_k = if hovered { 0.80 } else { 0.55 };
     let bottom = theme::lerp_color(lift, glow, tint_k);
-    theme::rounded_grad(&p, rect, radius, lift, bottom, 0.5);
+    // Градиент только в нижней четверти (опущен вдвое: 0.5 → 0.75).
+    theme::rounded_grad(&p, rect, radius, lift, bottom, 0.85);
 
     // Spotlight под курсором — мягкое акцентное свечение, следует за мышью.
     if hovered {
@@ -165,7 +173,7 @@ fn detect_button(ui: &mut egui::Ui, base: &str, secs: u32, glow: egui::Color32) 
     // поэтому цвет инвертируем по яркости нижнего цвета (тёмный текст на светлом
     // глоу и наоборот), чтобы отсчёт не сливался с градиентом.
     p.text(
-        Pos2::new(rect.min.x + 8.0, rect.min.y + 6.0),
+        Pos2::new(rect.min.x + 8.0, rect.min.y + 2.0),
         Align2::LEFT_TOP,
         base,
         theme::font(),
@@ -178,10 +186,20 @@ fn detect_button(ui: &mut egui::Ui, base: &str, secs: u32, glow: egui::Color32) 
     } else {
         theme::TEXT
     };
+    // Нижняя строка: слева остаток жизни `Ns` (мельче — чтобы не лез на монету),
+    // справа (прилипая к краю) — имя ядра-источника.
+    let timer_font = egui::FontId::proportional(8.0);
     p.text(
-        Pos2::new(rect.min.x + 8.0, rect.max.y - 6.0),
+        Pos2::new(rect.min.x + 8.0, rect.max.y - 2.0),
         Align2::LEFT_BOTTOM,
         format!("{secs}s"),
+        timer_font,
+        secs_color,
+    );
+    p.text(
+        Pos2::new(rect.max.x - 8.0, rect.max.y - 2.0),
+        Align2::RIGHT_BOTTOM,
+        core,
         theme::label_font(),
         secs_color,
     );

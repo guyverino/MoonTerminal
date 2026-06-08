@@ -1,6 +1,12 @@
 //! Модель стакана для glass-слоя в стиле стенда: кумулятивная глубина
 //! (полупрозрачный bar = накопленный объём от спреда наружу) + тонкая
 //! линия индивидуального объёма на каждый уровень.
+//!
+//! Нормировка длины баров — НЕ по всей книге, а по максимуму среди уровней,
+//! попавших в видимое ценовое окно панели (`build_instances`). Иначе при мелком
+//! зуме приспредовые уровни — крошечная доля полного кумулятива, и весь стакан
+//! «вытягивается в струну». По видимому окну самый крупный видимый уровень = на
+//! всю ширину, и транзиентная стенка чётко выстреливает на своём уровне.
 
 use crate::feed::OrderBook;
 
@@ -18,14 +24,29 @@ pub struct LevelInstance {
     pub kind: f32,
 }
 
+/// Сырой уровень книги (от окна не зависит): геометрия + объёмы. `len_norm`
+/// считается позже в `build_instances` под видимое окно конкретной панели.
+#[derive(Clone, Copy)]
+struct RawLevel {
+    price: f32,
+    span: f32,
+    /// Индивидуальный объём уровня (для тонкой линии).
+    qty: f32,
+    /// Кумулятив от спреда до этого уровня (для полосы глубины).
+    cum: f32,
+    is_ask: bool,
+}
+
 #[derive(Default)]
 pub struct OrderBookModel {
-    pub instances: Vec<LevelInstance>,
+    /// Биды (по убыванию цены), затем аски (по возрастанию) — порядок задаёт
+    /// порядок отрисовки: fill-полосы под line-линиями.
+    raw: Vec<RawLevel>,
 }
 
 impl OrderBookModel {
     pub fn update(&mut self, book: &OrderBook) {
-        self.instances.clear();
+        self.raw.clear();
 
         // Копии, отсортированные от лучшей цены наружу.
         let mut bids = book.bids.clone();
@@ -33,47 +54,53 @@ impl OrderBookModel {
         let mut asks = book.asks.clone();
         asks.sort_by(|a, b| a.price.total_cmp(&b.price)); // возрастание
 
-        // Нормировки по кумулятиву и индивидуальному объёму (обе стороны).
-        let max_qty = bids
-            .iter()
-            .chain(asks.iter())
-            .map(|l| l.qty)
-            .fold(0.0_f32, f32::max)
-            .max(1e-6);
-        let bid_cum: f32 = bids.iter().map(|l| l.qty).sum();
-        let ask_cum: f32 = asks.iter().map(|l| l.qty).sum();
-        let max_cum = bid_cum.max(ask_cum).max(1e-6);
-
-        // Сначала все fill (полупрозрачные), потом все line (поверх).
-        push_side(&mut self.instances, &bids, max_cum, max_qty, false, false);
-        push_side(&mut self.instances, &asks, max_cum, max_qty, true, false);
-        push_side(&mut self.instances, &bids, max_cum, max_qty, false, true);
-        push_side(&mut self.instances, &asks, max_cum, max_qty, true, true);
+        push_side(&mut self.raw, &bids, false);
+        push_side(&mut self.raw, &asks, true);
     }
 
-    pub fn instances(&self) -> &[LevelInstance] {
-        &self.instances
+    /// Строит GPU-инстансы, нормируя длину баров по максимуму среди уровней
+    /// внутри видимого окна `[lo, hi]` (единицы цены). Внеоконные уровни тоже
+    /// эмитятся (их отсечёт viewport/scissor), но в знаменатель не входят.
+    pub fn build_instances(&self, lo: f32, hi: f32, out: &mut Vec<LevelInstance>) {
+        out.clear();
+
+        // Знаменатели по видимому окну — общие для bid/ask, чтобы стенки сторон
+        // были визуально сравнимы.
+        let mut max_qty = 1e-6_f32;
+        let mut max_cum = 1e-6_f32;
+        for r in &self.raw {
+            if r.price >= lo && r.price <= hi {
+                max_qty = max_qty.max(r.qty);
+                max_cum = max_cum.max(r.cum);
+            }
+        }
+
+        // Сначала все fill (полупрозрачные кумулятив-полосы), потом все line.
+        for r in &self.raw {
+            out.push(LevelInstance {
+                price: r.price,
+                span: r.span,
+                len_norm: (r.cum / max_cum).clamp(0.0, 1.0),
+                kind: if r.is_ask { 1.0 } else { 0.0 },
+            });
+        }
+        for r in &self.raw {
+            out.push(LevelInstance {
+                price: r.price,
+                span: r.span,
+                len_norm: (r.qty / max_qty).clamp(0.0, 1.0) * 0.85,
+                kind: if r.is_ask { 3.0 } else { 2.0 },
+            });
+        }
     }
 
+    /// Число уровней книги (для отладочного счётчика).
     pub fn len(&self) -> usize {
-        self.instances.len()
+        self.raw.len()
     }
 }
 
-fn push_side(
-    out: &mut Vec<LevelInstance>,
-    levels: &[crate::feed::Level],
-    max_cum: f32,
-    max_qty: f32,
-    is_ask: bool,
-    is_line: bool,
-) {
-    let kind = match (is_ask, is_line) {
-        (false, false) => 0.0,
-        (true, false) => 1.0,
-        (false, true) => 2.0,
-        (true, true) => 3.0,
-    };
+fn push_side(out: &mut Vec<RawLevel>, levels: &[crate::feed::Level], is_ask: bool) {
     let n = levels.len();
     let mut cum = 0.0_f32;
     for i in 0..n {
@@ -88,17 +115,12 @@ fn push_side(
         }
         .max(1e-6);
 
-        let len_norm = if is_line {
-            (l.qty / max_qty).clamp(0.0, 1.0) * 0.85
-        } else {
-            (cum / max_cum).clamp(0.0, 1.0)
-        };
-
-        out.push(LevelInstance {
+        out.push(RawLevel {
             price: l.price,
             span,
-            len_norm,
-            kind,
+            qty: l.qty,
+            cum,
+            is_ask,
         });
     }
 }

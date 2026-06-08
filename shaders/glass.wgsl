@@ -38,8 +38,9 @@ fn vs_main(
     let right = chart.viewport.x + zone;     // правый край
     let len = max(len_norm * zone, 1.0);
     let cx = right - len * 0.5;
-    let cy = chart.viewport.y + chart.viewport.w - (price - chart.view_price0) * chart.price_to_px;
-    var h = max(span_price * chart.price_to_px, 1.0);
+    // Снап Y к целому пикселю → чёткие края уровней, без субпиксельного дрожания.
+    let cy = round(chart.viewport.y + chart.viewport.w - (price - chart.view_price0) * chart.price_to_px);
+    var h = max(round(span_price * chart.price_to_px), 1.0);
     if (kind >= 2.0) {
         h = 1.5; // тонкая линия уровня
     }
