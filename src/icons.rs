@@ -29,10 +29,20 @@ fn load_png(id: u32) -> Option<(Vec<u8>, u32, u32)> {
     Some((img.into_raw(), w, h))
 }
 
-/// Иконка окна (taskbar / заголовок).
+/// Иконка окна (taskbar / заголовок) из assets/icons/{id}.png.
 pub fn winit_icon(id: u32) -> Option<winit::window::Icon> {
     let (rgba, w, h) = load_png(id)?;
     winit::window::Icon::from_rgba(rgba, w, h).ok()
+}
+
+/// Брендовая иконка (0.png), ВШИТАЯ в бинарь на этапе компиляции. Не зависит от
+/// наличия папки assets/ рядом с exe — важно для release-запуска из произвольной
+/// рабочей папки (окна Настроек/Отчётов всегда с иконкой).
+pub fn brand_winit_icon() -> Option<winit::window::Icon> {
+    const PNG: &[u8] = include_bytes!("../assets/icons/0.png");
+    let img = image::load_from_memory(PNG).ok()?.to_rgba8();
+    let (w, h) = img.dimensions();
+    winit::window::Icon::from_rgba(img.into_raw(), w, h).ok()
 }
 
 /// Кэш egui-текстур иконок (per egui Context — у каждого окна свой набор).

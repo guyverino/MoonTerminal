@@ -165,6 +165,12 @@ impl AppConfig {
             .unwrap_or_else(|| GroupConfig::new(name))
     }
 
+    /// Настраивали ли уже конфиг: есть ли хоть один сервер с ключом. False = первый
+    /// запуск (ещё ничего не вводили) — показываем только окно Настроек.
+    pub fn has_keyed_server(&self) -> bool {
+        self.servers.iter().any(|s| !s.key.is_empty())
+    }
+
     pub fn primary_server(&self) -> ServerConfig {
         self.servers
             .first()

@@ -35,6 +35,9 @@ impl SettingsWindow {
             .with_resizable(true)
             .with_inner_size(winit::dpi::LogicalSize::new(860.0, 580.0));
         let window = Arc::new(event_loop.create_window(attrs)?);
+        // Иконка окна/taskbar — общая «лунная» 0.png (как у окна отчётов). Вшита в
+        // бинарь, поэтому показывается и в release-запуске без assets/ рядом с exe.
+        window.set_window_icon(crate::icons::brand_winit_icon());
 
         let gpu = GpuContext::new(window.clone())?;
         let egui_ctx = egui::Context::default();

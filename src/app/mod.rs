@@ -66,6 +66,12 @@ impl App {
         self.windows.clear();
         let mut workspaces = Workspace::build_all(&self.config);
         if workspaces.is_empty() {
+            // Первый запуск (ни одного сервера с ключом) — групповых окон не делаем
+            // вовсе: resumed() откроет только окно Настроек. Если же серверы есть, но
+            // все headless/неактивны — пустое окно-заглушка для доступа к Настройкам.
+            if !self.config.has_keyed_server() {
+                return;
+            }
             workspaces.push(Workspace::placeholder());
         }
         for ws in workspaces {
@@ -193,6 +199,10 @@ impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.windows.is_empty() {
             self.build_windows(event_loop);
+            // Окон групп нет (первый запуск без серверов) — открываем только Настройки.
+            if self.windows.is_empty() {
+                self.open_settings(event_loop);
+            }
         }
     }
 
@@ -215,6 +225,11 @@ impl ApplicationHandler for App {
             }
             if close {
                 self.settings_window = None;
+                // Настройки были единственным окном (первый запуск без серверов) —
+                // закрыли, открывать больше нечего → выходим.
+                if self.windows.is_empty() && self.reports_window.is_none() {
+                    event_loop.exit();
+                }
             }
             return;
         }

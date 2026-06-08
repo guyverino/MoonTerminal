@@ -35,6 +35,15 @@ const MANUAL_HOLD_MS: f64 = 3000.0;
 const RANGE_HYST: f32 = 1.15;
 /// Порог сдвига центра Y в пикселях: пока цена не уехала дальше — центр стоит.
 const CENTER_SNAP_PX: f32 = 8.0;
+/// Минимальное видимое окно времени, мс. Зум по X не даёт окну схлопнуться
+/// меньше — иначе секунда занимает весь экран и follow по правому краю гонит
+/// график (тот самый «улёт»). Порог-«упор» из ТЗ: ~1 с.
+const MIN_WINDOW_MS: f32 = 1_000.0;
+/// Максимальное видимое окно времени, мс (зум по X не растягивает больше). 1 час.
+const MAX_WINDOW_MS: f32 = 3_600_000.0;
+/// Дефолтное видимое окно при первом открытии, мс. Под него подгоняется зум по
+/// реальной ширине зоны графика (1 минута; сетка 30 вертикалей → ~2 с на риску).
+const DEFAULT_WINDOW_MS: f32 = 60_000.0;
 
 pub struct ChartView {
     /// Фиксированная точка отсчёта времени (unix ms), задаётся при старте.
@@ -71,6 +80,10 @@ pub struct ChartView {
 
     /// Полуразмер крестика, px.
     pub marker_half_px: f32,
+
+    /// Ещё не подгоняли зум под дефолтное окно (делается раз, по реальной ширине
+    /// зоны графика в первом кадре).
+    x_init_pending: bool,
 }
 
 impl ChartView {
@@ -90,6 +103,17 @@ impl ChartView {
             render_range: 1.0,
             manual_until: 0.0,
             marker_half_px: 3.5, // крест 7px (NormalX MoonBot)
+            x_init_pending: true,
+        }
+    }
+
+    /// Один раз подгоняет зум по X так, чтобы видимое окно было ровно
+    /// DEFAULT_WINDOW_MS при реальной ширине зоны графика `area_w` (физ. px).
+    /// Зовётся каждым кадром — срабатывает лишь на первом (когда ширина известна).
+    pub fn ensure_default_window(&mut self, area_w: f32) {
+        if self.x_init_pending && area_w >= 1.0 {
+            self.px_per_ms = (area_w / DEFAULT_WINDOW_MS).clamp(0.0005, 5.0);
+            self.x_init_pending = false;
         }
     }
 
@@ -118,6 +142,17 @@ impl ChartView {
         self.follow = true;
         self.manual_until = 0.0;
         self.right_time_ms = now_ms;
+    }
+
+    /// Сброс Y-вида для мгновенного переоткрытия на новой монете/цене: обнуляем
+    /// центр/диапазон (живые и render), чтобы следующий update_y встал СРАЗУ на
+    /// цену без плавного «добега» (lerp). Цена появляется через кадр-два после
+    /// подписки — тогда вид мгновенно встаёт на неё, а не бежит от старой.
+    pub fn reset_y(&mut self) {
+        self.center_price = 0.0;
+        self.price_range = 0.0;
+        self.render_center = 0.0;
+        self.render_range = 0.0;
     }
 
     /// Пиксель правого края по заданному времени (для триггера перерисовки).
@@ -169,9 +204,19 @@ impl ChartView {
         self.begin_manual(now_ms);
     }
 
-    /// Зум по X вокруг правого края (колесо). Постоянный масштаб времени.
-    pub fn zoom_x(&mut self, factor: f32) {
-        self.px_per_ms = (self.px_per_ms * factor).clamp(0.0005, 5.0);
+    /// Зум по X вокруг правого края (колесо). Ограничиваем не px_per_ms напрямую,
+    /// а ВИДИМОЕ окно времени: [MIN_WINDOW_MS, MAX_WINDOW_MS]. `area_w` — ширина
+    /// зоны графика в физ. пикселях (та же шкала, что px_per_ms). Если ширина ещё
+    /// неизвестна (нулевая, до первого кадра) — мягкий абсолютный фолбэк.
+    pub fn zoom_x(&mut self, factor: f32, area_w: f32) {
+        let next = self.px_per_ms * factor;
+        let (lo, hi) = if area_w >= 1.0 {
+            // window_ms = area_w / px_per_ms → больше px_per_ms = у́же окно.
+            (area_w / MAX_WINDOW_MS, area_w / MIN_WINDOW_MS)
+        } else {
+            (0.0005, 5.0)
+        };
+        self.px_per_ms = next.clamp(lo, hi);
     }
 
     /// Зум по Y (drag ПКМ) от снимка на момент нажатия. up=zoom out, down=zoom in.

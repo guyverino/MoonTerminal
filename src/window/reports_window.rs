@@ -67,6 +67,9 @@ impl ReportsWindow {
             .with_resizable(true)
             .with_inner_size(winit::dpi::LogicalSize::new(1200.0, 660.0));
         let window = Arc::new(event_loop.create_window(attrs)?);
+        // Иконка окна/taskbar — общая «лунная» 0.png, вшитая в бинарь (не зависит от
+        // наличия assets/ рядом с exe в release).
+        window.set_window_icon(crate::icons::brand_winit_icon());
 
         let gpu = GpuContext::new(window.clone())?;
         let egui_ctx = egui::Context::default();

@@ -48,9 +48,10 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let bg = style.bg.rgb;
     let line = mix(bg, style.grid.rgb, style.grid.w);
     let sep = mix(bg, vec3<f32>(1.0), 0.05);
-    // Пропорциональная решётка: 10 горизонталей × 60 вертикалей (как moonweb).
+    // Пропорциональная решётка: 10 горизонталей × 30 вертикалей. При дефолтном
+    // зуме окно ≈ 1 минута → одна вертикаль ≈ 2 с.
     let rows = 10.0;
-    let cols = 60.0;
+    let cols = 30.0;
     let stepx = w / cols;
     let stepy = h / rows;
     let fx = abs(lx - round(lx / stepx) * stepx);

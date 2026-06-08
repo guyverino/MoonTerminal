@@ -1,6 +1,7 @@
 //! Chart renderer: слои (grid/crosses/glass/cursor) + вид. Рыночные данные приходят
 //! извне (MarketView) — один рендерер может обслуживать любую панель/ядро/рынок.
 
+pub mod axes;
 pub mod canvas;
 pub mod data;
 pub mod layers;
@@ -45,8 +46,8 @@ pub struct Chart {
     last_book_rev: u64,
 }
 
-/// Ширина зоны стакана справа (как BOOK_WIDTH_CSS стенда = 220).
-const GLASS_ZONE_PX: f32 = 220.0;
+/// Ширина зоны стакана справа (как BOOK_WIDTH_CSS стенда = 220), физ. пиксели.
+pub const GLASS_ZONE_PX: f32 = 220.0;
 
 impl Chart {
     pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat, epoch_ms: f64) -> Self {
@@ -90,6 +91,7 @@ impl Chart {
         target: &wgpu::TextureView,
         content: Rect,
         resolution: [f32; 2],
+        ppp: f32,
         now_ms: f64,
         data: Option<&MarketView>,
         open: bool,
@@ -123,19 +125,33 @@ impl Chart {
         // Тема → style-uniform (group 1) для grid/cursor.
         self.style
             .update(queue, &StyleUniform::from_theme(theme));
-        // Две зоны: график слева, стакан справа.
+        // Жёлоба шкал (физ. пиксели = логич. константы × ppp): слева — цена,
+        // снизу — время. Подписи в них рисует egui (chart::axes); тут лишь сжимаем
+        // зоны рисования, чтобы grid/тики/стакан/курсор не залезали под шкалы.
+        let price_axis_w = axes::PRICE_AXIS_W * ppp;
+        let time_axis_h = axes::TIME_AXIS_H * ppp;
+        let plot_h = (content.h - time_axis_h).max(1.0);
+        // Три зоны над нижней шкалой: жёлоб цены | график | стакан.
         let glass_w = GLASS_ZONE_PX.min(content.w * 0.5);
         let chart_area = Rect {
-            x: content.x,
+            x: content.x + price_axis_w,
             y: content.y,
-            w: (content.w - glass_w).max(1.0),
-            h: content.h,
+            w: (content.w - price_axis_w - glass_w).max(1.0),
+            h: plot_h,
         };
         let glass_area = Rect {
             x: content.x + (content.w - glass_w).max(1.0),
             y: content.y,
             w: glass_w,
-            h: content.h,
+            h: plot_h,
+        };
+        // Зона перекрестия: вся plot-область (график + стакан, общая шкала цены),
+        // но БЕЗ жёлобов шкал — крест не лезет в подписи.
+        let plot_area = Rect {
+            x: content.x + price_axis_w,
+            y: content.y,
+            w: (content.w - price_axis_w).max(1.0),
+            h: plot_h,
         };
 
         // 1. Вид. Сначала X-окно (не зависит от Y), затем видимый срез тиков,
@@ -144,6 +160,8 @@ impl Chart {
         // Smooth wall-clock follow (CHART_RENDERING_TZ): правый край = «сейчас»,
         // гладкий скролл по времени. Кадр дешёвый за счёт canvas UV-scroll +
         // egui-mesh cache (Stage 2b/2c), а не за счёт пропуска кадров.
+        // Первый кадр: подгоняем зум так, чтобы дефолтное окно было ~1 минута.
+        self.view.ensure_default_window(chart_area.w);
         self.view.follow_edge(now_ms, now_ms);
         let (view_time0, window_ms) = self.view.visible_x(chart_area.w);
 
@@ -178,9 +196,10 @@ impl Chart {
                 self.last_book_rev = d.book_rev;
             }
         }
-        // Перекрестие живёт над всей областью (чарт + стакан): шкала цены общая,
-        // поэтому горизонталь/вертикаль должны проходить и через стакан.
-        self.cursor.update(queue, self.cursor_pos, resolution, content);
+        // Перекрестие живёт над всей plot-областью (чарт + стакан): шкала цены
+        // общая, поэтому горизонталь/вертикаль проходят и через стакан; в жёлоба
+        // шкал (слева/снизу) крест не заходит.
+        self.cursor.update(queue, self.cursor_pos, resolution, plot_area);
 
         // 2c-2: крестики живут в offscreen-канвасе шире экрана (запас MARGIN_PX
         // справа «в будущее»). Полный re-bake — только при смене Y/зума/размера
@@ -251,8 +270,8 @@ impl Chart {
         self.glass
             .render(&mut rpass, &self.glass_globals.bind_group, &self.style.bind_group);
 
-        // Курсор — поверх всего, по всей области (чарт + стакан).
-        scissor(&mut rpass, content, resolution);
+        // Курсор — поверх всего, по plot-области (чарт + стакан, без жёлобов шкал).
+        scissor(&mut rpass, plot_area, resolution);
         self.cursor.render(&mut rpass, &self.style.bind_group);
     }
 }

@@ -43,12 +43,39 @@ fn now_unix_ms() -> f64 {
         .unwrap_or(0.0)
 }
 
+/// Смещение локального времени от UTC, сек (для подписей часов на шкале времени).
+/// Считаем как разницу «час:мин:сек» локального и системного (UTC) времени —
+/// учитывает текущий DST без сторонних крейтов. На не-Windows — 0 (UTC).
+#[cfg(windows)]
+fn local_offset_sec() -> i64 {
+    use windows::Win32::System::SystemInformation::{GetLocalTime, GetSystemTime};
+    let (l, u) = unsafe { (GetLocalTime(), GetSystemTime()) };
+    let lsec = l.wHour as i64 * 3600 + l.wMinute as i64 * 60 + l.wSecond as i64;
+    let usec = u.wHour as i64 * 3600 + u.wMinute as i64 * 60 + u.wSecond as i64;
+    let mut d = lsec - usec;
+    if d > 43_200 {
+        d -= 86_400;
+    } else if d < -43_200 {
+        d += 86_400;
+    }
+    d
+}
+#[cfg(not(windows))]
+fn local_offset_sec() -> i64 {
+    0
+}
+
 pub struct WindowHost {
     pub window: Arc<Window>,
     gpu: GpuContext,
     egui_ctx: egui::Context,
     egui_state: egui_winit::State,
     egui_renderer: egui_wgpu::Renderer,
+    /// Лёгкий overlay-контекст шкал/перекрестных readout'ов: гоняется КАЖДЫМ
+    /// кадром (как wgpu-перекрестие), не кэшируется вместе с хромом — поэтому
+    /// шкала времени едет за паном/скроллом, а readout'ы — за курсором.
+    overlay_ctx: egui::Context,
+    overlay_renderer: egui_wgpu::Renderer,
     shell: Shell,
     chart: Chart,
     pub workspace: Workspace,
@@ -133,6 +160,11 @@ impl WindowHost {
             None,
         );
         let egui_renderer = egui_wgpu::Renderer::new(&gpu.device, gpu.format, None, 1, false);
+        // Overlay-контекст: свои шрифты/стиль проекта (Geist Mono), свой рендерер
+        // (отдельный атлас глифов). Ввод ему не маршрутизируем — рисуем по снимку.
+        let overlay_ctx = egui::Context::default();
+        crate::shell::theme::apply(&overlay_ctx);
+        let overlay_renderer = egui_wgpu::Renderer::new(&gpu.device, gpu.format, None, 1, false);
         let shell = Shell::new(&egui_ctx);
 
         Ok(Self {
@@ -141,6 +173,8 @@ impl WindowHost {
             egui_ctx,
             egui_state,
             egui_renderer,
+            overlay_ctx,
+            overlay_renderer,
             shell,
             chart,
             workspace,
@@ -313,9 +347,10 @@ impl WindowHost {
             // Shift+колесо — пан по времени (≈60 px за «щелчок»).
             self.chart.view.pan_x_px(-dy.signum() * 60.0, now_unix_ms());
         } else {
-            // Колесо вверх = приблизить (меньше времени в окне).
+            // Колесо вверх = приблизить (меньше времени в окне). Ширину зоны
+            // графика (физ. px) передаём для клампа окна по времени (мин. ~1 с).
             let factor = if dy > 0.0 { 1.15 } else { 1.0 / 1.15 };
-            self.chart.view.zoom_x(factor);
+            self.chart.view.zoom_x(factor, self.chart_area.2);
         }
         self.dirty = true;
     }
@@ -628,6 +663,9 @@ impl WindowHost {
             if let Some((core, mkt)) = open_detect.take() {
                 self.workspace.open = Some(crate::workspace::OpenChart { core, market: mkt });
                 self.chart.view.resume_live(now_ms);
+                // Открываем монету СРАЗУ на её цене: сбрасываем Y, чтобы вид встал
+                // на цену в первом же кадре с данными, а не добегал от старой.
+                self.chart.view.reset_y();
                 layout_changed = true;
             }
             if close_chart {
@@ -696,6 +734,7 @@ impl WindowHost {
             &view,
             area,
             resolution,
+            ppp,
             now_ms,
             data,
             render_open,
@@ -724,6 +763,84 @@ impl WindowHost {
             self.egui_renderer.render(&mut rpass, tris, &screen);
         }
         self.egui_tris = tris;
+
+        // Overlay-слой шкал + readout'ов перекрестия (только при открытом чарте).
+        // Гоняется КАЖДЫМ кадром по снимку вида (не кэшируется): шкала времени
+        // привязана к данным → едет за паном/скроллом, readout'ы — за курсором.
+        if render_open && area.w > 1.0 && area.h > 1.0 {
+            let snap = {
+                let v = &self.chart.view;
+                crate::chart::axes::AxisSnapshot {
+                    px_per_ms: v.px_per_ms,
+                    right_margin_frac: v.right_margin_frac,
+                    render_center: v.render_center,
+                    render_range: v.render_range,
+                    epoch_ms: v.epoch_ms,
+                    right_time_ms: v.right_time_ms,
+                    tz_offset_sec: local_offset_sec(),
+                }
+            };
+            let central = egui::Rect::from_min_size(
+                egui::pos2(area.x / ppp, area.y / ppp),
+                egui::vec2(area.w / ppp, area.h / ppp),
+            );
+            let cursor = cur.map(|(x, y)| egui::pos2(x / ppp, y / ppp));
+
+            let mut raw = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(resolution[0] / ppp, resolution[1] / ppp),
+                )),
+                ..Default::default()
+            };
+            let vid = raw.viewport_id;
+            raw.viewports.entry(vid).or_default().native_pixels_per_point = Some(ppp);
+
+            let out = self.overlay_ctx.run(raw, |ctx| {
+                let p = ctx.layer_painter(egui::LayerId::new(
+                    egui::Order::Foreground,
+                    egui::Id::new("axes-overlay"),
+                ));
+                crate::chart::axes::draw(&p, central, ppp, &snap, cursor);
+            });
+            let otris = self.overlay_ctx.tessellate(out.shapes, out.pixels_per_point);
+            for (id, delta) in &out.textures_delta.set {
+                self.overlay_renderer
+                    .update_texture(&self.gpu.device, &self.gpu.queue, *id, delta);
+            }
+            let oscreen = egui_wgpu::ScreenDescriptor {
+                size_in_pixels: [self.gpu.size.width, self.gpu.size.height],
+                pixels_per_point: ppp,
+            };
+            self.overlay_renderer.update_buffers(
+                &self.gpu.device,
+                &self.gpu.queue,
+                &mut encoder,
+                &otris,
+                &oscreen,
+            );
+            {
+                let rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("axes-overlay-pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+                let mut rpass = rpass.forget_lifetime();
+                self.overlay_renderer.render(&mut rpass, &otris, &oscreen);
+            }
+            for id in &out.textures_delta.free {
+                self.overlay_renderer.free_texture(id);
+            }
+        }
 
         self.gpu.queue.submit(Some(encoder.finish()));
         frame.present();
