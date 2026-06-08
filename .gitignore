@@ -1,0 +1,8 @@
+/target
+# Локальные конфиги с ключами — НИКОГДА не коммитим.
+/config.toml
+/config.enc
+/servers.enc
+/settings.toml
+Cargo.lock
+/legasy

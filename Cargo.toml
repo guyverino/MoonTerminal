@@ -1,0 +1,67 @@
+[package]
+name = "moon-terminal"
+version = "0.1.0"
+edition = "2021"
+description = "MoonBot terminal — wgpu chart + orderbook, egui shell, moonproto feed"
+
+[dependencies]
+winit = "0.30"
+wgpu = "22"
+egui = "0.29"
+egui-wgpu = "0.29"
+egui-winit = "0.29"
+bytemuck = { version = "1", features = ["derive"] }
+pollster = "0.3"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+anyhow = "1"
+log = "0.4"
+env_logger = "0.11"
+
+# Локализация интерфейса (RU/EN/ES). Строки в locales/app.yml, переключение
+# языка в рантайме через rust_i18n::set_locale. sys-locale — дефолт по системе.
+rust-i18n = "3"
+sys-locale = "0.3"
+
+# Диагностические метрики CPU/RAM (процесс + система) для статус-бара.
+# Кросс-платформенно; берём только feature "system" (без disk/network/...).
+sysinfo = { version = "0.33", default-features = false, features = ["system"] }
+
+# Зашифрованный конфиг: AES-256-GCM, ключ в OS keyring.
+aes-gcm = "0.10"
+keyring = { version = "3", features = ["windows-native", "apple-native"] }
+getrandom = "0.2"
+base64 = "0.22"
+zeroize = "1"
+
+# Загрузка PNG-иконок (кросс-платформенно), извлечённых из mb_ico.dll в assets/icons.
+image = { version = "0.25", default-features = false, features = ["png"] }
+raw-window-handle = "0.6"
+
+# Рендер встроенного SVG-логотипа (assets/brand/moonbot-logo.svg) в текстуру egui.
+# default-features=false — без текстовых/шрифтовых фич: лого состоит из путей.
+resvg = { version = "0.44", default-features = false }
+
+# Либа связи с ядром MoonBot.
+# feature "diagnostics" открывает поля ордера (ExchangeOrder.open_time/close_time/…),
+# нужные для buydate/sellsetdate/closedate в отчётах — иначе они pub(crate).
+moonproto = { git = "https://github.com/Moonbot-Tech/MoonProtoBeta", features = ["diagnostics"] }
+
+# Локальная БД отчётов по закрытым ордерам. "bundled" статически линкует sqlite3
+# в exe — без системных зависимостей, кроссплатформенно (Windows/macOS/Linux).
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+# Раздельные кнопки/иконки в taskbar (AppUserModelID) — ТОЛЬКО Windows.
+# На macOS/Linux секция игнорируется → сборка чистая.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_PropertiesSystem",
+] }
+
+[profile.release]
+codegen-units = 1
+lto = true
+strip = true

@@ -1,0 +1,174 @@
+//! Конфиг приложения в ДВУХ файлах рядом с exe:
+//! - `servers.enc` (зашифрован): uid/name/host/port/key — переносимый секрет
+//!   (скопировал файл — и ключи на месте, вводить заново не надо).
+//! - `settings.toml` (открытый): версия схемы + группы + по-серверная мета
+//!   (галки active/show_window/feed, группа, рынок, цвет). Привязка к серверу — по uid.
+//!
+//! Обновление версии программы: старый settings.toml без новых полей читается
+//! без потерь (serde-дефолты), а `version` < `SCHEMA_VERSION` запускает один
+//! досейв — новые галки дописываются в файл с дефолтами, старые сохраняются.
+//!
+//! Раскладка по модулям (не валим всё в один файл):
+//! - `schema`    — структуры файлов на диске (serde) + версия схемы;
+//! - `store`     — чтение/запись файлов (шифрование, бэкап битого settings.toml);
+//! - `reconcile` — слияние файлов ↔ рантайм + стабильные uid;
+//! - `migrate`   — одноразовые миграции со старых форматов.
+
+pub mod crypto;
+pub mod groups;
+pub mod lang;
+pub mod paths;
+pub mod secrets;
+pub mod servers;
+pub mod theme;
+
+mod migrate;
+mod reconcile;
+mod schema;
+mod store;
+
+pub use groups::GroupConfig;
+pub use lang::Language;
+pub use secrets::Secret;
+pub use servers::{FeedFlags, ServerConfig};
+pub use theme::ChartTheme;
+
+use std::collections::HashSet;
+
+use crate::market::MarketDataMode;
+
+/// Рантайм-конфиг (смерженный из двух файлов).
+#[derive(Clone, Debug, Default)]
+pub struct AppConfig {
+    pub servers: Vec<ServerConfig>,
+    pub groups: Vec<GroupConfig>,
+    /// Язык интерфейса (settings.toml). Дефолт — системная локаль.
+    pub language: Language,
+    /// Источник рыночных данных (settings.toml). Дефолт — Dedup (провайдер на биржу).
+    pub market_mode: MarketDataMode,
+    /// Тема оформления чарта (отдельный переносимый theme.toml).
+    pub theme: ChartTheme,
+}
+
+impl AppConfig {
+    pub fn load() -> anyhow::Result<Self> {
+        // Тема — отдельный переносимый файл, грузится независимо от серверов/групп.
+        let theme = ChartTheme::load();
+        if paths::servers_path().exists() {
+            let sf = store::read_servers()?;
+            let meta = store::read_settings();
+            let merged = reconcile::merge(sf, meta);
+            let mut cfg = Self {
+                servers: merged.servers,
+                groups: merged.groups,
+                language: merged.language,
+                market_mode: merged.market_mode,
+                theme,
+            };
+            log::info!(
+                "конфиг: {} серверов, {} групп",
+                cfg.servers.len(),
+                cfg.groups.len()
+            );
+            // Дослоить новые дефолты / зафиксировать свежие uid на диск.
+            // Не фатально: при ошибке продолжаем с тем, что уже в памяти.
+            if merged.dirty {
+                if let Err(e) = cfg.save() {
+                    log::warn!("не удалось дослоить конфиг на диск: {e}");
+                }
+            }
+            return Ok(cfg);
+        }
+
+        // Миграции со старых форматов (один раз → save() пишет новые файлы).
+        if paths::legacy_enc_path().exists() {
+            let mut cfg = migrate::from_legacy_enc()?;
+            cfg.theme = theme;
+            cfg.save()?;
+            log::info!("мигрировано из config.enc → servers.enc + settings.toml");
+            return Ok(cfg);
+        }
+        if paths::legacy_toml_path().exists() {
+            let mut cfg = migrate::from_legacy_toml()?;
+            cfg.theme = theme;
+            cfg.save()?;
+            log::info!("мигрировано из config.toml → servers.enc + settings.toml");
+            return Ok(cfg);
+        }
+
+        log::warn!("конфиг не найден — добавь сервера в Настройках");
+        Ok(Self {
+            theme,
+            ..Self::default()
+        })
+    }
+
+    /// Сохраняет в два файла. Проставляет стабильные uid, валидирует уникальность
+    /// имени и host:port. `&mut self` — т.к. может присвоить uid новым ядрам.
+    pub fn save(&mut self) -> anyhow::Result<()> {
+        reconcile::ensure_uids(&mut self.servers);
+        self.prune_orphan_groups();
+        self.validate()?;
+        let (sf, meta) = reconcile::split(&self.servers, &self.groups, self.language, self.market_mode);
+        store::write_servers(&sf)?;
+        store::write_settings(&meta)?;
+        // Тема — в свой переносимый файл (theme.toml), независимо от settings.toml.
+        self.theme.save()?;
+        Ok(())
+    }
+
+    /// Группа имеет смысл только пока на неё ссылается хоть одно ядро. Сироты
+    /// (например, от промежуточных значений при наборе имени) не сохраняем.
+    fn prune_orphan_groups(&mut self) {
+        let used: HashSet<&str> = self.servers.iter().map(|s| s.group.as_str()).collect();
+        self.groups.retain(|g| used.contains(g.name.as_str()));
+    }
+
+    /// Проверка уникальности имени и host:port серверов.
+    fn validate(&self) -> anyhow::Result<()> {
+        let mut names = HashSet::new();
+        let mut endpoints = HashSet::new();
+        for s in &self.servers {
+            if !names.insert(s.name.to_lowercase()) {
+                anyhow::bail!("{}", t!("err.dup_name", name = s.name));
+            }
+            let ep = (s.host.to_lowercase(), s.port);
+            if !endpoints.insert(ep) {
+                anyhow::bail!("{}", t!("err.dup_endpoint", ep = format!("{}:{}", s.host, s.port)));
+            }
+        }
+        Ok(())
+    }
+
+    /// Сигнатура «структурной» части конфига: серверы + группы, БЕЗ темы/языка/режима
+    /// рынка. По ней App решает, нужен ли при сохранении настроек реконнект к ядрам и
+    /// пересоздание окон. Тема меняется живо, язык и режим рынка — без реконнекта,
+    /// поэтому их исключаем (нейтрализуем дефолтом).
+    pub fn structural_sig(&self) -> String {
+        let (sf, meta) = reconcile::split(
+            &self.servers,
+            &self.groups,
+            Language::default(),
+            MarketDataMode::default(),
+        );
+        let a = toml::to_string(&sf).unwrap_or_default();
+        let b = toml::to_string(&meta).unwrap_or_default();
+        format!("{a}\n{b}")
+    }
+
+    /// Свойства группы по имени (существующие или дефолт).
+    pub fn group(&self, name: &str) -> GroupConfig {
+        self.groups
+            .iter()
+            .find(|g| g.name == name)
+            .cloned()
+            .unwrap_or_else(|| GroupConfig::new(name))
+    }
+
+    pub fn primary_server(&self) -> ServerConfig {
+        self.servers
+            .first()
+            .cloned()
+            .unwrap_or_else(ServerConfig::placeholder)
+    }
+}

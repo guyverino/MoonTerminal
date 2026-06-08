@@ -1,0 +1,392 @@
+# Локализация интерфейса MoonTerminal. Формат rust-i18n `_version: 2`:
+# каждый ключ → карта локаль→строка. Интерполяция: %{var}.
+#
+# Намеренно НЕ переводим (отраслевой стандарт / тех-метрики):
+#   BUY · SELL · Cancel Buy · PANIC SELL · LONG · SHORT · ON · OFF
+#   Size · SL · TS · VStop · Buy · Fill · Strat · Host · Port
+#   строку метрик статус-бара (ticks/book/fps/present/CPU/RAM)
+_version: 2
+
+# --- Shell (верхняя панель / статус) ---
+shell.settings_btn:
+  ru: "⚙ Настройки"
+  en: "⚙ Settings"
+  es: "⚙ Ajustes"
+status.connecting:
+  ru: "подключение…"
+  en: "connecting…"
+  es: "conectando…"
+status.live:
+  ru: "онлайн"
+  en: "live"
+  es: "en vivo"
+status.disconnected:
+  ru: "отключено"
+  en: "disconnected"
+  es: "desconectado"
+
+# --- Тулбар ---
+toolbar.size:
+  ru: "Размер"
+  en: "Size"
+  es: "Tamaño"
+toolbar.scale:
+  ru: "Масштаб"
+  en: "Scale"
+  es: "Escala"
+toolbar.scale_auto:
+  ru: "Авто"
+  en: "Auto"
+  es: "Auto"
+toolbar.live:
+  ru: "▶ Live"
+  en: "▶ Live"
+  es: "▶ Live"
+toolbar.pause:
+  ru: "⏸ Пауза"
+  en: "⏸ Pause"
+  es: "⏸ Pausa"
+toolbar.live_tip:
+  ru: "Live: график бежит за рынком. Пауза: заморожен, можно листать (ЛКМ-перетаскивание, колесо)."
+  en: "Live: the chart follows the market. Pause: frozen, you can scroll (LMB drag, wheel)."
+  es: "Live: el gráfico sigue al mercado. Pausa: congelado, puedes desplazarte (arrastrar con clic izquierdo, rueda)."
+toolbar.close_chart:
+  ru: "Закрыть график"
+  en: "Close chart"
+  es: "Cerrar gráfico"
+toolbar.reports:
+  ru: "Отчёты"
+  en: "Reports"
+  es: "Informes"
+toolbar.help:
+  ru: "Справка"
+  en: "Help"
+  es: "Ayuda"
+toolbar.strategies:
+  ru: "Стратегии"
+  en: "Strategies"
+  es: "Estrategias"
+
+# --- Правая панель ордера ---
+order.title:
+  ru: "ОРДЕР"
+  en: "ORDER"
+  es: "ORDEN"
+order.size:
+  ru: "размер %{n}"
+  en: "size %{n}"
+  es: "tamaño %{n}"
+order.settings:
+  ru: "Настройки ордера…"
+  en: "Order settings…"
+  es: "Ajustes de orden…"
+
+# --- Нижний док: таблица ордеров ---
+orders.title:
+  ru: "Открытые ордера группы (%{count})"
+  en: "Open group orders (%{count})"
+  es: "Órdenes abiertas del grupo (%{count})"
+orders.empty:
+  ru: "нет открытых ордеров"
+  en: "no open orders"
+  es: "sin órdenes abiertas"
+orders.col.core:
+  ru: "Ядро"
+  en: "Core"
+  es: "Núcleo"
+orders.col.side:
+  ru: "Сторона"
+  en: "Side"
+  es: "Lado"
+orders.col.token:
+  ru: "Токен"
+  en: "Token"
+  es: "Token"
+orders.col.price:
+  ru: "Цена"
+  en: "Price"
+  es: "Precio"
+
+# --- Окно настроек: общее ---
+settings.save:
+  ru: "Сохранить"
+  en: "Save"
+  es: "Guardar"
+settings.saved:
+  ru: "Сохранено"
+  en: "Saved"
+  es: "Guardado"
+settings.window_title:
+  ru: "Настройки — MoonTerminal"
+  en: "Settings — MoonTerminal"
+  es: "Ajustes — MoonTerminal"
+tab.connections:
+  ru: "Подключения"
+  en: "Connections"
+  es: "Conexiones"
+tab.general:
+  ru: "Общие"
+  en: "General"
+  es: "General"
+tab.interface:
+  ru: "Интерфейс"
+  en: "Interface"
+  es: "Interfaz"
+
+# --- Вкладка «Интерфейс» (тема оформления, theme.toml) ---
+iface.sec_chart:
+  ru: "График: фон и сетка"
+  en: "Chart: background & grid"
+  es: "Gráfico: fondo y rejilla"
+iface.bg:
+  ru: "Цвет фона графика"
+  en: "Chart background"
+  es: "Fondo del gráfico"
+iface.grid:
+  ru: "Цвет сетки"
+  en: "Grid color"
+  es: "Color de rejilla"
+iface.grid_alpha:
+  ru: "Видимость сетки"
+  en: "Grid visibility"
+  es: "Visibilidad de rejilla"
+iface.sec_cross:
+  ru: "График: перекрестие"
+  en: "Chart: crosshair"
+  es: "Gráfico: cruz"
+iface.cross:
+  ru: "Цвет перекрестия"
+  en: "Crosshair color"
+  es: "Color de la cruz"
+iface.cross_alpha:
+  ru: "Прозрачность линий"
+  en: "Line opacity"
+  es: "Opacidad de líneas"
+iface.cross_thickness:
+  ru: "Толщина линий"
+  en: "Line thickness"
+  es: "Grosor de líneas"
+iface.halo_radius:
+  ru: "Радиус ореола"
+  en: "Halo radius"
+  es: "Radio del halo"
+iface.halo_intensity:
+  ru: "Яркость ореола"
+  en: "Halo intensity"
+  es: "Intensidad del halo"
+iface.sec_book:
+  ru: "Стакан"
+  en: "Order book"
+  es: "Libro de órdenes"
+iface.book_bg:
+  ru: "Фон стакана"
+  en: "Order book background"
+  es: "Fondo del libro"
+iface.book_bid:
+  ru: "Цвет покупок (bid)"
+  en: "Bid color"
+  es: "Color de compra (bid)"
+iface.book_ask:
+  ru: "Цвет продаж (ask)"
+  en: "Ask color"
+  es: "Color de venta (ask)"
+iface.sec_panels:
+  ru: "Панели"
+  en: "Panels"
+  es: "Paneles"
+iface.panel_bg:
+  ru: "Фон панелей (тулбар, ордер, док, статус)"
+  en: "Panels background (toolbar, order, dock, status)"
+  es: "Fondo de paneles (barra, orden, dock, estado)"
+iface.sec_closed:
+  ru: "Закрытый график"
+  en: "Closed chart"
+  es: "Gráfico cerrado"
+iface.closed_bg:
+  ru: "Фон пустого контейнера"
+  en: "Empty container background"
+  es: "Fondo del contenedor vacío"
+iface.hint:
+  ru: "Меняется вживую. «Сохранить» пишет theme.toml рядом с программой — им можно делиться."
+  en: "Changes live. “Save” writes theme.toml next to the app — you can share it."
+  es: "Cambia en vivo. «Guardar» escribe theme.toml junto a la app — puedes compartirlo."
+
+# --- Вкладка «Общие» ---
+general.language:
+  ru: "Язык интерфейса"
+  en: "Interface language"
+  es: "Idioma de la interfaz"
+general.language_hint:
+  ru: "Применяется после сохранения."
+  en: "Applies after saving."
+  es: "Se aplica al guardar."
+
+# --- Вкладка «Подключения» ---
+conn.servers_heading:
+  ru: "Ядра (серверы)"
+  en: "Cores (servers)"
+  es: "Núcleos (servidores)"
+conn.market_src:
+  ru: "Источник рыночных данных"
+  en: "Market data source"
+  es: "Fuente de datos de mercado"
+conn.market_src_tip:
+  ru: "Откуда брать крестики и стакан. Дедуп: одно ядро-провайдер на биржу тянет рынок за всех (экономно при многих ядрах). По ядрам: каждый чарт берёт рынок со своего ядра (без дедупа)."
+  en: "Where crosses and the order book come from. Dedup: one provider core per exchange serves the market for all (cheap with many cores). Per-core: each chart reads the market from its own core (no dedup)."
+  es: "De dónde vienen los cruces y el libro de órdenes. Dedup: un núcleo proveedor por bolsa sirve el mercado a todos (económico con muchos núcleos). Por núcleo: cada gráfico lee el mercado de su propio núcleo (sin dedup)."
+conn.market_dedup:
+  ru: "Дедуп (провайдер на биржу)"
+  en: "Dedup (provider per exchange)"
+  es: "Dedup (proveedor por bolsa)"
+conn.market_percore:
+  ru: "По ядрам (без дедупа)"
+  en: "Per-core (no dedup)"
+  es: "Por núcleo (sin dedup)"
+conn.groups_heading:
+  ru: "Группы"
+  en: "Groups"
+  es: "Grupos"
+conn.no_groups:
+  ru: "задай группы серверам слева"
+  en: "assign groups to the servers on the left"
+  es: "asigna grupos a los servidores de la izquierda"
+conn.add_core:
+  ru: "+ Добавить ядро"
+  en: "+ Add core"
+  es: "+ Añadir núcleo"
+conn.icon_for:
+  ru: "Иконка «%{name}»"
+  en: "Icon for «%{name}»"
+  es: "Icono de «%{name}»"
+conn.pick:
+  ru: "выбор"
+  en: "pick"
+  es: "elegir"
+conn.delete:
+  ru: "Удал"
+  en: "Del"
+  es: "Elim"
+conn.filter_note:
+  ru: "фильтр на клиенте"
+  en: "client-side filter"
+  es: "filtro en el cliente"
+
+# Заголовки колонок таблицы серверов
+conn.col.act:
+  ru: "Акт"
+  en: "Act"
+  es: "Act"
+conn.col.win:
+  ru: "Окн"
+  en: "Win"
+  es: "Ven"
+conn.col.name:
+  ru: "Имя"
+  en: "Name"
+  es: "Nombre"
+conn.col.key:
+  ru: "Ключ"
+  en: "Key"
+  es: "Clave"
+conn.col.group:
+  ru: "Группа"
+  en: "Group"
+  es: "Grupo"
+conn.col.color:
+  ru: "Цвет"
+  en: "Color"
+  es: "Color"
+conn.col.orders:
+  ru: "Орд"
+  en: "Ord"
+  es: "Órd"
+conn.col.detects:
+  ru: "Дет"
+  en: "Det"
+  es: "Det"
+conn.col.reports:
+  ru: "Отч"
+  en: "Rep"
+  es: "Inf"
+conn.col.balance:
+  ru: "Бал"
+  en: "Bal"
+  es: "Sal"
+conn.col.strat:
+  ru: "Стр"
+  en: "Str"
+  es: "Est"
+conn.col.log:
+  ru: "Лог"
+  en: "Log"
+  es: "Reg"
+conn.col.alerts:
+  ru: "Алр"
+  en: "Alr"
+  es: "Ale"
+conn.col.arb:
+  ru: "Арб"
+  en: "Arb"
+  es: "Arb"
+
+# Заголовки колонок таблицы групп
+conn.gcol.ico:
+  ru: "Ico"
+  en: "Ico"
+  es: "Ico"
+
+# Подсказки (тултипы)
+conn.tip.act:
+  ru: "Подключаться к ядру"
+  en: "Connect to the core"
+  es: "Conectarse al núcleo"
+conn.tip.win:
+  ru: "Рисовать окно/чарт. Выкл = headless: данные в БД/память без окна"
+  en: "Draw window/chart. Off = headless: data to DB/memory without a window"
+  es: "Dibujar ventana/gráfico. Desactivado = headless: datos a BD/memoria sin ventana"
+conn.tip.orders:
+  ru: "Открытые ордера"
+  en: "Open orders"
+  es: "Órdenes abiertas"
+conn.tip.detects:
+  ru: "Детекты"
+  en: "Detects"
+  es: "Detecciones"
+conn.tip.reports:
+  ru: "Отчёты по закрытым ордерам → SQLite"
+  en: "Reports on closed orders → SQLite"
+  es: "Informes de órdenes cerradas → SQLite"
+conn.tip.balance:
+  ru: "Балансы / аккаунт"
+  en: "Balances / account"
+  es: "Saldos / cuenta"
+conn.tip.strat:
+  ru: "Стратегии"
+  en: "Strategies"
+  es: "Estrategias"
+conn.tip.log:
+  ru: "Серверный лог"
+  en: "Server log"
+  es: "Registro del servidor"
+conn.tip.alerts:
+  ru: "Chart-алерты / текст"
+  en: "Chart alerts / text"
+  es: "Alertas de gráfico / texto"
+conn.tip.arb:
+  ru: "Арбитраж"
+  en: "Arbitrage"
+  es: "Arbitraje"
+
+# --- Ошибки ---
+err.dup_name:
+  ru: "Дубликат имени сервера: «%{name}»"
+  en: "Duplicate server name: «%{name}»"
+  es: "Nombre de servidor duplicado: «%{name}»"
+err.dup_endpoint:
+  ru: "Дубликат host:port: %{ep}"
+  en: "Duplicate host:port: %{ep}"
+  es: "host:port duplicado: %{ep}"
+err.no_gpu:
+  ru: "нет подходящего GPU adapter"
+  en: "no suitable GPU adapter"
+  es: "no hay adaptador de GPU adecuado"
