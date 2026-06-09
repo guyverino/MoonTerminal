@@ -19,6 +19,8 @@ pub struct Merged {
     pub language: Language,
     /// Источник рыночных данных из settings.toml (или дефолт Dedup).
     pub market_mode: MarketDataMode,
+    /// Отдельная чарт-вкладка на ядро (AddToChart).
+    pub charts_split_by_core: bool,
     /// Нужно пере-сохранить на диск: присвоены новые uid и/или версия схемы
     /// устарела (надо дослоить дефолты новых полей в settings.toml).
     pub dirty: bool,
@@ -31,6 +33,7 @@ pub fn merge(sf: ServersFile, meta: SettingsFile) -> Merged {
     let mut dirty = meta.version < SCHEMA_VERSION;
     let language = meta.language;
     let market_mode = meta.market_mode;
+    let charts_split_by_core = meta.charts_split_by_core;
 
     let servers = sf
         .servers
@@ -76,6 +79,7 @@ pub fn merge(sf: ServersFile, meta: SettingsFile) -> Merged {
         groups: meta.groups,
         language,
         market_mode,
+        charts_split_by_core,
         dirty,
     }
 }
@@ -86,6 +90,7 @@ pub fn split(
     groups: &[GroupConfig],
     language: Language,
     market_mode: MarketDataMode,
+    charts_split_by_core: bool,
 ) -> (ServersFile, SettingsFile) {
     let sf = ServersFile {
         servers: servers
@@ -101,6 +106,7 @@ pub fn split(
         version: SCHEMA_VERSION,
         language,
         market_mode,
+        charts_split_by_core,
         groups: groups.to_vec(),
         servers: servers
             .iter()

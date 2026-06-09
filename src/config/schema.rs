@@ -16,7 +16,8 @@ use crate::market::MarketDataMode;
 /// Текущая версия схемы settings.toml. Поднимай на +1, когда добавил новое поле
 /// и хочешь, чтобы старые файлы один раз пере-сохранились с его дефолтом.
 /// v2: добавлено поле `language`. v3: добавлено `market_mode`.
-pub const SCHEMA_VERSION: u32 = 3;
+/// v4: добавлено `charts_split_by_core`.
+pub const SCHEMA_VERSION: u32 = 4;
 
 /// Старые файлы без поля `version` читаются как 0 → меньше SCHEMA_VERSION →
 /// триггерят досейв с дослоением новых дефолтов.
@@ -79,6 +80,10 @@ pub struct SettingsFile {
     /// Источник рыночных данных (дедуп по провайдеру / по ядрам). Старые файлы → дефолт.
     #[serde(default)]
     pub market_mode: MarketDataMode,
+    /// Отдельная чарт-вкладка на каждое ядро (AddToChart): true = 1-HL-ядро,
+    /// false = все ядра в одной вкладке 1-HL. Старые файлы → дефолт true.
+    #[serde(default = "servers::default_true")]
+    pub charts_split_by_core: bool,
     #[serde(default)]
     pub groups: Vec<GroupConfig>,
     #[serde(default)]

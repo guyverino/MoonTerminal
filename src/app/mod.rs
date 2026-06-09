@@ -178,15 +178,21 @@ impl App {
         let mut strategies = false;
         let mut detach = None;
         let mut repin = None;
-        // Номера чартов, откреплённых из ЭТОГО окна, — их новые детекты пойдут в их
+        // Виды чартов, откреплённых из ЭТОГО окна, — их новые детекты пойдут в их
         // окна, а не во вкладку host'а.
-        let detached_nums: std::collections::HashSet<u32> = self
+        let detached_keys: std::collections::HashSet<crate::chart::container::ContainerKind> = self
             .detached_charts
             .values()
             .filter(|w| w.owner() == id)
-            .filter_map(|w| w.chart_num())
+            .map(|w| w.chart_kind())
             .collect();
-        let mut addto: Vec<(u32, crate::session::CoreId, String, f64)> = Vec::new();
+        let split_by_core = self.config.charts_split_by_core;
+        let mut addto: Vec<(
+            crate::chart::container::ContainerKind,
+            crate::session::CoreId,
+            String,
+            f64,
+        )> = Vec::new();
         {
             let session = &self.session;
             let report = &mut self.report;
@@ -195,8 +201,15 @@ impl App {
                 if !host.needs_render(session, now) {
                     return;
                 }
-                let out =
-                    host.render(session, now, metrics, report, global_detached, &detached_nums);
+                let out = host.render(
+                    session,
+                    now,
+                    metrics,
+                    report,
+                    global_detached,
+                    &detached_keys,
+                    split_by_core,
+                );
                 gear = out.gear_clicked;
                 strategies = out.strategies_clicked;
                 detach = out.detach;
@@ -207,12 +220,12 @@ impl App {
                 addto = out.addto_detached;
             }
         }
-        // Пробросить детекты откреплённых чартов в их окна.
-        for (no, core, market, ttl) in addto {
+        // Пробросить детекты откреплённых чартов в их окна (по виду контейнера).
+        for (kind, core, market, ttl) in addto {
             if let Some(w) = self
                 .detached_charts
                 .values_mut()
-                .find(|w| w.owner() == id && w.chart_num() == Some(no))
+                .find(|w| w.owner() == id && w.chart_kind() == kind)
             {
                 w.push_auto(core, &market, now, ttl);
             }
@@ -364,24 +377,34 @@ impl App {
             .windows
             .get_mut(&owner)
             .and_then(|h| h.take_container(idx));
-        let Some((_title, kind, mode, spec)) = taken else {
+        let Some((kind, mode, spec)) = taken else {
             return;
         };
         if spec.is_empty() {
             return;
         }
-        // Подпись окна формируем из номера чарта и ИМЕНИ ГРУППЫ владельца (1-HL),
-        // чтобы одинаковые номера в разных группах не путались.
-        let group = self
-            .windows
-            .get(&owner)
+        // Подпись окна: «номер-группа[-ядро]» (1-HL или 1-HL-Ядро), чтобы одинаковые
+        // номера в разных группах/ядрах не путались.
+        let owner_host = self.windows.get(&owner);
+        let group = owner_host
             .map(|h| h.workspace.group.clone())
             .unwrap_or_default();
-        let num = match kind {
-            crate::chart::container::ContainerKind::Chart(n) => n,
-            _ => 0,
+        let display = match kind {
+            crate::chart::container::ContainerKind::Chart { num, core: None } => {
+                format!("{num}-{group}")
+            }
+            crate::chart::container::ContainerKind::Chart {
+                num,
+                core: Some(cid),
+            } => {
+                let cn = owner_host
+                    .and_then(|h| h.workspace.cores.iter().find(|c| c.id == cid))
+                    .map(|c| c.name.clone())
+                    .unwrap_or_default();
+                format!("{num}-{group}-{cn}")
+            }
+            crate::chart::container::ContainerKind::Main => group.clone(),
         };
-        let display = format!("{num}-{group}");
         match ChartWindow::new(event_loop, owner, &display, kind, mode, spec, theme, epoch) {
             Ok(w) => {
                 self.detached_charts.insert(w.window.id(), w);

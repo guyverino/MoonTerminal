@@ -30,8 +30,8 @@ pub struct HostRender {
     pub repin: Option<crate::dock::DockTab>,
     /// Чарт-вкладку (контейнер №idx) потянули — открепить в отдельное чарт-окно.
     pub detach_chart: Option<usize>,
-    /// Детекты для УЖЕ откреплённых чарт-окон: (номер чарта, ядро, рынок, ttl_ms).
-    pub addto_detached: Vec<(u32, crate::session::CoreId, String, f64)>,
+    /// Детекты для УЖЕ откреплённых чарт-окон: (целевой вид, ядро, рынок, ttl_ms).
+    pub addto_detached: Vec<(ContainerKind, crate::session::CoreId, String, f64)>,
 }
 
 /// Принудительный прогон egui хотя бы раз в этот интервал — освежает живые
@@ -352,17 +352,19 @@ impl WindowHost {
     /// Втянуть свежие AddToChart-детекты ядер группы в чарт-вкладки по их НОМЕРУ
     /// (AddToChart=N → вкладка №N, создаётся лениво). TTL панели = KeepInChart.
     /// Такие детекты в ленту-кнопки не идут (см. DetectRibbon::ingest).
-    /// `detached_nums` — номера чартов, уже откреплённых в окна: их детекты НЕ
-    /// создают вкладку в host, а возвращаются для проброса в соответствующее окно.
+    /// `detached_keys` — виды чартов, уже откреплённых в окна: их детекты НЕ создают
+    /// вкладку в host, а возвращаются для проброса в окно. `split_by_core` — настройка
+    /// «отдельная вкладка на ядро» (ключ контейнера = (номер, ядро) или (номер, None)).
     /// Возвращает (изменился ли host, детекты для откреплённых окон).
     fn ingest_addtochart(
         &mut self,
         store: &CoreStore,
         now_ms: f64,
-        detached_nums: &HashSet<u32>,
-    ) -> (bool, Vec<(u32, CoreId, String, f64)>) {
-        // (номер чарта, ядро, рынок, ttl_ms)
-        let mut adds: Vec<(u32, CoreId, String, f64)> = Vec::new();
+        detached_keys: &HashSet<ContainerKind>,
+        split_by_core: bool,
+    ) -> (bool, Vec<(ContainerKind, CoreId, String, f64)>) {
+        // (целевой вид контейнера, ядро-источник, рынок, ttl_ms)
+        let mut adds: Vec<(ContainerKind, CoreId, String, f64)> = Vec::new();
         for ci in &self.workspace.cores {
             let Some(d) = store.core(ci.id) else { continue };
             let last = self.add_seq.get(&ci.id).copied().unwrap_or(0);
@@ -374,7 +376,11 @@ impl WindowHost {
                 newest = newest.max(det.seq);
                 if det.add_to_chart > 0 {
                     let ttl = (det.keep_in_chart_secs.max(1) as f64) * 1000.0;
-                    adds.push((det.add_to_chart, ci.id, det.market.clone(), ttl));
+                    let kind = ContainerKind::Chart {
+                        num: det.add_to_chart,
+                        core: if split_by_core { Some(ci.id) } else { None },
+                    };
+                    adds.push((kind, ci.id, det.market.clone(), ttl));
                 }
             }
             if newest != last {
@@ -385,23 +391,19 @@ impl WindowHost {
             return (false, Vec::new());
         }
         let (fmt, epoch) = (self.gpu.format, self.epoch_ms);
-        let mut forwarded: Vec<(u32, CoreId, String, f64)> = Vec::new();
+        let mut forwarded: Vec<(ContainerKind, CoreId, String, f64)> = Vec::new();
         let mut host_changed = false;
         // Свежие детекты с конца (новые) → добавляем в обратном порядке (старые выше).
-        for (no, core, market, ttl) in adds.into_iter().rev() {
+        for (kind, core, market, ttl) in adds.into_iter().rev() {
             // Чарт уже откреплён в окно → детект туда (App пробросит), не в host.
-            if detached_nums.contains(&no) {
-                forwarded.push((no, core, market, ttl));
+            if detached_keys.contains(&kind) {
+                forwarded.push((kind, core, market, ttl));
                 continue;
             }
-            let idx = match self
-                .containers
-                .iter()
-                .position(|c| c.kind == ContainerKind::Chart(no))
-            {
+            let idx = match self.containers.iter().position(|c| c.kind == kind) {
                 Some(i) => i,
                 None => {
-                    self.containers.push(Container::new(ContainerKind::Chart(no)));
+                    self.containers.push(Container::new(kind));
                     self.containers.len() - 1
                 }
             };
@@ -409,12 +411,12 @@ impl WindowHost {
             host_changed = true;
         }
         if host_changed {
-            // Держим вкладки в порядке: Main, затем по номеру. active_container
+            // Порядок вкладок: Main, затем по (номер, ядро). active_container
             // восстанавливаем по виду (kind), т.к. индексы могли сдвинуться.
             let active_kind = self.containers[self.active_container].kind;
             self.containers.sort_by_key(|c| match c.kind {
-                ContainerKind::Main => (0u8, 0u32),
-                ContainerKind::Chart(n) => (1, n),
+                ContainerKind::Main => (0u8, 0u32, 0u64),
+                ContainerKind::Chart { num, core } => (1, num, core.unwrap_or(0)),
             });
             self.active_container = self
                 .containers
@@ -579,7 +581,7 @@ impl WindowHost {
     /// Двойной ЛКМ по чарту (не стакану) нумерованной вкладки → запомнить монету
     /// панели под курсором для открытия на Main фулскрин (render применит).
     fn try_dblclick_to_main(&mut self) {
-        if !matches!(self.active().kind, ContainerKind::Chart(_)) {
+        if !matches!(self.active().kind, ContainerKind::Chart { .. }) {
             return; // только во вкладках-номерах
         }
         let Some(idx) = self.hovered_pane else { return };
@@ -793,7 +795,8 @@ impl WindowHost {
         metrics: MetricsSnapshot,
         report: &mut crate::dock::ReportView,
         global_detached: [bool; 4],
-        detached_nums: &HashSet<u32>,
+        detached_keys: &HashSet<ContainerKind>,
+        split_by_core: bool,
     ) -> HostRender {
         let store = session.store();
         let none = HostRender {
@@ -830,7 +833,8 @@ impl WindowHost {
 
         // AddToChart: втянуть свежие детекты (откреплённые номера — на проброс в их
         // окна); убрать истёкшие.
-        let (added, addto_forwarded) = self.ingest_addtochart(store, now_ms, detached_nums);
+        let (added, addto_forwarded) =
+            self.ingest_addtochart(store, now_ms, detached_keys, split_by_core);
         let pruned = self.prune_panes(now_ms);
         // Появился/исчез контейнер или панели → перестроить хром (верхние вкладки).
         if added || pruned {
@@ -1035,7 +1039,7 @@ impl WindowHost {
                 // AddToChart-детект); иначе Main рисуется на всю зону без полосы.
                 let show_tabs = containers
                     .iter()
-                    .any(|c| matches!(c.kind, ContainerKind::Chart(_)));
+                    .any(|c| matches!(c.kind, ContainerKind::Chart { .. }));
                 let tabs_h = if show_tabs { CHART_TABS_H } else { 0.0 };
                 if show_tabs && central.is_positive() {
                     egui::Area::new(egui::Id::new("chart-tabs"))
@@ -1048,16 +1052,29 @@ impl WindowHost {
                                 ui.add_space(4.0);
                                 ui.spacing_mut().item_spacing.x = 2.0;
                                 for (i, c) in containers.iter().enumerate() {
-                                    // Метка вкладки: «номер-группа» (1-HL), чтобы
-                                    // одинаковые номера в разных группах различались.
+                                    // Метка вкладки: «номер-группа[-ядро]». Имя ядра
+                                    // добавляется, когда чарты разделены по ядрам.
                                     let label = match c.kind {
                                         ContainerKind::Main => "Main".to_string(),
-                                        ContainerKind::Chart(n) => format!("{n}-{group_name}"),
+                                        ContainerKind::Chart { num, core: None } => {
+                                            format!("{num}-{group_name}")
+                                        }
+                                        ContainerKind::Chart {
+                                            num,
+                                            core: Some(cid),
+                                        } => {
+                                            let cn = cores
+                                                .iter()
+                                                .find(|ci| ci.id == cid)
+                                                .map(|ci| ci.name.as_str())
+                                                .unwrap_or("");
+                                            format!("{num}-{group_name}-{cn}")
+                                        }
                                     };
                                     let sel = i == active_container;
                                     // Нумерованные вкладки можно ПОТЯНУТЬ → открепить
                                     // в окно; Main не открепляется.
-                                    let draggable = matches!(c.kind, ContainerKind::Chart(_));
+                                    let draggable = matches!(c.kind, ContainerKind::Chart { .. });
                                     let resp = chart_tab(ui, &label, c.panes.len(), sel, draggable);
                                     if sel {
                                         active_x = Some((resp.rect.left(), resp.rect.right()));
@@ -1198,7 +1215,7 @@ impl WindowHost {
             let tabs_h = if self
                 .containers
                 .iter()
-                .any(|c| matches!(c.kind, ContainerKind::Chart(_)))
+                .any(|c| matches!(c.kind, ContainerKind::Chart { .. }))
             {
                 CHART_TABS_H
             } else {
@@ -1359,16 +1376,15 @@ impl WindowHost {
 
     /// Открепить контейнер №`idx` (только нумерованную чарт-вкладку): забрать его
     /// спецификацию (для пересоздания в окне) и удалить из набора. Main не
-    /// открепляется. Возвращает (заголовок, вид, режим, спецификация панелей).
+    /// открепляется. Возвращает (вид, режим, спецификация панелей).
     pub fn take_container(
         &mut self,
         idx: usize,
-    ) -> Option<(String, ContainerKind, Mode, Vec<(CoreId, String, PaneSource)>)> {
+    ) -> Option<(ContainerKind, Mode, Vec<(CoreId, String, PaneSource)>)> {
         let c = self.containers.get(idx)?;
-        let ContainerKind::Chart(n) = c.kind else {
+        if !matches!(c.kind, ContainerKind::Chart { .. }) {
             return None; // Main не открепляем
-        };
-        let title = n.to_string();
+        }
         let spec = c.spec();
         let (kind, mode) = (c.kind, c.mode);
         self.containers.remove(idx);
@@ -1380,7 +1396,7 @@ impl WindowHost {
         } else if self.active_container == idx {
             self.active_container = 0; // ушла активная → на Main
         }
-        Some((title, kind, mode, spec))
+        Some((kind, mode, spec))
     }
 }
 

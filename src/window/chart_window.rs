@@ -174,12 +174,9 @@ impl ChartWindow {
             .collect()
     }
 
-    /// Номер чарт-вкладки этого окна (если это нумерованный контейнер).
-    pub fn chart_num(&self) -> Option<u32> {
-        match self.container.kind {
-            ContainerKind::Chart(n) => Some(n),
-            ContainerKind::Main => None,
-        }
+    /// Вид контейнера окна (ключ маршрутизации детектов: номер + ядро).
+    pub fn chart_kind(&self) -> ContainerKind {
+        self.container.kind
     }
 
     /// Новый AddToChart-детект → панель монеты в этом окне (создаётся на его

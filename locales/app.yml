@@ -378,6 +378,14 @@ general.language_hint:
   ru: "Применяется после сохранения."
   en: "Applies after saving."
   es: "Se aplica al guardar."
+general.charts_split_by_core:
+  ru: "Отдельная чарт-вкладка на каждое ядро"
+  en: "Separate chart tab per core"
+  es: "Pestaña de gráfico separada por núcleo"
+general.charts_split_by_core_hint:
+  ru: "AddToChart: вкл — 1-HL-ядро (своя вкладка на ядро), выкл — все ядра в одной 1-HL."
+  en: "AddToChart: on — 1-HL-core (per-core tab), off — all cores in one 1-HL."
+  es: "AddToChart: act — 1-HL-núcleo (pestaña por núcleo), des — todos en uno 1-HL."
 
 # --- Вкладка «Подключения» ---
 conn.servers_heading:

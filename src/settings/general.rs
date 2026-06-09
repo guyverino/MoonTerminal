@@ -35,5 +35,16 @@ impl SettingsTab for GeneralTab {
         });
         ui.add_space(4.0);
         ui.label(egui::RichText::new(t!("general.language_hint")).weak());
+
+        ui.add_space(12.0);
+        ui.separator();
+        ui.add_space(6.0);
+        // Чарты по детектам (AddToChart): отдельная вкладка на каждое ядро или общая.
+        ui.checkbox(
+            &mut cfg.charts_split_by_core,
+            t!("general.charts_split_by_core"),
+        );
+        ui.add_space(4.0);
+        ui.label(egui::RichText::new(t!("general.charts_split_by_core_hint")).weak());
     }
 }

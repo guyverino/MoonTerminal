@@ -8,12 +8,13 @@ use crate::chart::view::Rect;
 use crate::chart::Chart;
 use crate::session::CoreId;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ContainerKind {
     /// Главная вкладка: клики по детектам, фулскрин-центричный.
     Main,
-    /// Чарт-вкладка №N (AddToChart=N): авто-панели монет с TTL, всегда тайл.
-    Chart(u32),
+    /// Чарт-вкладка AddToChart=`num`. `core` = Some(ядро), когда чарты разделены по
+    /// ядрам (настройка charts_split_by_core); None — все ядра в одной вкладке.
+    Chart { num: u32, core: Option<CoreId> },
 }
 
 /// Источник панели — влияет на TTL и поведение.

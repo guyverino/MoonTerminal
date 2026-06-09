@@ -48,6 +48,8 @@ pub struct AppConfig {
     pub language: Language,
     /// Источник рыночных данных (settings.toml). Дефолт — Dedup (провайдер на биржу).
     pub market_mode: MarketDataMode,
+    /// Отдельная чарт-вкладка на каждое ядро для AddToChart (settings.toml).
+    pub charts_split_by_core: bool,
     /// Тема оформления чарта (отдельный переносимый theme.toml).
     pub theme: ChartTheme,
 }
@@ -65,6 +67,7 @@ impl AppConfig {
                 groups: merged.groups,
                 language: merged.language,
                 market_mode: merged.market_mode,
+                charts_split_by_core: merged.charts_split_by_core,
                 theme,
             };
             log::info!(
@@ -86,6 +89,7 @@ impl AppConfig {
         if paths::legacy_enc_path().exists() {
             let mut cfg = migrate::from_legacy_enc()?;
             cfg.theme = theme;
+            cfg.charts_split_by_core = true;
             cfg.save()?;
             log::info!("мигрировано из config.enc → servers.enc + settings.toml");
             return Ok(cfg);
@@ -93,6 +97,7 @@ impl AppConfig {
         if paths::legacy_toml_path().exists() {
             let mut cfg = migrate::from_legacy_toml()?;
             cfg.theme = theme;
+            cfg.charts_split_by_core = true;
             cfg.save()?;
             log::info!("мигрировано из config.toml → servers.enc + settings.toml");
             return Ok(cfg);
@@ -101,6 +106,7 @@ impl AppConfig {
         log::warn!("конфиг не найден — добавь сервера в Настройках");
         Ok(Self {
             theme,
+            charts_split_by_core: true, // дефолт — отдельная вкладка на ядро
             ..Self::default()
         })
     }
@@ -111,7 +117,13 @@ impl AppConfig {
         reconcile::ensure_uids(&mut self.servers);
         self.prune_orphan_groups();
         self.validate()?;
-        let (sf, meta) = reconcile::split(&self.servers, &self.groups, self.language, self.market_mode);
+        let (sf, meta) = reconcile::split(
+            &self.servers,
+            &self.groups,
+            self.language,
+            self.market_mode,
+            self.charts_split_by_core,
+        );
         store::write_servers(&sf)?;
         store::write_settings(&meta)?;
         // Тема — в свой переносимый файл (theme.toml), независимо от settings.toml.
@@ -153,6 +165,7 @@ impl AppConfig {
             &self.groups,
             Language::default(),
             MarketDataMode::default(),
+            true, // нейтрализуем: тумблер чартов не влияет на структуру (без ребилда)
         );
         let a = toml::to_string(&sf).unwrap_or_default();
         let b = toml::to_string(&meta).unwrap_or_default();
