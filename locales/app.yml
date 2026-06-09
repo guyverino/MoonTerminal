@@ -124,10 +124,6 @@ strat.staged:
   ru: "изменений: %{n}"
   en: "staged: %{n}"
   es: "pendientes: %{n}"
-strat.root:
-  ru: "(корень)"
-  en: "(root)"
-  es: "(raíz)"
 strat.sections:
   ru: "Разделы"
   en: "Sections"

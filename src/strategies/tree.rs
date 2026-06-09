@@ -2,8 +2,9 @@
 //! индикатором запуска, чекбоксами (стейджинг) и кнопкой «Применить» (старт/стоп).
 
 use super::{
-    count_filter, folders_of, matches, searching, Key, StratAction, StrategiesOut, StrategiesState,
+    count_filter, matches, searching, Key, StratAction, StrategiesOut, StrategiesState,
 };
+use crate::feed::StrategyRow;
 use crate::session::{CoreId, CoreStore};
 use crate::shell::theme;
 
@@ -152,45 +153,20 @@ pub fn show(
                 }
 
                 ui.indent(("core_body", core_id), |ui| {
-                    for folder in folders_of(&cd.strategies) {
-                        let rows: Vec<_> = cd
-                            .strategies
-                            .iter()
-                            .filter(|r| r.folder_path == folder && matches(st, r))
-                            .collect();
-                        if rows.is_empty() {
-                            continue;
-                        }
-                        // Счётчики папки — по фильтру типа/L/S (а не по видимым строкам).
-                        let in_folder = |r: &&crate::feed::StrategyRow| {
-                            r.folder_path == folder && count_filter(st, r)
-                        };
-                        let total = cd.strategies.iter().filter(in_folder).count();
-                        let running = cd
-                            .strategies
-                            .iter()
-                            .filter(|r| in_folder(r) && r.checked)
-                            .count();
-                        let fkey = (*core_id, folder.clone());
-                        let fopen = force_open || st.expanded_folders.contains(&fkey);
-                        let name = if folder.is_empty() {
-                            t!("strat.root").to_string()
-                        } else {
-                            folder.clone()
-                        };
-                        let flabel =
-                            format!("{}  {name}  {running}/{total}", if fopen { "▼" } else { "▶" });
-                        if ui.selectable_label(false, flabel).clicked() {
-                            toggle(&mut st.expanded_folders, fkey.clone());
-                        }
-                        if fopen {
-                            ui.indent(("folder_body", core_id, &folder), |ui| {
-                                for r in &rows {
-                                    strategy_row(ui, st, *core_id, r, &order, &mut built);
-                                }
-                            });
-                        }
-                    }
+                    // Вложенное дерево папок: путь разбиваем по «/» и «\».
+                    let root = build_node(cd.strategies.iter().filter(|r| matches(st, r)));
+                    let mut prefix: Vec<String> = Vec::new();
+                    render_node(
+                        ui,
+                        st,
+                        &root,
+                        &cd.strategies,
+                        *core_id,
+                        &mut prefix,
+                        force_open,
+                        &order,
+                        &mut built,
+                    );
                 });
             }
         });
@@ -265,8 +241,16 @@ fn expand_collapse_toggle(
         for (c, _) in cores {
             st.expanded_cores.insert(*c);
             if let Some(cd) = store.core(*c) {
-                for folder in folders_of(&cd.strategies) {
-                    st.expanded_folders.insert((*c, folder));
+                for r in &cd.strategies {
+                    // Раскрываем каждый уровень пути (накопительные префиксы).
+                    let mut acc = String::new();
+                    for part in r.folder_path.split(['/', '\\']).filter(|s| !s.is_empty()) {
+                        if !acc.is_empty() {
+                            acc.push('/');
+                        }
+                        acc.push_str(part);
+                        st.expanded_folders.insert((*c, acc.clone()));
+                    }
                 }
             }
         }
@@ -392,6 +376,81 @@ fn gather_actions(
         }
     }
     actions
+}
+
+/// Узел дерева папок: подпапки (по имени) + стратегии прямо в этой папке.
+#[derive(Default)]
+struct FolderNode<'a> {
+    children: std::collections::BTreeMap<String, FolderNode<'a>>,
+    strategies: Vec<&'a StrategyRow>,
+}
+
+/// Строит вложенное дерево из путей стратегий (`/` и `\` — разделители).
+fn build_node<'a>(it: impl Iterator<Item = &'a StrategyRow>) -> FolderNode<'a> {
+    let mut root = FolderNode::default();
+    for r in it {
+        let mut node = &mut root;
+        for part in r.folder_path.split(['/', '\\']).filter(|s| !s.is_empty()) {
+            node = node.children.entry(part.to_string()).or_default();
+        }
+        node.strategies.push(r);
+    }
+    root
+}
+
+/// Активных/всего (по фильтру типа/L/S) во всех стратегиях под путём `prefix`.
+fn folder_counts(strategies: &[StrategyRow], st: &StrategiesState, prefix: &[String]) -> (usize, usize) {
+    let mut active = 0;
+    let mut total = 0;
+    for r in strategies {
+        if !count_filter(st, r) {
+            continue;
+        }
+        let parts: Vec<&str> = r.folder_path.split(['/', '\\']).filter(|s| !s.is_empty()).collect();
+        if parts.len() >= prefix.len() && prefix.iter().zip(parts.iter()).all(|(a, b)| a.as_str() == *b) {
+            total += 1;
+            if r.checked {
+                active += 1;
+            }
+        }
+    }
+    (active, total)
+}
+
+/// Рекурсивно рисует узел: подпапки (сворачиваемые, с активн./всего), затем
+/// стратегии прямо в этой папке. Корневой узел даёт стратегии без папки + верхние папки.
+#[allow(clippy::too_many_arguments)]
+fn render_node(
+    ui: &mut egui::Ui,
+    st: &mut StrategiesState,
+    node: &FolderNode,
+    strategies: &[StrategyRow],
+    core_id: CoreId,
+    prefix: &mut Vec<String>,
+    force_open: bool,
+    order: &[Key],
+    built: &mut Vec<Key>,
+) {
+    for (name, child) in &node.children {
+        prefix.push(name.clone());
+        let path_key = prefix.join("/");
+        let fkey = (core_id, path_key.clone());
+        let fopen = force_open || st.expanded_folders.contains(&fkey);
+        let (active, total) = folder_counts(strategies, st, prefix);
+        let flabel = format!("{}  {name}  {active}/{total}", if fopen { "▼" } else { "▶" });
+        if ui.selectable_label(false, flabel).clicked() {
+            toggle(&mut st.expanded_folders, fkey);
+        }
+        if fopen {
+            ui.indent(("folder_body", core_id, &path_key), |ui| {
+                render_node(ui, st, child, strategies, core_id, prefix, force_open, order, built);
+            });
+        }
+        prefix.pop();
+    }
+    for r in &node.strategies {
+        strategy_row(ui, st, core_id, r, order, built);
+    }
 }
 
 /// Одна строка стратегии: чекбокс (стейджинг) · индикатор запуска · имя (выбор).

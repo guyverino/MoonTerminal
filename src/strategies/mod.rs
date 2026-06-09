@@ -274,14 +274,3 @@ pub fn matches(st: &StrategiesState, row: &StrategyRow) -> bool {
     count_filter(st, row) && by_name && by_active
 }
 
-/// Для удобства модулей: набор папок ядра (в порядке появления).
-pub fn folders_of(rows: &[StrategyRow]) -> Vec<String> {
-    let mut seen: HashSet<String> = HashSet::new();
-    let mut out = Vec::new();
-    for r in rows {
-        if seen.insert(r.folder_path.clone()) {
-            out.push(r.folder_path.clone());
-        }
-    }
-    out
-}
