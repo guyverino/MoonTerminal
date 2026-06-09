@@ -6,6 +6,13 @@
 
 use egui::{Color32, FontData, FontDefinitions, FontFamily, FontId, Rounding, Stroke, TextStyle};
 
+use crate::palette;
+
+/// sRGB-байты палитры → egui [`Color32`]. Единый источник цветов — [`crate::palette`].
+const fn c(rgb: [u8; 3]) -> Color32 {
+    Color32::from_rgb(rgb[0], rgb[1], rgb[2])
+}
+
 // --- Единый шрифт UI (Geist Mono). Ссылаться отсюда, не хардкодить размеры. ---
 /// Базовый размер шрифта хрома (точки egui) — кнопки/пиллы/значения.
 pub const FONT_SIZE: f32 = 11.5;
@@ -25,19 +32,19 @@ pub fn label_font() -> FontId {
     FontId::proportional(LABEL_SIZE)
 }
 
-// --- Палитра стенда (см. stand-tauri/src/styles.css :root) ---
-const BG: Color32 = Color32::from_rgb(0x13, 0x14, 0x16); // --bg
-const SURFACE_1: Color32 = Color32::from_rgb(0x1a, 0x1c, 0x1f); // --surface-1
-pub const TEXT: Color32 = Color32::from_rgb(0xe8, 0xe4, 0xdc); // --text
-pub const TEXT_2: Color32 = Color32::from_rgb(0x97, 0x92, 0x8a); // --text-2 (приглушённый)
-pub const TEXT_3: Color32 = Color32::from_rgb(0x5e, 0x5a, 0x53); // --text-3 (самый тусклый)
-const HAIRLINE_STRONG: Color32 = Color32::from_rgb(0x3a, 0x3e, 0x45); // --hairline-strong
+// --- Палитра стенда: egui-обёртки над общими байтами crate::palette ---
+const BG: Color32 = c(palette::BG); // --bg
+const SURFACE_1: Color32 = c(palette::SURFACE_1); // --surface-1
+pub const TEXT: Color32 = c(palette::TEXT); // --text
+pub const TEXT_2: Color32 = c(palette::TEXT_2); // --text-2 (приглушённый)
+pub const TEXT_3: Color32 = c(palette::TEXT_3); // --text-3 (самый тусклый)
+const HAIRLINE_STRONG: Color32 = c(palette::HAIRLINE_STRONG); // --hairline-strong
 
 // Кнопки key-strip: lift-фон (белый ~2% поверх тёмного), hairline-рамка,
 // при наведении — чуть светлее фон и акцентная рамка вместо box-shadow стенда.
-pub const LIFT: Color32 = Color32::from_rgb(0x1d, 0x1f, 0x22); // ≈ --lift над --bg
-pub const LIFT_HOVER: Color32 = Color32::from_rgb(0x26, 0x28, 0x2d); // ≈ --lift-hover
-const LIFT_ACTIVE: Color32 = Color32::from_rgb(0x2c, 0x2f, 0x35);
+pub const LIFT: Color32 = c(palette::LIFT); // ≈ --lift над --bg
+pub const LIFT_HOVER: Color32 = c(palette::LIFT_HOVER); // ≈ --lift-hover
+const LIFT_ACTIVE: Color32 = c(palette::LIFT_ACTIVE);
 pub const HAIRLINE: Color32 = Color32::from_rgba_premultiplied(13, 13, 13, 13); // ≈ rgba(255,255,255,.05)
 /// Рамка кнопок в покое — тонкая, еле заметная (чуть ярче hairline, чтобы не «пропадала»).
 pub const BORDER: Color32 = Color32::from_rgba_premultiplied(24, 24, 24, 24); // ≈ rgba(255,255,255,.094)
@@ -166,11 +173,11 @@ fn load_cjk_font() -> Option<Vec<u8>> {
         .find_map(|p| std::fs::read(p).ok())
 }
 
-pub const ACCENT: Color32 = Color32::from_rgb(0xff, 0xb3, 0x47); // --accent
-pub const GREEN: Color32 = Color32::from_rgb(0x2f, 0xa8, 0x5c); // --long
-pub const RED: Color32 = Color32::from_rgb(0xff, 0x4a, 0x4a); // --sl
-pub const MUTED: Color32 = Color32::from_rgb(0x97, 0x92, 0x8a); // --text-2
-pub const TP: Color32 = Color32::from_rgb(0x7f, 0xc9, 0xff); // --tp (take-profit)
+pub const ACCENT: Color32 = c(palette::ACCENT); // --accent
+pub const GREEN: Color32 = c(palette::GREEN); // --long
+pub const RED: Color32 = c(palette::RED); // --sl
+pub const MUTED: Color32 = c(palette::TEXT_2); // --text-2 (== TEXT_2)
+pub const TP: Color32 = c(palette::TP); // --tp (take-profit)
 
 /// Зазор между соседними кнопками (точки egui). Ставим явным `add_space`, т.к.
 /// кастомные кнопки на `allocate_exact_size` идут впритык.

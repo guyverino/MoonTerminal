@@ -20,6 +20,7 @@ mod gpu;
 mod icons;
 mod market;
 mod metrics;
+mod palette;
 mod session;
 mod settings;
 mod shell;

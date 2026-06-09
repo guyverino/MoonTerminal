@@ -156,7 +156,8 @@ fn detect_button(
     // Spotlight под курсором — мягкое акцентное свечение, следует за мышью.
     if hovered {
         if let Some(c) = resp.hover_pos() {
-            spotlight(&p, c, 34.0, Color32::from_rgba_unmultiplied(0xff, 0xb3, 0x47, 40));
+            let [ar, ag, ab] = crate::palette::ACCENT;
+            spotlight(&p, c, 34.0, Color32::from_rgba_unmultiplied(ar, ag, ab, 40));
         }
         ui.ctx().request_repaint(); // пока курсор на кнопке — гоним кадры для следования
     }

@@ -6,6 +6,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::paths;
+use crate::palette;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
@@ -50,19 +51,19 @@ pub struct ChartTheme {
 impl Default for ChartTheme {
     fn default() -> Self {
         Self {
-            bg: [0x13, 0x14, 0x16],       // --bg, как панели/тулбары
-            grid: [0x17, 0x18, 0x1a],     // едва заметная сетка
+            bg: palette::BG,              // --bg, как панели/тулбары
+            grid: palette::GRID,          // едва заметная сетка
             grid_alpha: 1.0,
-            cross: [0xff, 0xb3, 0x47],    // --accent (янтарный)
+            cross: palette::ACCENT,       // --accent (янтарный)
             cross_alpha: 0.5,
             cross_thickness: 1.0,
             halo_radius: 44.0,
             halo_intensity: 0.14,
-            book_bg: [0x13, 0x14, 0x16],  // как фон чарта
-            book_bid: [0x2f, 0xa8, 0x5c], // --long (зелёный)
-            book_ask: [0xff, 0x8e, 0x5a], // --short (оранжевый)
-            panel_bg: [0x13, 0x14, 0x16], // --bg
-            closed_bg: [0x1a, 0x1c, 0x1f], // --surface-1 (нейтральный контейнер)
+            book_bg: palette::BG,         // как фон чарта
+            book_bid: palette::GREEN,     // --long (зелёный)
+            book_ask: palette::ORANGE,    // --short (оранжевый)
+            panel_bg: palette::BG,        // --bg
+            closed_bg: palette::SURFACE_1, // --surface-1 (нейтральный контейнер)
         }
     }
 }

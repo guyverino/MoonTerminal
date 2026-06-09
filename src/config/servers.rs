@@ -91,7 +91,7 @@ pub struct ServerConfig {
 }
 
 pub fn default_color() -> [u8; 3] {
-    [0xff, 0xb3, 0x47]
+    crate::palette::ACCENT
 }
 
 pub fn default_group() -> String {
