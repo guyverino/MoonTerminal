@@ -2,10 +2,44 @@
 //! (host), и откреплённым чарт-окном. Тут только wgpu-проходы по панелям и
 //! egui-оверлей шкал/перекрестия; владение surface/egui — у вызывающего.
 
-use crate::chart::container::Container;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use crate::chart::container::{Container, Pane};
 use crate::chart::view::Rect;
 use crate::config::ChartTheme;
 use crate::session::SessionManager;
+
+/// Кап частоты кадров: не презентим чаще этого. Общий для окна группы и
+/// откреплённого чарт-окна. 16_666 мкс ≈ 60 fps.
+pub const MIN_FRAME_DT: Duration = Duration::from_micros(16_666);
+
+/// Текущее unix-время в мс (та же шкала, что приходит в render как now_ms).
+pub fn now_unix_ms() -> f64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs_f64() * 1000.0)
+        .unwrap_or(0.0)
+}
+
+/// Сигнатура видимых панелей: рыночные ревизии + край времени каждой панели.
+/// Меняется → нужен кадр. Общая для host (активный контейнер) и чарт-окна.
+pub fn panes_visible_sig(panes: &[Pane], session: &SessionManager, now_ms: f64) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    for p in panes {
+        if let Some(v) = session.market_view(p.core, &p.market) {
+            v.ticks_rev.hash(&mut h);
+            v.book_rev.hash(&mut h);
+        }
+        let edge = if p.chart.view.is_live(now_ms) {
+            now_ms
+        } else {
+            p.chart.view.right_time_ms
+        };
+        p.chart.view.pixel_at(edge).hash(&mut h);
+    }
+    h.finish()
+}
 
 /// Смещение локального времени от UTC, сек (подписи часов на шкале). На не-Windows
 /// — 0 (UTC). Вынесено сюда, чтобы и host, и чарт-окно считали одинаково.

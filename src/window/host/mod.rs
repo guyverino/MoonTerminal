@@ -3,14 +3,15 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use winit::dpi::PhysicalSize;
-use winit::event::{MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
 use winit::window::{CursorIcon, Window};
 
 use crate::chart::container::{Container, ContainerKind, Mode, Pane, PaneSource};
+use crate::chart::paint::MIN_FRAME_DT;
 use crate::chart::view::Rect;
 use crate::config::ChartTheme;
 use crate::session::CoreId;
@@ -20,6 +21,11 @@ use crate::metrics::MetricsSnapshot;
 use crate::session::{CoreStore, SessionManager};
 use crate::shell::{Shell, ShellInfo, HEADER_H, STATUS_H};
 use crate::workspace::Workspace;
+
+mod input;
+mod signatures;
+
+use signatures::{chrome_sig, conn_summary_sig};
 
 pub struct HostRender {
     pub gear_clicked: bool,
@@ -37,12 +43,6 @@ pub struct HostRender {
 /// Принудительный прогон egui хотя бы раз в этот интервал — освежает живые
 /// счётчики статус-бара (fps/present/CPU/RAM), которые исключены из хром-сигнатуры.
 const EGUI_THROTTLE: Duration = Duration::from_millis(400);
-
-/// Кап частоты кадров: не презентим чаще этого. Движение мыши (перекрестие) и
-/// smooth-скролл иначе упираются в развёртку монитора (120/144 Гц) и греют GPU
-/// зря — следящему курсору хватает ~60/с. 16_666 мкс ≈ 60 fps; для более
-/// гладкого скролла на 120/144-Гц мониторе уменьши (8_333 ≈ 120, 6_944 ≈ 144).
-const MIN_FRAME_DT: Duration = Duration::from_micros(16_666);
 
 /// Высота верхней полосы чарт-вкладок (Main/1/2/3) над областью графиков, точки.
 const CHART_TABS_H: f32 = 28.0;
@@ -111,14 +111,6 @@ fn chart_tab(
         }
     }
     resp
-}
-
-/// Текущее unix-время в мс (та же шкала, что приходит в render как now_ms).
-fn now_unix_ms() -> f64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs_f64() * 1000.0)
-        .unwrap_or(0.0)
 }
 
 pub struct WindowHost {
@@ -438,27 +430,10 @@ impl WindowHost {
     }
 
     /// Сигнатура видимых панелей активного контейнера: рыночные ревизии + край
-    /// времени каждой видимой панели. Меняется → нужен кадр.
+    /// времени каждой видимой панели. Меняется → нужен кадр. (В фулскрине
+    /// невидимые панели всё равно не меняют картинку — приемлемо проходить по всем.)
     fn visible_sig(&self, session: &SessionManager, now_ms: f64) -> u64 {
-        use std::hash::{Hash, Hasher};
-        let mut h = std::collections::hash_map::DefaultHasher::new();
-        let c = self.active();
-        // Видимые индексы зависят от режима, но дёшевле просто пройтись по всем
-        // (в фулскрине невидимые панели всё равно не меняют картинку, но их edge
-        // не двигается заметно — приемлемо).
-        for p in &c.panes {
-            if let Some(v) = session.market_view(p.core, &p.market) {
-                v.ticks_rev.hash(&mut h);
-                v.book_rev.hash(&mut h);
-            }
-            let edge = if p.chart.view.is_live(now_ms) {
-                now_ms
-            } else {
-                p.chart.view.right_time_ms
-            };
-            p.chart.view.pixel_at(edge).hash(&mut h);
-        }
-        h.finish()
+        crate::chart::paint::panes_visible_sig(&self.active().panes, session, now_ms)
     }
 
     /// Сумма detects_rev ядер группы — дёшево ловит приход новых детектов.
@@ -550,216 +525,6 @@ impl WindowHost {
     /// Состояние Shift (для shift+колесо = пан по X).
     pub fn set_modifiers(&mut self, shift: bool) {
         self.shift_down = shift;
-    }
-
-    /// Указатель в зоне графика (а не над панелями egui)? Чисто геометрия:
-    /// все интерактивные виджеты egui живут в панелях ВНЕ центрального rect.
-    fn chart_input_ok(&self) -> bool {
-        let (x, y) = self.last_ptr;
-        let (cx, cy, cw, ch) = self.chart_area;
-        x >= cx && x <= cx + cw && y >= cy && y <= cy + ch
-    }
-
-    /// Ширина rect панели под курсором (физ. px) — для клампа зума по X.
-    fn hovered_pane_w(&self) -> f32 {
-        self.pane_rects
-            .iter()
-            .find(|(i, _)| Some(*i) == self.hovered_pane)
-            .map(|(_, r)| r.w)
-            .unwrap_or(self.chart_area.2)
-    }
-
-    /// `view` панели под курсором (для пан/зум). None — курсор не над панелью.
-    fn hovered_view_mut(&mut self) -> Option<&mut crate::chart::view::ChartView> {
-        let idx = self.hovered_pane?;
-        self.containers[self.active_container]
-            .panes
-            .get_mut(idx)
-            .map(|p| &mut p.chart.view)
-    }
-
-    /// Двойной ЛКМ по чарту (не стакану) нумерованной вкладки → запомнить монету
-    /// панели под курсором для открытия на Main фулскрин (render применит).
-    fn try_dblclick_to_main(&mut self) {
-        if !matches!(self.active().kind, ContainerKind::Chart { .. }) {
-            return; // только во вкладках-номерах
-        }
-        let Some(idx) = self.hovered_pane else { return };
-        let Some((_, r)) = self.pane_rects.iter().find(|(i, _)| *i == idx) else {
-            return;
-        };
-        // В стакане (правая зона GLASS_ZONE_PX) дабл-клик игнорируем.
-        let glass_w = crate::chart::GLASS_ZONE_PX.min(r.w * 0.5);
-        if self.last_ptr.0 >= r.x + r.w - glass_w {
-            return;
-        }
-        let info = self.containers[self.active_container]
-            .panes
-            .get(idx)
-            .map(|p| (p.core, p.market.clone()));
-        self.pending_to_main = info;
-    }
-
-    /// Колесо: зум по X (или пан по X при зажатом Shift) — у панели под курсором.
-    pub fn wheel(&mut self, delta: &MouseScrollDelta) {
-        if !self.chart_input_ok() {
-            return;
-        }
-        let dy = match delta {
-            MouseScrollDelta::LineDelta(_, y) => *y,
-            MouseScrollDelta::PixelDelta(p) => p.y as f32 / 40.0,
-        };
-        if dy == 0.0 {
-            return;
-        }
-        let shift = self.shift_down;
-        let w = self.hovered_pane_w();
-        let now = now_unix_ms();
-        if let Some(view) = self.hovered_view_mut() {
-            if shift {
-                view.pan_x_px(-dy.signum() * 60.0, now);
-            } else {
-                let factor = if dy > 0.0 { 1.15 } else { 1.0 / 1.15 };
-                view.zoom_x(factor, w);
-            }
-            self.dirty = true;
-        }
-    }
-
-    /// Нажатие/отпускание кнопки мыши. Гейт по зоне графика (не по egui). ПКМ:
-    /// короткий клик (без сдвига) = тоггл фулскрин↔тайл; ПКМ-drag = зум по цене.
-    pub fn mouse_button(&mut self, button: MouseButton, pressed: bool) {
-        match button {
-            MouseButton::Left => {
-                if pressed {
-                    if !self.chart_input_ok() {
-                        return; // клик по панели — не таскаем график
-                    }
-                    // Двойной ЛКМ по ЧАРТУ (не стакану) нумерованной вкладки →
-                    // открыть монету на Main фулскрин (обработка в render).
-                    let now = now_unix_ms();
-                    let (px, py) = self.last_ptr;
-                    let dbl = now - self.last_lmb_ms < 400.0
-                        && (px - self.last_lmb_pos.0).abs() < 28.0
-                        && (py - self.last_lmb_pos.1).abs() < 28.0;
-                    self.last_lmb_ms = now;
-                    self.last_lmb_pos = (px, py);
-                    if dbl {
-                        self.try_dblclick_to_main();
-                    }
-                    self.lmb_down = true;
-                    self.lmb_active = false;
-                    self.drag_accum = (0.0, 0.0);
-                } else {
-                    self.lmb_down = false;
-                    self.lmb_active = false;
-                }
-            }
-            MouseButton::Right => {
-                if pressed {
-                    if !self.chart_input_ok() {
-                        return;
-                    }
-                    self.rmb_down = true;
-                    self.rmb_moved = false;
-                    self.rmb_start_y = self.last_ptr.1;
-                    let snap = self.hovered_view_mut().map(|v| (v.price_range, v.center_price));
-                    if let Some((r, c)) = snap {
-                        self.rmb_start_range = r;
-                        self.rmb_start_center = c;
-                    }
-                } else {
-                    // Отпустили ПКМ без сдвига → клик: тоггл фулскрин/тайл (фокус —
-                    // панель под курсором). Со сдвигом — это был зум по цене.
-                    if self.rmb_down && !self.rmb_moved {
-                        let focus = self.hovered_pane.unwrap_or(0);
-                        if !self.active().is_empty() {
-                            self.active_mut().toggle_mode(focus);
-                        }
-                    }
-                    self.rmb_down = false;
-                }
-            }
-            _ => {}
-        }
-        self.dirty = true;
-    }
-
-    /// Движение курсора (физ. пиксели).
-    pub fn pointer_moved(&mut self, x: f32, y: f32) {
-        let dx = x - self.last_ptr.0;
-        let dy = y - self.last_ptr.1;
-        self.last_ptr = (x, y);
-        let (cx, cy, cw, ch) = self.chart_area;
-        let active = x >= cx && x <= cx + cw && y >= cy && y <= cy + ch;
-        let was_shown = self.cursor.is_some();
-        self.cursor = if active { Some((x, y)) } else { None };
-        // Панель под курсором (для маршрутизации пан/зум и крестика).
-        self.hovered_pane = if active {
-            self.pane_rects
-                .iter()
-                .find(|(_, r)| x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h)
-                .map(|(i, _)| *i)
-        } else {
-            None
-        };
-        // Системный курсор-крестик над графиком; шлём только при смене состояния.
-        if active != was_shown {
-            self.window
-                .set_cursor(if active { CursorIcon::Crosshair } else { CursorIcon::Default });
-        }
-        // Перекрестие живёт в зоне графика: движение над графиком или уход с него
-        // → нужен кадр. Над панелями egui (не было показано и не показано) кадр
-        // не форсируем — это и есть бывший «шторм» от движения мыши.
-        if active || was_shown {
-            self.dirty = true;
-        }
-
-        // Курсор над доком детектов → перегон egui (spotlight на кнопке следует за
-        // мышью). Точечно: только эта узкая колонка, не все панели (без «шторма»).
-        let (dx0, dy0, dw, dh) = self.detects_area;
-        if x >= dx0 && x <= dx0 + dw && y >= dy0 && y <= dy0 + dh {
-            self.egui_dirty = true;
-            self.dirty = true;
-        }
-
-        // ЛКМ-перетаскивание: горизонталь → пан по времени, вертикаль → пан по цене.
-        if self.lmb_down {
-            if !self.lmb_active {
-                self.drag_accum.0 += dx;
-                self.drag_accum.1 += dy;
-                if self.drag_accum.0.abs() > 5.0 || self.drag_accum.1.abs() > 5.0 {
-                    self.lmb_active = true;
-                }
-            }
-            if self.lmb_active {
-                let now = now_unix_ms();
-                if let Some(view) = self.hovered_view_mut() {
-                    if dx != 0.0 {
-                        view.pan_x_px(dx, now);
-                    }
-                    if dy != 0.0 {
-                        view.pan_y_px(dy, now);
-                    }
-                }
-            }
-            self.dirty = true;
-        }
-
-        // ПКМ-перетаскивание: вертикальный зум по цене от снимка нажатия. Сдвиг за
-        // порог помечает rmb_moved → на отпускании это зум, а не клик-тоггл.
-        if self.rmb_down {
-            let cum = y - self.rmb_start_y;
-            if cum.abs() > 4.0 {
-                self.rmb_moved = true;
-            }
-            let (c, r) = (self.rmb_start_center, self.rmb_start_range);
-            let now = now_unix_ms();
-            if let Some(view) = self.hovered_view_mut() {
-                view.rmb_zoom(c, r, cum, now);
-            }
-            self.dirty = true;
-        }
     }
 
     /// Открытые ордера всех ядер группы (с именем ядра) — для вкладки «Ордера»
@@ -1411,59 +1176,3 @@ impl WindowHost {
     }
 }
 
-/// Сигнатура содержимого хрома: меняется только при смене рынка/статуса/цены
-/// (до копеек) / набора ордеров. Живые счётчики статус-бара (fps/present/CPU/RAM)
-/// СЮДА НЕ входят — их освежает EGUI_THROTTLE, иначе хром «менялся» бы каждый кадр.
-fn chrome_sig(
-    market: &str,
-    status: &ConnStatus,
-    last_price: Option<f32>,
-    orders_sig: u64,
-    conn_sig: u64,
-) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    market.hash(&mut h);
-    let (code, txt): (u8, &str) = match status {
-        ConnStatus::Connecting => (0, ""),
-        ConnStatus::Stage(s) => (1, s.as_str()),
-        ConnStatus::Ready => (2, ""),
-        ConnStatus::Failed(e) => (3, e.as_str()),
-        ConnStatus::Disconnected => (4, ""),
-    };
-    code.hash(&mut h);
-    txt.hash(&mut h);
-    last_price
-        .map(|p| (p * 100.0).round() as i64)
-        .unwrap_or(i64::MIN)
-        .hash(&mut h);
-    orders_sig.hash(&mut h);
-    conn_sig.hash(&mut h);
-    h.finish()
-}
-
-/// Хэш сводки подключений (ready/total + список упавших) — чтобы статус-бар
-/// перерисовывался при смене статуса ЛЮБОГО ядра, а не только активного.
-fn conn_summary_sig(summary: &crate::session::ConnSummary) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    summary.ready.hash(&mut h);
-    summary.total.hash(&mut h);
-    for (name, st) in &summary.down {
-        name.hash(&mut h);
-        match st {
-            ConnStatus::Connecting => 0u8.hash(&mut h),
-            ConnStatus::Stage(s) => {
-                1u8.hash(&mut h);
-                s.hash(&mut h);
-            }
-            ConnStatus::Ready => 2u8.hash(&mut h),
-            ConnStatus::Failed(e) => {
-                3u8.hash(&mut h);
-                e.hash(&mut h);
-            }
-            ConnStatus::Disconnected => 4u8.hash(&mut h),
-        }
-    }
-    h.finish()
-}

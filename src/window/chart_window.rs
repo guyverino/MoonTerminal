@@ -4,13 +4,14 @@
 //! привязаны к девайсу окна, поэтому панели пересоздаются из спецификации.
 
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::Instant;
 
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
 use winit::window::{CursorIcon, Window, WindowId};
 
 use crate::chart::container::{Container, ContainerKind, Mode, PaneSource};
+use crate::chart::paint::{now_unix_ms, MIN_FRAME_DT};
 use crate::chart::view::Rect;
 use crate::config::ChartTheme;
 use crate::dock::controls::SCALES;
@@ -19,16 +20,8 @@ use crate::gpu::GpuContext;
 use crate::session::{CoreId, SessionManager};
 use crate::shell::theme;
 
-const MIN_FRAME_DT: Duration = Duration::from_micros(16_666);
 /// Высота верхней строки масштаба чарт-окна (логич. точки egui).
 const TOPBAR_H: f32 = 32.0;
-
-fn now_unix_ms() -> f64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs_f64() * 1000.0)
-        .unwrap_or(0.0)
-}
 
 pub struct ChartWindow {
     pub window: Arc<Window>,
@@ -204,21 +197,7 @@ impl ChartWindow {
     }
 
     fn visible_sig(&self, session: &SessionManager, now_ms: f64) -> u64 {
-        use std::hash::{Hash, Hasher};
-        let mut h = std::collections::hash_map::DefaultHasher::new();
-        for p in &self.container.panes {
-            if let Some(v) = session.market_view(p.core, &p.market) {
-                v.ticks_rev.hash(&mut h);
-                v.book_rev.hash(&mut h);
-            }
-            let edge = if p.chart.view.is_live(now_ms) {
-                now_ms
-            } else {
-                p.chart.view.right_time_ms
-            };
-            p.chart.view.pixel_at(edge).hash(&mut h);
-        }
-        h.finish()
+        crate::chart::paint::panes_visible_sig(&self.container.panes, session, now_ms)
     }
 
     pub fn needs_render(&self, session: &SessionManager, now_ms: f64) -> bool {
