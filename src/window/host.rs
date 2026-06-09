@@ -115,6 +115,11 @@ pub struct WindowHost {
     last_book_rev: u64,
     last_orders_sig: u64,
     last_detects_sig: u64,
+    /// Ревизия лог-буфера на момент прошлого кадра — для живого обновления вкладки
+    /// «Лог» (форсим кадр, только когда она активна и пришли новые строки).
+    last_log_rev: u64,
+    /// Генерация отчётов на момент прошлого кадра — живое обновление вкладки «Отчёт».
+    last_report_gen: u64,
     last_time_pixel: i64,
     icons: crate::icons::IconSet,
 
@@ -202,6 +207,8 @@ impl WindowHost {
             last_book_rev: u64::MAX,
             last_orders_sig: u64::MAX,
             last_detects_sig: u64::MAX,
+            last_log_rev: u64::MAX,
+            last_report_gen: u64::MAX,
             last_time_pixel: i64::MIN,
             icons: crate::icons::IconSet::discover(),
             egui_tris: None,
@@ -271,6 +278,20 @@ impl WindowHost {
             return true;
         }
         if self.workspace.dock.ribbon.has_items() {
+            return true;
+        }
+        // Живой лог: новые строки форсят кадр только когда вкладка «Лог» активна
+        // (иначе её обновление невидимо, а кадры зря грелись бы на потоке логов).
+        if self.workspace.dock.tab == crate::dock::DockTab::Log
+            && crate::applog::revision() != self.last_log_rev
+        {
+            return true;
+        }
+        // Живой отчёт: новые/изменённые записи форсят кадр, когда активна вкладка
+        // «Отчёт» (writer бампает счётчик-генерацию).
+        if self.workspace.dock.tab == crate::dock::DockTab::Report
+            && self.workspace.dock.report.generation() != self.last_report_gen
+        {
             return true;
         }
         // Движение: в лайве правый край едет за «сейчас» (wall-clock) → кадр на
@@ -535,7 +556,18 @@ impl WindowHost {
         // переиспользуем кэш-сетку: smooth scroll и hover над графиком не меняют
         // хром → нет CPU на тесселяцию хрома каждый кадр.
         let size_now = (self.gpu.size.width, self.gpu.size.height);
-        let sig = chrome_sig(&market, &status, last_price, orders_sig, conn_sig);
+        let mut sig = chrome_sig(&market, &status, last_price, orders_sig, conn_sig);
+        // Активная вкладка дока — часть хром-сигнатуры (переключение → перегон
+        // egui). Для вкладки «Лог» подмешиваем ревизию буфера, чтобы новые строки
+        // тесселировались, а не брались из кэш-сетки прошлого кадра.
+        let tab = self.workspace.dock.tab;
+        sig = sig.wrapping_add((tab as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
+        if tab == crate::dock::DockTab::Log {
+            sig = sig.wrapping_add(crate::applog::revision());
+        }
+        if tab == crate::dock::DockTab::Report {
+            sig = sig.wrapping_add(self.workspace.dock.report.generation());
+        }
         let run_egui = self.egui_tris.is_none()
             || self.egui_dirty
             || self.egui_wants_repaint
@@ -869,6 +901,8 @@ impl WindowHost {
         }
         self.last_orders_sig = orders_sig;
         self.last_detects_sig = self.detects_sig(store);
+        self.last_log_rev = crate::applog::revision();
+        self.last_report_gen = self.workspace.dock.report.generation();
         self.last_time_pixel = self.chart.view.pixel_at(self.chart.view.right_time_ms);
         // Следующий кадр держим «грязным», если egui анимирует (popup/fade) ИЛИ
         // только что открыли/закрыли чарт (нужно перестроить хром).

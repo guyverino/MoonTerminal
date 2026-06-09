@@ -37,11 +37,17 @@ use crate::config::AppConfig;
 
 fn main() -> anyhow::Result<()> {
     // Глушим info-шум зависимостей (wgpu/naga/winit), оставляем только наши логи.
-    env_logger::Builder::from_env(
+    // Строим env_logger как Logger (не .init()) и оборачиваем в TeeLogger — он
+    // дублирует напечатанные записи в in-memory буфер вкладки «Лог».
+    let env = env_logger::Builder::from_env(
         env_logger::Env::default()
             .default_filter_or("warn,moon_terminal=info,moonproto::crypted=error"),
     )
-    .init();
+    .build();
+    log::set_max_level(env.filter());
+    if let Err(e) = log::set_boxed_logger(Box::new(crate::applog::TeeLogger::new(env))) {
+        eprintln!("не удалось установить логгер: {e}");
+    }
 
     let cfg = AppConfig::load()?;
     // Применяем язык интерфейса до создания окон (дефолт — системная локаль).

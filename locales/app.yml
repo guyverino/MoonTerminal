@@ -205,6 +205,32 @@ orders.col.price:
   en: "Price"
   es: "Precio"
 
+# --- Нижний док: вкладки ---
+dock.tab.orders:
+  ru: "Ордера"
+  en: "Orders"
+  es: "Órdenes"
+dock.tab.assets:
+  ru: "Активы"
+  en: "Assets"
+  es: "Activos"
+dock.tab.log:
+  ru: "Лог"
+  en: "Log"
+  es: "Registro"
+dock.tab.report:
+  ru: "Отчёт"
+  en: "Report"
+  es: "Informe"
+dock.todo.assets:
+  ru: "Активы: канал балансов ядра пока не подключён"
+  en: "Assets: core balance feed not wired yet"
+  es: "Activos: el feed de balances del núcleo aún no está conectado"
+dock.log.empty:
+  ru: "Лог пуст"
+  en: "Log is empty"
+  es: "El registro está vacío"
+
 # --- Окно настроек: общее ---
 settings.save:
   ru: "Сохранить"

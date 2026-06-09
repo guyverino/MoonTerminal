@@ -1,6 +1,9 @@
 //! Workspace = группа ядер с собственной раскладкой (dock). Группа = ОС-окно
 //! (WindowHost держит по одному Workspace).
 
+use std::sync::atomic::AtomicU64;
+use std::sync::Arc;
+
 use crate::config::AppConfig;
 use crate::dock::Dock;
 use crate::session::CoreId;
@@ -34,7 +37,11 @@ pub struct Workspace {
 
 impl Workspace {
     /// Группирует серверы конфига по полю `group` (порядок появления сохраняется).
-    pub fn build_all(config: &AppConfig) -> Vec<Workspace> {
+    /// `generation` — счётчик writer'а отчётов (проброс во вкладку «Отчёт» дока).
+    pub fn build_all(
+        config: &AppConfig,
+        generation: Option<Arc<AtomicU64>>,
+    ) -> Vec<Workspace> {
         let mut out: Vec<Workspace> = Vec::new();
         for s in config
             .servers
@@ -60,7 +67,7 @@ impl Workspace {
                     icon: config.group(&s.group).icon,
                     cores: vec![info],
                     open: None,
-                    dock: Dock::new(),
+                    dock: Dock::new(generation.clone()),
                 });
             }
         }
@@ -89,13 +96,13 @@ impl Workspace {
     }
 
     /// Пустой workspace, чтобы было одно окно (открыть Настройки), когда серверов нет.
-    pub fn placeholder() -> Self {
+    pub fn placeholder(generation: Option<Arc<AtomicU64>>) -> Self {
         Self {
             group: "—".to_string(),
             icon: 0,
             cores: Vec::new(),
             open: None,
-            dock: Dock::new(),
+            dock: Dock::new(generation),
         }
     }
 }

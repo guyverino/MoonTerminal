@@ -4,11 +4,19 @@
 pub mod close_btn;
 pub mod controls;
 pub mod detects;
+pub mod log_panel;
 pub mod order;
 pub mod orders_panel;
+pub mod report_view;
+pub mod tabs;
 pub mod toolbar;
 
 pub use controls::{OrderControls, ScaleAction};
+pub use report_view::ReportView;
+pub use tabs::DockTab;
+
+use std::sync::atomic::AtomicU64;
+use std::sync::Arc;
 
 use crate::session::{CoreId, CoreStore};
 use crate::shell::HEADER_H;
@@ -22,6 +30,10 @@ pub struct Dock {
     pub controls: OrderControls,
     /// Лента детектов над чартом (state: очередь кнопок + курсоры ядер).
     pub ribbon: DetectRibbon,
+    /// Активная вкладка нижнего дока (Ордера/Активы/Лог/Отчёт).
+    pub tab: DockTab,
+    /// Состояние вкладки «Отчёт» (фильтры/таблица/своё SQLite-соединение).
+    pub report: ReportView,
 }
 
 pub struct DockOutput {
@@ -41,10 +53,13 @@ pub struct DockOutput {
 }
 
 impl Dock {
-    pub fn new() -> Self {
+    /// `generation` — счётчик writer'а отчётов (проброс во вкладку «Отчёт»).
+    pub fn new(generation: Option<Arc<AtomicU64>>) -> Self {
         Self {
             controls: OrderControls::default(),
             ribbon: DetectRibbon::default(),
+            tab: DockTab::default(),
+            report: ReportView::new(generation),
         }
     }
 
@@ -64,8 +79,9 @@ impl Dock {
 
         let tb = toolbar::show(ctx, &mut self.controls, following);
 
-        // Нижний док — открытые ордера группы (уровень группы, не контейнера чарта).
-        orders_panel::show(ctx, orders);
+        // Нижний док с вкладками (Ордера/Активы/Лог/Отчёт) — уровень группы, не
+        // контейнера чарта. Активная вкладка живёт в self.tab.
+        tabs::show(ctx, &mut self.tab, &mut self.report, orders);
 
         // Панель ордера — часть контейнера чарта: при закрытом чарте скрыта
         // (контейнер пустой/серый, центральная область не растягивается контентом).
@@ -106,11 +122,5 @@ impl Dock {
             close_chart,
             detects_rect,
         }
-    }
-}
-
-impl Default for Dock {
-    fn default() -> Self {
-        Self::new()
     }
 }

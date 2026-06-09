@@ -74,7 +74,9 @@ impl App {
     /// (Пере)создаёт окна групп. Нет групп — одно пустое окно (для Настроек).
     fn build_windows(&mut self, event_loop: &ActiveEventLoop) {
         self.windows.clear();
-        let mut workspaces = Workspace::build_all(&self.config);
+        // Счётчик-генерация writer'а отчётов — во вкладку «Отчёт» дока каждого окна.
+        let gen = self.reports.as_ref().map(|h| h.generation.clone());
+        let mut workspaces = Workspace::build_all(&self.config, gen.clone());
         if workspaces.is_empty() {
             // Первый запуск (ни одного сервера с ключом) — групповых окон не делаем
             // вовсе: resumed() откроет только окно Настроек. Если же серверы есть, но
@@ -82,7 +84,7 @@ impl App {
             if !self.config.has_keyed_server() {
                 return;
             }
-            workspaces.push(Workspace::placeholder());
+            workspaces.push(Workspace::placeholder(gen));
         }
         for ws in workspaces {
             match WindowHost::new(event_loop, ws, self.epoch_ms) {
