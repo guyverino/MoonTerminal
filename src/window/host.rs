@@ -244,7 +244,7 @@ impl WindowHost {
     /// удержании край заморожен → кадр пропускается. В лайве край едет за
     /// «сейчас» → ~px_per_ms·1000 кадров/с (дёшево за счёт canvas+egui-cache).
     pub fn needs_render(&self, session: &SessionManager, now_ms: f64) -> bool {
-        let store = &session.store;
+        let store = session.store();
         if self.dirty {
             return true;
         }
@@ -463,7 +463,7 @@ impl WindowHost {
         now_ms: f64,
         metrics: MetricsSnapshot,
     ) -> HostRender {
-        let store = &session.store;
+        let store = session.store();
         let none = HostRender {
             gear_clicked: false,
             reports_clicked: false,

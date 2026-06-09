@@ -50,8 +50,8 @@ impl StrategiesWindow {
     /// перерисовать (отразить новые checked/состав/схему).
     pub fn poll(&mut self, session: &SessionManager) {
         let mut sig = 0u64;
-        for s in &session.sessions {
-            if let Some(cd) = session.store.core(s.id) {
+        for s in session.sessions() {
+            if let Some(cd) = session.store().core(s.id) {
                 sig = sig
                     .wrapping_add(cd.strategies_rev)
                     .wrapping_mul(31)
@@ -75,12 +75,12 @@ impl StrategiesWindow {
     /// Кадр окна. Читает данные из `session`; возвращает команды старт/стоп.
     pub fn render(&mut self, session: &SessionManager) -> StrategiesWinOut {
         let cores: Vec<(CoreId, String)> = session
-            .sessions
+            .sessions()
             .iter()
             .map(|s| (s.id, s.name.clone()))
             .collect();
         let state = &mut self.state;
-        let store = &session.store;
+        let store = session.store();
         let mut actions = Vec::new();
         self.egui.render(&self.window, "strategies-pass", |ctx| {
             actions = state.ui(ctx, &cores, store).actions;

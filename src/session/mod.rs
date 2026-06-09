@@ -39,11 +39,13 @@ pub struct ConnSummary {
 }
 
 pub struct SessionManager {
-    pub sessions: Vec<CoreSession>,
-    /// Аккаунтный план: статус/ордера/детекты/стратегии по ядру.
-    pub store: CoreStore,
-    /// Рыночный план: крестики/стакан по ядру-провайдеру (дедуп).
-    pub market: MarketStore,
+    sessions: Vec<CoreSession>,
+    /// Аккаунтный план: статус/ордера/детекты/стратегии по ядру. Снаружи —
+    /// только чтение через [`SessionManager::store`]; мутирует лишь сам менеджер.
+    store: CoreStore,
+    /// Рыночный план: крестики/стакан по ядру-провайдеру (дедуп). Полностью
+    /// инкапсулирован: наружу — только через [`SessionManager::market_view`].
+    market: MarketStore,
     /// Режим источника рыночных данных (рубильник; пока дефолт Dedup).
     mode: MarketDataMode,
     /// Ядро → биржа (из `Identity`). Без идентичности провайдер не назначается.
@@ -211,6 +213,17 @@ impl SessionManager {
                 .cmd_tx
                 .send(CoreCmd::EditStrategyFields { ids, changes });
         }
+    }
+
+    /// Read-only доступ к аккаунтному плану (статусы/ордера/детекты/стратегии).
+    /// Наружу отдаём только `&` — мутирует store исключительно сам менеджер.
+    pub fn store(&self) -> &CoreStore {
+        &self.store
+    }
+
+    /// Живые сессии ядер (id/имя/группа) — read-only срез для UI.
+    pub fn sessions(&self) -> &[CoreSession] {
+        &self.sessions
     }
 
     /// Рыночные данные для чарта ядра `core` на рынке `market`: резолвим провайдера
