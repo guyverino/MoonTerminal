@@ -607,14 +607,24 @@ pub fn run(
 struct AlertParams {
     sound_alert: bool,
     keep_alert_secs: u32,
-    add_to_chart: bool,
+    /// Номер чарта-вкладки (0 = не добавлять).
+    add_to_chart: u32,
     keep_in_chart_secs: u32,
 }
 
+/// Целочисленное значение поля стратегии (AddToChart/KeepInChart/KeepAlert) —
+/// принимаем ЛЮБОЙ числовой/булев тип moonproto, иначе `default`.
 fn field_secs_or(s: &StrategySnapshot, name: &str, default: u32) -> u32 {
     match s.fields.get(name) {
         Some(FieldValue::Int32(v)) => (*v).max(0) as u32,
+        Some(FieldValue::Int64(v)) => (*v).max(0) as u32,
         Some(FieldValue::UInt32(v)) => *v,
+        Some(FieldValue::UInt64(v)) => *v as u32,
+        Some(FieldValue::Byte(v)) => *v as u32,
+        Some(FieldValue::Word(v)) => *v as u32,
+        Some(FieldValue::Bool(b)) => *b as u32,
+        Some(FieldValue::Double(v)) => v.max(0.0) as u32,
+        Some(FieldValue::Single(v)) => v.max(0.0) as u32,
         _ => default,
     }
 }
@@ -623,7 +633,7 @@ fn alert_params(s: &StrategySnapshot) -> AlertParams {
     AlertParams {
         sound_alert: s.field_bool_or_false("SoundAlert"),
         keep_alert_secs: field_secs_or(s, "KeepAlert", 60),
-        add_to_chart: s.field_bool_or_false("AddToChart"),
+        add_to_chart: field_secs_or(s, "AddToChart", 0),
         keep_in_chart_secs: field_secs_or(s, "KeepInChart", 60),
     }
 }

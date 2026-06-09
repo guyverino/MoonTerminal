@@ -54,6 +54,10 @@ impl DetectRibbon {
                 if !det.sound_alert {
                     continue;
                 }
+                // AddToChart-детекты идут прямо в чарт-вкладку (см. host), не в ленту.
+                if det.add_to_chart > 0 {
+                    continue;
+                }
                 let ttl_ms = (det.keep_alert_secs.max(1) as f64) * 1000.0;
                 // Ключ кнопки — пара (ядро, монета). Тот же детект с ТОГО ЖЕ ядра →
                 // не плодим кнопку, лишь продлеваем жизнь (новый KeepAlert). Та же

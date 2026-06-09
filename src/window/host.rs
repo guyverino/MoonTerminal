@@ -1,7 +1,7 @@
 //! WindowHost — одно ОС-окно одной группы: свой surface + egui + chart + dock.
 //! App держит по WindowHost на группу. CoreStore общий (читается, не владеется).
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -10,7 +10,7 @@ use winit::event::{MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
 use winit::window::{CursorIcon, Window};
 
-use crate::chart::container::{Container, ContainerKind, Mode, Pane};
+use crate::chart::container::{Container, ContainerKind, Mode, Pane, PaneSource};
 use crate::chart::view::Rect;
 use crate::config::ChartTheme;
 use crate::session::CoreId;
@@ -28,6 +28,10 @@ pub struct HostRender {
     pub detach: Option<crate::dock::DockTab>,
     /// Нажата «вернуть в док» — App закроет окно открепления этой вкладки.
     pub repin: Option<crate::dock::DockTab>,
+    /// Чарт-вкладку (контейнер №idx) потянули — открепить в отдельное чарт-окно.
+    pub detach_chart: Option<usize>,
+    /// Детекты для УЖЕ откреплённых чарт-окон: (номер чарта, ядро, рынок, ttl_ms).
+    pub addto_detached: Vec<(u32, crate::session::CoreId, String, f64)>,
 }
 
 /// Принудительный прогон egui хотя бы раз в этот интервал — освежает живые
@@ -40,34 +44,81 @@ const EGUI_THROTTLE: Duration = Duration::from_millis(400);
 /// гладкого скролла на 120/144-Гц мониторе уменьши (8_333 ≈ 120, 6_944 ≈ 144).
 const MIN_FRAME_DT: Duration = Duration::from_micros(16_666);
 
+/// Высота верхней полосы чарт-вкладок (Main/1/2/3) над областью графиков, точки.
+const CHART_TABS_H: f32 = 28.0;
+
+/// Чарт-вкладка (underline-стиль, как нижний док) с бейджем-счётчиком открытых
+/// графиков. Активную подчёркивает [`render`] поверх бейзлайна.
+fn chart_tab(
+    ui: &mut egui::Ui,
+    label: &str,
+    count: usize,
+    selected: bool,
+    draggable: bool,
+) -> egui::Response {
+    use crate::shell::theme;
+    let f = if selected {
+        theme::font_bold()
+    } else {
+        theme::font()
+    };
+    let pad = 12.0;
+    let badge = count > 0;
+    let badge_w = if badge { 20.0 } else { 0.0 };
+    let w = theme::text_w(ui, label, &f) + pad * 2.0 + badge_w;
+    let sense = if draggable {
+        egui::Sense::click_and_drag()
+    } else {
+        egui::Sense::click()
+    };
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, 24.0), sense);
+    if ui.is_rect_visible(rect) {
+        let hovered = resp.hovered();
+        let round = egui::Rounding {
+            nw: 5.0,
+            ne: 5.0,
+            sw: 0.0,
+            se: 0.0,
+        };
+        let p = ui.painter();
+        if selected {
+            p.rect_filled(rect, round, theme::LIFT);
+        } else if hovered {
+            p.rect_filled(rect, round, theme::LIFT.gamma_multiply(0.55));
+        }
+        let fg = if selected || hovered {
+            theme::TEXT
+        } else {
+            theme::TEXT_2
+        };
+        p.text(
+            egui::pos2(rect.min.x + pad, rect.center().y),
+            egui::Align2::LEFT_CENTER,
+            label,
+            f,
+            fg,
+        );
+        if badge {
+            let c = egui::pos2(rect.max.x - 12.0, rect.center().y);
+            p.circle_filled(c, 7.5, theme::ACCENT.gamma_multiply(0.9));
+            p.text(
+                c,
+                egui::Align2::CENTER_CENTER,
+                count.to_string(),
+                egui::FontId::proportional(9.0),
+                egui::Color32::from_rgb(0x14, 0x14, 0x16),
+            );
+        }
+    }
+    resp
+}
+
 /// Текущее unix-время в мс (та же шкала, что приходит в render как now_ms).
 fn now_unix_ms() -> f64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs_f64() * 1000.0)
         .unwrap_or(0.0)
-}
-
-/// Смещение локального времени от UTC, сек (для подписей часов на шкале времени).
-/// Считаем как разницу «час:мин:сек» локального и системного (UTC) времени —
-/// учитывает текущий DST без сторонних крейтов. На не-Windows — 0 (UTC).
-#[cfg(windows)]
-fn local_offset_sec() -> i64 {
-    use windows::Win32::System::SystemInformation::{GetLocalTime, GetSystemTime};
-    let (l, u) = unsafe { (GetLocalTime(), GetSystemTime()) };
-    let lsec = l.wHour as i64 * 3600 + l.wMinute as i64 * 60 + l.wSecond as i64;
-    let usec = u.wHour as i64 * 3600 + u.wMinute as i64 * 60 + u.wSecond as i64;
-    let mut d = lsec - usec;
-    if d > 43_200 {
-        d -= 86_400;
-    } else if d < -43_200 {
-        d += 86_400;
-    }
-    d
-}
-#[cfg(not(windows))]
-fn local_offset_sec() -> i64 {
-    0
 }
 
 pub struct WindowHost {
@@ -126,6 +177,11 @@ pub struct WindowHost {
     rmb_start_center: f32,
     /// ПКМ сдвинулся за порог → это зум-перетаскивание, а не клик-тоггл фулскрина.
     rmb_moved: bool,
+    /// Время/позиция прошлого ЛКМ-нажатия — для детекта двойного клика.
+    last_lmb_ms: f64,
+    last_lmb_pos: (f32, f32),
+    /// Двойной клик по чарту нумерованной вкладки → открыть монету на Main фулскрин.
+    pending_to_main: Option<(CoreId, String)>,
 
     // dirty-трекинг для skip-present.
     dirty: bool,
@@ -233,6 +289,9 @@ impl WindowHost {
             rmb_start_range: 0.0,
             rmb_start_center: 0.0,
             rmb_moved: false,
+            last_lmb_ms: 0.0,
+            last_lmb_pos: (0.0, 0.0),
+            pending_to_main: None,
             dirty: true,
             last_orders_sig: u64::MAX,
             last_detects_sig: u64::MAX,
@@ -290,10 +349,20 @@ impl WindowHost {
         out
     }
 
-    /// Втянуть свежие AddToChart-детекты ядер группы в общий AddToChart-контейнер
-    /// (создаётся лениво по первому такому детекту). TTL панели = KeepInChart.
-    fn ingest_addtochart(&mut self, store: &CoreStore, now_ms: f64) -> bool {
-        let mut adds: Vec<(CoreId, String, f64)> = Vec::new();
+    /// Втянуть свежие AddToChart-детекты ядер группы в чарт-вкладки по их НОМЕРУ
+    /// (AddToChart=N → вкладка №N, создаётся лениво). TTL панели = KeepInChart.
+    /// Такие детекты в ленту-кнопки не идут (см. DetectRibbon::ingest).
+    /// `detached_nums` — номера чартов, уже откреплённых в окна: их детекты НЕ
+    /// создают вкладку в host, а возвращаются для проброса в соответствующее окно.
+    /// Возвращает (изменился ли host, детекты для откреплённых окон).
+    fn ingest_addtochart(
+        &mut self,
+        store: &CoreStore,
+        now_ms: f64,
+        detached_nums: &HashSet<u32>,
+    ) -> (bool, Vec<(u32, CoreId, String, f64)>) {
+        // (номер чарта, ядро, рынок, ttl_ms)
+        let mut adds: Vec<(u32, CoreId, String, f64)> = Vec::new();
         for ci in &self.workspace.cores {
             let Some(d) = store.core(ci.id) else { continue };
             let last = self.add_seq.get(&ci.id).copied().unwrap_or(0);
@@ -303,9 +372,9 @@ impl WindowHost {
                     break;
                 }
                 newest = newest.max(det.seq);
-                if det.add_to_chart {
+                if det.add_to_chart > 0 {
                     let ttl = (det.keep_in_chart_secs.max(1) as f64) * 1000.0;
-                    adds.push((ci.id, det.market.clone(), ttl));
+                    adds.push((det.add_to_chart, ci.id, det.market.clone(), ttl));
                 }
             }
             if newest != last {
@@ -313,23 +382,47 @@ impl WindowHost {
             }
         }
         if adds.is_empty() {
-            return false;
+            return (false, Vec::new());
         }
-        if !self.containers.iter().any(|c| c.kind == ContainerKind::AddToChart) {
-            self.containers.push(Container::new(ContainerKind::AddToChart));
-        }
-        let ci_idx = self
-            .containers
-            .iter()
-            .position(|c| c.kind == ContainerKind::AddToChart)
-            .unwrap();
         let (fmt, epoch) = (self.gpu.format, self.epoch_ms);
-        // Свежие детекты идут с конца (новые) — добавляем в обратном порядке (старые
-        // выше), панель монеты дедуплицируется (продлевается TTL).
-        for (core, market, ttl) in adds.into_iter().rev() {
-            self.containers[ci_idx].push_auto(core, &market, now_ms, ttl, &self.gpu.device, fmt, epoch);
+        let mut forwarded: Vec<(u32, CoreId, String, f64)> = Vec::new();
+        let mut host_changed = false;
+        // Свежие детекты с конца (новые) → добавляем в обратном порядке (старые выше).
+        for (no, core, market, ttl) in adds.into_iter().rev() {
+            // Чарт уже откреплён в окно → детект туда (App пробросит), не в host.
+            if detached_nums.contains(&no) {
+                forwarded.push((no, core, market, ttl));
+                continue;
+            }
+            let idx = match self
+                .containers
+                .iter()
+                .position(|c| c.kind == ContainerKind::Chart(no))
+            {
+                Some(i) => i,
+                None => {
+                    self.containers.push(Container::new(ContainerKind::Chart(no)));
+                    self.containers.len() - 1
+                }
+            };
+            self.containers[idx].push_auto(core, &market, now_ms, ttl, &self.gpu.device, fmt, epoch);
+            host_changed = true;
         }
-        true
+        if host_changed {
+            // Держим вкладки в порядке: Main, затем по номеру. active_container
+            // восстанавливаем по виду (kind), т.к. индексы могли сдвинуться.
+            let active_kind = self.containers[self.active_container].kind;
+            self.containers.sort_by_key(|c| match c.kind {
+                ContainerKind::Main => (0u8, 0u32),
+                ContainerKind::Chart(n) => (1, n),
+            });
+            self.active_container = self
+                .containers
+                .iter()
+                .position(|c| c.kind == active_kind)
+                .unwrap_or(0);
+        }
+        (host_changed, forwarded)
     }
 
     /// Удалить истёкшие AddToChart-панели (контейнеры остаются). True — если
@@ -483,6 +576,28 @@ impl WindowHost {
             .map(|p| &mut p.chart.view)
     }
 
+    /// Двойной ЛКМ по чарту (не стакану) нумерованной вкладки → запомнить монету
+    /// панели под курсором для открытия на Main фулскрин (render применит).
+    fn try_dblclick_to_main(&mut self) {
+        if !matches!(self.active().kind, ContainerKind::Chart(_)) {
+            return; // только во вкладках-номерах
+        }
+        let Some(idx) = self.hovered_pane else { return };
+        let Some((_, r)) = self.pane_rects.iter().find(|(i, _)| *i == idx) else {
+            return;
+        };
+        // В стакане (правая зона GLASS_ZONE_PX) дабл-клик игнорируем.
+        let glass_w = crate::chart::GLASS_ZONE_PX.min(r.w * 0.5);
+        if self.last_ptr.0 >= r.x + r.w - glass_w {
+            return;
+        }
+        let info = self.containers[self.active_container]
+            .panes
+            .get(idx)
+            .map(|p| (p.core, p.market.clone()));
+        self.pending_to_main = info;
+    }
+
     /// Колесо: зум по X (или пан по X при зажатом Shift) — у панели под курсором.
     pub fn wheel(&mut self, delta: &MouseScrollDelta) {
         if !self.chart_input_ok() {
@@ -517,6 +632,18 @@ impl WindowHost {
                 if pressed {
                     if !self.chart_input_ok() {
                         return; // клик по панели — не таскаем график
+                    }
+                    // Двойной ЛКМ по ЧАРТУ (не стакану) нумерованной вкладки →
+                    // открыть монету на Main фулскрин (обработка в render).
+                    let now = now_unix_ms();
+                    let (px, py) = self.last_ptr;
+                    let dbl = now - self.last_lmb_ms < 400.0
+                        && (px - self.last_lmb_pos.0).abs() < 28.0
+                        && (py - self.last_lmb_pos.1).abs() < 28.0;
+                    self.last_lmb_ms = now;
+                    self.last_lmb_pos = (px, py);
+                    if dbl {
+                        self.try_dblclick_to_main();
                     }
                     self.lmb_down = true;
                     self.lmb_active = false;
@@ -666,6 +793,7 @@ impl WindowHost {
         metrics: MetricsSnapshot,
         report: &mut crate::dock::ReportView,
         global_detached: [bool; 4],
+        detached_nums: &HashSet<u32>,
     ) -> HostRender {
         let store = session.store();
         let none = HostRender {
@@ -673,6 +801,8 @@ impl WindowHost {
             strategies_clicked: false,
             detach: None,
             repin: None,
+            detach_chart: None,
+            addto_detached: Vec::new(),
         };
 
         let now = Instant::now();
@@ -698,11 +828,34 @@ impl WindowHost {
         }
         self.present_hz = self.present_marks.len() as f32;
 
-        // AddToChart: втянуть свежие детекты в общий контейнер; убрать истёкшие.
-        let added = self.ingest_addtochart(store, now_ms);
+        // AddToChart: втянуть свежие детекты (откреплённые номера — на проброс в их
+        // окна); убрать истёкшие.
+        let (added, addto_forwarded) = self.ingest_addtochart(store, now_ms, detached_nums);
         let pruned = self.prune_panes(now_ms);
         // Появился/исчез контейнер или панели → перестроить хром (верхние вкладки).
         if added || pruned {
+            self.egui_dirty = true;
+        }
+
+        // Двойной клик по чарту нумерованной вкладки → открыть монету на Main
+        // фулскрин и перейти туда фокусом.
+        if let Some((core, mkt)) = self.pending_to_main.take() {
+            let main_idx = self
+                .containers
+                .iter()
+                .position(|c| c.kind == ContainerKind::Main)
+                .unwrap_or(0);
+            let (fmt, epoch) = (self.gpu.format, self.epoch_ms);
+            self.containers[main_idx].open_manual(core, &mkt, &self.gpu.device, fmt, epoch);
+            self.active_container = main_idx;
+            let c = &mut self.containers[main_idx];
+            if let Mode::Fullscreen(i) = c.mode {
+                if let Some(p) = c.panes.get_mut(i) {
+                    p.chart.view.resume_live(now_ms);
+                    p.chart.view.reset_y();
+                }
+            }
+            self.dirty = true;
             self.egui_dirty = true;
         }
 
@@ -804,6 +957,7 @@ impl WindowHost {
         let mut strategies_clicked = false;
         let mut detach_req: Option<crate::dock::DockTab> = None;
         let mut repin_req: Option<crate::dock::DockTab> = None;
+        let mut detach_chart_req: Option<usize> = None;
         let mut open_detect: Option<(crate::session::CoreId, String)> = None;
         let mut close_chart = false;
         // Открыли/закрыли чарт в этом кадре → форсим ещё один кадр (перестроить
@@ -847,6 +1001,7 @@ impl WindowHost {
             let active_container = self.active_container;
             let mut close_pane: Option<usize> = None;
             let mut switch_to: Option<usize> = None;
+            let mut detach_chart: Option<usize> = None;
             let full_output = self.egui_ctx.run(raw_input, |ctx| {
                 let mut open = false;
                 let mut reports = false;
@@ -874,31 +1029,63 @@ impl WindowHost {
                 detach_req = out.detach;
                 repin_req = out.repin;
 
-                // Верхняя полоса вкладок-контейнеров (видна, когда контейнеров >1):
-                // переключает активный контейнер. Реально появляется по первому
-                // AddToChart-детекту (создаётся второй контейнер).
-                let tabs_h = if containers.len() > 1 { 28.0 } else { 0.0 };
-                if tabs_h > 0.0 && central.is_positive() {
+                // Верхняя полоса чарт-вкладок (под Size): Main, 1, 2, 3… в стиле
+                // нижнего дока (underline), с бейджем-счётчиком открытых графиков.
+                // Видна ТОЛЬКО когда есть хотя бы одна нумерованная вкладка (пришёл
+                // AddToChart-детект); иначе Main рисуется на всю зону без полосы.
+                let show_tabs = containers
+                    .iter()
+                    .any(|c| matches!(c.kind, ContainerKind::Chart(_)));
+                let tabs_h = if show_tabs { CHART_TABS_H } else { 0.0 };
+                if show_tabs && central.is_positive() {
                     egui::Area::new(egui::Id::new("chart-tabs"))
                         .fixed_pos(central.min)
                         .order(egui::Order::Foreground)
                         .show(ctx, |ui| {
+                            ui.add_space(3.0);
+                            let mut active_x: Option<(f32, f32)> = None;
                             ui.horizontal(|ui| {
                                 ui.add_space(4.0);
+                                ui.spacing_mut().item_spacing.x = 2.0;
                                 for (i, c) in containers.iter().enumerate() {
+                                    // Метка вкладки: «номер-группа» (1-HL), чтобы
+                                    // одинаковые номера в разных группах различались.
                                     let label = match c.kind {
-                                        ContainerKind::Main => t!("chart.tab.main").to_string(),
-                                        ContainerKind::AddToChart => "AddToChart".to_string(),
+                                        ContainerKind::Main => "Main".to_string(),
+                                        ContainerKind::Chart(n) => format!("{n}-{group_name}"),
                                     };
                                     let sel = i == active_container;
-                                    if crate::shell::theme::seg_btn(ui, &label, sel, None, false)
-                                        .clicked()
-                                    {
+                                    // Нумерованные вкладки можно ПОТЯНУТЬ → открепить
+                                    // в окно; Main не открепляется.
+                                    let draggable = matches!(c.kind, ContainerKind::Chart(_));
+                                    let resp = chart_tab(ui, &label, c.panes.len(), sel, draggable);
+                                    if sel {
+                                        active_x = Some((resp.rect.left(), resp.rect.right()));
+                                    }
+                                    if resp.clicked() {
                                         switch_to = Some(i);
                                     }
-                                    ui.add_space(crate::shell::theme::BTN_GAP);
+                                    if draggable && resp.drag_stopped() {
+                                        detach_chart = Some(i);
+                                    }
                                 }
                             });
+                            // Бейзлайн + акцентное подчёркивание активной вкладки.
+                            let y = central.min.y + tabs_h - 1.0;
+                            let p = ui.painter();
+                            p.line_segment(
+                                [
+                                    egui::pos2(central.min.x, y),
+                                    egui::pos2(central.max.x, y),
+                                ],
+                                egui::Stroke::new(1.0, crate::shell::theme::BORDER),
+                            );
+                            if let Some((x0, x1)) = active_x {
+                                p.line_segment(
+                                    [egui::pos2(x0, y), egui::pos2(x1, y)],
+                                    egui::Stroke::new(2.0, crate::shell::theme::ACCENT),
+                                );
+                            }
                         });
                 }
 
@@ -995,6 +1182,8 @@ impl WindowHost {
                     layout_changed = true;
                 }
             }
+            // Запрос на откреп вкладки в окно (создаёт App — нужен event_loop).
+            detach_chart_req = detach_chart;
             let _ = close_chart;
             // Кнопка «Отчёты» в шапке теперь выбирает вкладку «Отчёт» дока (а не
             // открывает отдельное окно): отчёт живёт во вкладке, окном становится
@@ -1004,8 +1193,17 @@ impl WindowHost {
                 layout_changed = true;
             }
 
-            // Полоса вкладок-контейнеров (если >1) съедает верх центральной зоны.
-            let tabs_h = if self.containers.len() > 1 { 28.0 } else { 0.0 };
+            // Полоса чарт-вкладок (видна, когда есть нумерованные вкладки) съедает
+            // верх центральной зоны.
+            let tabs_h = if self
+                .containers
+                .iter()
+                .any(|c| matches!(c.kind, ContainerKind::Chart(_)))
+            {
+                CHART_TABS_H
+            } else {
+                0.0
+            };
             self.egui_area = if central.is_positive() {
                 Rect {
                     x: central.min.x * ppp,
@@ -1053,59 +1251,23 @@ impl WindowHost {
             .cursor
             .filter(|(_, y)| *y >= area.y && *y <= area.y + area.h);
         let ac = self.active_container;
-        let layout = self.containers[ac].layout(area);
+        let layout = crate::chart::paint::render_panes(
+            &mut self.containers[ac],
+            &self.gpu.device,
+            &self.gpu.queue,
+            &mut encoder,
+            &view,
+            area,
+            resolution,
+            ppp,
+            now_ms,
+            &self.theme,
+            self.hovered_pane,
+            cur,
+            session,
+        );
         self.pane_rects = layout.clone();
         let render_open = !layout.is_empty();
-        if !render_open {
-            // Пустой контейнер — серый фон (closed_bg).
-            let cb = self.theme.closed_bg;
-            encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("chart-empty"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: crate::chart::srgb_to_linear(cb[0]),
-                            g: crate::chart::srgb_to_linear(cb[1]),
-                            b: crate::chart::srgb_to_linear(cb[2]),
-                            a: 1.0,
-                        }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-        } else {
-            let hovered = self.hovered_pane;
-            for (n, (idx, rect)) in layout.iter().enumerate() {
-                let clear = n == 0;
-                let (core, market) = {
-                    let p = &self.containers[ac].panes[*idx];
-                    (p.core, p.market.clone())
-                };
-                let data = session.market_view(core, &market);
-                let pcur = if hovered == Some(*idx) { cur } else { None };
-                let pane = &mut self.containers[ac].panes[*idx];
-                pane.chart.set_cursor(pcur);
-                pane.chart.render(
-                    &self.gpu.device,
-                    &self.gpu.queue,
-                    &mut encoder,
-                    &view,
-                    *rect,
-                    resolution,
-                    ppp,
-                    now_ms,
-                    data,
-                    true,
-                    clear,
-                    &self.theme,
-                );
-            }
-        }
 
         // egui-проход (всегда) — кэш-сеткой поверх чарта. На reuse-кадрах
         // update_buffers не зовём: буферы рендерера держат прошлую (ту же) сетку.
@@ -1131,93 +1293,22 @@ impl WindowHost {
         self.egui_tris = tris;
 
         // Overlay-слой шкал + readout'ов перекрестия — по одному на видимую панель.
-        // Гоняется КАЖДЫМ кадром по снимку вида (не кэшируется): шкала времени
-        // привязана к данным → едет за паном/скроллом, readout'ы — за курсором.
         if render_open && area.w > 1.0 && area.h > 1.0 {
-            // Снимки осей + rect (точки egui) для каждой видимой панели; курсор —
-            // только у панели под мышью.
-            let hovered = self.hovered_pane;
-            let mut overlays: Vec<(crate::chart::axes::AxisSnapshot, egui::Rect, Option<egui::Pos2>)> =
-                Vec::new();
-            for (idx, rect) in &layout {
-                let v = &self.containers[ac].panes[*idx].chart.view;
-                let snap = crate::chart::axes::AxisSnapshot {
-                    px_per_ms: v.px_per_ms,
-                    right_margin_frac: v.right_margin_frac,
-                    render_center: v.render_center,
-                    render_range: v.render_range,
-                    epoch_ms: v.epoch_ms,
-                    right_time_ms: v.right_time_ms,
-                    tz_offset_sec: local_offset_sec(),
-                };
-                let prect = egui::Rect::from_min_size(
-                    egui::pos2(rect.x / ppp, rect.y / ppp),
-                    egui::vec2(rect.w / ppp, rect.h / ppp),
-                );
-                let pcur = if hovered == Some(*idx) {
-                    cur.map(|(x, y)| egui::pos2(x / ppp, y / ppp))
-                } else {
-                    None
-                };
-                overlays.push((snap, prect, pcur));
-            }
-
-            let mut raw = egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(resolution[0] / ppp, resolution[1] / ppp),
-                )),
-                ..Default::default()
-            };
-            let vid = raw.viewport_id;
-            raw.viewports.entry(vid).or_default().native_pixels_per_point = Some(ppp);
-
-            let out = self.overlay_ctx.run(raw, |ctx| {
-                let p = ctx.layer_painter(egui::LayerId::new(
-                    egui::Order::Foreground,
-                    egui::Id::new("axes-overlay"),
-                ));
-                for (snap, prect, pcur) in &overlays {
-                    crate::chart::axes::draw(&p, *prect, ppp, snap, *pcur);
-                }
-            });
-            let otris = self.overlay_ctx.tessellate(out.shapes, out.pixels_per_point);
-            for (id, delta) in &out.textures_delta.set {
-                self.overlay_renderer
-                    .update_texture(&self.gpu.device, &self.gpu.queue, *id, delta);
-            }
-            let oscreen = egui_wgpu::ScreenDescriptor {
-                size_in_pixels: [self.gpu.size.width, self.gpu.size.height],
-                pixels_per_point: ppp,
-            };
-            self.overlay_renderer.update_buffers(
+            crate::chart::paint::render_overlay(
+                &self.containers[ac],
+                &layout,
+                &self.overlay_ctx,
+                &mut self.overlay_renderer,
                 &self.gpu.device,
                 &self.gpu.queue,
                 &mut encoder,
-                &otris,
-                &oscreen,
+                &view,
+                (self.gpu.size.width, self.gpu.size.height),
+                resolution,
+                ppp,
+                self.hovered_pane,
+                cur,
             );
-            {
-                let rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("axes-overlay-pass"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &view,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Load,
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
-                    depth_stencil_attachment: None,
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                });
-                let mut rpass = rpass.forget_lifetime();
-                self.overlay_renderer.render(&mut rpass, &otris, &oscreen);
-            }
-            for id in &out.textures_delta.free {
-                self.overlay_renderer.free_texture(id);
-            }
         }
 
         self.gpu.queue.submit(Some(encoder.finish()));
@@ -1240,7 +1331,56 @@ impl WindowHost {
             strategies_clicked,
             detach: detach_req,
             repin: repin_req,
+            detach_chart: detach_chart_req,
+            addto_detached: addto_forwarded,
         }
+    }
+
+    /// Открыть монету на главной вкладке (Main) фулскрин и сделать Main активной.
+    /// Зовётся App при двойном клике по чарту в откреплённом окне.
+    pub fn open_on_main(&mut self, core: CoreId, market: &str, now_ms: f64) {
+        let main_idx = self
+            .containers
+            .iter()
+            .position(|c| c.kind == ContainerKind::Main)
+            .unwrap_or(0);
+        let (fmt, epoch) = (self.gpu.format, self.epoch_ms);
+        self.containers[main_idx].open_manual(core, market, &self.gpu.device, fmt, epoch);
+        self.active_container = main_idx;
+        let c = &mut self.containers[main_idx];
+        if let Mode::Fullscreen(i) = c.mode {
+            if let Some(p) = c.panes.get_mut(i) {
+                p.chart.view.resume_live(now_ms);
+                p.chart.view.reset_y();
+            }
+        }
+        self.mark_egui_dirty();
+    }
+
+    /// Открепить контейнер №`idx` (только нумерованную чарт-вкладку): забрать его
+    /// спецификацию (для пересоздания в окне) и удалить из набора. Main не
+    /// открепляется. Возвращает (заголовок, вид, режим, спецификация панелей).
+    pub fn take_container(
+        &mut self,
+        idx: usize,
+    ) -> Option<(String, ContainerKind, Mode, Vec<(CoreId, String, PaneSource)>)> {
+        let c = self.containers.get(idx)?;
+        let ContainerKind::Chart(n) = c.kind else {
+            return None; // Main не открепляем
+        };
+        let title = n.to_string();
+        let spec = c.spec();
+        let (kind, mode) = (c.kind, c.mode);
+        self.containers.remove(idx);
+        // Поправить активный контейнер после удаления.
+        if self.active_container >= self.containers.len() {
+            self.active_container = 0;
+        } else if self.active_container > idx {
+            self.active_container -= 1;
+        } else if self.active_container == idx {
+            self.active_container = 0; // ушла активная → на Main
+        }
+        Some((title, kind, mode, spec))
     }
 }
 

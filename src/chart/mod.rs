@@ -6,6 +6,7 @@ pub mod canvas;
 pub mod container;
 pub mod data;
 pub mod layers;
+pub mod paint;
 pub mod style;
 pub mod transform;
 pub mod view;

@@ -205,11 +205,11 @@ orders.col.price:
   en: "Price"
   es: "Precio"
 
-# --- Верхняя полоса вкладок-контейнеров графиков ---
-chart.tab.main:
-  ru: "Графики"
-  en: "Charts"
-  es: "Gráficos"
+# --- Откреплённое чарт-окно ---
+chartwin.clear:
+  ru: "Закрыть окно (убрать все графики)"
+  en: "Close window (remove all charts)"
+  es: "Cerrar ventana (quitar todos los gráficos)"
 
 # --- Нижний док: вкладки ---
 dock.tab.orders:

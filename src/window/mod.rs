@@ -5,11 +5,13 @@
 use winit::dpi::PhysicalSize;
 use winit::event::WindowEvent;
 
+pub mod chart_window;
 pub mod egui_surface;
 pub mod host;
 pub mod settings_window;
 pub mod strategies_window;
 
+pub use chart_window::ChartWindow;
 pub use egui_surface::EguiSurface;
 pub use host::WindowHost;
 pub use settings_window::SettingsWindow;

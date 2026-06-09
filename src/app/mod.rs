@@ -17,7 +17,7 @@ use crate::metrics::{Metrics, MetricsSnapshot};
 use crate::session::SessionManager;
 use crate::settings::SettingsState;
 use crate::window::{
-    handle_aux_event, EguiSurface, SettingsWindow, StrategiesWindow, WindowHost,
+    handle_aux_event, ChartWindow, EguiSurface, SettingsWindow, StrategiesWindow, WindowHost,
 };
 use crate::workspace::Workspace;
 
@@ -59,8 +59,12 @@ pub struct App {
     open_settings_requested: bool,
     strategies_window: Option<StrategiesWindow>,
     open_strategies_requested: bool,
-    /// Окна открепления вкладок (ключ — id окна открепления, не владельца).
+    /// Окна открепления вкладок дока (ключ — id окна открепления, не владельца).
     detached: HashMap<WindowId, DetachedPanel>,
+    /// Откреплённые чарт-окна (контейнеры графиков, вынесенные drag'ом вкладки).
+    detached_charts: HashMap<WindowId, ChartWindow>,
+    /// Очередь запросов на откреп чарт-вкладки: (окно-владелец, индекс контейнера).
+    detach_chart_reqs: Vec<(WindowId, usize)>,
     /// Очередь запросов на открепление/возврат вкладок (создание окна требует
     /// ActiveEventLoop, доступного только в about_to_wait/window_event).
     detach_reqs: Vec<(WindowId, DockTab)>,
@@ -105,6 +109,8 @@ impl App {
             strategies_window: None,
             open_strategies_requested: false,
             detached: HashMap::new(),
+            detached_charts: HashMap::new(),
+            detach_chart_reqs: Vec::new(),
             detach_reqs: Vec::new(),
             repin_reqs: Vec::new(),
             report,
@@ -130,6 +136,7 @@ impl App {
         // Окна открепления — дети окон групп; при пересоздании окон закрываем их и
         // сбрасываем глобальные флаги открепления.
         self.detached.clear();
+        self.detached_charts.clear();
         self.global_detached = [false; 4];
         let mut workspaces = Workspace::build_all(&self.config);
         if workspaces.is_empty() {
@@ -171,6 +178,15 @@ impl App {
         let mut strategies = false;
         let mut detach = None;
         let mut repin = None;
+        // Номера чартов, откреплённых из ЭТОГО окна, — их новые детекты пойдут в их
+        // окна, а не во вкладку host'а.
+        let detached_nums: std::collections::HashSet<u32> = self
+            .detached_charts
+            .values()
+            .filter(|w| w.owner() == id)
+            .filter_map(|w| w.chart_num())
+            .collect();
+        let mut addto: Vec<(u32, crate::session::CoreId, String, f64)> = Vec::new();
         {
             let session = &self.session;
             let report = &mut self.report;
@@ -179,11 +195,26 @@ impl App {
                 if !host.needs_render(session, now) {
                     return;
                 }
-                let out = host.render(session, now, metrics, report, global_detached);
+                let out =
+                    host.render(session, now, metrics, report, global_detached, &detached_nums);
                 gear = out.gear_clicked;
                 strategies = out.strategies_clicked;
                 detach = out.detach;
                 repin = out.repin;
+                if let Some(ci) = out.detach_chart {
+                    self.detach_chart_reqs.push((id, ci));
+                }
+                addto = out.addto_detached;
+            }
+        }
+        // Пробросить детекты откреплённых чартов в их окна.
+        for (no, core, market, ttl) in addto {
+            if let Some(w) = self
+                .detached_charts
+                .values_mut()
+                .find(|w| w.owner() == id && w.chart_num() == Some(no))
+            {
+                w.push_auto(core, &market, now, ttl);
             }
         }
         if gear {
@@ -322,6 +353,44 @@ impl App {
             det_id,
             DetachedPanel { owner, tab, global, window, egui, last_rev: u64::MAX },
         );
+    }
+
+    /// Открепить чарт-вкладку (контейнер №idx окна `owner`) в отдельное чарт-окно:
+    /// забрать спецификацию панелей у host'а и пересоздать графики на девайсе окна.
+    fn open_detached_chart(&mut self, event_loop: &ActiveEventLoop, owner: WindowId, idx: usize) {
+        let theme = self.config.theme.clone();
+        let epoch = self.epoch_ms;
+        let taken = self
+            .windows
+            .get_mut(&owner)
+            .and_then(|h| h.take_container(idx));
+        let Some((_title, kind, mode, spec)) = taken else {
+            return;
+        };
+        if spec.is_empty() {
+            return;
+        }
+        // Подпись окна формируем из номера чарта и ИМЕНИ ГРУППЫ владельца (1-HL),
+        // чтобы одинаковые номера в разных группах не путались.
+        let group = self
+            .windows
+            .get(&owner)
+            .map(|h| h.workspace.group.clone())
+            .unwrap_or_default();
+        let num = match kind {
+            crate::chart::container::ContainerKind::Chart(n) => n,
+            _ => 0,
+        };
+        let display = format!("{num}-{group}");
+        match ChartWindow::new(event_loop, owner, &display, kind, mode, spec, theme, epoch) {
+            Ok(w) => {
+                self.detached_charts.insert(w.window.id(), w);
+            }
+            Err(e) => log::error!("чарт-окно: {e:#}"),
+        }
+        if let Some(h) = self.windows.get_mut(&owner) {
+            h.mark_egui_dirty();
+        }
     }
 
     /// Закрыть окно открепления по его id и вернуть вкладку в док(и).
@@ -576,6 +645,18 @@ impl ApplicationHandler for App {
             return;
         }
 
+        // Откреплённое чарт-окно: ввод/ресайз/закрытие обрабатывает оно само.
+        if self.detached_charts.contains_key(&id) {
+            let mut close = false;
+            if let Some(w) = self.detached_charts.get_mut(&id) {
+                close = w.on_event(&event);
+            }
+            if close {
+                self.detached_charts.remove(&id);
+            }
+            return;
+        }
+
         // Окно открепления вкладки: ввод/ресайз в его egui; закрытие → возврат в док.
         if self.detached.contains_key(&id) {
             let mut close = false;
@@ -651,8 +732,10 @@ impl ApplicationHandler for App {
             // Снять геометрию закрываемого окна группы в раскладку ДО удаления.
             self.update_group_layout(id);
             self.windows.remove(&id);
-            // Закрылось окно группы — закрываем и его окна открепления (дети).
+            // Закрылось окно группы — закрываем и его детей: окна открепления вкладок
+            // дока И откреплённые чарт-окна (иначе висят без владельца).
             self.detached.retain(|_, p| p.owner != id);
+            self.detached_charts.retain(|_, w| w.owner() != id);
             self.update_detached_layout();
             self.layout.save();
             if self.windows.is_empty() {
@@ -671,10 +754,12 @@ impl ApplicationHandler for App {
 
         // Открытые рынки всех панелей всех контейнеров всех окон → подписки
         // (список пар; ядро может иметь несколько открытых рынков — мульти-панель).
+        // ВКЛЮЧАЯ откреплённые чарт-окна — иначе их рынок отпишется и тики пропадут.
         let open: Vec<(crate::session::CoreId, String)> = self
             .windows
             .values()
             .flat_map(|h| h.open_markets())
+            .chain(self.detached_charts.values().flat_map(|w| w.open_markets()))
             .collect();
         self.session.set_open(&open);
 
@@ -730,7 +815,39 @@ impl ApplicationHandler for App {
         if had_detach_ops {
             self.layout_dirty = true; // состав откреплённых окон изменился
         }
+        // Откреп чарт-вкладок в окна (накоплено в render_window — здесь есть event_loop).
+        for (owner, idx) in std::mem::take(&mut self.detach_chart_reqs) {
+            self.open_detached_chart(event_loop, owner, idx);
+        }
         self.render_detached();
+
+        // Рендер откреплённых чарт-окон (свой surface; данные — из общей сессии).
+        let now_chart = now_ms();
+        // Двойной клик в чарт-окне → открыть монету на Main окна-владельца.
+        let mut to_main: Vec<(WindowId, crate::session::CoreId, String)> = Vec::new();
+        // Сбор окон на закрытие (по крестику тулбара).
+        let mut close_charts: Vec<WindowId> = Vec::new();
+        for (cid, w) in self.detached_charts.iter_mut() {
+            w.set_theme(&theme);
+            if let Some((core, market)) = w.take_pending_to_main() {
+                to_main.push((w.owner(), core, market));
+            }
+            if w.take_close_requested() {
+                close_charts.push(*cid);
+            }
+            if w.needs_render(&self.session, now_chart) {
+                w.render(&self.session, now_chart);
+            }
+        }
+        for cid in close_charts {
+            self.detached_charts.remove(&cid);
+        }
+        for (owner, core, market) in to_main {
+            if let Some(h) = self.windows.get_mut(&owner) {
+                h.open_on_main(core, &market, now_chart);
+                h.window.focus_window();
+            }
+        }
 
         // Раскладку пишем дебаунсом: накопили изменения (двигали/ресайзили окна,
         // свернули док, открепили) → раз в ~1.2 с снимаем состояние живых окон.

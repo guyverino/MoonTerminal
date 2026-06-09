@@ -1,7 +1,6 @@
 //! Dock: раскладка панелей. Верхний тулбар + правая панель ордера; центральная
 //! область отдаётся под wgpu график+стакан (её rect возвращается наружу).
 
-pub mod close_btn;
 pub mod controls;
 pub mod detects;
 pub mod log_panel;
@@ -16,7 +15,6 @@ pub use report_view::ReportView;
 pub use tabs::DockTab;
 
 use crate::session::{CoreId, CoreStore};
-use crate::shell::HEADER_H;
 use crate::workspace::CoreInfo;
 use detects::DetectRibbon;
 
@@ -118,15 +116,9 @@ impl Dock {
             &mut self.collapsed,
         );
 
-        // Панель ордера — часть контейнера чарта: при закрытом чарте скрыта
-        // (контейнер пустой/серый, центральная область не растягивается контентом).
-        // Содержимое пока пустое — только подпись (см. order::show).
-        if chart_open {
-            order::show(ctx);
-        }
-
         // Правый док детектов — вертикальная колонка кнопок (новые сверху). Виден
-        // всегда: детекты приходят группе независимо от открытого чарта.
+        // всегда: детекты приходят группе независимо от открытого чарта. Создаём
+        // ПЕРВЫМ из правых панелей → он самый правый край окна.
         let detects_resp = egui::SidePanel::right("detects")
             .exact_width(DETECTS_W)
             .resizable(false)
@@ -137,10 +129,15 @@ impl Dock {
         let open_detect = detects_resp.inner;
         let detects_rect = detects_resp.response.rect;
 
-        // Кнопка закрытия — в правом-верхнем углу области графика (левее дока
-        // детектов), только при открытом чарте.
-        let close_chart =
-            chart_open && close_btn::show(ctx, HEADER_H + toolbar::TOOLBAR_H, DETECTS_W);
+        // Панель ордера — правая колонка контейнера чарта (левее дока детектов).
+        // При закрытом чарте скрыта. Содержимое пока пустое — только подпись.
+        if chart_open {
+            order::show(ctx);
+        }
+
+        // Закрытие — теперь пер-панельными крестиками (рисует host на каждой
+        // панели контейнера), одиночная кнопка дока больше не нужна.
+        let close_chart = false;
 
         let mut central = egui::Rect::NOTHING;
         egui::CentralPanel::default()

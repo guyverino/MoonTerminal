@@ -10,13 +10,14 @@ use crate::session::CoreId;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ContainerKind {
-    /// Ручной: клики по детектам, фулскрин-центричный.
+    /// Главная вкладка: клики по детектам, фулскрин-центричный.
     Main,
-    /// AddToChart: авто-панели монет с TTL, всегда тайл.
-    AddToChart,
+    /// Чарт-вкладка №N (AddToChart=N): авто-панели монет с TTL, всегда тайл.
+    Chart(u32),
 }
 
 /// Источник панели — влияет на TTL и поведение.
+#[derive(Clone, Copy)]
 pub enum PaneSource {
     /// Открыта вручную (клик по детекту) — живёт до закрытия крестиком.
     Manual,
@@ -54,6 +55,36 @@ impl Container {
             panes: Vec::new(),
             mode: Mode::Fullscreen(0),
         }
+    }
+
+    /// Спецификация панелей (ядро/рынок/источник) — для переноса в откреплённое
+    /// окно (GPU-ресурсы Chart не переносимы между девайсами, пересоздаём).
+    pub fn spec(&self) -> Vec<(CoreId, String, PaneSource)> {
+        self.panes
+            .iter()
+            .map(|p| (p.core, p.market.clone(), p.source))
+            .collect()
+    }
+
+    /// Собрать контейнер из спецификации, создав `Chart` на указанном девайсе.
+    pub fn from_spec(
+        kind: ContainerKind,
+        mode: Mode,
+        spec: Vec<(CoreId, String, PaneSource)>,
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        epoch_ms: f64,
+    ) -> Self {
+        let panes = spec
+            .into_iter()
+            .map(|(core, market, source)| Pane {
+                core,
+                market,
+                source,
+                chart: Chart::new(device, format, epoch_ms),
+            })
+            .collect();
+        Self { kind, panes, mode }
     }
 
     pub fn is_empty(&self) -> bool {
