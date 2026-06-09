@@ -8,7 +8,6 @@ use crate::shell::theme;
 pub fn show(ui: &mut egui::Ui, st: &mut StrategiesState, store: &CoreStore) {
     ui.add_space(2.0);
     ui.label(egui::RichText::new(t!("strat.sections").to_string()).strong());
-    ui.checkbox(&mut st.only_active_sections, t!("strat.only_active").to_string());
     ui.separator();
 
     let Some(sections) = selected_sections(st, store) else {
@@ -26,15 +25,20 @@ pub fn show(ui: &mut egui::Ui, st: &mut StrategiesState, store: &CoreStore) {
     }
     let values = selected_values(st, store);
 
+    // Порядок: сначала активные, потом неактивные; внутри групп — порядок схемы
+    // (стабильная сортировка). Индекс `i` остаётся исходным (для выбора раздела).
+    let mut order: Vec<(usize, bool)> = sections
+        .iter()
+        .enumerate()
+        .map(|(i, sec)| (i, section_active(&st.rules, &values, sec)))
+        .collect();
+    order.sort_by_key(|(_, active)| !active);
+
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            for (i, sec) in sections.iter().enumerate() {
-                let active = section_active(&st.rules, &values, sec);
-                if st.only_active_sections && !active {
-                    continue;
-                }
-                // Неактивный раздел — приглушённым «тёмным» шрифтом.
+            for (i, active) in order {
+                let sec = &sections[i];
                 let mut text = egui::RichText::new(&sec.title);
                 if !active {
                     text = text.color(theme::TEXT_3);

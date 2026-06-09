@@ -9,8 +9,6 @@
 use std::collections::HashMap;
 use std::time::SystemTime;
 
-use serde::Deserialize;
-
 /// Внешний путь (относительно cwd) для hot-reload в dev (`cargo run` → корень крейта).
 const EXTERNAL: &str = "assets/param_deps.toml";
 /// Фолбэк, вшитый в бинарь (release-запуск без assets рядом).
@@ -19,18 +17,23 @@ const BUNDLED: &str = include_str!("../../assets/param_deps.toml");
 /// Значения полей выбранной стратегии: имя(lowercase) → значение(как есть).
 pub type Values = HashMap<String, String>;
 
-/// Одно условие: `field` (op) `value`. `ne=true` → `<>`, иначе `=`.
+/// Оператор условия.
+#[derive(Clone, Copy)]
+enum Op {
+    Eq,
+    Ne,
+    Gt,
+    Lt,
+    Ge,
+    Le,
+}
+
+/// Одно условие: `field` (op) `value`.
 #[derive(Clone)]
 struct Cond {
     field: String,
-    ne: bool,
+    op: Op,
     value: String,
-}
-
-#[derive(Default, Deserialize)]
-struct DepsFile {
-    #[serde(default)]
-    deps: HashMap<String, String>,
 }
 
 pub struct Rules {
@@ -71,11 +74,25 @@ impl Rules {
         false
     }
 
+    /// Построчный разбор (терпимый к ручной правке): `"Поле" = "условие"`. Терпит
+    /// дубликаты (побеждает последний), комментарии `#`, заголовок `[deps]`, кавычки.
+    /// Один битый ключ не валит весь файл (в отличие от строгого TOML).
     fn parse_into(&mut self, content: &str) {
-        let file: DepsFile = toml::from_str(content).unwrap_or_default();
-        for (name, expr) in file.deps {
-            self.deps.insert(name.to_lowercase(), parse_conds(&expr));
+        for line in content.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') || line.starts_with('[') {
+                continue;
+            }
+            // Разделитель — ПЕРВЫЙ '=' (внутри значения '=' уже за кавычками).
+            let Some(eq) = line.find('=') else { continue };
+            let key = line[..eq].trim().trim_matches('"').trim().to_lowercase();
+            let expr = line[eq + 1..].trim().trim_matches('"').trim();
+            if key.is_empty() {
+                continue;
+            }
+            self.deps.insert(key, parse_conds(expr));
         }
+        log::info!("strategy param rules: {} полей с зависимостями", self.deps.len());
     }
 
     /// Поле активно (редактируемо), если все его условия истинны на текущих
@@ -88,16 +105,47 @@ impl Rules {
             None => true,
             Some(conds) => conds.iter().all(|c| match values.get(&c.field) {
                 None => true,
-                Some(v) => {
-                    let eq = v.eq_ignore_ascii_case(&c.value);
-                    if c.ne {
-                        !eq
-                    } else {
-                        eq
-                    }
-                }
+                Some(v) => cond_true(c, v),
             }),
         }
+    }
+}
+
+/// Истинно ли условие `c` на значении `v`. `=`/`<>` — булево/строковое сравнение,
+/// `>`/`<`/`>=`/`<=` — числовое (нечисловое значение → условие НЕ выполнено).
+fn cond_true(c: &Cond, v: &str) -> bool {
+    match c.op {
+        Op::Eq => value_eq(v, &c.value),
+        Op::Ne => !value_eq(v, &c.value),
+        _ => match (v.trim().parse::<f64>(), c.value.trim().parse::<f64>()) {
+            (Ok(a), Ok(e)) => match c.op {
+                Op::Gt => a > e,
+                Op::Lt => a < e,
+                Op::Ge => a >= e,
+                Op::Le => a <= e,
+                _ => true,
+            },
+            _ => false,
+        },
+    }
+}
+
+/// Булева трактовка значения: ядро отдаёт да/нет как `1/0`, `Yes/No`, `true/false`.
+/// None — не булево (число/строка).
+fn as_bool(s: &str) -> Option<bool> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "yes" | "true" | "1" | "on" => Some(true),
+        "no" | "false" | "0" | "off" | "" => Some(false),
+        _ => None,
+    }
+}
+
+/// Сравнение значения условия: если ОБЕ стороны булевы (включая `0/1`), сравниваем
+/// как булевы (чтобы `IgnoreVolume=NO` совпало с сырым `"0"`), иначе — как строки.
+fn value_eq(actual: &str, expected: &str) -> bool {
+    match (as_bool(actual), as_bool(expected)) {
+        (Some(a), Some(e)) => a == e,
+        _ => actual.eq_ignore_ascii_case(expected),
     }
 }
 
@@ -106,27 +154,30 @@ fn file_mtime() -> Option<SystemTime> {
     std::fs::metadata(EXTERNAL).ok().and_then(|m| m.modified().ok())
 }
 
-/// Разбирает `A=VAL;B<>VAL` в условия. Поля/значения — в lowercase для сравнения.
+/// Разбирает `A=VAL;B<>VAL;C>1` в условия. Операторы проверяем от длинных к
+/// коротким (`<>`,`>=`,`<=` раньше `>`,`<`,`=`). Поля/значения — в lowercase.
 fn parse_conds(expr: &str) -> Vec<Cond> {
+    const OPS: [(&str, Op); 6] = [
+        ("<>", Op::Ne),
+        (">=", Op::Ge),
+        ("<=", Op::Le),
+        (">", Op::Gt),
+        ("<", Op::Lt),
+        ("=", Op::Eq),
+    ];
     expr.split(';')
         .filter_map(|part| {
             let part = part.trim();
             if part.is_empty() {
                 return None;
             }
-            if let Some(i) = part.find("<>") {
-                Some(Cond {
+            OPS.iter().find_map(|&(s, op)| {
+                part.find(s).map(|i| Cond {
                     field: part[..i].trim().to_lowercase(),
-                    ne: true,
-                    value: part[i + 2..].trim().to_lowercase(),
+                    op,
+                    value: part[i + s.len()..].trim().to_lowercase(),
                 })
-            } else {
-                part.find('=').map(|i| Cond {
-                    field: part[..i].trim().to_lowercase(),
-                    ne: false,
-                    value: part[i + 1..].trim().to_lowercase(),
-                })
-            }
+            })
         })
         .collect()
 }

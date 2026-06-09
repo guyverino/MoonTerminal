@@ -2,8 +2,6 @@
 //! Неактивные поля (depends_on не выполнен) гасим тёмным; галка «только активные»
 //! их скрывает. Bool/choice показываем как YES/NO. Длинный текст — в окошке по «…».
 
-use std::collections::HashMap;
-
 use super::{
     common_fields, kinds_differ, multi_rows, selected_row, selected_sections, selected_values,
     StrategiesState,
@@ -16,7 +14,7 @@ use crate::shell::theme;
 const LONG_VALUE: usize = 28;
 
 pub fn show(ui: &mut egui::Ui, st: &mut StrategiesState, store: &CoreStore) {
-    let Some(row) = selected_row(st, store) else {
+    let Some(_) = selected_row(st, store) else {
         ui.add_space(12.0);
         ui.label(egui::RichText::new(t!("strat.no_selection").to_string()).weak());
         return;
@@ -52,22 +50,17 @@ pub fn show(ui: &mut egui::Ui, st: &mut StrategiesState, store: &CoreStore) {
     ui.checkbox(&mut st.only_active_params, t!("strat.only_active").to_string());
     ui.separator();
 
-    // Порядок ядра: сортируем поля секции по их позиции в сериализации стратегии
-    // (row.fields). Поля, не сохранённые ядром, уходят в конец — в порядке схемы.
-    let pos: HashMap<String, usize> = row
-        .fields
-        .iter()
-        .enumerate()
-        .map(|(i, (n, _))| (n.to_lowercase(), i))
-        .collect();
-    let mut fields: Vec<&SchemaField> = sec.fields.iter().collect();
-    fields.sort_by_key(|f| pos.get(&f.name.to_lowercase()).copied().unwrap_or(usize::MAX));
-
+    // Порядок полей — как в схеме (RTTI-порядок MoonBot из
+    // editor_sections_for_strategy_kind). Значения берём из снимка по имени.
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            for f in fields {
+            for f in &sec.fields {
                 let lname = f.name.to_lowercase();
+                // При мультивыборе имя стратегии общим не сделать — скрываем.
+                if multi && lname == "strategyname" {
+                    continue;
+                }
                 // Поля, которых нет у кого-то из выбранных, — менять нельзя, скрываем.
                 if let Some(c) = &common {
                     if !c.contains(&lname) {

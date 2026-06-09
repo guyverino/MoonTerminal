@@ -61,8 +61,6 @@ pub struct StrategiesState {
     pub expanded_folders: HashSet<(CoreId, String)>,
     /// Правила зависимостей полей (param_deps.toml; hot-reload).
     pub rules: Rules,
-    /// Показывать только активные разделы (галка над списком разделов).
-    pub only_active_sections: bool,
     /// Показывать только активные параметры (галка над параметрами).
     pub only_active_params: bool,
 }
@@ -84,8 +82,7 @@ impl Default for StrategiesState {
             expanded_cores: HashSet::new(),
             expanded_folders: HashSet::new(),
             rules: Rules::load(),
-            // По умолчанию неактивные скрыты (галки включены).
-            only_active_sections: true,
+            // По умолчанию неактивные параметры скрыты (галка включена).
             only_active_params: true,
         }
     }
@@ -235,13 +232,15 @@ pub fn selected_values(st: &StrategiesState, store: &CoreStore) -> Values {
     v
 }
 
-/// Раздел «осмысленный» (активный): есть хотя бы одно активное поле, НЕ являющееся
-/// тумблером `Ignore*`. Так раздел гаснет при `IgnoreX=YES` (остаётся лишь активный
-/// тумблер), но сам тумблер не считаем «содержимым».
+/// Раздел АКТИВЕН (не затемнён), если в нём осталось БОЛЬШЕ ОДНОГО активного поля.
+/// Если активен только один (обычно сам тумблер вроде `UseCustomColors`/`IgnoreBase`)
+/// — раздел затемняем. Никаких других условий.
 pub fn section_active(rules: &Rules, values: &Values, sec: &SchemaSection) -> bool {
-    sec.fields.iter().any(|f| {
-        !f.name.to_lowercase().starts_with("ignore") && rules.field_active(&f.name, values)
-    })
+    sec.fields
+        .iter()
+        .filter(|f| rules.field_active(&f.name, values))
+        .count()
+        > 1
 }
 
 /// Секции схемы для выбранной стратегии (по её виду). None — нет выбора/схемы.
