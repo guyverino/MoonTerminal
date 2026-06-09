@@ -72,6 +72,17 @@ impl Dock {
         self.orders_detached = on;
     }
 
+    /// Свёрнут ли док (для сохранения раскладки).
+    pub fn collapsed(&self) -> bool {
+        self.collapsed
+    }
+
+    /// Восстановить из сохранённой раскладки (активная вкладка + свёрнутость).
+    pub fn restore(&mut self, tab: DockTab, collapsed: bool) {
+        self.tab = tab;
+        self.collapsed = collapsed;
+    }
+
     /// `report` — ОБЩИЙ `ReportView` (живёт в App, один на все окна групп).
     /// `global_detached` — глобальные флаги открепления Report/Log/Assets (Orders
     /// игнорируется: его открепление пер-окно, берётся из self.orders_detached).

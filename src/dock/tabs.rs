@@ -38,6 +38,11 @@ impl DockTab {
         self as usize
     }
 
+    /// Вкладка по индексу (из сохранённой раскладки); вне диапазона → Orders.
+    pub fn from_idx(i: usize) -> DockTab {
+        DockTab::ALL.get(i).copied().unwrap_or(DockTab::Orders)
+    }
+
     /// Локализованный заголовок вкладки (и заголовок откреплённого окна).
     pub fn title(self) -> String {
         match self {
@@ -126,15 +131,12 @@ pub fn show(
             // Справа: кнопка свернуть/развернуть (самая правая), левее — подсказка.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.add_space(6.0);
-                let (glyph, hint) = if is_collapsed {
-                    ("▴", t!("dock.expand"))
+                let hint = if is_collapsed {
+                    t!("dock.expand")
                 } else {
-                    ("▾", t!("dock.collapse"))
+                    t!("dock.collapse")
                 };
-                if theme::seg_btn(ui, glyph, false, Some(28.0), false)
-                    .on_hover_text(hint)
-                    .clicked()
-                {
+                if collapse_button(ui, is_collapsed).on_hover_text(hint).clicked() {
                     *collapsed = !is_collapsed;
                 }
                 ui.add_space(10.0);
@@ -175,6 +177,37 @@ pub fn show(
         }
     });
     out
+}
+
+/// Кнопка свернуть/развернуть док. Шеврон рисуем painter'ом (а не глифом ▾/▴ —
+/// в Geist Mono их нет, выходил «тофу»-квадрат). Вниз ∨ — свернуть, вверх ∧ —
+/// развернуть. Фон/рамка/ховер — как у seg_btn.
+fn collapse_button(ui: &mut egui::Ui, collapsed: bool) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(28.0, 28.0), egui::Sense::click());
+    if ui.is_rect_visible(rect) {
+        let hovered = resp.hovered();
+        let round = egui::Rounding::same(4.0);
+        let (fill, border) = if hovered {
+            (theme::LIFT_HOVER, theme::ACCENT.gamma_multiply(0.55))
+        } else {
+            (theme::LIFT, theme::BORDER)
+        };
+        let p = ui.painter();
+        p.rect_filled(rect, round, fill);
+        p.rect_stroke(rect, round, egui::Stroke::new(1.0, border));
+        let c = rect.center();
+        let (hw, hh) = (4.5, 2.6);
+        let stroke = egui::Stroke::new(1.6, if hovered { theme::TEXT } else { theme::TEXT_2 });
+        // collapsed → ∧ (развернуть), иначе → ∨ (свернуть).
+        let (y_tip, y_arm) = if collapsed {
+            (c.y - hh, c.y + hh)
+        } else {
+            (c.y + hh, c.y - hh)
+        };
+        p.line_segment([egui::pos2(c.x - hw, y_arm), egui::pos2(c.x, y_tip)], stroke);
+        p.line_segment([egui::pos2(c.x, y_tip), egui::pos2(c.x + hw, y_arm)], stroke);
+    }
+    resp
 }
 
 /// Кнопка-вкладка (underline-стиль): top-скруглённый lift-фон у активной/наведённой,

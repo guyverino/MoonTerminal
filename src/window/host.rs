@@ -140,13 +140,26 @@ pub struct WindowHost {
 impl WindowHost {
     pub fn new(
         event_loop: &ActiveEventLoop,
-        workspace: Workspace,
+        mut workspace: Workspace,
         epoch_ms: f64,
+        layout: Option<crate::config::GroupLayout>,
     ) -> anyhow::Result<Self> {
-        let attrs = Window::default_attributes()
+        let mut attrs = Window::default_attributes()
             .with_title(format!("MoonTerminal — {}", workspace.group))
             .with_inner_size(winit::dpi::LogicalSize::new(1100.0, 720.0));
+        // Восстановление раскладки: позиция/размер окна + активная вкладка/свёрнутость.
+        if let Some(l) = &layout {
+            attrs = attrs
+                .with_position(winit::dpi::PhysicalPosition::new(l.x, l.y))
+                .with_inner_size(winit::dpi::PhysicalSize::new(l.w.max(200), l.h.max(150)));
+            workspace
+                .dock
+                .restore(crate::dock::DockTab::from_idx(l.tab as usize), l.collapsed);
+        }
         let window = Arc::new(event_loop.create_window(attrs)?);
+        if layout.as_ref().map(|l| l.maximized).unwrap_or(false) {
+            window.set_maximized(true);
+        }
         // Своя кнопка в taskbar на группу (Windows) + иконка группы.
         crate::win_taskbar::set_app_id(&window, &format!("MoonTerminal.Group.{}", workspace.group));
         window.set_window_icon(crate::icons::winit_icon(workspace.icon));

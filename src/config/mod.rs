@@ -17,6 +17,7 @@
 pub mod crypto;
 pub mod groups;
 pub mod lang;
+pub mod layout;
 pub mod paths;
 pub mod secrets;
 pub mod servers;
@@ -29,6 +30,7 @@ mod store;
 
 pub use groups::GroupConfig;
 pub use lang::Language;
+pub use layout::{DetachedLayout, GeomRect, GroupLayout, WindowLayout};
 pub use secrets::Secret;
 pub use servers::{FeedFlags, ServerConfig};
 pub use theme::ChartTheme;

@@ -74,6 +74,10 @@ pub struct App {
     /// активна Лог/Отчёт и вкладка не откреплена.
     last_log_rev: u64,
     last_report_gen: u64,
+    /// Раскладка окон (позиции/свёрнутость/вкладки + откреплённые) — layout.toml.
+    layout: crate::config::WindowLayout,
+    layout_dirty: bool,
+    last_layout_save: Instant,
     session: SessionManager,
     /// Хэндл БД отчётов: канал записи + счётчик-генерация (None = БД недоступна).
     reports: Option<ReportsHandle>,
@@ -107,6 +111,9 @@ impl App {
             global_detached: [false; 4],
             last_log_rev: 0,
             last_report_gen: 0,
+            layout: crate::config::WindowLayout::load(),
+            layout_dirty: false,
+            last_layout_save: Instant::now(),
             session,
             reports,
             epoch_ms,
@@ -135,11 +142,25 @@ impl App {
             workspaces.push(Workspace::placeholder());
         }
         for ws in workspaces {
-            match WindowHost::new(event_loop, ws, self.epoch_ms) {
+            let gl = self.layout.groups.get(&ws.group).copied();
+            match WindowHost::new(event_loop, ws, self.epoch_ms, gl) {
                 Ok(host) => {
                     self.windows.insert(host.window.id(), host);
                 }
                 Err(e) => log::error!("создание окна: {e:#}"),
+            }
+        }
+
+        // Восстановить откреплённые окна из раскладки (если их группа-владелец есть).
+        for d in self.layout.detached.clone() {
+            let owner = self
+                .windows
+                .iter()
+                .find(|(_, h)| h.workspace.group == d.owner_group)
+                .map(|(id, _)| *id);
+            if let Some(owner) = owner {
+                let tab = DockTab::from_idx(d.tab as usize);
+                self.open_detached(event_loop, owner, tab, Some((d.x, d.y, d.w, d.h)));
             }
         }
     }
@@ -225,7 +246,28 @@ impl App {
     /// Глобальные вкладки (Report/Log/Assets) — один экземпляр на все окна групп
     /// (дедуп по `tab`); Orders — пер-окно (дедуп по `owner`+`tab`). Уже открепена
     /// → фокусируем существующее окно.
-    fn open_detached(&mut self, event_loop: &ActiveEventLoop, owner: WindowId, tab: DockTab) {
+    /// Ключ запомненной геометрии окна открепления: глобальные — по вкладке;
+    /// Orders — по вкладке+группе владельца.
+    fn detached_geom_key(&self, global: bool, tab: DockTab, owner: WindowId) -> String {
+        if global {
+            format!("g:{}", tab.idx())
+        } else {
+            let g = self
+                .windows
+                .get(&owner)
+                .map(|h| h.workspace.group.as_str())
+                .unwrap_or("");
+            format!("o:{}:{}", tab.idx(), g)
+        }
+    }
+
+    fn open_detached(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        owner: WindowId,
+        tab: DockTab,
+        geom: Option<(i32, i32, u32, u32)>,
+    ) {
         let global = is_global_tab(tab);
         let existing = self.detached.values().find(|p| {
             p.tab == tab && (global || p.owner == owner)
@@ -234,10 +276,21 @@ impl App {
             p.window.focus_window();
             return;
         }
-        let attrs = Window::default_attributes()
+        // Геометрия: явная (восстановление с диска) или запомненная для этой
+        // вкладки/группы (повторное открепление встаёт на прежнее место).
+        let geom = geom.or_else(|| {
+            let key = self.detached_geom_key(global, tab, owner);
+            self.layout.detached_geom.get(&key).map(|g| (g.x, g.y, g.w, g.h))
+        });
+        let mut attrs = Window::default_attributes()
             .with_title(format!("{} — MoonTerminal", tab.title()))
             .with_resizable(true)
             .with_inner_size(winit::dpi::LogicalSize::new(1100.0, 520.0));
+        if let Some((x, y, w, h)) = geom {
+            attrs = attrs
+                .with_position(winit::dpi::PhysicalPosition::new(x, y))
+                .with_inner_size(winit::dpi::PhysicalSize::new(w.max(200), h.max(150)));
+        }
         let window = match event_loop.create_window(attrs) {
             Ok(w) => Arc::new(w),
             Err(e) => {
@@ -274,6 +327,16 @@ impl App {
     /// Закрыть окно открепления по его id и вернуть вкладку в док(и).
     fn close_detached(&mut self, det_id: WindowId) {
         if let Some(p) = self.detached.remove(&det_id) {
+            // Запомнить позицию ДО закрытия — чтобы повторное открепление встало
+            // на то же место (окно ещё живо в `p`, читаем его геометрию).
+            if let Ok(pos) = p.window.outer_position() {
+                let size = p.window.inner_size();
+                let key = self.detached_geom_key(p.global, p.tab, p.owner);
+                self.layout.detached_geom.insert(
+                    key,
+                    crate::config::GeomRect { x: pos.x, y: pos.y, w: size.width, h: size.height },
+                );
+            }
             if p.global {
                 self.global_detached[p.tab.idx()] = false;
                 for host in self.windows.values_mut() {
@@ -347,6 +410,70 @@ impl App {
                 });
             });
         }
+    }
+
+    /// Снять геометрию+состояние окна группы `id` в раскладку (по имени группы).
+    fn update_group_layout(&mut self, id: WindowId) {
+        if let Some(h) = self.windows.get(&id) {
+            if let Ok(pos) = h.window.outer_position() {
+                let size = h.window.inner_size();
+                self.layout.groups.insert(
+                    h.workspace.group.clone(),
+                    crate::config::GroupLayout {
+                        x: pos.x,
+                        y: pos.y,
+                        w: size.width,
+                        h: size.height,
+                        maximized: h.window.is_maximized(),
+                        collapsed: h.workspace.dock.collapsed(),
+                        tab: h.workspace.dock.tab.idx() as u8,
+                    },
+                );
+            }
+        }
+    }
+
+    /// Пересобрать список откреплённых окон в раскладке из живых окон открепления.
+    /// Заодно обновляет карту запомненной геометрии (по ключу) — чтобы повторное
+    /// открепление вставало на то же место даже после закрытия.
+    fn update_detached_layout(&mut self) {
+        let mut list = Vec::new();
+        let mut geoms: Vec<(String, crate::config::GeomRect)> = Vec::new();
+        for p in self.detached.values() {
+            let Ok(pos) = p.window.outer_position() else {
+                continue;
+            };
+            let Some(group) = self.windows.get(&p.owner).map(|h| h.workspace.group.clone()) else {
+                continue; // владелец закрыт — не сохраняем сироту
+            };
+            let size = p.window.inner_size();
+            let rect = crate::config::GeomRect { x: pos.x, y: pos.y, w: size.width, h: size.height };
+            list.push(crate::config::DetachedLayout {
+                tab: p.tab.idx() as u8,
+                owner_group: group,
+                x: pos.x,
+                y: pos.y,
+                w: size.width,
+                h: size.height,
+            });
+            geoms.push((self.detached_geom_key(p.global, p.tab, p.owner), rect));
+        }
+        self.layout.detached = list;
+        for (k, r) in geoms {
+            self.layout.detached_geom.insert(k, r);
+        }
+    }
+
+    /// Снять раскладку со ВСЕХ живых окон и записать layout.toml.
+    fn save_layout(&mut self) {
+        let ids: Vec<WindowId> = self.windows.keys().copied().collect();
+        for id in ids {
+            self.update_group_layout(id);
+        }
+        self.update_detached_layout();
+        self.layout.save();
+        self.layout_dirty = false;
+        self.last_layout_save = Instant::now();
     }
 
     fn render_settings(&mut self) {
@@ -459,8 +586,13 @@ impl ApplicationHandler for App {
                 }
                 close = matches!(event, WindowEvent::CloseRequested);
             }
+            if matches!(event, WindowEvent::Moved(_) | WindowEvent::Resized(_)) {
+                self.layout_dirty = true;
+            }
             if close {
                 self.close_detached(id);
+                self.update_detached_layout();
+                self.layout.save();
             }
             return;
         }
@@ -506,10 +638,23 @@ impl ApplicationHandler for App {
             }
         }
 
+        // Двигали/ресайзили/кликали окно группы → раскладка могла измениться
+        // (позиция/размер, а клик мог свернуть док / сменить вкладку).
+        if matches!(
+            event,
+            WindowEvent::Moved(_) | WindowEvent::Resized(_) | WindowEvent::MouseInput { .. }
+        ) {
+            self.layout_dirty = true;
+        }
+
         if let WindowEvent::CloseRequested = event {
+            // Снять геометрию закрываемого окна группы в раскладку ДО удаления.
+            self.update_group_layout(id);
             self.windows.remove(&id);
             // Закрылось окно группы — закрываем и его окна открепления (дети).
             self.detached.retain(|_, p| p.owner != id);
+            self.update_detached_layout();
+            self.layout.save();
             if self.windows.is_empty() {
                 event_loop.exit();
             }
@@ -580,13 +725,23 @@ impl ApplicationHandler for App {
 
         // Открепление/возврат вкладок (накоплены в render_window — здесь есть
         // event_loop для создания окон).
+        let had_detach_ops = !self.detach_reqs.is_empty() || !self.repin_reqs.is_empty();
         for (owner, tab) in std::mem::take(&mut self.detach_reqs) {
-            self.open_detached(event_loop, owner, tab);
+            self.open_detached(event_loop, owner, tab, None);
         }
         for (owner, tab) in std::mem::take(&mut self.repin_reqs) {
             self.repin(owner, tab);
         }
+        if had_detach_ops {
+            self.layout_dirty = true; // состав откреплённых окон изменился
+        }
         self.render_detached();
+
+        // Раскладку пишем дебаунсом: накопили изменения (двигали/ресайзили окна,
+        // свернули док, открепили) → раз в ~1.2 с снимаем состояние живых окон.
+        if self.layout_dirty && self.last_layout_save.elapsed() > Duration::from_millis(1200) {
+            self.save_layout();
+        }
 
         if self.open_settings_requested {
             self.open_settings(event_loop);
@@ -601,5 +756,13 @@ impl ApplicationHandler for App {
         event_loop.set_control_flow(ControlFlow::WaitUntil(
             Instant::now() + Duration::from_millis(8),
         ));
+    }
+
+    /// Выход из приложения — финальный флэш раскладки (на случай несохранённых
+    /// изменений, не попавших под дебаунс).
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        if self.layout_dirty {
+            self.save_layout();
+        }
     }
 }

@@ -24,6 +24,12 @@ pub fn theme_path() -> PathBuf {
     exe_dir().join("theme.toml")
 }
 
+/// Раскладка окон (позиции/размеры/свёрнутость/активная вкладка + откреплённые
+/// окна) — отдельный переносимый файл рядом с exe.
+pub fn layout_path() -> PathBuf {
+    exe_dir().join("layout.toml")
+}
+
 /// SQLite-БД с отчётами по закрытым ордерам (`ClosedSellOrderReport`).
 pub fn reports_db_path() -> PathBuf {
     exe_dir().join("reports.sqlite")
