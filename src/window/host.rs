@@ -1052,12 +1052,12 @@ impl WindowHost {
                                 ui.add_space(4.0);
                                 ui.spacing_mut().item_spacing.x = 2.0;
                                 for (i, c) in containers.iter().enumerate() {
-                                    // Метка вкладки: «номер-группа[-ядро]». Имя ядра
-                                    // добавляется, когда чарты разделены по ядрам.
+                                    // Метка вкладки (в доке, не откреплено): «номер»
+                                    // или «номер-ядро» (без группы — мы уже в её окне).
                                     let label = match c.kind {
                                         ContainerKind::Main => "Main".to_string(),
                                         ContainerKind::Chart { num, core: None } => {
-                                            format!("{num}-{group_name}")
+                                            num.to_string()
                                         }
                                         ContainerKind::Chart {
                                             num,
@@ -1068,14 +1068,16 @@ impl WindowHost {
                                                 .find(|ci| ci.id == cid)
                                                 .map(|ci| ci.name.as_str())
                                                 .unwrap_or("");
-                                            format!("{num}-{group_name}-{cn}")
+                                            format!("{num}-{cn}")
                                         }
                                     };
                                     let sel = i == active_container;
                                     // Нумерованные вкладки можно ПОТЯНУТЬ → открепить
-                                    // в окно; Main не открепляется.
+                                    // в окно; Main не открепляется. Бейдж-счётчик — не
+                                    // для Main (там фулскрин, счёт окон не нужен).
                                     let draggable = matches!(c.kind, ContainerKind::Chart { .. });
-                                    let resp = chart_tab(ui, &label, c.panes.len(), sel, draggable);
+                                    let count = if draggable { c.panes.len() } else { 0 };
+                                    let resp = chart_tab(ui, &label, count, sel, draggable);
                                     if sel {
                                         active_x = Some((resp.rect.left(), resp.rect.right()));
                                     }
@@ -1351,6 +1353,15 @@ impl WindowHost {
             detach_chart: detach_chart_req,
             addto_detached: addto_forwarded,
         }
+    }
+
+    /// Убрать все нумерованные чарт-вкладки (оставить Main). Зовётся при смене
+    /// настройки charts_split_by_core — старые вкладки больше не получат детекты.
+    pub fn clear_chart_tabs(&mut self) {
+        self.containers
+            .retain(|c| matches!(c.kind, ContainerKind::Main));
+        self.active_container = 0;
+        self.mark_egui_dirty();
     }
 
     /// Открыть монету на главной вкладке (Main) фулскрин и сделать Main активной.

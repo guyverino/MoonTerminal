@@ -632,6 +632,16 @@ impl App {
                 host.mark_egui_dirty();
             }
         }
+        // Сменили тип группировки чартов по ядрам → старые чарт-вкладки/окна больше
+        // не получат детекты (ключ контейнера изменился) → чистим, новые соберутся
+        // заново в новом режиме. Независимо от прочих изменений (если не было
+        // структурного ребилда, который и так всё пересоздаёт).
+        if !struct_changed && before.charts_split_by_core != self.config.charts_split_by_core {
+            for host in self.windows.values_mut() {
+                host.clear_chart_tabs();
+            }
+            self.detached_charts.clear();
+        }
         // Иначе (изменилась только тема) — ничего: уже применено живо.
     }
 }
