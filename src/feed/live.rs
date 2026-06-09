@@ -11,53 +11,24 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use moonproto::state::OrderBookKind;
 use moonproto::{
-    ClientConfig, ConnectConfig, Event, FieldValue, InitConfig, InitialStrategies, LifecycleEvent,
-    MoonClient, StrategyFieldType, StrategyFieldUiKind, StrategySchema, StrategySnapshot,
+    ClientConfig, ConnectConfig, Event, InitConfig, InitialStrategies, LifecycleEvent, MoonClient,
     TradesStreamMode, TransportMode,
 };
 
+use super::report::{delphi_to_unix, send_close_report, OrderIndex, OrderMeta};
+use super::strategies::{alert_params, build_schema_model, fmt_field, fv_from_str, strat_kind_name};
 use super::{
-    ConnStatus, CoreCmd, DetectRow, ExchangeId, FeedMsg, FeedTx, Level, OrderBook, OrderRow,
-    SchemaField, SchemaFieldUi, SchemaKind, SchemaSection, Side, StrategyRow, StrategySchemaModel,
-    Tick,
+    ConnStatus, CoreCmd, DetectRow, ExchangeId, FeedMsg, FeedTx, Level, OrderBook, OrderRow, Side,
+    StrategyRow, Tick,
 };
 use crate::config::ServerConfig;
-use crate::db::{ReportRow, ReportTx};
+use crate::db::ReportTx;
 
 fn now_ms() -> f64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs_f64() * 1000.0)
         .unwrap_or(0.0)
-}
-
-/// Полный снимок полей ордера из живой модели, запоминаемый по серверному db_id.
-/// Источник всех данных, которых нет в close-SQL (монета/открытие/цены/статы).
-struct OrderMeta {
-    coin: String,
-    isshort: bool,
-    buyprice: f64,
-    sellprice: f64,
-    quantity: f64,
-    spentbtc: f64,
-    gainedbtc: f64,
-    lev: i64,
-    strategyid: i64,
-    taskid: i64,
-    exorderid: Option<String>,
-    emulator: bool,
-    buydate: Option<i64>,
-    sellsetdate: Option<i64>,
-    closedate: Option<i64>,
-}
-
-/// Delphi `TDateTime` (дней с 1899-12-30) → unix-секунды. 0/пусто → None.
-fn delphi_to_unix(d: f64) -> Option<i64> {
-    if d > 1.0 {
-        Some(((d - 25569.0) * 86400.0).round() as i64)
-    } else {
-        None
-    }
 }
 
 pub fn run(
@@ -121,13 +92,8 @@ pub fn run(
     let mut last_strat_sig: u64 = u64::MAX;
     // Монотонный per-core номер детекта — курсор ингеста в ленту детектов UI.
     let mut detect_seq: u64 = 0;
-    // Полные данные ордера копим по СТАБИЛЬНОМУ uid (есть с открытия). А db_id у
-    // открытого ордера почти всегда 0 — он присваивается лишь перед закрытием,
-    // когда строка пишется в Orders DB ядра. Поэтому держим ещё карту db_id→uid
-    // (заполняется в тот момент, когда db_id появился). На close-report (там
-    // только db_id) идём db_id → uid → полные данные.
-    let mut order_by_uid: HashMap<u64, OrderMeta> = HashMap::new();
-    let mut dbid_to_uid: HashMap<i32, u64> = HashMap::new();
+    // Полные данные ордеров для close-report'ов (uid/db_id) — см. feed::report.
+    let mut orders_index = OrderIndex::default();
 
     loop {
         // Команды роли от координатора (полное желаемое состояние, не дельта).
@@ -283,10 +249,6 @@ pub fn run(
                         detects.push(DetectRow {
                             seq: detect_seq,
                             market: d.market_name,
-                            strategy_id: d.strategy_id,
-                            is_short: d.is_short,
-                            kind_bits: d.kind_bits,
-                            msg: d.msg,
                             time_ms: now_ms(),
                             sound_alert: params.sound_alert,
                             keep_alert_secs: params.keep_alert_secs,
@@ -296,19 +258,12 @@ pub fn run(
                     }
                     Event::ClosedSellOrderReport(r) if server.feed.reports => {
                         if let Some(tx_db) = reports {
-                            // Разбираем SQL (insert ИЛИ update). Поля берём из SQL;
-                            // чего там нет (open-side у update-формы) — из снапшота
-                            // ордеров по db_id.
-                            // Поля из close-SQL (финальные/авторитетные); чего там
-                            // нет — из снимка модели ордера (m) по db_id.
-                            let p = crate::db::parse_report_sql(&r.sql);
                             // db_id → uid → полные данные (uid стабилен с открытия).
                             // Если db_id ещё не успели замапить — сканируем ТЕКУЩИЙ
                             // снапшот: ордер часто ещё в модели с присвоенным db_id,
-                            // а его полные данные уже есть в order_by_uid по uid.
-                            let m = match dbid_to_uid.get(&(r.db_id as i32)) {
-                                Some(uid) => order_by_uid.get(uid),
-                                None => client
+                            // а его полные данные уже есть в индексе по uid.
+                            let m = orders_index.by_dbid(r.db_id as i32).or_else(|| {
+                                client
                                     .snapshot()
                                     .and_then(|snap| {
                                         snap.orders()
@@ -316,47 +271,9 @@ pub fn run(
                                             .find(|o| o.db_id as i64 == r.db_id)
                                             .map(|o| o.uid)
                                     })
-                                    .and_then(|uid| order_by_uid.get(&uid)),
-                            };
-                            // Логируем СЫРОЙ report-SQL в logs/commands.log — чтобы
-                            // видеть, INSERT или UPDATE шлёт ядро и что внутри.
-                            let form = if r.sql.trim_start().get(..6).map(|s| s.eq_ignore_ascii_case("insert")).unwrap_or(false) {
-                                "INSERT"
-                            } else {
-                                "UPDATE"
-                            };
-                            crate::applog::command(&format!(
-                                "core={} ({}) db_id={} form={} link={} coin={:?} buydate={:?}\n    SQL: {}",
-                                server.uid, server.name, r.db_id, form, m.is_some(),
-                                m.map(|x| x.coin.clone()).or_else(|| p.coin.clone()),
-                                m.and_then(|x| x.buydate).or(p.buydate),
-                                r.sql,
-                            ));
-                            let _ = tx_db.send(ReportRow {
-                                core_uid: server.uid, // СТАБИЛЬНЫЙ uid, не рантайм-id
-                                core_name: server.name.clone(),
-                                db_id: r.db_id,
-                                taskid: p.taskid.or_else(|| m.map(|m| m.taskid)),
-                                exorderid: m.and_then(|m| m.exorderid.clone()),
-                                coin: p.coin.or_else(|| m.map(|m| m.coin.clone())),
-                                isshort: p.isshort.or_else(|| m.map(|m| m.isshort)),
-                                buydate: p.buydate.or_else(|| m.and_then(|m| m.buydate)),
-                                sellsetdate: p.sellsetdate.or_else(|| m.and_then(|m| m.sellsetdate)),
-                                closedate: p.close_date.or_else(|| m.and_then(|m| m.closedate)),
-                                quantity: p.quantity.or_else(|| m.map(|m| m.quantity)),
-                                buyprice: p.buyprice.or_else(|| m.map(|m| m.buyprice)),
-                                sellprice: p.sellprice.or_else(|| m.map(|m| m.sellprice)),
-                                spentbtc: p.spent_btc.or_else(|| m.map(|m| m.spentbtc)),
-                                gainedbtc: p.gained_btc.or_else(|| m.map(|m| m.gainedbtc)),
-                                profitbtc: p.profit_btc.or_else(|| m.map(|m| m.gainedbtc - m.spentbtc)),
-                                lev: p.lev.or_else(|| m.map(|m| m.lev)),
-                                strategyid: p.strategyid.or_else(|| m.map(|m| m.strategyid)),
-                                emulator: m.map(|m| m.emulator),
-                                status: p.status,
-                                sellreason: p.sell_reason,
-                                comment: p.comment,
-                                sql: r.sql,
+                                    .and_then(|uid| orders_index.by_uid(uid))
                             });
+                            send_close_report(tx_db, server, r.db_id, r.sql, m);
                         }
                     }
                     _ => {}
@@ -380,7 +297,7 @@ pub fn run(
                     // когда db_id появился (перед закрытием). close-SQL этих полей
                     // не несёт.
                     if server.feed.reports {
-                        order_by_uid.insert(
+                        orders_index.remember(
                             o.uid,
                             OrderMeta {
                                 coin: o.market_name.clone(),
@@ -402,7 +319,7 @@ pub fn run(
                             },
                         );
                         if o.db_id != 0 {
-                            dbid_to_uid.insert(o.db_id, o.uid);
+                            orders_index.map_dbid(o.db_id, o.uid);
                         }
                     }
                     if !orders_due {
@@ -482,7 +399,6 @@ pub fn run(
                     let strategies: Vec<StrategyRow> = strats
                         .snapshots()
                         .map(|s| {
-                            let ap = alert_params(s);
                             let name = s
                                 .strategy_name()
                                 .filter(|n| !n.is_empty())
@@ -501,8 +417,6 @@ pub fn run(
                                 folder_path: s.path.to_string(),
                                 checked: s.checked,
                                 is_short: s.is_short(),
-                                sound_alert: ap.sound_alert,
-                                keep_alert_secs: ap.keep_alert_secs,
                                 fields,
                             }
                         })
@@ -537,7 +451,6 @@ pub fn run(
                         .map(|r| Tick {
                             time_ms: r.unix_millis() as f64,
                             price: r.price,
-                            qty: r.quantity(),
                             side: if r.is_buy() { Side::Buy } else { Side::Sell },
                         })
                         .collect();
@@ -598,182 +511,4 @@ pub fn run(
 
     let _ = client.disconnect();
     Ok(())
-}
-
-/// (SoundAlert, KeepAlert сек) из полей стратегии. Дефолт — (false, 60):
-/// кнопку-детект показываем только при SoundAlert=Yes, держим KeepAlert секунд.
-/// Параметры стратегии-источника, влияющие на UI детекта.
-#[derive(Default)]
-struct AlertParams {
-    sound_alert: bool,
-    keep_alert_secs: u32,
-    /// Номер чарта-вкладки (0 = не добавлять).
-    add_to_chart: u32,
-    keep_in_chart_secs: u32,
-}
-
-/// Целочисленное значение поля стратегии (AddToChart/KeepInChart/KeepAlert) —
-/// принимаем ЛЮБОЙ числовой/булев тип moonproto, иначе `default`.
-fn field_secs_or(s: &StrategySnapshot, name: &str, default: u32) -> u32 {
-    match s.fields.get(name) {
-        Some(FieldValue::Int32(v)) => (*v).max(0) as u32,
-        Some(FieldValue::Int64(v)) => (*v).max(0) as u32,
-        Some(FieldValue::UInt32(v)) => *v,
-        Some(FieldValue::UInt64(v)) => *v as u32,
-        Some(FieldValue::Byte(v)) => *v as u32,
-        Some(FieldValue::Word(v)) => *v as u32,
-        Some(FieldValue::Bool(b)) => *b as u32,
-        Some(FieldValue::Double(v)) => v.max(0.0) as u32,
-        Some(FieldValue::Single(v)) => v.max(0.0) as u32,
-        _ => default,
-    }
-}
-
-fn alert_params(s: &StrategySnapshot) -> AlertParams {
-    AlertParams {
-        sound_alert: s.field_bool_or_false("SoundAlert"),
-        keep_alert_secs: field_secs_or(s, "KeepAlert", 60),
-        add_to_chart: field_secs_or(s, "AddToChart", 0),
-        keep_in_chart_secs: field_secs_or(s, "KeepInChart", 60),
-    }
-}
-
-/// Форматирует значение поля стратегии в строку (read-only показ в плашках).
-fn fmt_field(v: &FieldValue) -> String {
-    match v {
-        FieldValue::Bool(b) => if *b { "Yes" } else { "No" }.to_string(),
-        FieldValue::Int32(n) => n.to_string(),
-        FieldValue::Int64(n) => n.to_string(),
-        FieldValue::UInt32(n) => n.to_string(),
-        FieldValue::UInt64(n) => n.to_string(),
-        FieldValue::Byte(n) => n.to_string(),
-        FieldValue::Word(n) => n.to_string(),
-        FieldValue::Double(d) => fmt_num(*d),
-        FieldValue::Single(f) => fmt_num(*f as f64),
-        FieldValue::String(s) => s.clone(),
-    }
-}
-
-/// Собирает `FieldValue` из строки UI по ТИПУ поля: приоритет — тип существующего
-/// значения снимка, иначе тип из схемы, иначе строка. Кривое число → 0.
-fn fv_from_str(existing: Option<&FieldValue>, stype: Option<StrategyFieldType>, s: &str) -> FieldValue {
-    let b = || matches!(s.trim().to_ascii_lowercase().as_str(), "yes" | "true" | "1" | "on");
-    let i = |def: i64| s.trim().parse::<i64>().unwrap_or(def);
-    let u = || s.trim().parse::<u64>().unwrap_or(0);
-    let f = || s.trim().parse::<f64>().unwrap_or(0.0);
-    // По существующему значению.
-    if let Some(ev) = existing {
-        return match ev {
-            FieldValue::Bool(_) => FieldValue::Bool(b()),
-            FieldValue::Int32(_) => FieldValue::Int32(i(0) as i32),
-            FieldValue::Int64(_) => FieldValue::Int64(i(0)),
-            FieldValue::UInt32(_) => FieldValue::UInt32(u() as u32),
-            FieldValue::UInt64(_) => FieldValue::UInt64(u()),
-            FieldValue::Byte(_) => FieldValue::Byte(u() as u8),
-            FieldValue::Word(_) => FieldValue::Word(u() as u16),
-            FieldValue::Double(_) => FieldValue::Double(f()),
-            FieldValue::Single(_) => FieldValue::Single(f() as f32),
-            FieldValue::String(_) => FieldValue::String(s.to_string()),
-        };
-    }
-    // По типу схемы.
-    match stype {
-        Some(StrategyFieldType::Bool) => FieldValue::Bool(b()),
-        Some(StrategyFieldType::Int32) => FieldValue::Int32(i(0) as i32),
-        Some(StrategyFieldType::Int64) => FieldValue::Int64(i(0)),
-        Some(StrategyFieldType::UInt32) => FieldValue::UInt32(u() as u32),
-        Some(StrategyFieldType::UInt64) => FieldValue::UInt64(u()),
-        Some(StrategyFieldType::Byte) => FieldValue::Byte(u() as u8),
-        Some(StrategyFieldType::Word) => FieldValue::Word(u() as u16),
-        Some(StrategyFieldType::Double) => FieldValue::Double(f()),
-        Some(StrategyFieldType::Single) => FieldValue::Single(f() as f32),
-        _ => FieldValue::String(s.to_string()),
-    }
-}
-
-/// Компактное число без хвостовых нулей.
-fn fmt_num(d: f64) -> String {
-    let s = format!("{d:.6}");
-    let s = s.trim_end_matches('0').trim_end_matches('.');
-    if s.is_empty() {
-        "0".to_string()
-    } else {
-        s.to_string()
-    }
-}
-
-/// Декаплированная модель схемы из moonproto `StrategySchema`: по каждому виду —
-/// его секции (editor sections) с полями (имя/тип/вид виджета/пиклист/дефолт).
-fn build_schema_model(schema: &StrategySchema) -> StrategySchemaModel {
-    let kinds = schema
-        .kinds
-        .iter()
-        .map(|k| {
-            let kind = k.kind();
-            let sections = schema
-                .editor_sections_for_strategy_kind(kind)
-                .into_iter()
-                .map(|sec| SchemaSection {
-                    title: sec.title,
-                    fields: sec
-                        .fields
-                        .iter()
-                        .map(|f| SchemaField {
-                            name: f.name.clone(),
-                            type_name: f.type_id.name().to_string(),
-                            ui: map_ui(f.ui_kind),
-                            picklist: f.static_picklist.clone(),
-                            default: f.default_value.as_ref().map(fmt_field),
-                        })
-                        .collect(),
-                })
-                .collect();
-            SchemaKind {
-                ordinal: k.ordinal(),
-                name: k.name.clone(),
-                sections,
-            }
-        })
-        .collect();
-    StrategySchemaModel { kinds }
-}
-
-fn map_ui(u: StrategyFieldUiKind) -> SchemaFieldUi {
-    match u {
-        StrategyFieldUiKind::Checkbox => SchemaFieldUi::Checkbox,
-        StrategyFieldUiKind::Combo => SchemaFieldUi::Combo,
-        StrategyFieldUiKind::Color => SchemaFieldUi::Color,
-        _ => SchemaFieldUi::Edit, // Edit + Unknown
-    }
-}
-
-/// Тип (вид) стратегии MoonBot по ordinal `StrategyKind`.
-fn strat_kind_name(ordinal: u8) -> &'static str {
-    match ordinal {
-        0 => "Unknown",
-        1 => "Telegram",
-        2 => "Drops",
-        3 => "Walls",
-        4 => "Volumes",
-        5 => "Pump Detection",
-        6 => "Moon Shot",
-        7 => "V Lite",
-        8 => "Delta",
-        9 => "Waves",
-        10 => "Combo",
-        11 => "UDP",
-        12 => "Manual",
-        13 => "Moon Strike",
-        14 => "New Listing",
-        15 => "Liquidations",
-        16 => "Top Market",
-        17 => "EMA",
-        18 => "Spread",
-        19 => "Chart Wall",
-        20 => "Moon Hook",
-        21 => "Activity",
-        22 => "Alerts",
-        23 => "Watcher",
-        _ => "?",
-    }
 }

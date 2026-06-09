@@ -26,6 +26,7 @@ mod settings;
 mod shell;
 mod strategies;
 mod symbol;
+mod util;
 mod win_taskbar;
 mod window;
 mod workspace;

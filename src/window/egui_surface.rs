@@ -80,24 +80,9 @@ impl EguiSurface {
     /// `label` — метка encoder/pass для отладки. Кадр со «слетевшим» сурфейсом
     /// пропускается (dirty остаётся, ретрай на следующем тике).
     pub fn render(&mut self, window: &Window, label: &str, run: impl FnMut(&egui::Context)) {
-        let frame = match self.gpu.surface.get_current_texture() {
-            Ok(f) => f,
-            Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
-                self.gpu.surface.configure(&self.gpu.device, &self.gpu.config);
-                return;
-            }
-            Err(e) => {
-                log::warn!("{label} surface error: {e:?}");
-                return;
-            }
+        let Some((frame, view, mut encoder)) = self.gpu.begin_frame(label) else {
+            return;
         };
-        let view = frame
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder = self
-            .gpu
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some(label) });
 
         let raw_input = self.state.take_egui_input(window);
         let full_output = self.ctx.run(raw_input, run);
@@ -118,21 +103,7 @@ impl EguiSurface {
         self.renderer
             .update_buffers(&self.gpu.device, &self.gpu.queue, &mut encoder, &tris, &screen);
         {
-            let rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some(label),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(CLEAR),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-            let mut rpass = rpass.forget_lifetime();
+            let mut rpass = crate::gpu::egui_pass(&mut encoder, &view, label, Some(CLEAR));
             self.renderer.render(&mut rpass, &tris, &screen);
         }
         self.gpu.queue.submit(Some(encoder.finish()));

@@ -31,26 +31,12 @@ pub fn write_servers(sf: &ServersFile) -> anyhow::Result<()> {
 /// Прочитать settings.toml. Нет файла → дефолт (первый запуск). Битый файл →
 /// увести в `.bak`, залогировать и вернуть дефолт (данные не теряются молча).
 pub fn read_settings() -> SettingsFile {
-    let path = paths::settings_path();
-    let text = match std::fs::read_to_string(&path) {
-        Ok(t) => t,
-        Err(_) => return SettingsFile::default(),
-    };
-    match toml::from_str(&text) {
-        Ok(sf) => sf,
-        Err(e) => {
-            log::error!("settings.toml повреждён ({e}); увожу в .bak и начинаю с дефолта");
-            backup_corrupt(&path);
-            SettingsFile::default()
-        }
-    }
+    super::toml_io::load_or_default(&paths::settings_path(), "settings.toml", backup_corrupt)
 }
 
 /// Записать settings.toml (открытый, человекочитаемый TOML, без секретов).
 pub fn write_settings(sf: &SettingsFile) -> anyhow::Result<()> {
-    std::fs::write(paths::settings_path(), toml::to_string_pretty(sf)?)
-        .context("запись settings.toml")?;
-    Ok(())
+    super::toml_io::save(&paths::settings_path(), sf, "settings.toml")
 }
 
 /// Переименовать битый settings.toml → settings.toml.bak (не затираем молча).

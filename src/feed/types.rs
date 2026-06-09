@@ -21,7 +21,6 @@ pub struct Tick {
     /// Unix-время в миллисекундах (из core: row.unix_millis()).
     pub time_ms: f64,
     pub price: f32,
-    pub qty: f32,
     pub side: Side,
 }
 
@@ -70,13 +69,6 @@ pub struct DetectRow {
     pub seq: u64,
     /// Рынок (монета).
     pub market: String,
-    /// Id стратегии-источника.
-    pub strategy_id: u64,
-    pub is_short: bool,
-    /// Биты вида: regular / watcher-row / chart-only / alert-fire.
-    pub kind_bits: u8,
-    /// Текст детекта.
-    pub msg: String,
     /// Unix-время приёма, мс.
     pub time_ms: f64,
     /// У стратегии-источника включён звук-алерт (SoundAlert=Yes) — только такие
@@ -107,10 +99,6 @@ pub struct StrategyRow {
     /// Отмечена (checked) = запущена.
     pub checked: bool,
     pub is_short: bool,
-    /// SoundAlert=Yes.
-    pub sound_alert: bool,
-    /// KeepAlert, сек.
-    pub keep_alert_secs: u32,
     /// Значения полей стратегии (имя → форматированная строка) для read-only плашек.
     pub fields: Vec<(String, String)>,
 }
@@ -129,9 +117,13 @@ pub enum SchemaFieldUi {
 pub struct SchemaField {
     pub name: String,
     /// Имя типа ("Bool"/"Int32"/"Double"/…), для подписи/форматирования.
+    /// Пока не читается: нужно этапу полного редактирования полей стратегий.
+    #[allow(dead_code)]
     pub type_name: String,
     pub ui: SchemaFieldUi,
     /// Статический список значений (для Combo).
+    /// Пока не читается: нужно этапу полного редактирования полей стратегий.
+    #[allow(dead_code)]
     pub picklist: Vec<String>,
     /// Значение по умолчанию (форматированное), если есть в схеме.
     pub default: Option<String>,
@@ -148,6 +140,9 @@ pub struct SchemaSection {
 #[derive(Debug, Clone)]
 pub struct SchemaKind {
     pub ordinal: u8,
+    /// Имя вида из схемы ядра (авторитетнее хардкода strat_kind_name).
+    /// Пока не читается: нужно этапу полного редактирования полей стратегий.
+    #[allow(dead_code)]
     pub name: String,
     pub sections: Vec<SchemaSection>,
 }

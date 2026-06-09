@@ -78,10 +78,6 @@ impl TickRing {
         self.instances.len()
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.instances.is_empty()
-    }
-
     /// Мин/макс цены среди среза [start, start+count) — авто-диапазон Y по
     /// ВИДИМОМУ окну (на паузе окно заморожено → вертикаль не дёргается).
     pub fn price_range_in(&self, start: u32, count: u32) -> Option<(f32, f32)> {

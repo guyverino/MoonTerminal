@@ -206,6 +206,8 @@ impl SessionManager {
 
     /// Редактирование полей стратегий ядра: одни и те же `changes` (имя→строка)
     /// применить к каждой стратегии из `ids` (полный снимок правится на стороне feed).
+    /// Пока не вызывается: UI-этап полного редактирования полей ещё не сделан.
+    #[allow(dead_code)]
     pub fn edit_strategies(&self, core: CoreId, ids: Vec<u64>, changes: Vec<(String, String)>) {
         if ids.is_empty() || changes.is_empty() {
             return;

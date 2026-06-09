@@ -13,13 +13,6 @@ struct Style {
 };
 @group(1) @binding(0) var<uniform> style: Style;
 
-// sRGB-свопчейн кодирует linear→sRGB при записи: отдаём цвет в linear.
-fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
-    let lo = c / 12.92;
-    let hi = pow((c + 0.055) / 1.055, vec3<f32>(2.4));
-    return select(hi, lo, c <= vec3<f32>(0.04045));
-}
-
 struct VsOut {
     @builtin(position) pos: vec4<f32>,
     @location(0) kind: f32,

@@ -16,28 +16,7 @@ struct Style {
 };
 @group(1) @binding(0) var<uniform> style: Style;
 
-fn px_to_clip(px: vec2<f32>, res: vec2<f32>) -> vec2<f32> {
-    return vec2<f32>(px.x / res.x * 2.0 - 1.0, 1.0 - px.y / res.y * 2.0);
-}
-
-// sRGB-свопчейн кодирует linear→sRGB при записи: отдаём цвет в linear.
-fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
-    let lo = c / 12.92;
-    let hi = pow((c + 0.055) / 1.055, vec3<f32>(2.4));
-    return select(hi, lo, c <= vec3<f32>(0.04045));
-}
-
-fn quad_corner(i: u32) -> vec2<f32> {
-    var c = array<vec2<f32>, 6>(
-        vec2<f32>(-1.0, -1.0),
-        vec2<f32>( 1.0, -1.0),
-        vec2<f32>( 1.0,  1.0),
-        vec2<f32>(-1.0, -1.0),
-        vec2<f32>( 1.0,  1.0),
-        vec2<f32>(-1.0,  1.0),
-    );
-    return c[i];
-}
+// px_to_clip / srgb_to_linear / quad_corner приходят из common.wgsl (склейка в cursor.rs).
 
 struct VsOut {
     @builtin(position) pos: vec4<f32>,

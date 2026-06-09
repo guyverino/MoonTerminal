@@ -27,6 +27,7 @@ mod migrate;
 mod reconcile;
 mod schema;
 mod store;
+mod toml_io;
 
 pub use groups::GroupConfig;
 pub use lang::Language;

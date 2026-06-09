@@ -34,3 +34,11 @@ fn quad_corner(i: u32) -> vec2<f32> {
     );
     return c[i];
 }
+
+// sRGB-свопчейн кодирует linear→sRGB при записи, поэтому цвета, заданные в
+// sRGB (палитра/egui/тема), отдаём в linear — иначе фон осветляется в серый.
+fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
+    let lo = c / 12.92;
+    let hi = pow((c + 0.055) / 1.055, vec3<f32>(2.4));
+    return select(hi, lo, c <= vec3<f32>(0.04045));
+}

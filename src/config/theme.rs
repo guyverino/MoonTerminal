@@ -71,24 +71,11 @@ impl Default for ChartTheme {
 impl ChartTheme {
     /// Прочитать theme.toml рядом с exe. Нет файла или битый → дефолт (не падаем).
     pub fn load() -> Self {
-        let path = paths::theme_path();
-        let Ok(text) = std::fs::read_to_string(&path) else {
-            return Self::default();
-        };
-        match toml::from_str(&text) {
-            Ok(t) => t,
-            Err(e) => {
-                log::error!("theme.toml повреждён ({e}); беру дефолт");
-                Self::default()
-            }
-        }
+        super::toml_io::load_or_default(&paths::theme_path(), "theme.toml", |_| {})
     }
 
     /// Записать theme.toml (открытый человекочитаемый TOML — можно делиться).
     pub fn save(&self) -> anyhow::Result<()> {
-        use anyhow::Context;
-        std::fs::write(paths::theme_path(), toml::to_string_pretty(self)?)
-            .context("запись theme.toml")?;
-        Ok(())
+        super::toml_io::save(&paths::theme_path(), self, "theme.toml")
     }
 }

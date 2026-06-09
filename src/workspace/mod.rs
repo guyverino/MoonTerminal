@@ -8,8 +8,6 @@ use crate::session::CoreId;
 pub struct CoreInfo {
     pub id: CoreId,
     pub name: String,
-    /// Рынок по умолчанию ядра (для вывода quote подключения).
-    pub market: String,
     /// Цвет ядра из конфига — цвет кнопки детекта в ленте.
     pub color: [u8; 3],
     /// Quote подключения ядра (`USDT`/…), который режем из символов в UI.
@@ -39,7 +37,6 @@ impl Workspace {
                 } else {
                     s.name.clone()
                 },
-                market: s.market.clone(),
                 color: s.color,
                 quote: crate::symbol::resolve_quote(&s.market),
             };

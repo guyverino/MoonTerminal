@@ -2,6 +2,7 @@
 //! (см. window/strategies_window.rs). 4 панели: дерево (ядра→папки→стратегии),
 //! секции выбранной стратегии, плашки параметров (read-only) и описание/хэлп.
 
+pub mod filter;
 pub mod params;
 pub mod rules;
 pub mod sections;
@@ -11,6 +12,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::feed::{SchemaSection, StrategyRow};
 use crate::session::{CoreId, CoreStore};
+use filter::StrategyFilter;
 use rules::{Rules, Values};
 
 /// Действие со стратегиями одного ядра: синхронизировать галки (`checks`) и,
@@ -30,14 +32,8 @@ pub struct StrategiesOut {
 pub type Key = (CoreId, u64);
 
 pub struct StrategiesState {
-    /// Фильтр дерева по названию стратегии.
-    pub search: String,
-    /// Фильтр дерева по виду стратегии (ordinal). None — все виды. Работает И с поиском.
-    pub kind_filter: Option<u8>,
-    /// Фильтр по направлению: None — все, Some(true) — SHORT, Some(false) — LONG.
-    pub dir_filter: Option<bool>,
-    /// Показывать в дереве только активные (запущенные) стратегии. По умолчанию вкл.
-    pub only_active_tree: bool,
+    /// Фильтры дерева (имя/вид/направление/только активные).
+    pub filter: StrategyFilter,
     /// Текущая (первичная) стратегия — источник схемы/секций (ядро, id).
     pub selected: Option<Key>,
     /// Множественный выбор (ядро, id) — подсветка + объединённый показ параметров.
@@ -68,10 +64,7 @@ pub struct StrategiesState {
 impl Default for StrategiesState {
     fn default() -> Self {
         Self {
-            search: String::new(),
-            kind_filter: None,
-            dir_filter: None,
-            only_active_tree: true,
+            filter: StrategyFilter::default(),
             selected: None,
             sel: HashSet::new(),
             anchor: None,
@@ -253,23 +246,4 @@ pub fn selected_sections<'a>(st: &StrategiesState, store: &'a CoreStore) -> Opti
     Some(&kind.sections)
 }
 
-/// Раскрытые узлы (ядра/папки) форсим открытыми при активном поиске.
-pub fn searching(st: &StrategiesState) -> bool {
-    !st.search.trim().is_empty()
-}
-
-/// Условие для СЧЁТЧИКОВ активных/всего: вид И направление (без имени и без
-/// «только активные»), чтобы цифры на ядрах/папках отражали выбранный тип и L/S.
-pub fn count_filter(st: &StrategiesState, row: &StrategyRow) -> bool {
-    st.kind_filter.is_none_or(|k| row.kind_ordinal == k)
-        && st.dir_filter.is_none_or(|s| row.is_short == s)
-}
-
-/// Видимость строки в дереве: имя И вид И направление И («только активные» → checked).
-pub fn matches(st: &StrategiesState, row: &StrategyRow) -> bool {
-    let q = st.search.trim().to_lowercase();
-    let by_name = q.is_empty() || row.name.to_lowercase().contains(&q);
-    let by_active = !st.only_active_tree || row.checked;
-    count_filter(st, row) && by_name && by_active
-}
 

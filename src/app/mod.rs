@@ -2,13 +2,12 @@
 //! + окна открепления вкладок дока (Ордера/Активы/Лог/Отчёт «вытянуты» в окно).
 
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow};
-use winit::window::{Window, WindowId};
+use winit::window::WindowId;
 
 use crate::config::AppConfig;
 use crate::db::{self, ReportsHandle};
@@ -17,39 +16,20 @@ use crate::metrics::{Metrics, MetricsSnapshot};
 use crate::session::SessionManager;
 use crate::settings::SettingsState;
 use crate::window::{
-    handle_aux_event, ChartWindow, EguiSurface, SettingsWindow, StrategiesWindow, WindowHost,
+    handle_aux_event, ChartWindow, SettingsWindow, StrategiesWindow, WindowHost,
 };
 use crate::workspace::Workspace;
+
+mod detached;
+mod layout;
+
+use detached::DetachedPanel;
 
 fn now_ms() -> f64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs_f64() * 1000.0)
         .unwrap_or(0.0)
-}
-
-/// Окно открепления вкладки дока: отдельное ОС-окно с egui-сурфейсом, которое
-/// рисует контент одной вкладки своего окна-владельца (`owner`). Состояние вкладки
-/// (например фильтры отчёта) остаётся в доке владельца — окно лишь рисует его в
-/// свой `ui`. Закрытие окна → вкладка возвращается в док (App снимает флаг).
-struct DetachedPanel {
-    /// Окно группы, из которого открепили (для Orders — чьи ордера показывать; для
-    /// глобальных Report/Log/Assets — просто «откуда вызвали»).
-    owner: WindowId,
-    tab: DockTab,
-    /// Глобальная вкладка (Report/Log/Assets) — один экземпляр на все окна групп, и
-    /// флаг открепления глобальный. Orders — пер-окно (`global = false`).
-    global: bool,
-    window: Arc<Window>,
-    egui: EguiSurface,
-    /// Ревизия данных вкладки на прошлом кадре — для авто-перерисовки (живой
-    /// отчёт/лог/ордера без необходимости двигать мышь).
-    last_rev: u64,
-}
-
-/// Глобальные вкладки (один экземпляр на все окна групп) vs пер-окно (Orders).
-fn is_global_tab(tab: DockTab) -> bool {
-    !matches!(tab, DockTab::Orders)
 }
 
 pub struct App {
@@ -284,288 +264,6 @@ impl App {
         for a in actions {
             self.session.apply_strategies(a.core, a.checks, a.start_stop);
         }
-    }
-
-    /// Открепить вкладку `tab` окна-владельца `owner` в отдельное окно.
-    /// Глобальные вкладки (Report/Log/Assets) — один экземпляр на все окна групп
-    /// (дедуп по `tab`); Orders — пер-окно (дедуп по `owner`+`tab`). Уже открепена
-    /// → фокусируем существующее окно.
-    /// Ключ запомненной геометрии окна открепления: глобальные — по вкладке;
-    /// Orders — по вкладке+группе владельца.
-    fn detached_geom_key(&self, global: bool, tab: DockTab, owner: WindowId) -> String {
-        if global {
-            format!("g:{}", tab.idx())
-        } else {
-            let g = self
-                .windows
-                .get(&owner)
-                .map(|h| h.workspace.group.as_str())
-                .unwrap_or("");
-            format!("o:{}:{}", tab.idx(), g)
-        }
-    }
-
-    fn open_detached(
-        &mut self,
-        event_loop: &ActiveEventLoop,
-        owner: WindowId,
-        tab: DockTab,
-        geom: Option<(i32, i32, u32, u32)>,
-    ) {
-        let global = is_global_tab(tab);
-        let existing = self.detached.values().find(|p| {
-            p.tab == tab && (global || p.owner == owner)
-        });
-        if let Some(p) = existing {
-            p.window.focus_window();
-            return;
-        }
-        // Геометрия: явная (восстановление с диска) или запомненная для этой
-        // вкладки/группы (повторное открепление встаёт на прежнее место).
-        let geom = geom.or_else(|| {
-            let key = self.detached_geom_key(global, tab, owner);
-            self.layout.detached_geom.get(&key).map(|g| (g.x, g.y, g.w, g.h))
-        });
-        let mut attrs = Window::default_attributes()
-            .with_title(format!("{} — MoonTerminal", tab.title()))
-            .with_resizable(true)
-            .with_inner_size(winit::dpi::LogicalSize::new(1100.0, 520.0));
-        if let Some((x, y, w, h)) = geom {
-            attrs = attrs
-                .with_position(winit::dpi::PhysicalPosition::new(x, y))
-                .with_inner_size(winit::dpi::PhysicalSize::new(w.max(200), h.max(150)));
-        }
-        let window = match event_loop.create_window(attrs) {
-            Ok(w) => Arc::new(w),
-            Err(e) => {
-                log::error!("окно открепления: {e:#}");
-                return;
-            }
-        };
-        window.set_window_icon(crate::icons::brand_winit_icon());
-        let egui = match EguiSurface::new(&window) {
-            Ok(e) => e,
-            Err(e) => {
-                log::error!("egui окна открепления: {e:#}");
-                return;
-            }
-        };
-        let det_id = window.id();
-        // Пометить откреплённой. Глобальная — флаг общий (все окна групп покажут
-        // плашку); Orders — флаг в доке окна-владельца.
-        if global {
-            self.global_detached[tab.idx()] = true;
-            for host in self.windows.values_mut() {
-                host.mark_egui_dirty();
-            }
-        } else if let Some(host) = self.windows.get_mut(&owner) {
-            host.workspace.dock.set_orders_detached(true);
-            host.mark_egui_dirty();
-        }
-        self.detached.insert(
-            det_id,
-            DetachedPanel { owner, tab, global, window, egui, last_rev: u64::MAX },
-        );
-    }
-
-    /// Открепить чарт-вкладку (контейнер №idx окна `owner`) в отдельное чарт-окно:
-    /// забрать спецификацию панелей у host'а и пересоздать графики на девайсе окна.
-    fn open_detached_chart(&mut self, event_loop: &ActiveEventLoop, owner: WindowId, idx: usize) {
-        let theme = self.config.theme.clone();
-        let epoch = self.epoch_ms;
-        let taken = self
-            .windows
-            .get_mut(&owner)
-            .and_then(|h| h.take_container(idx));
-        let Some((kind, mode, spec)) = taken else {
-            return;
-        };
-        if spec.is_empty() {
-            return;
-        }
-        // Подпись окна: «номер-группа[-ядро]» (1-HL или 1-HL-Ядро), чтобы одинаковые
-        // номера в разных группах/ядрах не путались.
-        let owner_host = self.windows.get(&owner);
-        let group = owner_host
-            .map(|h| h.workspace.group.clone())
-            .unwrap_or_default();
-        let display = match kind {
-            crate::chart::container::ContainerKind::Chart { num, core: None } => {
-                format!("{num}-{group}")
-            }
-            crate::chart::container::ContainerKind::Chart {
-                num,
-                core: Some(cid),
-            } => {
-                let cn = owner_host
-                    .and_then(|h| h.workspace.cores.iter().find(|c| c.id == cid))
-                    .map(|c| c.name.clone())
-                    .unwrap_or_default();
-                format!("{num}-{group}-{cn}")
-            }
-            crate::chart::container::ContainerKind::Main => group.clone(),
-        };
-        match ChartWindow::new(event_loop, owner, &display, kind, mode, spec, theme, epoch) {
-            Ok(w) => {
-                self.detached_charts.insert(w.window.id(), w);
-            }
-            Err(e) => log::error!("чарт-окно: {e:#}"),
-        }
-        if let Some(h) = self.windows.get_mut(&owner) {
-            h.mark_egui_dirty();
-        }
-    }
-
-    /// Закрыть окно открепления по его id и вернуть вкладку в док(и).
-    fn close_detached(&mut self, det_id: WindowId) {
-        if let Some(p) = self.detached.remove(&det_id) {
-            // Запомнить позицию ДО закрытия — чтобы повторное открепление встало
-            // на то же место (окно ещё живо в `p`, читаем его геометрию).
-            if let Ok(pos) = p.window.outer_position() {
-                let size = p.window.inner_size();
-                let key = self.detached_geom_key(p.global, p.tab, p.owner);
-                self.layout.detached_geom.insert(
-                    key,
-                    crate::config::GeomRect { x: pos.x, y: pos.y, w: size.width, h: size.height },
-                );
-            }
-            if p.global {
-                self.global_detached[p.tab.idx()] = false;
-                for host in self.windows.values_mut() {
-                    host.mark_egui_dirty();
-                }
-            } else if let Some(host) = self.windows.get_mut(&p.owner) {
-                host.workspace.dock.set_orders_detached(false);
-                host.mark_egui_dirty();
-            }
-        }
-    }
-
-    /// Вернуть вкладку в док (по кнопке «вернуть» на плашке) — закрывает окно.
-    fn repin(&mut self, owner: WindowId, tab: DockTab) {
-        let global = is_global_tab(tab);
-        let id = self
-            .detached
-            .iter()
-            .find(|(_, p)| p.tab == tab && (global || p.owner == owner))
-            .map(|(id, _)| *id);
-        if let Some(id) = id {
-            self.close_detached(id);
-        }
-    }
-
-    /// Рисует окна открепления. Глобальные вкладки берут ОБЩЕЕ состояние (App'овый
-    /// `report` / глобальный лог), Orders — из окна-владельца. Единый `content_ui`,
-    /// без дубля состояния.
-    fn render_detached(&mut self) {
-        let ids: Vec<WindowId> = self.detached.keys().copied().collect();
-        for det_id in ids {
-            let Some(panel) = self.detached.get_mut(&det_id) else {
-                continue;
-            };
-            let owner = panel.owner;
-            let tab = panel.tab;
-
-            // Живость: перерисовать, если данные вкладки изменились с прошлого кадра.
-            let rev = match tab {
-                DockTab::Report => self.report.generation(),
-                DockTab::Log => crate::applog::revision(),
-                DockTab::Orders => self
-                    .windows
-                    .get(&owner)
-                    .map(|h| h.orders_rev(self.session.store()))
-                    .unwrap_or(0),
-                DockTab::Assets => 0,
-            };
-            if rev != panel.last_rev {
-                panel.egui.mark_dirty();
-                panel.last_rev = rev;
-            }
-            if !panel.egui.needs_render() {
-                continue;
-            }
-
-            // Orders — ордера окна-владельца; глобальные — пустой срез (контент их
-            // не использует). Report везде рисует ОБЩИЙ self.report.
-            let orders = if tab == DockTab::Orders {
-                match self.windows.get(&owner) {
-                    Some(h) => h.collect_orders(self.session.store()),
-                    None => continue, // владелец Orders-окна закрыт
-                }
-            } else {
-                Vec::new()
-            };
-            let report = &mut self.report;
-            panel.egui.render(&panel.window, "detached-pass", |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    crate::dock::tabs::content_ui(ui, tab, report, &orders);
-                });
-            });
-        }
-    }
-
-    /// Снять геометрию+состояние окна группы `id` в раскладку (по имени группы).
-    fn update_group_layout(&mut self, id: WindowId) {
-        if let Some(h) = self.windows.get(&id) {
-            if let Ok(pos) = h.window.outer_position() {
-                let size = h.window.inner_size();
-                self.layout.groups.insert(
-                    h.workspace.group.clone(),
-                    crate::config::GroupLayout {
-                        x: pos.x,
-                        y: pos.y,
-                        w: size.width,
-                        h: size.height,
-                        maximized: h.window.is_maximized(),
-                        collapsed: h.workspace.dock.collapsed(),
-                        tab: h.workspace.dock.tab.idx() as u8,
-                    },
-                );
-            }
-        }
-    }
-
-    /// Пересобрать список откреплённых окон в раскладке из живых окон открепления.
-    /// Заодно обновляет карту запомненной геометрии (по ключу) — чтобы повторное
-    /// открепление вставало на то же место даже после закрытия.
-    fn update_detached_layout(&mut self) {
-        let mut list = Vec::new();
-        let mut geoms: Vec<(String, crate::config::GeomRect)> = Vec::new();
-        for p in self.detached.values() {
-            let Ok(pos) = p.window.outer_position() else {
-                continue;
-            };
-            let Some(group) = self.windows.get(&p.owner).map(|h| h.workspace.group.clone()) else {
-                continue; // владелец закрыт — не сохраняем сироту
-            };
-            let size = p.window.inner_size();
-            let rect = crate::config::GeomRect { x: pos.x, y: pos.y, w: size.width, h: size.height };
-            list.push(crate::config::DetachedLayout {
-                tab: p.tab.idx() as u8,
-                owner_group: group,
-                x: pos.x,
-                y: pos.y,
-                w: size.width,
-                h: size.height,
-            });
-            geoms.push((self.detached_geom_key(p.global, p.tab, p.owner), rect));
-        }
-        self.layout.detached = list;
-        for (k, r) in geoms {
-            self.layout.detached_geom.insert(k, r);
-        }
-    }
-
-    /// Снять раскладку со ВСЕХ живых окон и записать layout.toml.
-    fn save_layout(&mut self) {
-        let ids: Vec<WindowId> = self.windows.keys().copied().collect();
-        for id in ids {
-            self.update_group_layout(id);
-        }
-        self.update_detached_layout();
-        self.layout.save();
-        self.layout_dirty = false;
-        self.last_layout_save = Instant::now();
     }
 
     fn render_settings(&mut self) {

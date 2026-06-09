@@ -127,26 +127,9 @@ impl WindowHost {
             || sig != self.last_chrome_sig
             || now.duration_since(self.last_egui_run) >= EGUI_THROTTLE;
 
-        let frame = match self.gpu.surface.get_current_texture() {
-            Ok(f) => f,
-            Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
-                self.gpu.surface.configure(&self.gpu.device, &self.gpu.config);
-                return none;
-            }
-            Err(e) => {
-                log::warn!("surface error: {e:?}");
-                return none;
-            }
+        let Some((frame, view, mut encoder)) = self.gpu.begin_frame("frame-encoder") else {
+            return none;
         };
-        let view = frame
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder = self
-            .gpu
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("frame-encoder"),
-            });
 
         let screen = egui_wgpu::ScreenDescriptor {
             size_in_pixels: [self.gpu.size.width, self.gpu.size.height],
@@ -180,6 +163,7 @@ impl WindowHost {
         let area = self.egui_area;
         self.chart_area = (area.x, area.y, area.w, area.h);
         let cur = self
+            .input
             .cursor
             .filter(|(_, y)| *y >= area.y && *y <= area.y + area.h);
         let ac = self.active_container;
@@ -194,32 +178,18 @@ impl WindowHost {
             ppp,
             now_ms,
             &self.theme,
-            self.hovered_pane,
+            self.input.hovered_pane,
             cur,
             session,
         );
-        self.pane_rects = layout.clone();
+        self.input.pane_rects = layout.clone();
         let render_open = !layout.is_empty();
 
         // egui-проход (всегда) — кэш-сеткой поверх чарта. На reuse-кадрах
         // update_buffers не зовём: буферы рендерера держат прошлую (ту же) сетку.
         let tris = self.egui_tris.take();
         if let Some(tris) = &tris {
-            let rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("egui-pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-            let mut rpass = rpass.forget_lifetime();
+            let mut rpass = crate::gpu::egui_pass(&mut encoder, &view, "egui-pass", None);
             self.egui_renderer.render(&mut rpass, tris, &screen);
         }
         self.egui_tris = tris;
@@ -238,7 +208,7 @@ impl WindowHost {
                 (self.gpu.size.width, self.gpu.size.height),
                 resolution,
                 ppp,
-                self.hovered_pane,
+                self.input.hovered_pane,
                 cur,
             );
         }
@@ -271,7 +241,7 @@ impl WindowHost {
     /// Двойной клик по чарту нумерованной вкладки (`pending_to_main`) → открыть
     /// монету на Main фулскрин и перейти туда фокусом.
     fn apply_pending_to_main(&mut self, now_ms: f64) {
-        let Some((core, mkt)) = self.pending_to_main.take() else {
+        let Some((core, mkt)) = self.input.pending_to_main.take() else {
             return;
         };
         let main_idx = self

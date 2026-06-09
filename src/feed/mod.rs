@@ -2,6 +2,8 @@
 //! UI никогда не вызывает moonproto напрямую. Режим один — live.
 
 pub mod live;
+mod report;
+mod strategies;
 pub mod types;
 
 pub use types::*;
@@ -35,6 +37,8 @@ pub enum CoreCmd {
     /// Редактирование полей: одни и те же `changes` (имя→строка) применить к каждой
     /// стратегии из `ids`. На стороне feed клонируем полный снимок, правим поля по
     /// типу и шлём `sync_local_strategies`.
+    /// Пока не конструируется: UI-этап полного редактирования полей ещё не сделан.
+    #[allow(dead_code)]
     EditStrategyFields {
         ids: Vec<u64>,
         changes: Vec<(String, String)>,

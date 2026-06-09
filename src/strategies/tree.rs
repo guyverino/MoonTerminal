@@ -1,9 +1,7 @@
 //! Панель 1: дерево ядро→папка→стратегия с поиском, счётчиками запущ./всего,
 //! индикатором запуска, чекбоксами (стейджинг) и кнопкой «Применить» (старт/стоп).
 
-use super::{
-    count_filter, matches, searching, Key, StratAction, StrategiesOut, StrategiesState,
-};
+use super::{Key, StratAction, StrategiesOut, StrategiesState};
 use crate::feed::StrategyRow;
 use crate::session::{CoreId, CoreStore};
 use crate::shell::theme;
@@ -31,10 +29,11 @@ pub fn show(
     ui.horizontal(|ui| {
         let te = ui.add_sized(
             [search_w, 22.0],
-            egui::TextEdit::singleline(&mut st.search).hint_text(t!("strat.search").to_string()),
+            egui::TextEdit::singleline(&mut st.filter.search)
+                .hint_text(t!("strat.search").to_string()),
         );
         // Круглый сброс «×» ВНУТРИ поля (линиями, без глифа-тофу).
-        if !st.search.is_empty() {
+        if !st.filter.search.is_empty() {
             let d = 14.0;
             let center = egui::pos2(te.rect.right() - d * 0.5 - 5.0, te.rect.center().y);
             let hit = egui::Rect::from_center_size(center, egui::vec2(d, d));
@@ -47,14 +46,15 @@ pub fn show(
             p.line_segment([center + egui::vec2(-s, -s), center + egui::vec2(s, s)], stroke);
             p.line_segment([center + egui::vec2(-s, s), center + egui::vec2(s, -s)], stroke);
             if br.clicked() {
-                st.search.clear();
+                st.filter.search.clear();
             }
         }
 
         // Список видов стратегий (по присутствующим в дереве), фильтр по виду.
         let kinds = kinds_present(cores, store);
         let cur = st
-            .kind_filter
+            .filter
+            .kind
             .and_then(|k| kinds.iter().find(|(o, _)| *o == k))
             .map(|(_, n)| n.clone())
             .unwrap_or_else(|| t!("strat.all_kinds").to_string());
@@ -62,14 +62,14 @@ pub fn show(
             .selected_text(cur)
             .width((avail * 0.34).max(64.0))
             .show_ui(ui, |ui| {
-                ui.selectable_value(&mut st.kind_filter, None, t!("strat.all_kinds").to_string());
+                ui.selectable_value(&mut st.filter.kind, None, t!("strat.all_kinds").to_string());
                 for (ord, name) in &kinds {
-                    ui.selectable_value(&mut st.kind_filter, Some(*ord), name);
+                    ui.selectable_value(&mut st.filter.kind, Some(*ord), name);
                 }
             });
 
         // Фильтр направления (все/LONG/SHORT) — узкий, ~1/5 ширины.
-        let dir_txt = match st.dir_filter {
+        let dir_txt = match st.filter.dir {
             None => t!("strat.all_dirs").to_string(),
             Some(true) => "SHORT".to_string(),
             Some(false) => "LONG".to_string(),
@@ -78,13 +78,13 @@ pub fn show(
             .selected_text(dir_txt)
             .width((avail * 0.18).max(48.0))
             .show_ui(ui, |ui| {
-                ui.selectable_value(&mut st.dir_filter, None, t!("strat.all_dirs").to_string());
-                ui.selectable_value(&mut st.dir_filter, Some(false), "LONG");
-                ui.selectable_value(&mut st.dir_filter, Some(true), "SHORT");
+                ui.selectable_value(&mut st.filter.dir, None, t!("strat.all_dirs").to_string());
+                ui.selectable_value(&mut st.filter.dir, Some(false), "LONG");
+                ui.selectable_value(&mut st.filter.dir, Some(true), "SHORT");
             });
     });
     ui.horizontal(|ui| {
-        ui.checkbox(&mut st.only_active_tree, t!("strat.only_active").to_string());
+        ui.checkbox(&mut st.filter.only_active, t!("strat.only_active").to_string());
         // Справа — маленькая квадратная кнопка «развернуть/свернуть всё» (▼/▲).
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let collapsed = st.expanded_cores.is_empty() && st.expanded_folders.is_empty();
@@ -108,7 +108,7 @@ pub fn show(
 
     // Поиск временно раскрывает всё; своё состояние раскрытия (expanded_*) при
     // этом не трогаем — после очистки дерево вернётся к прежней свёрнутости.
-    let force_open = searching(st);
+    let force_open = st.filter.searching();
 
     // Плоский порядок видимых стратегий прошлого кадра — для Shift-диапазона; новый
     // собираем по ходу отрисовки и сохраняем в конце.
@@ -120,17 +120,17 @@ pub fn show(
         .show(ui, |ui| {
             for (core_id, core_name) in cores {
                 let Some(cd) = store.core(*core_id) else { continue };
-                if cd.strategies.is_empty() || !cd.strategies.iter().any(|r| matches(st, r)) {
+                if cd.strategies.is_empty() || !cd.strategies.iter().any(|r| st.filter.matches(r)) {
                     continue;
                 }
 
                 // Узел ядра: активных/всего (с учётом фильтров типа и L/S), ▼/▶.
                 let open = force_open || st.expanded_cores.contains(core_id);
-                let total = cd.strategies.iter().filter(|r| count_filter(st, r)).count();
+                let total = cd.strategies.iter().filter(|r| st.filter.counts(r)).count();
                 let active = cd
                     .strategies
                     .iter()
-                    .filter(|r| count_filter(st, r) && r.checked)
+                    .filter(|r| st.filter.counts(r) && r.checked)
                     .count();
                 let label = format!(
                     "{}  {}  {}/{}",
@@ -154,7 +154,7 @@ pub fn show(
 
                 ui.indent(("core_body", core_id), |ui| {
                     // Вложенное дерево папок: путь разбиваем по «/» и «\».
-                    let root = build_node(cd.strategies.iter().filter(|r| matches(st, r)));
+                    let root = build_node(cd.strategies.iter().filter(|r| st.filter.matches(r)));
                     let mut prefix: Vec<String> = Vec::new();
                     render_node(
                         ui,
@@ -403,7 +403,7 @@ fn folder_counts(strategies: &[StrategyRow], st: &StrategiesState, prefix: &[Str
     let mut active = 0;
     let mut total = 0;
     for r in strategies {
-        if !count_filter(st, r) {
+        if !st.filter.counts(r) {
             continue;
         }
         let parts: Vec<&str> = r.folder_path.split(['/', '\\']).filter(|s| !s.is_empty()).collect();

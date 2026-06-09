@@ -127,11 +127,6 @@ pub struct WindowHost {
     /// [1..] — AddToChart (по группам, тайл). Активный показывается в центр. зоне.
     containers: Vec<Container>,
     active_container: usize,
-    /// Раскладка панелей активного контейнера (физ. px) на прошлом кадре — для
-    /// hit-теста ввода (какая панель под курсором).
-    pane_rects: Vec<(usize, Rect)>,
-    /// Панель под курсором (индекс в активном контейнере).
-    hovered_pane: Option<usize>,
     /// Per-core курсор уже учтённых детектов для AddToChart-ингеста.
     add_seq: HashMap<CoreId, u64>,
     /// Epoch для создания новых панелей (Chart::new) на лету.
@@ -139,7 +134,6 @@ pub struct WindowHost {
     pub workspace: Workspace,
     /// Тема оформления чарта (приходит из App; смена → dirty-кадр).
     theme: ChartTheme,
-    cursor: Option<(f32, f32)>,
     last_frame: Instant,
     /// Время последнего present — для капа частоты кадров (MIN_FRAME_DT).
     last_present_at: Instant,
@@ -149,29 +143,14 @@ pub struct WindowHost {
     present_marks: VecDeque<Instant>,
     present_hz: f32,
 
-    // ввод / интерактив (порт ChartInteraction из moonweb), всё в физ. пикселях.
-    shift_down: bool,
-    last_ptr: (f32, f32),
+    /// Ввод/интерактив чарта (общий с ChartWindow), всё в физ. пикселях.
+    input: crate::chart::input::ChartInput,
     /// Прямоугольник зоны графика (физ. px) — hit-тест ввода. egui НЕ годится
     /// для гейта: CentralPanel поверх чарта считается «областью под курсором».
     chart_area: (f32, f32, f32, f32),
     /// Прямоугольник правого дока детектов (физ. px) — движение курсора над ним
     /// форсит перетесселяцию egui (живой spotlight на кнопках).
     detects_area: (f32, f32, f32, f32),
-    lmb_down: bool,
-    lmb_active: bool,
-    drag_accum: (f32, f32),
-    rmb_down: bool,
-    rmb_start_y: f32,
-    rmb_start_range: f32,
-    rmb_start_center: f32,
-    /// ПКМ сдвинулся за порог → это зум-перетаскивание, а не клик-тоггл фулскрина.
-    rmb_moved: bool,
-    /// Время/позиция прошлого ЛКМ-нажатия — для детекта двойного клика.
-    last_lmb_ms: f64,
-    last_lmb_pos: (f32, f32),
-    /// Двойной клик по чарту нумерованной вкладки → открыть монету на Main фулскрин.
-    pending_to_main: Option<(CoreId, String)>,
 
     // dirty-трекинг для skip-present.
     dirty: bool,
@@ -255,33 +234,18 @@ impl WindowHost {
             shell,
             containers: vec![Container::new(ContainerKind::Main)],
             active_container: 0,
-            pane_rects: Vec::new(),
-            hovered_pane: None,
             add_seq: HashMap::new(),
             epoch_ms,
             workspace,
             theme: ChartTheme::default(),
-            cursor: None,
             last_frame: Instant::now(),
             last_present_at: Instant::now() - MIN_FRAME_DT,
             fps: 0.0,
             present_marks: VecDeque::new(),
             present_hz: 0.0,
-            shift_down: false,
-            last_ptr: (0.0, 0.0),
+            input: crate::chart::input::ChartInput::default(),
             chart_area: (0.0, 0.0, 0.0, 0.0),
             detects_area: (0.0, 0.0, 0.0, 0.0),
-            lmb_down: false,
-            lmb_active: false,
-            drag_accum: (0.0, 0.0),
-            rmb_down: false,
-            rmb_start_y: 0.0,
-            rmb_start_range: 0.0,
-            rmb_start_center: 0.0,
-            rmb_moved: false,
-            last_lmb_ms: 0.0,
-            last_lmb_pos: (0.0, 0.0),
-            pending_to_main: None,
             dirty: true,
             last_orders_sig: u64::MAX,
             last_detects_sig: u64::MAX,
@@ -514,7 +478,7 @@ impl WindowHost {
 
     pub fn clear_cursor(&mut self) {
         // Кадр нужен только если перекрестие было показано (надо стереть).
-        if self.cursor.take().is_some() {
+        if self.input.cursor.take().is_some() {
             self.window.set_cursor(CursorIcon::Default);
             self.dirty = true;
         }
@@ -522,7 +486,7 @@ impl WindowHost {
 
     /// Состояние Shift (для shift+колесо = пан по X).
     pub fn set_modifiers(&mut self, shift: bool) {
-        self.shift_down = shift;
+        self.input.shift_down = shift;
     }
 
     /// Открытые ордера всех ядер группы (с именем ядра) — для вкладки «Ордера»

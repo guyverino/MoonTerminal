@@ -82,4 +82,60 @@ impl GpuContext {
         self.config.height = new_size.height;
         self.surface.configure(&self.device, &self.config);
     }
+
+    /// Начало кадра: текстура свопчейна + view + encoder. Lost/Outdated →
+    /// реконфиг сурфейса и None (кадр пропускается, ретрай следующим тиком).
+    pub fn begin_frame(
+        &self,
+        label: &str,
+    ) -> Option<(wgpu::SurfaceTexture, wgpu::TextureView, wgpu::CommandEncoder)> {
+        let frame = match self.surface.get_current_texture() {
+            Ok(f) => f,
+            Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+                self.surface.configure(&self.device, &self.config);
+                return None;
+            }
+            Err(e) => {
+                log::warn!("{label} surface error: {e:?}");
+                return None;
+            }
+        };
+        let view = frame
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some(label) });
+        Some((frame, view, encoder))
+    }
+}
+
+/// Рендер-пасс под egui-сетку: один color-attachment в кадр, `clear`=Some —
+/// очистка фоном, None — рисуем поверх (Load). Время жизни отвязано от encoder
+/// (`forget_lifetime`) — паттерн egui-wgpu.
+pub fn egui_pass(
+    encoder: &mut wgpu::CommandEncoder,
+    view: &wgpu::TextureView,
+    label: &str,
+    clear: Option<wgpu::Color>,
+) -> wgpu::RenderPass<'static> {
+    encoder
+        .begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some(label),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: match clear {
+                        Some(c) => wgpu::LoadOp::Clear(c),
+                        None => wgpu::LoadOp::Load,
+                    },
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        })
+        .forget_lifetime()
 }

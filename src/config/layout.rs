@@ -68,28 +68,13 @@ pub struct WindowLayout {
 impl WindowLayout {
     /// Загрузить layout.toml. Нет файла → дефолт; битый → лог + дефолт.
     pub fn load() -> Self {
-        let path = paths::layout_path();
-        let Ok(text) = std::fs::read_to_string(&path) else {
-            return Self::default();
-        };
-        match toml::from_str(&text) {
-            Ok(l) => l,
-            Err(e) => {
-                log::warn!("layout.toml повреждён ({e}); начинаю с дефолта");
-                Self::default()
-            }
-        }
+        super::toml_io::load_or_default(&paths::layout_path(), "layout.toml", |_| {})
     }
 
     /// Записать layout.toml (не фатально: при ошибке только лог).
     pub fn save(&self) {
-        match toml::to_string_pretty(self) {
-            Ok(s) => {
-                if let Err(e) = std::fs::write(paths::layout_path(), s) {
-                    log::warn!("запись layout.toml: {e}");
-                }
-            }
-            Err(e) => log::warn!("сериализация layout.toml: {e}"),
+        if let Err(e) = super::toml_io::save(&paths::layout_path(), self, "layout.toml") {
+            log::warn!("{e:#}");
         }
     }
 }

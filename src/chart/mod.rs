@@ -5,6 +5,7 @@ pub mod axes;
 pub mod canvas;
 pub mod container;
 pub mod data;
+pub mod input;
 pub mod layers;
 pub mod paint;
 pub mod style;

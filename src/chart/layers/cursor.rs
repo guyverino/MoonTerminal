@@ -6,7 +6,10 @@ use wgpu::util::DeviceExt;
 use super::make_pipeline;
 use crate::chart::view::Rect;
 
-const SHADER: &str = include_str!("../../../shaders/cursor.wgsl");
+const SHADER: &str = concat!(
+    include_str!("../../../shaders/common.wgsl"),
+    include_str!("../../../shaders/cursor.wgsl"),
+);
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]

@@ -3,6 +3,7 @@
 
 mod brand;
 pub mod theme;
+pub mod widgets;
 
 use crate::feed::ConnStatus;
 use crate::icons::IconSet;

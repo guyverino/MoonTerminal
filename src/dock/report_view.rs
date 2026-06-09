@@ -349,11 +349,7 @@ fn value_to_string(v: &Value) -> String {
     match v {
         Value::Null => String::new(),
         Value::Integer(i) => i.to_string(),
-        Value::Real(r) => {
-            let s = format!("{r:.8}");
-            let s = s.trim_end_matches('0').trim_end_matches('.');
-            if s.is_empty() { "0".into() } else { s.to_string() }
-        }
+        Value::Real(r) => crate::util::fmt::compact(*r, 8),
         Value::Text(t) => t.clone(),
         Value::Blob(_) => "<blob>".into(),
     }

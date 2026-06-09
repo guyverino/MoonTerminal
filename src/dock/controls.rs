@@ -1,27 +1,13 @@
 //! Состояние контролов дока: размеры ордера и пресеты масштаба.
 
 pub struct OrderControls {
-    /// 5 настраиваемых размеров ордера.
-    pub sizes: [f64; 5],
-    /// Активный размер (индекс).
-    pub active_size: usize,
     /// Активный пресет масштаба (индекс в SCALES).
     pub scale_idx: usize,
 }
 
 impl Default for OrderControls {
     fn default() -> Self {
-        Self {
-            sizes: [10.0, 25.0, 50.0, 100.0, 250.0],
-            active_size: 0,
-            scale_idx: 0,
-        }
-    }
-}
-
-impl OrderControls {
-    pub fn active_size(&self) -> f64 {
-        self.sizes[self.active_size]
+        Self { scale_idx: 0 }
     }
 }
 
