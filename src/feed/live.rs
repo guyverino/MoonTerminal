@@ -12,8 +12,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use moonproto::state::OrderBookKind;
 use moonproto::{
     ClientConfig, ConnectConfig, Event, FieldValue, InitConfig, InitialStrategies, LifecycleEvent,
-    MoonClient, StrategyFieldUiKind, StrategySchema, StrategySnapshot, TradesStreamMode,
-    TransportMode,
+    MoonClient, StrategyFieldType, StrategyFieldUiKind, StrategySchema, StrategySnapshot,
+    TradesStreamMode, TransportMode,
 };
 
 use super::{
@@ -193,6 +193,36 @@ pub fn run(
                         checks.len(),
                         start_stop
                     );
+                }
+                Ok(CoreCmd::EditStrategyFields { ids, changes }) => {
+                    // Берём полный снимок каждой стратегии, правим поля по типу и
+                    // отправляем sync_local_strategies (moonproto правит только целиком).
+                    if let Some(snap) = client.snapshot() {
+                        let strats = snap.strats();
+                        let schema = strats.strategy_schema();
+                        let mut modified = Vec::new();
+                        for id in &ids {
+                            let Some(s) = strats.snapshot(*id) else { continue };
+                            let mut sc = s.clone();
+                            for (name, val) in &changes {
+                                let existing = sc.fields.get(name).cloned();
+                                let stype = schema.and_then(|s| s.field(name)).map(|f| f.type_id);
+                                sc.fields
+                                    .insert(name.as_str(), fv_from_str(existing.as_ref(), stype, val));
+                            }
+                            modified.push(sc);
+                        }
+                        let n = modified.len();
+                        if n > 0 {
+                            let _ = client.strategies().sync_local_strategies(modified);
+                            log::info!(
+                                "core {} edit {} strategies, {} changes",
+                                server.id,
+                                n,
+                                changes.len()
+                            );
+                        }
+                    }
                 }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
@@ -593,6 +623,43 @@ fn fmt_field(v: &FieldValue) -> String {
         FieldValue::Double(d) => fmt_num(*d),
         FieldValue::Single(f) => fmt_num(*f as f64),
         FieldValue::String(s) => s.clone(),
+    }
+}
+
+/// Собирает `FieldValue` из строки UI по ТИПУ поля: приоритет — тип существующего
+/// значения снимка, иначе тип из схемы, иначе строка. Кривое число → 0.
+fn fv_from_str(existing: Option<&FieldValue>, stype: Option<StrategyFieldType>, s: &str) -> FieldValue {
+    let b = || matches!(s.trim().to_ascii_lowercase().as_str(), "yes" | "true" | "1" | "on");
+    let i = |def: i64| s.trim().parse::<i64>().unwrap_or(def);
+    let u = || s.trim().parse::<u64>().unwrap_or(0);
+    let f = || s.trim().parse::<f64>().unwrap_or(0.0);
+    // По существующему значению.
+    if let Some(ev) = existing {
+        return match ev {
+            FieldValue::Bool(_) => FieldValue::Bool(b()),
+            FieldValue::Int32(_) => FieldValue::Int32(i(0) as i32),
+            FieldValue::Int64(_) => FieldValue::Int64(i(0)),
+            FieldValue::UInt32(_) => FieldValue::UInt32(u() as u32),
+            FieldValue::UInt64(_) => FieldValue::UInt64(u()),
+            FieldValue::Byte(_) => FieldValue::Byte(u() as u8),
+            FieldValue::Word(_) => FieldValue::Word(u() as u16),
+            FieldValue::Double(_) => FieldValue::Double(f()),
+            FieldValue::Single(_) => FieldValue::Single(f() as f32),
+            FieldValue::String(_) => FieldValue::String(s.to_string()),
+        };
+    }
+    // По типу схемы.
+    match stype {
+        Some(StrategyFieldType::Bool) => FieldValue::Bool(b()),
+        Some(StrategyFieldType::Int32) => FieldValue::Int32(i(0) as i32),
+        Some(StrategyFieldType::Int64) => FieldValue::Int64(i(0)),
+        Some(StrategyFieldType::UInt32) => FieldValue::UInt32(u() as u32),
+        Some(StrategyFieldType::UInt64) => FieldValue::UInt64(u()),
+        Some(StrategyFieldType::Byte) => FieldValue::Byte(u() as u8),
+        Some(StrategyFieldType::Word) => FieldValue::Word(u() as u16),
+        Some(StrategyFieldType::Double) => FieldValue::Double(f()),
+        Some(StrategyFieldType::Single) => FieldValue::Single(f() as f32),
+        _ => FieldValue::String(s.to_string()),
     }
 }
 

@@ -32,6 +32,13 @@ pub enum CoreCmd {
         checks: Vec<(u64, bool)>,
         start_stop: Option<bool>,
     },
+    /// Редактирование полей: одни и те же `changes` (имя→строка) применить к каждой
+    /// стратегии из `ids`. На стороне feed клонируем полный снимок, правим поля по
+    /// типу и шлём `sync_local_strategies`.
+    EditStrategyFields {
+        ids: Vec<u64>,
+        changes: Vec<(String, String)>,
+    },
 }
 
 /// Хэндл backend-потока. Дроп закрывает каналы → поток завершается.

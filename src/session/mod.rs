@@ -199,6 +199,20 @@ impl SessionManager {
         }
     }
 
+    /// Редактирование полей стратегий ядра: одни и те же `changes` (имя→строка)
+    /// применить к каждой стратегии из `ids` (полный снимок правится на стороне feed).
+    pub fn edit_strategies(&self, core: CoreId, ids: Vec<u64>, changes: Vec<(String, String)>) {
+        if ids.is_empty() || changes.is_empty() {
+            return;
+        }
+        if let Some(s) = self.sessions.iter().find(|s| s.id == core) {
+            let _ = s
+                .handle
+                .cmd_tx
+                .send(CoreCmd::EditStrategyFields { ids, changes });
+        }
+    }
+
     /// Рыночные данные для чарта ядра `core` на рынке `market`: резолвим провайдера
     /// ядра и читаем его view. None, пока провайдер не избран или данные не пришли.
     pub fn market_view(&self, core: CoreId, market: &str) -> Option<&MarketView> {
