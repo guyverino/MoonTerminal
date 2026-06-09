@@ -22,8 +22,11 @@ use crate::workspace::Workspace;
 
 pub struct HostRender {
     pub gear_clicked: bool,
-    pub reports_clicked: bool,
     pub strategies_clicked: bool,
+    /// Вкладку дока потянули — открепить в окно (App создаёт окно для этого host'а).
+    pub detach: Option<crate::dock::DockTab>,
+    /// Нажата «вернуть в док» — App закроет окно открепления этой вкладки.
+    pub repin: Option<crate::dock::DockTab>,
 }
 
 /// Принудительный прогон egui хотя бы раз в этот интервал — освежает живые
@@ -280,16 +283,18 @@ impl WindowHost {
         if self.workspace.dock.ribbon.has_items() {
             return true;
         }
-        // Живой лог: новые строки форсят кадр только когда вкладка «Лог» активна
-        // (иначе её обновление невидимо, а кадры зря грелись бы на потоке логов).
+        // Живой лог: новые строки форсят кадр только когда вкладка «Лог» активна и
+        // НЕ откреплена (откреплённую рисует своё окно; в доке — статичная плашка).
         if self.workspace.dock.tab == crate::dock::DockTab::Log
+            && !self.workspace.dock.is_detached(crate::dock::DockTab::Log)
             && crate::applog::revision() != self.last_log_rev
         {
             return true;
         }
-        // Живой отчёт: новые/изменённые записи форсят кадр, когда активна вкладка
-        // «Отчёт» (writer бампает счётчик-генерацию).
+        // Живой отчёт: аналогично — кадр только когда вкладка «Отчёт» активна и не
+        // откреплена (writer бампает счётчик-генерацию).
         if self.workspace.dock.tab == crate::dock::DockTab::Report
+            && !self.workspace.dock.is_detached(crate::dock::DockTab::Report)
             && self.workspace.dock.report.generation() != self.last_report_gen
         {
             return true;
@@ -478,6 +483,32 @@ impl WindowHost {
         self.window.request_redraw();
     }
 
+    /// Открытые ордера всех ядер группы (с именем ядра) — для вкладки «Ордера»
+    /// дока и её окна открепления. Дёшево копирует строки на кадр.
+    pub fn collect_orders(&self, store: &CoreStore) -> Vec<(String, OrderRow)> {
+        let mut rows = Vec::new();
+        for ci in &self.workspace.cores {
+            if let Some(d) = store.core(ci.id) {
+                for o in &d.orders {
+                    rows.push((ci.name.clone(), o.clone()));
+                }
+            }
+        }
+        rows
+    }
+
+    /// Сумма orders_rev ядер группы — дёшево ловит изменение набора ордеров (для
+    /// живого обновления откреплённого окна вкладки «Ордера»).
+    pub fn orders_rev(&self, store: &CoreStore) -> u64 {
+        let mut sig = 0u64;
+        for ci in &self.workspace.cores {
+            if let Some(d) = store.core(ci.id) {
+                sig = sig.wrapping_add(d.orders_rev);
+            }
+        }
+        sig
+    }
+
     pub fn render(
         &mut self,
         session: &SessionManager,
@@ -487,8 +518,9 @@ impl WindowHost {
         let store = session.store();
         let none = HostRender {
             gear_clicked: false,
-            reports_clicked: false,
             strategies_clicked: false,
+            detach: None,
+            repin: None,
         };
 
         let now = Instant::now();
@@ -604,6 +636,8 @@ impl WindowHost {
         let mut gear_clicked = false;
         let mut reports_clicked = false;
         let mut strategies_clicked = false;
+        let mut detach_req: Option<crate::dock::DockTab> = None;
+        let mut repin_req: Option<crate::dock::DockTab> = None;
         let mut open_detect: Option<(crate::session::CoreId, String)> = None;
         let mut close_chart = false;
         // Открыли/закрыли чарт в этом кадре → форсим ещё один кадр (перестроить
@@ -630,14 +664,7 @@ impl WindowHost {
                 mem_delta_mb: metrics.mem_delta_mb,
             };
             // Открытые ордера всех ядер группы для нижнего дока (с именем ядра).
-            let mut order_rows: Vec<(String, OrderRow)> = Vec::new();
-            for ci in &self.workspace.cores {
-                if let Some(d) = store.core(ci.id) {
-                    for o in &d.orders {
-                        order_rows.push((ci.name.clone(), o.clone()));
-                    }
-                }
-            }
+            let order_rows = self.collect_orders(store);
 
             let mut central = egui::Rect::NOTHING;
             let mut detects_rect = egui::Rect::NOTHING;
@@ -673,6 +700,8 @@ impl WindowHost {
                 set_follow = out.set_follow;
                 open_detect = out.open_detect;
                 close_chart = out.close_chart;
+                detach_req = out.detach;
+                repin_req = out.repin;
             });
 
             // Зона дока детектов в физ. пикселях — для форса кадров под курсором.
@@ -714,6 +743,13 @@ impl WindowHost {
             }
             if close_chart {
                 self.workspace.open = None;
+                layout_changed = true;
+            }
+            // Кнопка «Отчёты» в шапке теперь выбирает вкладку «Отчёт» дока (а не
+            // открывает отдельное окно): отчёт живёт во вкладке, окном становится
+            // только при откреплении. Если вкладка откреплена — App сфокусит окно.
+            if reports_clicked {
+                self.workspace.dock.tab = crate::dock::DockTab::Report;
                 layout_changed = true;
             }
 
@@ -910,8 +946,9 @@ impl WindowHost {
 
         HostRender {
             gear_clicked,
-            reports_clicked,
             strategies_clicked,
+            detach: detach_req,
+            repin: repin_req,
         }
     }
 }

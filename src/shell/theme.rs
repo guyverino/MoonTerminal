@@ -221,11 +221,26 @@ pub fn seg_btn_h(
     rest_gradient: bool,
     height: f32,
 ) -> egui::Response {
-    use egui::{vec2, Align2, Rounding, Sense, Stroke};
+    seg_btn_sensed(ui, text, active, fixed_w, rest_gradient, height, egui::Sense::click())
+}
+
+/// Как [`seg_btn_h`], но с произвольным `Sense` — для вкладок дока, которым нужен
+/// `click_and_drag` (клик = выбор вкладки, перетаскивание = открепить в окно).
+#[allow(clippy::too_many_arguments)]
+pub fn seg_btn_sensed(
+    ui: &mut egui::Ui,
+    text: &str,
+    active: bool,
+    fixed_w: Option<f32>,
+    rest_gradient: bool,
+    height: f32,
+    sense: egui::Sense,
+) -> egui::Response {
+    use egui::{vec2, Align2, Rounding, Stroke};
 
     let f = font();
     let w = fixed_w.unwrap_or_else(|| text_w(ui, text, &f) + 16.0);
-    let (rect, resp) = ui.allocate_exact_size(vec2(w, height), Sense::click());
+    let (rect, resp) = ui.allocate_exact_size(vec2(w, height), sense);
     if ui.is_rect_visible(rect) {
         let hovered = resp.hovered();
         let round = Rounding::same(4.0);

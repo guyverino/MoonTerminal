@@ -34,6 +34,9 @@ pub struct Dock {
     pub tab: DockTab,
     /// Состояние вкладки «Отчёт» (фильтры/таблица/своё SQLite-соединение).
     pub report: ReportView,
+    /// Какие вкладки сейчас откреплены в отдельные окна (по [`DockTab::idx`]).
+    /// Откреплённая вкладка в доке показывает плашку, а контент рисует окно.
+    detached: [bool; 4],
 }
 
 pub struct DockOutput {
@@ -50,6 +53,10 @@ pub struct DockOutput {
     /// Rect правого дока детектов (точки egui) — host форсит кадр при движении
     /// курсора над ним (живой spotlight на кнопках).
     pub detects_rect: egui::Rect,
+    /// Вкладку потянули — открепить в отдельное окно (создаёт App).
+    pub detach: Option<DockTab>,
+    /// Нажата «вернуть в док» на плашке откреплённой вкладки (App закроет окно).
+    pub repin: Option<DockTab>,
 }
 
 impl Dock {
@@ -60,7 +67,24 @@ impl Dock {
             ribbon: DetectRibbon::default(),
             tab: DockTab::default(),
             report: ReportView::new(generation),
+            detached: [false; 4],
         }
+    }
+
+    /// Откреплена ли вкладка в окно (контент рисует окно, в доке — плашка).
+    pub fn is_detached(&self, tab: DockTab) -> bool {
+        self.detached[tab.idx()]
+    }
+
+    /// Пометить вкладку откреплённой/прикреплённой (вызывает App при создании/
+    /// закрытии окна открепления).
+    pub fn set_detached(&mut self, tab: DockTab, on: bool) {
+        self.detached[tab.idx()] = on;
+    }
+
+    /// Состояние вкладки «Отчёт» (для рендера в окне открепления).
+    pub fn report_mut(&mut self) -> &mut ReportView {
+        &mut self.report
     }
 
     pub fn show(
@@ -81,7 +105,7 @@ impl Dock {
 
         // Нижний док с вкладками (Ордера/Активы/Лог/Отчёт) — уровень группы, не
         // контейнера чарта. Активная вкладка живёт в self.tab.
-        tabs::show(ctx, &mut self.tab, &mut self.report, orders);
+        let tabs_out = tabs::show(ctx, &mut self.tab, &mut self.report, orders, &self.detached);
 
         // Панель ордера — часть контейнера чарта: при закрытом чарте скрыта
         // (контейнер пустой/серый, центральная область не растягивается контентом).
@@ -121,6 +145,8 @@ impl Dock {
             open_detect,
             close_chart,
             detects_rect,
+            detach: tabs_out.detach,
+            repin: tabs_out.repin,
         }
     }
 }

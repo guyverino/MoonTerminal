@@ -1,20 +1,23 @@
-//! App: менеджер ОС-окон. По окну на группу + отдельное окно Настроек.
+//! App: менеджер ОС-окон. По окну на группу + окна-утилиты (Настройки/Стратегии)
+//! + окна открепления вкладок дока (Ордера/Активы/Лог/Отчёт «вытянуты» в окно).
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow};
-use winit::window::WindowId;
+use winit::window::{Window, WindowId};
 
 use crate::config::AppConfig;
 use crate::db::{self, ReportsHandle};
+use crate::dock::DockTab;
 use crate::metrics::{Metrics, MetricsSnapshot};
 use crate::session::SessionManager;
 use crate::settings::SettingsState;
 use crate::window::{
-    handle_aux_event, ReportsWindow, SettingsWindow, StrategiesWindow, WindowHost,
+    handle_aux_event, EguiSurface, SettingsWindow, StrategiesWindow, WindowHost,
 };
 use crate::workspace::Workspace;
 
@@ -25,15 +28,33 @@ fn now_ms() -> f64 {
         .unwrap_or(0.0)
 }
 
+/// Окно открепления вкладки дока: отдельное ОС-окно с egui-сурфейсом, которое
+/// рисует контент одной вкладки своего окна-владельца (`owner`). Состояние вкладки
+/// (например фильтры отчёта) остаётся в доке владельца — окно лишь рисует его в
+/// свой `ui`. Закрытие окна → вкладка возвращается в док (App снимает флаг).
+struct DetachedPanel {
+    owner: WindowId,
+    tab: DockTab,
+    window: Arc<Window>,
+    egui: EguiSurface,
+    /// Ревизия данных вкладки на прошлом кадре — для авто-перерисовки (живой
+    /// отчёт/лог/ордера без необходимости двигать мышь).
+    last_rev: u64,
+}
+
 pub struct App {
     config: AppConfig,
     settings: SettingsState,
     settings_window: Option<SettingsWindow>,
     open_settings_requested: bool,
-    reports_window: Option<ReportsWindow>,
-    open_reports_requested: bool,
     strategies_window: Option<StrategiesWindow>,
     open_strategies_requested: bool,
+    /// Окна открепления вкладок (ключ — id окна открепления, не владельца).
+    detached: HashMap<WindowId, DetachedPanel>,
+    /// Очередь запросов на открепление/возврат вкладок (создание окна требует
+    /// ActiveEventLoop, доступного только в about_to_wait/window_event).
+    detach_reqs: Vec<(WindowId, DockTab)>,
+    repin_reqs: Vec<(WindowId, DockTab)>,
     session: SessionManager,
     /// Хэндл БД отчётов: канал записи + счётчик-генерация (None = БД недоступна).
     reports: Option<ReportsHandle>,
@@ -57,10 +78,11 @@ impl App {
             settings: SettingsState::new(),
             settings_window: None,
             open_settings_requested: false,
-            reports_window: None,
-            open_reports_requested: false,
             strategies_window: None,
             open_strategies_requested: false,
+            detached: HashMap::new(),
+            detach_reqs: Vec::new(),
+            repin_reqs: Vec::new(),
             session,
             reports,
             epoch_ms,
@@ -74,6 +96,8 @@ impl App {
     /// (Пере)создаёт окна групп. Нет групп — одно пустое окно (для Настроек).
     fn build_windows(&mut self, event_loop: &ActiveEventLoop) {
         self.windows.clear();
+        // Окна открепления — дети окон групп; при пересоздании окон закрываем их.
+        self.detached.clear();
         // Счётчик-генерация writer'а отчётов — во вкладку «Отчёт» дока каждого окна.
         let gen = self.reports.as_ref().map(|h| h.generation.clone());
         let mut workspaces = Workspace::build_all(&self.config, gen.clone());
@@ -99,8 +123,9 @@ impl App {
     fn render_window(&mut self, id: WindowId, metrics: MetricsSnapshot) {
         let now = now_ms();
         let mut gear = false;
-        let mut reports = false;
         let mut strategies = false;
+        let mut detach = None;
+        let mut repin = None;
         {
             let session = &self.session;
             if let Some(host) = self.windows.get_mut(&id) {
@@ -109,18 +134,22 @@ impl App {
                 }
                 let out = host.render(session, now, metrics);
                 gear = out.gear_clicked;
-                reports = out.reports_clicked;
                 strategies = out.strategies_clicked;
+                detach = out.detach;
+                repin = out.repin;
             }
         }
         if gear {
             self.open_settings_requested = true;
         }
-        if reports {
-            self.open_reports_requested = true;
-        }
         if strategies {
             self.open_strategies_requested = true;
+        }
+        if let Some(tab) = detach {
+            self.detach_reqs.push((id, tab));
+        }
+        if let Some(tab) = repin {
+            self.repin_reqs.push((id, tab));
         }
     }
 
@@ -136,29 +165,6 @@ impl App {
                 self.settings_window = Some(w);
             }
             Err(e) => log::error!("окно настроек: {e:#}"),
-        }
-    }
-
-    fn open_reports(&mut self, event_loop: &ActiveEventLoop) {
-        self.open_reports_requested = false;
-        if let Some(rw) = &self.reports_window {
-            rw.window.focus_window();
-            return;
-        }
-        let generation = self.reports.as_ref().map(|h| h.generation.clone());
-        match ReportsWindow::new(event_loop, generation) {
-            Ok(w) => self.reports_window = Some(w),
-            Err(e) => log::error!("окно отчётов: {e:#}"),
-        }
-    }
-
-    fn render_reports(&mut self) {
-        if let Some(rw) = self.reports_window.as_mut() {
-            // Новые/изменённые отчёты от writer → перезапрос даже если окно открыто.
-            rw.poll();
-            if rw.needs_render() {
-                rw.render();
-            }
         }
     }
 
@@ -186,6 +192,109 @@ impl App {
         }
         for a in actions {
             self.session.apply_strategies(a.core, a.checks, a.start_stop);
+        }
+    }
+
+    /// Открепить вкладку `tab` окна-владельца `owner` в отдельное окно. Уже
+    /// откреплена → просто фокусируем существующее окно.
+    fn open_detached(&mut self, event_loop: &ActiveEventLoop, owner: WindowId, tab: DockTab) {
+        if let Some(p) = self.detached.values().find(|p| p.owner == owner && p.tab == tab) {
+            p.window.focus_window();
+            return;
+        }
+        let attrs = Window::default_attributes()
+            .with_title(format!("{} — MoonTerminal", tab.title()))
+            .with_resizable(true)
+            .with_inner_size(winit::dpi::LogicalSize::new(1100.0, 520.0));
+        let window = match event_loop.create_window(attrs) {
+            Ok(w) => Arc::new(w),
+            Err(e) => {
+                log::error!("окно открепления: {e:#}");
+                return;
+            }
+        };
+        window.set_window_icon(crate::icons::brand_winit_icon());
+        let egui = match EguiSurface::new(&window) {
+            Ok(e) => e,
+            Err(e) => {
+                log::error!("egui окна открепления: {e:#}");
+                return;
+            }
+        };
+        let det_id = window.id();
+        if let Some(host) = self.windows.get_mut(&owner) {
+            host.workspace.dock.set_detached(tab, true);
+            host.mark_egui_dirty(); // в доке вместо контента появится плашка
+        }
+        self.detached.insert(
+            det_id,
+            DetachedPanel { owner, tab, window, egui, last_rev: u64::MAX },
+        );
+    }
+
+    /// Закрыть окно открепления по его id и вернуть вкладку в док владельца.
+    fn close_detached(&mut self, det_id: WindowId) {
+        if let Some(p) = self.detached.remove(&det_id) {
+            if let Some(host) = self.windows.get_mut(&p.owner) {
+                host.workspace.dock.set_detached(p.tab, false);
+                host.mark_egui_dirty();
+            }
+        }
+    }
+
+    /// Вернуть вкладку в док (по кнопке «вернуть» на плашке) — закрывает окно.
+    fn repin(&mut self, owner: WindowId, tab: DockTab) {
+        let id = self
+            .detached
+            .iter()
+            .find(|(_, p)| p.owner == owner && p.tab == tab)
+            .map(|(id, _)| *id);
+        if let Some(id) = id {
+            self.close_detached(id);
+        }
+    }
+
+    /// Рисует окна открепления. Контент берётся из дока владельца (тот же
+    /// `content_ui`, что и inline) — единый источник состояния, без дубля.
+    fn render_detached(&mut self) {
+        let ids: Vec<WindowId> = self.detached.keys().copied().collect();
+        for det_id in ids {
+            let Some(panel) = self.detached.get_mut(&det_id) else {
+                continue;
+            };
+            let owner = panel.owner;
+            let tab = panel.tab;
+            let Some(host) = self.windows.get_mut(&owner) else {
+                continue; // владелец закрыт — окно закроется по своему CloseRequested
+            };
+
+            // Живость: перерисовать, если данные вкладки изменились с прошлого кадра.
+            let store = self.session.store();
+            let rev = match tab {
+                DockTab::Report => host.workspace.dock.report.generation(),
+                DockTab::Log => crate::applog::revision(),
+                DockTab::Orders => host.orders_rev(store),
+                DockTab::Assets => 0,
+            };
+            if rev != panel.last_rev {
+                panel.egui.mark_dirty();
+                panel.last_rev = rev;
+            }
+            if !panel.egui.needs_render() {
+                continue;
+            }
+
+            let orders = if tab == DockTab::Orders {
+                host.collect_orders(store)
+            } else {
+                Vec::new()
+            };
+            let report = host.workspace.dock.report_mut();
+            panel.egui.render(&panel.window, "detached-pass", |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    crate::dock::tabs::content_ui(ui, tab, report, &orders);
+                });
+            });
         }
     }
 
@@ -269,28 +378,38 @@ impl ApplicationHandler for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        // Окна-утилиты (Настройки/Отчёты/Стратегии) обрабатывают ввод/ресайз
-        // одинаково (handle_aux_event); различается только реакция на закрытие.
+        // Окна-утилиты (Настройки/Стратегии) обрабатывают ввод/ресайз одинаково
+        // (handle_aux_event); различается только реакция на закрытие.
         if let Some(w) = self.settings_window.as_mut().filter(|w| w.window.id() == id) {
             if handle_aux_event(w, &event) {
                 self.settings_window = None;
                 // Настройки были единственным окном (первый запуск без серверов) —
                 // закрыли, открывать больше нечего → выходим.
-                if self.windows.is_empty() && self.reports_window.is_none() {
+                if self.windows.is_empty() {
                     event_loop.exit();
                 }
-            }
-            return;
-        }
-        if let Some(w) = self.reports_window.as_mut().filter(|w| w.window.id() == id) {
-            if handle_aux_event(w, &event) {
-                self.reports_window = None;
             }
             return;
         }
         if let Some(w) = self.strategies_window.as_mut().filter(|w| w.window.id() == id) {
             if handle_aux_event(w, &event) {
                 self.strategies_window = None;
+            }
+            return;
+        }
+
+        // Окно открепления вкладки: ввод/ресайз в его egui; закрытие → возврат в док.
+        if self.detached.contains_key(&id) {
+            let mut close = false;
+            if let Some(panel) = self.detached.get_mut(&id) {
+                panel.egui.on_event(&panel.window, &event);
+                if let WindowEvent::Resized(size) = &event {
+                    panel.egui.resize(*size);
+                }
+                close = matches!(event, WindowEvent::CloseRequested);
+            }
+            if close {
+                self.close_detached(id);
             }
             return;
         }
@@ -338,6 +457,8 @@ impl ApplicationHandler for App {
 
         if let WindowEvent::CloseRequested = event {
             self.windows.remove(&id);
+            // Закрылось окно группы — закрываем и его окна открепления (дети).
+            self.detached.retain(|_, p| p.owner != id);
             if self.windows.is_empty() {
                 event_loop.exit();
             }
@@ -385,15 +506,20 @@ impl ApplicationHandler for App {
             self.render_window(id, metrics);
         }
 
+        // Открепление/возврат вкладок (накоплены в render_window — здесь есть
+        // event_loop для создания окон).
+        for (owner, tab) in std::mem::take(&mut self.detach_reqs) {
+            self.open_detached(event_loop, owner, tab);
+        }
+        for (owner, tab) in std::mem::take(&mut self.repin_reqs) {
+            self.repin(owner, tab);
+        }
+        self.render_detached();
+
         if self.open_settings_requested {
             self.open_settings(event_loop);
         }
         self.render_settings();
-
-        if self.open_reports_requested {
-            self.open_reports(event_loop);
-        }
-        self.render_reports();
 
         if self.open_strategies_requested {
             self.open_strategies(event_loop);

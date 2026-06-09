@@ -230,6 +230,18 @@ dock.log.empty:
   ru: "Лог пуст"
   en: "Log is empty"
   es: "El registro está vacío"
+dock.tab.drag_hint:
+  ru: "Потяните вкладку, чтобы открепить в окно"
+  en: "Drag the tab to pop it out into a window"
+  es: "Arrastre la pestaña para abrirla en una ventana"
+dock.tab.in_window:
+  ru: "Открыто в отдельном окне"
+  en: "Open in a separate window"
+  es: "Abierto en una ventana aparte"
+dock.tab.repin:
+  ru: "↩ Вернуть в док"
+  en: "↩ Return to dock"
+  es: "↩ Volver al panel"
 
 # --- Окно настроек: общее ---
 settings.save:
