@@ -4,7 +4,10 @@
 
 use std::collections::HashMap;
 
-use super::{multi_rows, selected_row, selected_sections, selected_values, StrategiesState};
+use super::{
+    common_fields, kinds_differ, multi_rows, selected_row, selected_sections, selected_values,
+    StrategiesState,
+};
 use crate::feed::{SchemaField, SchemaFieldUi, StrategyRow};
 use crate::session::CoreStore;
 use crate::shell::theme;
@@ -25,9 +28,13 @@ pub fn show(ui: &mut egui::Ui, st: &mut StrategiesState, store: &CoreStore) {
         return;
     };
     let values = selected_values(st, store);
-    // Объединённый показ: значения по всем выбранным стратегиям того же вида.
+    // Объединённый показ по всем выбранным (любых видов). `common` — поля, что есть
+    // у ВСЕХ выбранных (иначе менять нельзя — скрываем). При разных видах прячем
+    // ещё и сам тип (SignalType).
     let rows = multi_rows(st, store);
     let multi = rows.len() > 1;
+    let common = common_fields(st, store);
+    let differ = kinds_differ(st, store);
 
     ui.add_space(2.0);
     // Заголовок раздела (strong — как «Разделы») + счётчик (полей / выбрано) справа.
@@ -60,6 +67,17 @@ pub fn show(ui: &mut egui::Ui, st: &mut StrategiesState, store: &CoreStore) {
         .auto_shrink([false, false])
         .show(ui, |ui| {
             for f in fields {
+                let lname = f.name.to_lowercase();
+                // Поля, которых нет у кого-то из выбранных, — менять нельзя, скрываем.
+                if let Some(c) = &common {
+                    if !c.contains(&lname) {
+                        continue;
+                    }
+                }
+                // Разные виды → тип (SignalType) менять нельзя — скрываем.
+                if differ && lname == "signaltype" {
+                    continue;
+                }
                 let active = st.rules.field_active(&f.name, &values);
                 if st.only_active_params && !active {
                     continue;

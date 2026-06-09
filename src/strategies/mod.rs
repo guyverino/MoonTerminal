@@ -32,6 +32,12 @@ pub type Key = (CoreId, u64);
 pub struct StrategiesState {
     /// Фильтр дерева по названию стратегии.
     pub search: String,
+    /// Фильтр дерева по виду стратегии (ordinal). None — все виды. Работает И с поиском.
+    pub kind_filter: Option<u8>,
+    /// Фильтр по направлению: None — все, Some(true) — SHORT, Some(false) — LONG.
+    pub dir_filter: Option<bool>,
+    /// Показывать в дереве только активные (запущенные) стратегии. По умолчанию вкл.
+    pub only_active_tree: bool,
     /// Текущая (первичная) стратегия — источник схемы/секций (ядро, id).
     pub selected: Option<Key>,
     /// Множественный выбор (ядро, id) — подсветка + объединённый показ параметров.
@@ -65,6 +71,9 @@ impl Default for StrategiesState {
     fn default() -> Self {
         Self {
             search: String::new(),
+            kind_filter: None,
+            dir_filter: None,
+            only_active_tree: true,
             selected: None,
             sel: HashSet::new(),
             anchor: None,
@@ -134,22 +143,71 @@ pub fn row(store: &CoreStore, core: CoreId, id: u64) -> Option<&StrategyRow> {
     store.core(core)?.strategies.iter().find(|s| s.id == id)
 }
 
-/// Строки всех выбранных стратегий ТОГО ЖЕ вида, что первичная (для объединённого
-/// показа параметров). Пустой выбор → только первичная. Иные виды отбрасываем
-/// (их поля не сопоставимы со схемой первичной).
-pub fn multi_rows<'a>(st: &StrategiesState, store: &'a CoreStore) -> Vec<&'a StrategyRow> {
-    let Some(prim) = selected_row(st, store) else {
-        return Vec::new();
-    };
-    let keys: Vec<Key> = if st.sel.is_empty() {
+/// Ключи выбранных стратегий (мультивыбор) или первичная, если выбор пуст.
+fn selected_keys(st: &StrategiesState) -> Vec<Key> {
+    if st.sel.is_empty() {
         st.selected.into_iter().collect()
     } else {
         st.sel.iter().copied().collect()
-    };
-    keys.iter()
+    }
+}
+
+/// Строки ВСЕХ выбранных стратегий (любых видов) — для объединённого показа.
+pub fn multi_rows<'a>(st: &StrategiesState, store: &'a CoreStore) -> Vec<&'a StrategyRow> {
+    selected_keys(st)
+        .iter()
         .filter_map(|(c, id)| row(store, *c, *id))
-        .filter(|r| r.kind_ordinal == prim.kind_ordinal)
         .collect()
+}
+
+/// У выбранных РАЗНЫЕ виды стратегий? (тогда SignalType менять нельзя — скрываем).
+pub fn kinds_differ(st: &StrategiesState, store: &CoreStore) -> bool {
+    let mut kind: Option<u8> = None;
+    for (c, id) in selected_keys(st) {
+        if let Some(r) = row(store, c, id) {
+            match kind {
+                None => kind = Some(r.kind_ordinal),
+                Some(k) if k != r.kind_ordinal => return true,
+                _ => {}
+            }
+        }
+    }
+    false
+}
+
+/// Имена полей (lowercase) в схеме ядра `core` для вида `ord`.
+fn kind_field_set(store: &CoreStore, core: CoreId, ord: u8) -> HashSet<String> {
+    store
+        .core(core)
+        .and_then(|cd| cd.schema.as_ref())
+        .and_then(|sch| sch.kinds.iter().find(|k| k.ordinal == ord))
+        .map(|k| {
+            k.sections
+                .iter()
+                .flat_map(|s| &s.fields)
+                .map(|f| f.name.to_lowercase())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Поля (lowercase), которые есть у ВСЕХ выбранных стратегий (пересечение схем их
+/// видов). None — выбрана одна (ограничения нет, показываем всё).
+pub fn common_fields(st: &StrategiesState, store: &CoreStore) -> Option<HashSet<String>> {
+    let keys = selected_keys(st);
+    if keys.len() <= 1 {
+        return None;
+    }
+    let mut acc: Option<HashSet<String>> = None;
+    for (c, id) in keys {
+        let Some(r) = row(store, c, id) else { continue };
+        let set = kind_field_set(store, c, r.kind_ordinal);
+        acc = Some(match acc {
+            None => set,
+            Some(a) => a.intersection(&set).cloned().collect(),
+        });
+    }
+    acc
 }
 
 /// Значения полей выбранной стратегии: имя(lowercase) → значение(как есть) — для
@@ -201,10 +259,19 @@ pub fn searching(st: &StrategiesState) -> bool {
     !st.search.trim().is_empty()
 }
 
-/// Совпадает ли стратегия с фильтром поиска (по названию, без регистра).
+/// Условие для СЧЁТЧИКОВ активных/всего: вид И направление (без имени и без
+/// «только активные»), чтобы цифры на ядрах/папках отражали выбранный тип и L/S.
+pub fn count_filter(st: &StrategiesState, row: &StrategyRow) -> bool {
+    st.kind_filter.is_none_or(|k| row.kind_ordinal == k)
+        && st.dir_filter.is_none_or(|s| row.is_short == s)
+}
+
+/// Видимость строки в дереве: имя И вид И направление И («только активные» → checked).
 pub fn matches(st: &StrategiesState, row: &StrategyRow) -> bool {
     let q = st.search.trim().to_lowercase();
-    q.is_empty() || row.name.to_lowercase().contains(&q)
+    let by_name = q.is_empty() || row.name.to_lowercase().contains(&q);
+    let by_active = !st.only_active_tree || row.checked;
+    count_filter(st, row) && by_name && by_active
 }
 
 /// Для удобства модулей: набор папок ядра (в порядке появления).

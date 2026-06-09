@@ -77,9 +77,17 @@ strat.window_title:
   en: "Strategies — MoonTerminal"
   es: "Estrategias — MoonTerminal"
 strat.search:
-  ru: "поиск по названию"
-  en: "search by name"
-  es: "buscar por nombre"
+  ru: "поиск"
+  en: "search"
+  es: "buscar"
+strat.all_kinds:
+  ru: "все типы"
+  en: "all types"
+  es: "todos los tipos"
+strat.all_dirs:
+  ru: "все"
+  en: "all"
+  es: "todos"
 strat.clear:
   ru: "Очистить"
   en: "Clear"
@@ -96,14 +104,22 @@ strat.differs:
   ru: "значения у выбранных различаются"
   en: "values differ across selection"
   es: "los valores difieren en la selección"
+strat.expand_all:
+  ru: "Развернуть всё"
+  en: "Expand all"
+  es: "Expandir todo"
+strat.collapse_all:
+  ru: "Свернуть всё"
+  en: "Collapse all"
+  es: "Contraer todo"
 strat.start_checked:
-  ru: "Старт отмеченных"
-  en: "Start checked"
-  es: "Iniciar marcadas"
+  ru: "▶ отмеченных"
+  en: "▶ checked"
+  es: "▶ marcadas"
 strat.stop_checked:
-  ru: "Стоп отмеченных"
-  en: "Stop checked"
-  es: "Detener marcadas"
+  ru: "■ отмеченных"
+  en: "■ checked"
+  es: "■ marcadas"
 strat.staged:
   ru: "изменений: %{n}"
   en: "staged: %{n}"

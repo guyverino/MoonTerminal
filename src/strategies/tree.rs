@@ -1,7 +1,9 @@
 //! Панель 1: дерево ядро→папка→стратегия с поиском, счётчиками запущ./всего,
 //! индикатором запуска, чекбоксами (стейджинг) и кнопкой «Применить» (старт/стоп).
 
-use super::{folders_of, matches, searching, Key, StratAction, StrategiesOut, StrategiesState};
+use super::{
+    count_filter, folders_of, matches, searching, Key, StratAction, StrategiesOut, StrategiesState,
+};
 use crate::session::{CoreId, CoreStore};
 use crate::shell::theme;
 
@@ -12,58 +14,94 @@ pub fn show(
     store: &CoreStore,
     out: &mut StrategiesOut,
 ) {
-    ui.add_space(6.0);
-    // Поиск во всю ширину (без вычислений от available_width — они давали
-    // «расползание» панели на перерисовках). Сброс — круглая кнопка с крестиком
-    // ВНУТРИ поля справа, нарисованная линиями (не глифом, иначе шрифт даёт тофу).
-    let te = ui.add(
-        egui::TextEdit::singleline(&mut st.search)
-            .desired_width(f32::INFINITY)
-            .hint_text(t!("strat.search").to_string()),
-    );
-    if !st.search.is_empty() {
-        let d = 14.0;
-        let center = egui::pos2(te.rect.right() - d * 0.5 - 5.0, te.rect.center().y);
-        let hit = egui::Rect::from_center_size(center, egui::vec2(d, d));
-        let br = ui.interact(hit, ui.make_persistent_id("strat-search-clear"), egui::Sense::click());
-        let p = ui.painter();
-        p.circle_filled(center, d * 0.5, if br.hovered() { theme::LIFT_HOVER } else { theme::LIFT });
-        let fg = if br.hovered() { theme::TEXT } else { theme::TEXT_3 };
-        let s = 3.0;
-        let stroke = egui::Stroke::new(1.3, fg);
-        p.line_segment([center + egui::vec2(-s, -s), center + egui::vec2(s, s)], stroke);
-        p.line_segment([center + egui::vec2(-s, s), center + egui::vec2(s, -s)], stroke);
-        if br.clicked() {
-            st.search.clear();
-        }
-    }
+    // Нижняя панель действий ПОД левой колонкой: старт/стоп отмеченных (позже —
+    // copy/delete/create). Добавляем первой, чтобы она прижалась к низу.
+    egui::TopBottomPanel::bottom("strat-tree-actions").show_inside(ui, |ui| {
+        ui.add_space(4.0);
+        action_buttons(ui, st, cores, store, out);
+        ui.add_space(4.0);
+    });
 
-    // Старт/стоп отмеченных: галка — это ОТМЕТКА (не «работает»). Кнопка сначала
-    // синхронизирует изменённые галки, затем шлёт ядрам «старт»/«стоп» отмеченных.
-    let has_any = cores
-        .iter()
-        .any(|(c, _)| store.core(*c).is_some_and(|cd| !cd.strategies.is_empty()));
-    ui.add_space(4.0);
+    ui.add_space(6.0);
+    // Поиск (половина ширины) + выпадающий фильтр по виду стратегии. Оба фильтра
+    // действуют ОДНОВРЕМЕННО (И). Ширины фиксированные от available — без «расползания».
+    let avail = ui.available_width();
+    let search_w = (avail * 0.42).max(54.0);
     ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = theme::BTN_GAP;
-        // Кнопки темы проекта (seg_btn). Отключённые (нет ядер) — приглушаем.
-        let start = theme::seg_btn(ui, &t!("strat.start_checked"), false, None, false);
-        if has_any && start.clicked() {
-            out.actions = gather_actions(st, cores, store, true);
-            st.staged.clear();
+        let te = ui.add_sized(
+            [search_w, 22.0],
+            egui::TextEdit::singleline(&mut st.search).hint_text(t!("strat.search").to_string()),
+        );
+        // Круглый сброс «×» ВНУТРИ поля (линиями, без глифа-тофу).
+        if !st.search.is_empty() {
+            let d = 14.0;
+            let center = egui::pos2(te.rect.right() - d * 0.5 - 5.0, te.rect.center().y);
+            let hit = egui::Rect::from_center_size(center, egui::vec2(d, d));
+            let br = ui.interact(hit, ui.make_persistent_id("strat-search-clear"), egui::Sense::click());
+            let p = ui.painter();
+            p.circle_filled(center, d * 0.5, if br.hovered() { theme::LIFT_HOVER } else { theme::LIFT });
+            let fg = if br.hovered() { theme::TEXT } else { theme::TEXT_3 };
+            let s = 3.0;
+            let stroke = egui::Stroke::new(1.3, fg);
+            p.line_segment([center + egui::vec2(-s, -s), center + egui::vec2(s, s)], stroke);
+            p.line_segment([center + egui::vec2(-s, s), center + egui::vec2(s, -s)], stroke);
+            if br.clicked() {
+                st.search.clear();
+            }
         }
-        let stop = theme::seg_btn(ui, &t!("strat.stop_checked"), false, None, false);
-        if has_any && stop.clicked() {
-            out.actions = gather_actions(st, cores, store, false);
-            st.staged.clear();
-        }
-        if !st.staged.is_empty() {
-            ui.label(
-                egui::RichText::new(t!("strat.staged", n = st.staged.len()).to_string())
-                    .color(theme::ACCENT)
-                    .small(),
-            );
-        }
+
+        // Список видов стратегий (по присутствующим в дереве), фильтр по виду.
+        let kinds = kinds_present(cores, store);
+        let cur = st
+            .kind_filter
+            .and_then(|k| kinds.iter().find(|(o, _)| *o == k))
+            .map(|(_, n)| n.clone())
+            .unwrap_or_else(|| t!("strat.all_kinds").to_string());
+        egui::ComboBox::from_id_salt("strat-kind-filter")
+            .selected_text(cur)
+            .width((avail * 0.34).max(64.0))
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut st.kind_filter, None, t!("strat.all_kinds").to_string());
+                for (ord, name) in &kinds {
+                    ui.selectable_value(&mut st.kind_filter, Some(*ord), name);
+                }
+            });
+
+        // Фильтр направления (все/LONG/SHORT) — узкий, ~1/5 ширины.
+        let dir_txt = match st.dir_filter {
+            None => t!("strat.all_dirs").to_string(),
+            Some(true) => "SHORT".to_string(),
+            Some(false) => "LONG".to_string(),
+        };
+        egui::ComboBox::from_id_salt("strat-dir-filter")
+            .selected_text(dir_txt)
+            .width((avail * 0.18).max(48.0))
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut st.dir_filter, None, t!("strat.all_dirs").to_string());
+                ui.selectable_value(&mut st.dir_filter, Some(false), "LONG");
+                ui.selectable_value(&mut st.dir_filter, Some(true), "SHORT");
+            });
+    });
+    ui.horizontal(|ui| {
+        ui.checkbox(&mut st.only_active_tree, t!("strat.only_active").to_string());
+        // Справа — маленькая квадратная кнопка «развернуть/свернуть всё» (▼/▲).
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let collapsed = st.expanded_cores.is_empty() && st.expanded_folders.is_empty();
+            let h = ui.spacing().interact_size.y;
+            let arrow = if collapsed { "▼" } else { "▲" };
+            let tip = if collapsed {
+                t!("strat.expand_all")
+            } else {
+                t!("strat.collapse_all")
+            };
+            if ui
+                .add_sized([h, h], egui::Button::new(arrow))
+                .on_hover_text(tip.to_string())
+                .clicked()
+            {
+                expand_collapse_toggle(st, cores, store, collapsed);
+            }
+        });
     });
     ui.separator();
 
@@ -85,13 +123,20 @@ pub fn show(
                     continue;
                 }
 
-                // Узел ядра: счётчик стратегий, ▼/▶, своё состояние раскрытия.
+                // Узел ядра: активных/всего (с учётом фильтров типа и L/S), ▼/▶.
                 let open = force_open || st.expanded_cores.contains(core_id);
+                let total = cd.strategies.iter().filter(|r| count_filter(st, r)).count();
+                let active = cd
+                    .strategies
+                    .iter()
+                    .filter(|r| count_filter(st, r) && r.checked)
+                    .count();
                 let label = format!(
-                    "{}  {}  ·  {}",
+                    "{}  {}  {}/{}",
                     if open { "▼" } else { "▶" },
                     core_name,
-                    cd.strategies.len()
+                    active,
+                    total
                 );
                 if ui
                     .selectable_label(
@@ -116,8 +161,16 @@ pub fn show(
                         if rows.is_empty() {
                             continue;
                         }
-                        let total = rows.len();
-                        let running = rows.iter().filter(|r| r.checked).count();
+                        // Счётчики папки — по фильтру типа/L/S (а не по видимым строкам).
+                        let in_folder = |r: &&crate::feed::StrategyRow| {
+                            r.folder_path == folder && count_filter(st, r)
+                        };
+                        let total = cd.strategies.iter().filter(in_folder).count();
+                        let running = cd
+                            .strategies
+                            .iter()
+                            .filter(|r| in_folder(r) && r.checked)
+                            .count();
                         let fkey = (*core_id, folder.clone());
                         let fopen = force_open || st.expanded_folders.contains(&fkey);
                         let name = if folder.is_empty() {
@@ -150,6 +203,130 @@ fn toggle<T: std::cmp::Eq + std::hash::Hash>(set: &mut std::collections::HashSet
     if !set.remove(&key) {
         set.insert(key);
     }
+}
+
+/// Виды стратегий, присутствующие в дереве: (ordinal, имя), отсортировано по имени.
+/// «Все типы» добавляется первым пунктом отдельно (в комбобоксе).
+fn kinds_present(cores: &[(CoreId, String)], store: &CoreStore) -> Vec<(u8, String)> {
+    let mut map: std::collections::BTreeMap<u8, String> = std::collections::BTreeMap::new();
+    for (c, _) in cores {
+        if let Some(cd) = store.core(*c) {
+            for r in &cd.strategies {
+                map.entry(r.kind_ordinal).or_insert_with(|| r.kind.clone());
+            }
+        }
+    }
+    let mut v: Vec<(u8, String)> = map.into_iter().collect();
+    v.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
+    v
+}
+
+/// Кнопки действий под колонкой: старт/стоп отмеченных (позже — copy/delete/create).
+fn action_buttons(
+    ui: &mut egui::Ui,
+    st: &mut StrategiesState,
+    cores: &[(CoreId, String)],
+    store: &CoreStore,
+    out: &mut StrategiesOut,
+) {
+    let has_any = cores
+        .iter()
+        .any(|(c, _)| store.core(*c).is_some_and(|cd| !cd.strategies.is_empty()));
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = theme::BTN_GAP;
+        let start = theme::seg_btn(ui, &t!("strat.start_checked"), false, None, false);
+        if has_any && start.clicked() {
+            out.actions = gather_actions(st, cores, store, true);
+            st.staged.clear();
+        }
+        let stop = theme::seg_btn(ui, &t!("strat.stop_checked"), false, None, false);
+        if has_any && stop.clicked() {
+            out.actions = gather_actions(st, cores, store, false);
+            st.staged.clear();
+        }
+        if !st.staged.is_empty() {
+            ui.label(
+                egui::RichText::new(t!("strat.staged", n = st.staged.len()).to_string())
+                    .color(theme::ACCENT)
+                    .small(),
+            );
+        }
+    });
+}
+
+/// Развернуть все узлы (если `collapsed`) или свернуть все (иначе).
+fn expand_collapse_toggle(
+    st: &mut StrategiesState,
+    cores: &[(CoreId, String)],
+    store: &CoreStore,
+    collapsed: bool,
+) {
+    if collapsed {
+        for (c, _) in cores {
+            st.expanded_cores.insert(*c);
+            if let Some(cd) = store.core(*c) {
+                for folder in folders_of(&cd.strategies) {
+                    st.expanded_folders.insert((*c, folder));
+                }
+            }
+        }
+    } else {
+        st.expanded_cores.clear();
+        st.expanded_folders.clear();
+    }
+}
+
+/// Строка «имя (слева, усечение «…») … тип (справа)». Тип цветом по направлению.
+/// Возвращает Response (click) для выбора. Без всплывающей подсказки.
+fn name_type_row(
+    ui: &mut egui::Ui,
+    name: &str,
+    highlighted: bool,
+    type_label: &str,
+    type_col: egui::Color32,
+) -> egui::Response {
+    let body = egui::TextStyle::Body.resolve(ui.style());
+    let small = egui::TextStyle::Small.resolve(ui.style());
+    let avail = ui.available_width();
+    let h = ui.spacing().interact_size.y.max(body.size + 4.0);
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(avail, h), egui::Sense::click());
+    if ui.is_rect_visible(rect) {
+        let type_galley = ui.fonts(|f| f.layout_no_wrap(type_label.to_string(), small, type_col));
+        let type_w = type_galley.size().x;
+        let name_max = (rect.width() - type_w - 10.0).max(8.0);
+        let mut job = egui::text::LayoutJob::single_section(
+            name.to_string(),
+            egui::TextFormat {
+                font_id: body,
+                color: theme::TEXT,
+                ..Default::default()
+            },
+        );
+        job.wrap = egui::text::TextWrapping {
+            max_width: name_max,
+            max_rows: 1,
+            break_anywhere: true,
+            overflow_character: Some('…'),
+        };
+        let name_galley = ui.fonts(|f| f.layout_job(job));
+        let p = ui.painter();
+        if highlighted {
+            p.rect_filled(rect, 2.0, theme::ACCENT.gamma_multiply(0.20));
+        } else if resp.hovered() {
+            p.rect_filled(rect, 2.0, theme::LIFT_HOVER);
+        }
+        p.galley(
+            egui::pos2(rect.left() + 2.0, rect.center().y - name_galley.size().y / 2.0),
+            name_galley,
+            theme::TEXT,
+        );
+        p.galley(
+            egui::pos2(rect.right() - type_w - 2.0, rect.center().y - type_galley.size().y / 2.0),
+            type_galley,
+            type_col,
+        );
+    }
+    resp
 }
 
 /// Клик по стратегии с учётом модификаторов: Shift — диапазон от якоря (по
@@ -252,11 +429,12 @@ fn strategy_row(
         } else {
             st.sel.contains(&key)
         };
-        let resp = ui.selectable_label(highlighted, &r.name);
+        // Имя слева (укорачивается «…»), тип стратегии прижат справа; SHORT — красным.
+        let type_col = if r.is_short { theme::RED } else { theme::TEXT_3 };
+        let resp = name_type_row(ui, &r.name, highlighted, &r.kind, type_col);
         if resp.clicked() {
             let m = ui.input(|i| i.modifiers);
             apply_click(st, key, order, m.shift, m.command);
         }
-        resp.on_hover_text(format!("{} · {}", r.kind, if r.is_short { "SHORT" } else { "LONG" }));
     });
 }
