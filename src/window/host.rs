@@ -118,11 +118,6 @@ pub struct WindowHost {
     last_book_rev: u64,
     last_orders_sig: u64,
     last_detects_sig: u64,
-    /// Ревизия лог-буфера на момент прошлого кадра — для живого обновления вкладки
-    /// «Лог» (форсим кадр, только когда она активна и пришли новые строки).
-    last_log_rev: u64,
-    /// Генерация отчётов на момент прошлого кадра — живое обновление вкладки «Отчёт».
-    last_report_gen: u64,
     last_time_pixel: i64,
     icons: crate::icons::IconSet,
 
@@ -210,8 +205,6 @@ impl WindowHost {
             last_book_rev: u64::MAX,
             last_orders_sig: u64::MAX,
             last_detects_sig: u64::MAX,
-            last_log_rev: u64::MAX,
-            last_report_gen: u64::MAX,
             last_time_pixel: i64::MIN,
             icons: crate::icons::IconSet::discover(),
             egui_tris: None,
@@ -283,22 +276,8 @@ impl WindowHost {
         if self.workspace.dock.ribbon.has_items() {
             return true;
         }
-        // Живой лог: новые строки форсят кадр только когда вкладка «Лог» активна и
-        // НЕ откреплена (откреплённую рисует своё окно; в доке — статичная плашка).
-        if self.workspace.dock.tab == crate::dock::DockTab::Log
-            && !self.workspace.dock.is_detached(crate::dock::DockTab::Log)
-            && crate::applog::revision() != self.last_log_rev
-        {
-            return true;
-        }
-        // Живой отчёт: аналогично — кадр только когда вкладка «Отчёт» активна и не
-        // откреплена (writer бампает счётчик-генерацию).
-        if self.workspace.dock.tab == crate::dock::DockTab::Report
-            && !self.workspace.dock.is_detached(crate::dock::DockTab::Report)
-            && self.workspace.dock.report.generation() != self.last_report_gen
-        {
-            return true;
-        }
+        // Живые вкладки Лог/Отчёт — общие на все окна; их обновление форсит App
+        // (mark_egui_dirty по ревизии), т.к. их состояние/флаг открепления глобальны.
         // Движение: в лайве правый край едет за «сейчас» (wall-clock) → кадр на
         // каждый накопленный пиксель сдвига (гладкий скролл, CHART_RENDERING_TZ).
         // На паузе/ручном удержании край заморожен (right_time_ms) → скип.
@@ -514,6 +493,8 @@ impl WindowHost {
         session: &SessionManager,
         now_ms: f64,
         metrics: MetricsSnapshot,
+        report: &mut crate::dock::ReportView,
+        global_detached: [bool; 4],
     ) -> HostRender {
         let store = session.store();
         let none = HostRender {
@@ -572,8 +553,8 @@ impl WindowHost {
             .core(status_core)
             .map(|d| d.status.clone())
             .unwrap_or(ConnStatus::Connecting);
-        // Сводка по ВСЕМ ядрам (для счётчика «N/M подключено» в статус-баре).
-        let conn = session.conn_summary();
+        // Сводка по ядрам ЭТОЙ группы (окно = группа) — счётчик «N/M подключено».
+        let conn = session.conn_summary_group(&self.workspace.group);
         let conn_sig = conn_summary_sig(&conn);
 
         // Сумма orders_rev группы — для хром-сигнатуры (таблица ордеров) и трекинга.
@@ -588,18 +569,9 @@ impl WindowHost {
         // переиспользуем кэш-сетку: smooth scroll и hover над графиком не меняют
         // хром → нет CPU на тесселяцию хрома каждый кадр.
         let size_now = (self.gpu.size.width, self.gpu.size.height);
-        let mut sig = chrome_sig(&market, &status, last_price, orders_sig, conn_sig);
-        // Активная вкладка дока — часть хром-сигнатуры (переключение → перегон
-        // egui). Для вкладки «Лог» подмешиваем ревизию буфера, чтобы новые строки
-        // тесселировались, а не брались из кэш-сетки прошлого кадра.
-        let tab = self.workspace.dock.tab;
-        sig = sig.wrapping_add((tab as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
-        if tab == crate::dock::DockTab::Log {
-            sig = sig.wrapping_add(crate::applog::revision());
-        }
-        if tab == crate::dock::DockTab::Report {
-            sig = sig.wrapping_add(self.workspace.dock.report.generation());
-        }
+        let sig = chrome_sig(&market, &status, last_price, orders_sig, conn_sig);
+        // Переключение вкладок/живые Лог-Отчёт перерисовываются через egui_dirty
+        // (клик по вкладке = ввод; App форсит mark_egui_dirty по ревизии данных).
         let run_egui = self.egui_tris.is_none()
             || self.egui_dirty
             || self.egui_wants_repaint
@@ -693,6 +665,7 @@ impl WindowHost {
                 }
                 let out = dock.show(
                     ctx, cores, store, &order_rows, following, chart_open, now_ms,
+                    report, global_detached,
                 );
                 central = out.central;
                 detects_rect = out.detects_rect;
@@ -937,8 +910,6 @@ impl WindowHost {
         }
         self.last_orders_sig = orders_sig;
         self.last_detects_sig = self.detects_sig(store);
-        self.last_log_rev = crate::applog::revision();
-        self.last_report_gen = self.workspace.dock.report.generation();
         self.last_time_pixel = self.chart.view.pixel_at(self.chart.view.right_time_ms);
         // Следующий кадр держим «грязным», если egui анимирует (popup/fade) ИЛИ
         // только что открыли/закрыли чарт (нужно перестроить хром).

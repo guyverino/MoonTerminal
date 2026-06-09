@@ -136,13 +136,16 @@ impl SessionManager {
         self.store.statuses().collect()
     }
 
-    /// Сводка подключений по живым сессиям: ready/total + список не-Ready ядер
-    /// (имя, статус) для статус-бара и его тултипа.
-    pub fn conn_summary(&self) -> ConnSummary {
-        let total = self.sessions.len();
+    /// Сводка подключений ядер ОДНОЙ группы: ready/total + список не-Ready ядер
+    /// (имя, статус). Группа = ОС-окно, поэтому каждый статус-бар показывает свою
+    /// группу (3/3 + 7/7 при 10 ядрах в двух группах). Учитываются и headless-ядра
+    /// группы — у них тоже есть сессия (show_window влияет лишь на наличие окна).
+    pub fn conn_summary_group(&self, group: &str) -> ConnSummary {
+        let mut total = 0;
         let mut ready = 0;
         let mut down = Vec::new();
-        for s in &self.sessions {
+        for s in self.sessions.iter().filter(|s| s.group == group) {
+            total += 1;
             let st = self
                 .store
                 .core(s.id)

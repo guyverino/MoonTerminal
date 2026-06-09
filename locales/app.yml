@@ -230,10 +230,26 @@ dock.log.empty:
   ru: "Лог пуст"
   en: "Log is empty"
   es: "El registro está vacío"
-dock.tab.drag_hint:
-  ru: "Потяните вкладку, чтобы открепить в окно"
-  en: "Drag the tab to pop it out into a window"
-  es: "Arrastre la pestaña para abrirla en una ventana"
+dock.collapse:
+  ru: "Свернуть док"
+  en: "Collapse dock"
+  es: "Contraer panel"
+dock.expand:
+  ru: "Развернуть док"
+  en: "Expand dock"
+  es: "Expandir panel"
+dock.tab.dblclick_hint:
+  ru: "двойной клик по вкладке — открепить / вернуть"
+  en: "double-click a tab to detach / re-dock it"
+  es: "doble clic en una pestaña para separar / reacoplar"
+dock.tab.hint_docked:
+  ru: "Клик — выбрать · двойной клик или перетаскивание — открепить в окно"
+  en: "Click to select · double-click or drag to pop out into a window"
+  es: "Clic para seleccionar · doble clic o arrastrar para abrir en ventana"
+dock.tab.hint_detached:
+  ru: "Открыто в отдельном окне · двойной клик — вернуть в док"
+  en: "Open in a separate window · double-click to return to dock"
+  es: "Abierto en otra ventana · doble clic para volver al panel"
 dock.tab.in_window:
   ru: "Открыто в отдельном окне"
   en: "Open in a separate window"

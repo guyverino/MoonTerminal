@@ -33,13 +33,23 @@ fn now_ms() -> f64 {
 /// (например фильтры отчёта) остаётся в доке владельца — окно лишь рисует его в
 /// свой `ui`. Закрытие окна → вкладка возвращается в док (App снимает флаг).
 struct DetachedPanel {
+    /// Окно группы, из которого открепили (для Orders — чьи ордера показывать; для
+    /// глобальных Report/Log/Assets — просто «откуда вызвали»).
     owner: WindowId,
     tab: DockTab,
+    /// Глобальная вкладка (Report/Log/Assets) — один экземпляр на все окна групп, и
+    /// флаг открепления глобальный. Orders — пер-окно (`global = false`).
+    global: bool,
     window: Arc<Window>,
     egui: EguiSurface,
     /// Ревизия данных вкладки на прошлом кадре — для авто-перерисовки (живой
     /// отчёт/лог/ордера без необходимости двигать мышь).
     last_rev: u64,
+}
+
+/// Глобальные вкладки (один экземпляр на все окна групп) vs пер-окно (Orders).
+fn is_global_tab(tab: DockTab) -> bool {
+    !matches!(tab, DockTab::Orders)
 }
 
 pub struct App {
@@ -55,6 +65,15 @@ pub struct App {
     /// ActiveEventLoop, доступного только в about_to_wait/window_event).
     detach_reqs: Vec<(WindowId, DockTab)>,
     repin_reqs: Vec<(WindowId, DockTab)>,
+    /// ОБЩИЙ для всех окон групп `ReportView` (один экземпляр, одно SQLite-чтение).
+    report: crate::dock::ReportView,
+    /// Глобальные флаги открепления Report/Log/Assets (по [`DockTab::idx`]; Orders
+    /// игнорируется — его открепление пер-окно живёт в доке окна).
+    global_detached: [bool; 4],
+    /// Ревизии общих живых вкладок на прошлом тике — для форса кадров окон, где
+    /// активна Лог/Отчёт и вкладка не откреплена.
+    last_log_rev: u64,
+    last_report_gen: u64,
     session: SessionManager,
     /// Хэндл БД отчётов: канал записи + счётчик-генерация (None = БД недоступна).
     reports: Option<ReportsHandle>,
@@ -73,6 +92,7 @@ impl App {
         let reports = db::spawn_writer();
         let mut session = SessionManager::start(&config, epoch_ms, reports.as_ref().map(|h| &h.tx));
         session.set_market_mode(config.market_mode);
+        let report = crate::dock::ReportView::new(reports.as_ref().map(|h| h.generation.clone()));
         Self {
             config,
             settings: SettingsState::new(),
@@ -83,6 +103,10 @@ impl App {
             detached: HashMap::new(),
             detach_reqs: Vec::new(),
             repin_reqs: Vec::new(),
+            report,
+            global_detached: [false; 4],
+            last_log_rev: 0,
+            last_report_gen: 0,
             session,
             reports,
             epoch_ms,
@@ -96,11 +120,11 @@ impl App {
     /// (Пере)создаёт окна групп. Нет групп — одно пустое окно (для Настроек).
     fn build_windows(&mut self, event_loop: &ActiveEventLoop) {
         self.windows.clear();
-        // Окна открепления — дети окон групп; при пересоздании окон закрываем их.
+        // Окна открепления — дети окон групп; при пересоздании окон закрываем их и
+        // сбрасываем глобальные флаги открепления.
         self.detached.clear();
-        // Счётчик-генерация writer'а отчётов — во вкладку «Отчёт» дока каждого окна.
-        let gen = self.reports.as_ref().map(|h| h.generation.clone());
-        let mut workspaces = Workspace::build_all(&self.config, gen.clone());
+        self.global_detached = [false; 4];
+        let mut workspaces = Workspace::build_all(&self.config);
         if workspaces.is_empty() {
             // Первый запуск (ни одного сервера с ключом) — групповых окон не делаем
             // вовсе: resumed() откроет только окно Настроек. Если же серверы есть, но
@@ -108,7 +132,7 @@ impl App {
             if !self.config.has_keyed_server() {
                 return;
             }
-            workspaces.push(Workspace::placeholder(gen));
+            workspaces.push(Workspace::placeholder());
         }
         for ws in workspaces {
             match WindowHost::new(event_loop, ws, self.epoch_ms) {
@@ -128,11 +152,13 @@ impl App {
         let mut repin = None;
         {
             let session = &self.session;
+            let report = &mut self.report;
+            let global_detached = self.global_detached;
             if let Some(host) = self.windows.get_mut(&id) {
                 if !host.needs_render(session, now) {
                     return;
                 }
-                let out = host.render(session, now, metrics);
+                let out = host.render(session, now, metrics, report, global_detached);
                 gear = out.gear_clicked;
                 strategies = out.strategies_clicked;
                 detach = out.detach;
@@ -195,10 +221,16 @@ impl App {
         }
     }
 
-    /// Открепить вкладку `tab` окна-владельца `owner` в отдельное окно. Уже
-    /// откреплена → просто фокусируем существующее окно.
+    /// Открепить вкладку `tab` окна-владельца `owner` в отдельное окно.
+    /// Глобальные вкладки (Report/Log/Assets) — один экземпляр на все окна групп
+    /// (дедуп по `tab`); Orders — пер-окно (дедуп по `owner`+`tab`). Уже открепена
+    /// → фокусируем существующее окно.
     fn open_detached(&mut self, event_loop: &ActiveEventLoop, owner: WindowId, tab: DockTab) {
-        if let Some(p) = self.detached.values().find(|p| p.owner == owner && p.tab == tab) {
+        let global = is_global_tab(tab);
+        let existing = self.detached.values().find(|p| {
+            p.tab == tab && (global || p.owner == owner)
+        });
+        if let Some(p) = existing {
             p.window.focus_window();
             return;
         }
@@ -222,21 +254,33 @@ impl App {
             }
         };
         let det_id = window.id();
-        if let Some(host) = self.windows.get_mut(&owner) {
-            host.workspace.dock.set_detached(tab, true);
-            host.mark_egui_dirty(); // в доке вместо контента появится плашка
+        // Пометить откреплённой. Глобальная — флаг общий (все окна групп покажут
+        // плашку); Orders — флаг в доке окна-владельца.
+        if global {
+            self.global_detached[tab.idx()] = true;
+            for host in self.windows.values_mut() {
+                host.mark_egui_dirty();
+            }
+        } else if let Some(host) = self.windows.get_mut(&owner) {
+            host.workspace.dock.set_orders_detached(true);
+            host.mark_egui_dirty();
         }
         self.detached.insert(
             det_id,
-            DetachedPanel { owner, tab, window, egui, last_rev: u64::MAX },
+            DetachedPanel { owner, tab, global, window, egui, last_rev: u64::MAX },
         );
     }
 
-    /// Закрыть окно открепления по его id и вернуть вкладку в док владельца.
+    /// Закрыть окно открепления по его id и вернуть вкладку в док(и).
     fn close_detached(&mut self, det_id: WindowId) {
         if let Some(p) = self.detached.remove(&det_id) {
-            if let Some(host) = self.windows.get_mut(&p.owner) {
-                host.workspace.dock.set_detached(p.tab, false);
+            if p.global {
+                self.global_detached[p.tab.idx()] = false;
+                for host in self.windows.values_mut() {
+                    host.mark_egui_dirty();
+                }
+            } else if let Some(host) = self.windows.get_mut(&p.owner) {
+                host.workspace.dock.set_orders_detached(false);
                 host.mark_egui_dirty();
             }
         }
@@ -244,18 +288,20 @@ impl App {
 
     /// Вернуть вкладку в док (по кнопке «вернуть» на плашке) — закрывает окно.
     fn repin(&mut self, owner: WindowId, tab: DockTab) {
+        let global = is_global_tab(tab);
         let id = self
             .detached
             .iter()
-            .find(|(_, p)| p.owner == owner && p.tab == tab)
+            .find(|(_, p)| p.tab == tab && (global || p.owner == owner))
             .map(|(id, _)| *id);
         if let Some(id) = id {
             self.close_detached(id);
         }
     }
 
-    /// Рисует окна открепления. Контент берётся из дока владельца (тот же
-    /// `content_ui`, что и inline) — единый источник состояния, без дубля.
+    /// Рисует окна открепления. Глобальные вкладки берут ОБЩЕЕ состояние (App'овый
+    /// `report` / глобальный лог), Orders — из окна-владельца. Единый `content_ui`,
+    /// без дубля состояния.
     fn render_detached(&mut self) {
         let ids: Vec<WindowId> = self.detached.keys().copied().collect();
         for det_id in ids {
@@ -264,16 +310,16 @@ impl App {
             };
             let owner = panel.owner;
             let tab = panel.tab;
-            let Some(host) = self.windows.get_mut(&owner) else {
-                continue; // владелец закрыт — окно закроется по своему CloseRequested
-            };
 
             // Живость: перерисовать, если данные вкладки изменились с прошлого кадра.
-            let store = self.session.store();
             let rev = match tab {
-                DockTab::Report => host.workspace.dock.report.generation(),
+                DockTab::Report => self.report.generation(),
                 DockTab::Log => crate::applog::revision(),
-                DockTab::Orders => host.orders_rev(store),
+                DockTab::Orders => self
+                    .windows
+                    .get(&owner)
+                    .map(|h| h.orders_rev(self.session.store()))
+                    .unwrap_or(0),
                 DockTab::Assets => 0,
             };
             if rev != panel.last_rev {
@@ -284,12 +330,17 @@ impl App {
                 continue;
             }
 
+            // Orders — ордера окна-владельца; глобальные — пустой срез (контент их
+            // не использует). Report везде рисует ОБЩИЙ self.report.
             let orders = if tab == DockTab::Orders {
-                host.collect_orders(store)
+                match self.windows.get(&owner) {
+                    Some(h) => h.collect_orders(self.session.store()),
+                    None => continue, // владелец Orders-окна закрыт
+                }
             } else {
                 Vec::new()
             };
-            let report = host.workspace.dock.report_mut();
+            let report = &mut self.report;
             panel.egui.render(&panel.window, "detached-pass", |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     crate::dock::tabs::content_ui(ui, tab, report, &orders);
@@ -496,6 +547,27 @@ impl ApplicationHandler for App {
         };
         for host in self.windows.values_mut() {
             host.set_theme(&theme);
+        }
+
+        // Живые ОБЩИЕ вкладки (Лог/Отчёт): при изменении данных форсим кадр окнам,
+        // где такая вкладка активна и НЕ откреплена (её состояние/флаг — глобальны,
+        // поэтому решает App, а не per-window needs_render).
+        let log_rev = crate::applog::revision();
+        let report_gen = self.report.generation();
+        let log_changed = log_rev != self.last_log_rev;
+        let report_changed = report_gen != self.last_report_gen;
+        self.last_log_rev = log_rev;
+        self.last_report_gen = report_gen;
+        if log_changed || report_changed {
+            let gd = self.global_detached;
+            for host in self.windows.values_mut() {
+                let tab = host.workspace.dock.tab;
+                let live = (tab == DockTab::Log && log_changed && !gd[DockTab::Log.idx()])
+                    || (tab == DockTab::Report && report_changed && !gd[DockTab::Report.idx()]);
+                if live {
+                    host.mark_egui_dirty();
+                }
+            }
         }
 
         // Один снимок метрик на тик (sysinfo сам троттлит до ~1 Гц), общий для

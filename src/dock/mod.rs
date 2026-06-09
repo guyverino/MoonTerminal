@@ -15,9 +15,6 @@ pub use controls::{OrderControls, ScaleAction};
 pub use report_view::ReportView;
 pub use tabs::DockTab;
 
-use std::sync::atomic::AtomicU64;
-use std::sync::Arc;
-
 use crate::session::{CoreId, CoreStore};
 use crate::shell::HEADER_H;
 use crate::workspace::CoreInfo;
@@ -30,13 +27,13 @@ pub struct Dock {
     pub controls: OrderControls,
     /// Лента детектов над чартом (state: очередь кнопок + курсоры ядер).
     pub ribbon: DetectRibbon,
-    /// Активная вкладка нижнего дока (Ордера/Активы/Лог/Отчёт).
+    /// Активная вкладка нижнего дока (Ордера/Активы/Лог/Отчёт). Своя у окна.
     pub tab: DockTab,
-    /// Состояние вкладки «Отчёт» (фильтры/таблица/своё SQLite-соединение).
-    pub report: ReportView,
-    /// Какие вкладки сейчас откреплены в отдельные окна (по [`DockTab::idx`]).
-    /// Откреплённая вкладка в доке показывает плашку, а контент рисует окно.
-    detached: [bool; 4],
+    /// Открепена ли вкладка «Ордера» этого окна (Orders — пер-окно; Report/Log/
+    /// Assets открепляются ГЛОБАЛЬНО — их флаг живёт в App, передаётся в show).
+    orders_detached: bool,
+    /// Док свёрнут — видна только полоска вкладок, без контента (кнопка справа).
+    collapsed: bool,
 }
 
 pub struct DockOutput {
@@ -60,33 +57,25 @@ pub struct DockOutput {
 }
 
 impl Dock {
-    /// `generation` — счётчик writer'а отчётов (проброс во вкладку «Отчёт»).
-    pub fn new(generation: Option<Arc<AtomicU64>>) -> Self {
+    pub fn new() -> Self {
         Self {
             controls: OrderControls::default(),
             ribbon: DetectRibbon::default(),
             tab: DockTab::default(),
-            report: ReportView::new(generation),
-            detached: [false; 4],
+            orders_detached: false,
+            collapsed: false,
         }
     }
 
-    /// Откреплена ли вкладка в окно (контент рисует окно, в доке — плашка).
-    pub fn is_detached(&self, tab: DockTab) -> bool {
-        self.detached[tab.idx()]
+    /// Пометить вкладку «Ордера» этого окна откреплённой/прикреплённой (App).
+    pub fn set_orders_detached(&mut self, on: bool) {
+        self.orders_detached = on;
     }
 
-    /// Пометить вкладку откреплённой/прикреплённой (вызывает App при создании/
-    /// закрытии окна открепления).
-    pub fn set_detached(&mut self, tab: DockTab, on: bool) {
-        self.detached[tab.idx()] = on;
-    }
-
-    /// Состояние вкладки «Отчёт» (для рендера в окне открепления).
-    pub fn report_mut(&mut self) -> &mut ReportView {
-        &mut self.report
-    }
-
+    /// `report` — ОБЩИЙ `ReportView` (живёт в App, один на все окна групп).
+    /// `global_detached` — глобальные флаги открепления Report/Log/Assets (Orders
+    /// игнорируется: его открепление пер-окно, берётся из self.orders_detached).
+    #[allow(clippy::too_many_arguments)]
     pub fn show(
         &mut self,
         ctx: &egui::Context,
@@ -96,6 +85,8 @@ impl Dock {
         following: bool,
         chart_open: bool,
         now_ms: f64,
+        report: &mut ReportView,
+        global_detached: [bool; 4],
     ) -> DockOutput {
         // Лента: втянуть новые детекты ядер группы и выбросить просроченные.
         self.ribbon.ingest(cores, store);
@@ -103,9 +94,18 @@ impl Dock {
 
         let tb = toolbar::show(ctx, &mut self.controls, following);
 
-        // Нижний док с вкладками (Ордера/Активы/Лог/Отчёт) — уровень группы, не
-        // контейнера чарта. Активная вкладка живёт в self.tab.
-        let tabs_out = tabs::show(ctx, &mut self.tab, &mut self.report, orders, &self.detached);
+        // Нижний док с вкладками. Орд. открепление — пер-окно (self.orders_detached),
+        // остальное — глобально (global_detached). Активная вкладка живёт в self.tab.
+        let mut detached = global_detached;
+        detached[DockTab::Orders.idx()] = self.orders_detached;
+        let tabs_out = tabs::show(
+            ctx,
+            &mut self.tab,
+            report,
+            orders,
+            &detached,
+            &mut self.collapsed,
+        );
 
         // Панель ордера — часть контейнера чарта: при закрытом чарте скрыта
         // (контейнер пустой/серый, центральная область не растягивается контентом).
