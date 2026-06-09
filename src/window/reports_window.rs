@@ -15,8 +15,8 @@ use winit::event_loop::ActiveEventLoop;
 use winit::window::Window;
 
 use crate::db::{self, ReportFilter, ReportTable, SideFilter};
-use crate::gpu::GpuContext;
 use crate::shell::theme;
+use crate::window::{AuxWindow, EguiSurface};
 
 /// Грузим только топ-N по сортировке (строк в БД может быть очень много).
 const ROW_LIMIT: usize = 100;
@@ -29,11 +29,7 @@ const DEFAULT_VISIBLE: &[&str] = &[
 
 pub struct ReportsWindow {
     pub window: Arc<Window>,
-    gpu: GpuContext,
-    egui_ctx: egui::Context,
-    egui_state: egui_winit::State,
-    egui_renderer: egui_wgpu::Renderer,
-    dirty: bool,
+    egui: EguiSurface,
 
     generation: Option<Arc<AtomicU64>>,
     last_gen: u64,
@@ -71,18 +67,7 @@ impl ReportsWindow {
         // наличия assets/ рядом с exe в release).
         window.set_window_icon(crate::icons::brand_winit_icon());
 
-        let gpu = GpuContext::new(window.clone())?;
-        let egui_ctx = egui::Context::default();
-        theme::apply(&egui_ctx);
-        let egui_state = egui_winit::State::new(
-            egui_ctx.clone(),
-            egui::ViewportId::ROOT,
-            &window,
-            Some(window.scale_factor() as f32),
-            None,
-            None,
-        );
-        let egui_renderer = egui_wgpu::Renderer::new(&gpu.device, gpu.format, None, 1, false);
+        let egui = EguiSurface::new(&window)?;
 
         let conn = db::open_reader();
         let cores = conn.as_ref().map(db::distinct_cores).unwrap_or_default();
@@ -98,11 +83,7 @@ impl ReportsWindow {
 
         Ok(Self {
             window,
-            gpu,
-            egui_ctx,
-            egui_state,
-            egui_renderer,
-            dirty: true,
+            egui,
             generation,
             last_gen,
             conn,
@@ -121,18 +102,8 @@ impl ReportsWindow {
         })
     }
 
-    pub fn on_egui_event(&mut self, event: &WindowEvent) -> bool {
-        self.dirty = true;
-        self.egui_state.on_window_event(&self.window, event).consumed
-    }
-
-    pub fn resize(&mut self, size: PhysicalSize<u32>) {
-        self.gpu.resize(size);
-        self.dirty = true;
-    }
-
     pub fn needs_render(&self) -> bool {
-        self.dirty
+        self.egui.needs_render()
     }
 
     /// Сверяет счётчик writer'а: новые/изменённые записи → перезапрос.
@@ -142,7 +113,7 @@ impl ReportsWindow {
             if v != self.last_gen {
                 self.last_gen = v;
                 self.needs_query = true;
-                self.dirty = true;
+                self.egui.mark_dirty();
             }
         }
     }
@@ -179,25 +150,6 @@ impl ReportsWindow {
             self.requery();
         }
 
-        let frame = match self.gpu.surface.get_current_texture() {
-            Ok(f) => f,
-            Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
-                self.gpu.surface.configure(&self.gpu.device, &self.gpu.config);
-                return;
-            }
-            Err(e) => {
-                log::warn!("reports surface error: {e:?}");
-                return;
-            }
-        };
-        let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder = self
-            .gpu
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("reports-encoder") });
-
-        let raw_input = self.egui_state.take_egui_input(&self.window);
-
         let mut changed = false;
         let mut sort_changed = false;
         let sel_core = &mut self.sel_core;
@@ -212,7 +164,7 @@ impl ReportsWindow {
         let table = &self.table;
         let totals = self.totals;
 
-        let full_output = self.egui_ctx.run(raw_input, |ctx| {
+        self.egui.render(&self.window, "reports-pass", |ctx| {
             egui::TopBottomPanel::top("reports-filters")
                 .exact_height(44.0)
                 .show(ctx, |ui| {
@@ -290,48 +242,23 @@ impl ReportsWindow {
 
         if changed || sort_changed {
             self.needs_query = true;
-            self.dirty = true;
+            self.egui.mark_dirty();
         }
         if sort_changed {
             if let Some(conn) = &self.conn {
                 db::save_sort(conn, &self.sort_key, self.sort_desc);
             }
         }
+    }
+}
 
-        self.egui_state.handle_platform_output(&self.window, full_output.platform_output);
-        let tris = self.egui_ctx.tessellate(full_output.shapes, full_output.pixels_per_point);
-        let screen = egui_wgpu::ScreenDescriptor {
-            size_in_pixels: [self.gpu.size.width, self.gpu.size.height],
-            pixels_per_point: full_output.pixels_per_point,
-        };
-        for (id, delta) in &full_output.textures_delta.set {
-            self.egui_renderer.update_texture(&self.gpu.device, &self.gpu.queue, *id, delta);
-        }
-        self.egui_renderer.update_buffers(&self.gpu.device, &self.gpu.queue, &mut encoder, &tris, &screen);
-        {
-            let rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("reports-pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.0745, g: 0.0784, b: 0.0863, a: 1.0 }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-            let mut rpass = rpass.forget_lifetime();
-            self.egui_renderer.render(&mut rpass, &tris, &screen);
-        }
-        self.gpu.queue.submit(Some(encoder.finish()));
-        frame.present();
-        for id in &full_output.textures_delta.free {
-            self.egui_renderer.free_texture(id);
-        }
-        self.dirty = self.egui_ctx.has_requested_repaint();
+impl AuxWindow for ReportsWindow {
+    fn on_event(&mut self, event: &WindowEvent) -> bool {
+        self.egui.on_event(&self.window, event)
+    }
+
+    fn resize(&mut self, size: PhysicalSize<u32>) {
+        self.egui.resize(size);
     }
 }
 

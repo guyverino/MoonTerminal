@@ -1,5 +1,5 @@
 //! Отдельное нативное окно настроек: обычное ОС-окно (системная рамка + крестик),
-//! вкладки в ScrollArea, футер с «Сохранить». Свой surface + egui.
+//! вкладки в ScrollArea, футер с «Сохранить». egui-конвейер — общий [`EguiSurface`].
 
 use std::sync::Arc;
 
@@ -9,10 +9,9 @@ use winit::event_loop::ActiveEventLoop;
 use winit::window::Window;
 
 use crate::config::AppConfig;
-use crate::gpu::GpuContext;
 use crate::icons::IconSet;
 use crate::settings::{CoreStatuses, SettingsState};
-use crate::shell::theme;
+use crate::window::{AuxWindow, EguiSurface};
 
 pub struct SettingsWinOut {
     pub saved: bool,
@@ -20,12 +19,8 @@ pub struct SettingsWinOut {
 
 pub struct SettingsWindow {
     pub window: Arc<Window>,
-    gpu: GpuContext,
-    egui_ctx: egui::Context,
-    egui_state: egui_winit::State,
-    egui_renderer: egui_wgpu::Renderer,
+    egui: EguiSurface,
     icons: IconSet,
-    dirty: bool,
 }
 
 impl SettingsWindow {
@@ -39,47 +34,21 @@ impl SettingsWindow {
         // бинарь, поэтому показывается и в release-запуске без assets/ рядом с exe.
         window.set_window_icon(crate::icons::brand_winit_icon());
 
-        let gpu = GpuContext::new(window.clone())?;
-        let egui_ctx = egui::Context::default();
-        theme::apply(&egui_ctx);
-        let egui_state = egui_winit::State::new(
-            egui_ctx.clone(),
-            egui::ViewportId::ROOT,
-            &window,
-            Some(window.scale_factor() as f32),
-            None,
-            None,
-        );
-        let egui_renderer = egui_wgpu::Renderer::new(&gpu.device, gpu.format, None, 1, false);
-
+        let egui = EguiSurface::new(&window)?;
         Ok(Self {
             window,
-            gpu,
-            egui_ctx,
-            egui_state,
-            egui_renderer,
+            egui,
             icons: IconSet::discover(),
-            dirty: true,
         })
     }
 
-    pub fn on_egui_event(&mut self, event: &WindowEvent) -> bool {
-        self.dirty = true;
-        self.egui_state.on_window_event(&self.window, event).consumed
-    }
-
-    pub fn resize(&mut self, size: PhysicalSize<u32>) {
-        self.gpu.resize(size);
-        self.dirty = true;
-    }
-
     pub fn needs_render(&self) -> bool {
-        self.dirty
+        self.egui.needs_render()
     }
 
     /// Принудительно перерисовать на следующем кадре (напр. изменился статус ядра).
     pub fn mark_dirty(&mut self) {
-        self.dirty = true;
+        self.egui.mark_dirty();
     }
 
     pub fn render(
@@ -88,34 +57,9 @@ impl SettingsWindow {
         config: &mut AppConfig,
         status: &CoreStatuses,
     ) -> SettingsWinOut {
-        let mut out = SettingsWinOut { saved: false };
-
-        let frame = match self.gpu.surface.get_current_texture() {
-            Ok(f) => f,
-            Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
-                self.gpu.surface.configure(&self.gpu.device, &self.gpu.config);
-                return out;
-            }
-            Err(e) => {
-                log::warn!("settings surface error: {e:?}");
-                return out;
-            }
-        };
-        let view = frame
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder = self
-            .gpu
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("settings-encoder"),
-            });
-
-        let raw_input = self.egui_state.take_egui_input(&self.window);
-        let icons = &mut self.icons;
         let mut saved = false;
-
-        let full_output = self.egui_ctx.run(raw_input, |ctx| {
+        let icons = &mut self.icons;
+        self.egui.render(&self.window, "settings-pass", |ctx| {
             // Футер с кнопкой Сохранить (вне прокрутки).
             egui::TopBottomPanel::bottom("settings-footer")
                 .exact_height(40.0)
@@ -132,53 +76,16 @@ impl SettingsWindow {
                 settings.body(ui, icons, status);
             });
         });
-        out.saved = saved;
+        SettingsWinOut { saved }
+    }
+}
 
-        self.egui_state
-            .handle_platform_output(&self.window, full_output.platform_output);
-        let tris = self
-            .egui_ctx
-            .tessellate(full_output.shapes, full_output.pixels_per_point);
-        let screen = egui_wgpu::ScreenDescriptor {
-            size_in_pixels: [self.gpu.size.width, self.gpu.size.height],
-            pixels_per_point: full_output.pixels_per_point,
-        };
-        for (tex_id, delta) in &full_output.textures_delta.set {
-            self.egui_renderer
-                .update_texture(&self.gpu.device, &self.gpu.queue, *tex_id, delta);
-        }
-        self.egui_renderer
-            .update_buffers(&self.gpu.device, &self.gpu.queue, &mut encoder, &tris, &screen);
-        {
-            let rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("settings-pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.0745,
-                            g: 0.0784,
-                            b: 0.0863,
-                            a: 1.0,
-                        }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-            let mut rpass = rpass.forget_lifetime();
-            self.egui_renderer.render(&mut rpass, &tris, &screen);
-        }
-        self.gpu.queue.submit(Some(encoder.finish()));
-        frame.present();
-        for tex_id in &full_output.textures_delta.free {
-            self.egui_renderer.free_texture(tex_id);
-        }
+impl AuxWindow for SettingsWindow {
+    fn on_event(&mut self, event: &WindowEvent) -> bool {
+        self.egui.on_event(&self.window, event)
+    }
 
-        self.dirty = self.egui_ctx.has_requested_repaint();
-        out
+    fn resize(&mut self, size: PhysicalSize<u32>) {
+        self.egui.resize(size);
     }
 }

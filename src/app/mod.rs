@@ -13,7 +13,9 @@ use crate::db::{self, ReportsHandle};
 use crate::metrics::{Metrics, MetricsSnapshot};
 use crate::session::SessionManager;
 use crate::settings::SettingsState;
-use crate::window::{ReportsWindow, SettingsWindow, StrategiesWindow, WindowHost};
+use crate::window::{
+    handle_aux_event, ReportsWindow, SettingsWindow, StrategiesWindow, WindowHost,
+};
 use crate::workspace::Workspace;
 
 fn now_ms() -> f64 {
@@ -265,23 +267,10 @@ impl ApplicationHandler for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        // Окно настроек?
-        let is_settings = self
-            .settings_window
-            .as_ref()
-            .is_some_and(|sw| sw.window.id() == id);
-        if is_settings {
-            let mut close = false;
-            if let Some(sw) = self.settings_window.as_mut() {
-                sw.on_egui_event(&event);
-                if let WindowEvent::Resized(size) = &event {
-                    sw.resize(*size);
-                }
-                if matches!(event, WindowEvent::CloseRequested) {
-                    close = true;
-                }
-            }
-            if close {
+        // Окна-утилиты (Настройки/Отчёты/Стратегии) обрабатывают ввод/ресайз
+        // одинаково (handle_aux_event); различается только реакция на закрытие.
+        if let Some(w) = self.settings_window.as_mut().filter(|w| w.window.id() == id) {
+            if handle_aux_event(w, &event) {
                 self.settings_window = None;
                 // Настройки были единственным окном (первый запуск без серверов) —
                 // закрыли, открывать больше нечего → выходим.
@@ -291,46 +280,14 @@ impl ApplicationHandler for App {
             }
             return;
         }
-
-        // Окно отчётов?
-        let is_reports = self
-            .reports_window
-            .as_ref()
-            .is_some_and(|rw| rw.window.id() == id);
-        if is_reports {
-            let mut close = false;
-            if let Some(rw) = self.reports_window.as_mut() {
-                rw.on_egui_event(&event);
-                if let WindowEvent::Resized(size) = &event {
-                    rw.resize(*size);
-                }
-                if matches!(event, WindowEvent::CloseRequested) {
-                    close = true;
-                }
-            }
-            if close {
+        if let Some(w) = self.reports_window.as_mut().filter(|w| w.window.id() == id) {
+            if handle_aux_event(w, &event) {
                 self.reports_window = None;
             }
             return;
         }
-
-        // Окно стратегий?
-        let is_strategies = self
-            .strategies_window
-            .as_ref()
-            .is_some_and(|sw| sw.window.id() == id);
-        if is_strategies {
-            let mut close = false;
-            if let Some(sw) = self.strategies_window.as_mut() {
-                sw.on_egui_event(&event);
-                if let WindowEvent::Resized(size) = &event {
-                    sw.resize(*size);
-                }
-                if matches!(event, WindowEvent::CloseRequested) {
-                    close = true;
-                }
-            }
-            if close {
+        if let Some(w) = self.strategies_window.as_mut().filter(|w| w.window.id() == id) {
+            if handle_aux_event(w, &event) {
                 self.strategies_window = None;
             }
             return;
