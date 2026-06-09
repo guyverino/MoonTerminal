@@ -16,7 +16,11 @@ const LOGO_H: f32 = 22.0;
 /// Данные для отрисовки, которые app обновляет каждый кадр.
 pub struct ShellInfo<'a> {
     pub group: &'a str,
-    pub status: &'a ConnStatus,
+    /// Сколько ядер подключено (Ready) из общего числа — для счётчика «N/M».
+    pub conn_ready: usize,
+    pub conn_total: usize,
+    /// Не-Ready ядра (имя, статус) — для всплывающей подсказки «кто и почему».
+    pub conn_down: &'a [(String, ConnStatus)],
     pub tick_count: usize,
     pub book_levels: usize,
     pub fps: f32,
@@ -51,6 +55,7 @@ impl Shell {
         info: &ShellInfo,
         open_settings: &mut bool,
         reports_clicked: &mut bool,
+        strategies_clicked: &mut bool,
         _icons: &mut IconSet,
     ) {
         egui::TopBottomPanel::top("header")
@@ -106,7 +111,7 @@ impl Shell {
                         }
                         ui.add_space(theme::BTN_GAP);
                         if theme::seg_btn(ui, &t!("toolbar.strategies"), false, None, false).clicked() {
-                            log::info!("[ui] Стратегии (todo)");
+                            *strategies_clicked = true;
                         }
                     });
                 });
@@ -117,8 +122,9 @@ impl Shell {
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.add_space(10.0);
-                    // Индикатор соединения — слева внизу (как на стенде).
-                    status_badge(ui, info.status);
+                    // Индикатор соединения — слева внизу (как на стенде): счётчик
+                    // «подключено N/M» + тултип со списком не-подключённых ядер.
+                    status_badge(ui, info);
                     ui.add_space(14.0);
                     ui.label(
                         egui::RichText::new(format!(
@@ -143,15 +149,40 @@ impl Shell {
     }
 }
 
-fn status_badge(ui: &mut egui::Ui, status: &ConnStatus) {
-    // Stage/Failed приходят строкой от ядра (moonproto) — не переводим; свои
-    // состояния (Connecting/Ready/Disconnected) локализуем.
-    let (text, color) = match status {
-        ConnStatus::Connecting => (t!("status.connecting").to_string(), theme::MUTED),
-        ConnStatus::Stage(s) => (s.clone(), theme::ACCENT),
-        ConnStatus::Ready => (t!("status.live").to_string(), theme::GREEN),
-        ConnStatus::Failed(e) => (e.clone(), theme::RED),
-        ConnStatus::Disconnected => (t!("status.disconnected").to_string(), theme::RED),
+fn status_badge(ui: &mut egui::Ui, info: &ShellInfo) {
+    let all_ok = info.conn_total > 0 && info.conn_ready == info.conn_total;
+    let any_failed = info
+        .conn_down
+        .iter()
+        .any(|(_, s)| matches!(s, ConnStatus::Failed(_) | ConnStatus::Disconnected));
+    // Зелёный — все на связи; красный — есть упавшие; иначе янтарный (идёт подключение).
+    let color = if all_ok {
+        theme::GREEN
+    } else if any_failed {
+        theme::RED
+    } else {
+        theme::ACCENT
     };
-    ui.label(egui::RichText::new(format!("● {text}")).color(color));
+    let text = format!(
+        "● {}/{} {}",
+        info.conn_ready,
+        info.conn_total,
+        t!("status.connected_count")
+    );
+    let resp = ui.label(egui::RichText::new(text).color(color));
+    // Тултип — только про тех, кто НЕ подключён (с причиной).
+    if !info.conn_down.is_empty() {
+        resp.on_hover_ui(|ui| {
+            for (name, st) in info.conn_down {
+                let reason = match st {
+                    ConnStatus::Connecting => t!("status.connecting").to_string(),
+                    ConnStatus::Stage(s) => s.clone(),
+                    ConnStatus::Failed(e) => e.clone(),
+                    ConnStatus::Disconnected => t!("status.disconnected").to_string(),
+                    ConnStatus::Ready => continue,
+                };
+                ui.label(egui::RichText::new(format!("{name}: {reason}")).small());
+            }
+        });
+    }
 }

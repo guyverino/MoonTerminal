@@ -1,6 +1,6 @@
 //! Конфиг приложения в ДВУХ файлах рядом с exe:
-//! - `servers.enc` (зашифрован): uid/name/host/port/key — переносимый секрет
-//!   (скопировал файл — и ключи на месте, вводить заново не надо).
+//! - `servers.enc` (зашифрован): uid/name/key — переносимый секрет (скопировал
+//!   файл — и ключи на месте). host/port/transport зашиты в самом ключе MoonBot.
 //! - `settings.toml` (открытый): версия схемы + группы + по-серверная мета
 //!   (галки active/show_window/feed, группа, рынок, цвет). Привязка к серверу — по uid.
 //!
@@ -124,17 +124,18 @@ impl AppConfig {
         self.groups.retain(|g| used.contains(g.name.as_str()));
     }
 
-    /// Проверка уникальности имени и host:port серверов.
+    /// Проверка уникальности имени сервера и ключа (endpoint теперь внутри ключа,
+    /// поэтому одинаковый ключ = одно и то же ядро дважды). Пустые ключи не сравниваем
+    /// — это недозаполненные строки в процессе редактирования.
     fn validate(&self) -> anyhow::Result<()> {
         let mut names = HashSet::new();
-        let mut endpoints = HashSet::new();
+        let mut keys = HashSet::new();
         for s in &self.servers {
             if !names.insert(s.name.to_lowercase()) {
                 anyhow::bail!("{}", t!("err.dup_name", name = s.name));
             }
-            let ep = (s.host.to_lowercase(), s.port);
-            if !endpoints.insert(ep) {
-                anyhow::bail!("{}", t!("err.dup_endpoint", ep = format!("{}:{}", s.host, s.port)));
+            if !s.key.is_empty() && !keys.insert(s.key.expose().to_owned()) {
+                anyhow::bail!("{}", t!("err.dup_key", name = s.name));
             }
         }
         Ok(())

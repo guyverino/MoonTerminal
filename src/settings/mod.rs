@@ -5,13 +5,36 @@ pub mod connections;
 pub mod general;
 pub mod interface;
 
+use std::collections::HashMap;
+
 use crate::config::AppConfig;
+use crate::feed::ConnStatus;
 use crate::icons::IconSet;
+use crate::session::CoreId;
+
+/// Снимок статусов подключения ядер (CoreId → статус) для бейджей вкладки
+/// «Подключения». Заполняется из живой сессии перед каждым кадром.
+pub type CoreStatuses = HashMap<CoreId, ConnStatus>;
+
+/// Действия, запрошенные из вкладок в этом кадре и применяемые приложением
+/// (вне save). Сейчас — ручной реконнект ядер по кнопке у кружка статуса.
+#[derive(Default)]
+pub struct SettingsActions {
+    /// Ядра (CoreId), для которых нажата кнопка «переподключить».
+    pub reconnect: Vec<CoreId>,
+}
 
 pub trait SettingsTab {
     /// Заголовок вкладки (локализованный) — String, т.к. t! отдаёт владеющую строку.
     fn title(&self) -> String;
-    fn ui(&mut self, ui: &mut egui::Ui, cfg: &mut AppConfig, icons: &mut IconSet);
+    fn ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        cfg: &mut AppConfig,
+        icons: &mut IconSet,
+        status: &CoreStatuses,
+        actions: &mut SettingsActions,
+    );
 }
 
 pub struct SettingsState {
@@ -19,6 +42,8 @@ pub struct SettingsState {
     draft: AppConfig,
     tabs: Vec<Box<dyn SettingsTab>>,
     status: Option<(String, egui::Color32)>,
+    /// Действия текущего кадра (реконнект и пр.) — забираются приложением.
+    actions: SettingsActions,
 }
 
 impl SettingsState {
@@ -32,7 +57,13 @@ impl SettingsState {
                 Box::new(interface::InterfaceTab),
             ],
             status: None,
+            actions: SettingsActions::default(),
         }
+    }
+
+    /// Забрать накопленные за кадр действия (реконнект и пр.) для применения.
+    pub fn take_actions(&mut self) -> SettingsActions {
+        std::mem::take(&mut self.actions)
     }
 
     /// Начать редактирование копии текущего конфига.
@@ -47,7 +78,7 @@ impl SettingsState {
     }
 
     /// Тело окна настроек: таб-бар + активная вкладка (в ScrollArea).
-    pub fn body(&mut self, ui: &mut egui::Ui, icons: &mut IconSet) {
+    pub fn body(&mut self, ui: &mut egui::Ui, icons: &mut IconSet, status: &CoreStatuses) {
         ui.horizontal(|ui| {
             for i in 0..self.tabs.len() {
                 let title = self.tabs[i].title();
@@ -60,7 +91,7 @@ impl SettingsState {
 
         let active = self.active.min(self.tabs.len().saturating_sub(1));
         // Вкладка сама управляет своим скроллом/раскладкой.
-        self.tabs[active].ui(ui, &mut self.draft, icons);
+        self.tabs[active].ui(ui, &mut self.draft, icons, status, &mut self.actions);
     }
 
     /// Кнопка сохранения. Валидирует (уникальность имени/host:port) и пишет в файлы.

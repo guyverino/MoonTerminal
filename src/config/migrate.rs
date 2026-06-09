@@ -12,14 +12,11 @@ use super::{AppConfig, GroupConfig, ServerConfig};
 
 /// Старый объединённый зашифрованный config.enc: { servers:[…], groups:[…] }.
 pub fn from_legacy_enc() -> anyhow::Result<AppConfig> {
+    // host/port из старого формата игнорируем — endpoint берётся из ключа.
     #[derive(Deserialize, Default)]
     struct OldServer {
         #[serde(default)]
         name: String,
-        #[serde(default)]
-        host: String,
-        #[serde(default)]
-        port: u16,
         #[serde(default)]
         key: Secret,
         #[serde(default = "servers::default_group")]
@@ -50,8 +47,6 @@ pub fn from_legacy_enc() -> anyhow::Result<AppConfig> {
             active: true,
             show_window: true,
             feed: FeedFlags::default(),
-            host: s.host,
-            port: s.port,
             key: s.key,
             group: s.group,
             market: s.market,
@@ -68,14 +63,11 @@ pub fn from_legacy_enc() -> anyhow::Result<AppConfig> {
 
 /// Совсем старый открытый config.toml (один сервер).
 pub fn from_legacy_toml() -> anyhow::Result<AppConfig> {
+    // host/port игнорируем — endpoint берётся из ключа.
     #[derive(Deserialize)]
     struct Legacy {
         #[serde(default)]
         key: String,
-        #[serde(default)]
-        host: String,
-        #[serde(default)]
-        port: u16,
         #[serde(default)]
         market: String,
     }
@@ -94,8 +86,6 @@ pub fn from_legacy_toml() -> anyhow::Result<AppConfig> {
             active: true,
             show_window: true,
             feed: FeedFlags::default(),
-            host: l.host,
-            port: l.port,
             key: Secret::new(l.key),
             group: servers::default_group(),
             market,

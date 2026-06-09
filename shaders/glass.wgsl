@@ -38,13 +38,38 @@ fn vs_main(
     let right = chart.viewport.x + zone;     // правый край
     let len = max(len_norm * zone, 1.0);
     let cx = right - len * 0.5;
-    // Снап Y к целому пикселю → чёткие края уровней, без субпиксельного дрожания.
-    let cy = round(chart.viewport.y + chart.viewport.w - (price - chart.view_price0) * chart.price_to_px);
-    var h = max(round(span_price * chart.price_to_px), 1.0);
-    if (kind >= 2.0) {
-        h = 1.5; // тонкая линия уровня
+
+    // Геометрию fill-полос строим по ДВУМ ОКРУГЛЁННЫМ краям-ценам, а не из
+    // «центр ± высота». Внутренний край полосы (цена соседнего уровня к спреду) и
+    // внешний край соседней полосы — это ОДНА и та же цена, поэтому после round
+    // дают один пиксель → полосы стыкуются без 1px-швов (тех самых чёрных
+    // полосок) и без пропусков. bid тянем к спреду вверх (цена соседа выше),
+    // ask — вниз (ниже).
+    let base = chart.viewport.y + chart.viewport.w;
+    let y_price = base - (price - chart.view_price0) * chart.price_to_px;
+    var inner_price = price;
+    if (kind < 0.5) {
+        inner_price = price + span_price;       // bid: сосед к спреду выше
+    } else if (kind < 1.5) {
+        inner_price = price - span_price;       // ask: сосед к спреду ниже
     }
-    let px = vec2<f32>(cx + corner.x * len * 0.5, cy + corner.y * h * 0.5);
+    let y_inner = base - (inner_price - chart.view_price0) * chart.price_to_px;
+
+    var top = round(min(y_price, y_inner));
+    var bot = round(max(y_price, y_inner));
+    if (bot - top < 1.0) {
+        bot = top + 1.0;                        // минимум 1px, без чёрных щелей
+    }
+    var cy_center = (top + bot) * 0.5;
+    var h = bot - top;
+
+    if (kind >= 2.0) {
+        // Линия индивидуального объёма — тонкая, по центру цены.
+        cy_center = round(y_price);
+        h = 1.5;
+    }
+
+    let px = vec2<f32>(cx + corner.x * len * 0.5, cy_center + corner.y * h * 0.5);
     var out: VsOut;
     out.pos = vec4<f32>(px_to_clip(px, chart.resolution), 0.0, 1.0);
     out.kind = kind;

@@ -1,5 +1,7 @@
 //! Вкладка «Подключения»: слева сервера, справа группы.
-//! Сервер: Акт · Имя · Host · Port · Ключ · Группа · Цвет(детекта) · Удалить.
+//! Сервер: Акт · Окн · Имя · Ключ · Группа · [Данные] · Цвет(детекта) · Удалить.
+//! Host/Port не вводим — они зашиты в ключе. Галки приёма данных свёрнуты в одну
+//! кнопку «Данные» (серая = принимаем всё; цвет сервера = часть выключена).
 //! Группа: Акт(вся группа) · иконка · имя · выбор иконки.
 
 use super::SettingsTab;
@@ -7,14 +9,12 @@ use crate::config::servers::{default_color, default_group, default_market};
 use crate::config::{AppConfig, GroupConfig, Secret, ServerConfig};
 use crate::icons::IconSet;
 use crate::market::MarketDataMode;
+use crate::shell::theme;
 
 #[derive(Default)]
 pub struct ConnectionsTab {
     /// Для какой группы открыт picker иконок.
     picking: Option<String>,
-    /// Строковые буферы порта (по id сервера) — нужны для маскировки порта
-    /// password-полем с раскрытием по фокусу.
-    port_buf: std::collections::HashMap<u64, String>,
 }
 
 const H: f32 = 22.0;
@@ -24,9 +24,15 @@ impl SettingsTab for ConnectionsTab {
         t!("tab.connections").to_string()
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, cfg: &mut AppConfig, icons: &mut IconSet) {
+    fn ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        cfg: &mut AppConfig,
+        icons: &mut IconSet,
+        status: &super::CoreStatuses,
+        actions: &mut super::SettingsActions,
+    ) {
         let picking = &mut self.picking;
-        let port_buf = &mut self.port_buf;
         // Источник рыночных данных (глобально для всех ядер) — над таблицами.
         egui::TopBottomPanel::top("market_src_bar")
             .resizable(false)
@@ -46,7 +52,7 @@ impl SettingsTab for ConnectionsTab {
                 groups_panel(ui, cfg, icons, picking);
             });
         egui::CentralPanel::default().show_inside(ui, |ui| {
-            servers_panel(ui, cfg, port_buf);
+            servers_panel(ui, cfg, status, actions);
         });
     }
 }
@@ -84,33 +90,31 @@ fn market_mode_row(ui: &mut egui::Ui, cfg: &mut AppConfig) {
 fn servers_panel(
     ui: &mut egui::Ui,
     cfg: &mut AppConfig,
-    port_buf: &mut std::collections::HashMap<u64, String>,
+    status: &super::CoreStatuses,
+    actions: &mut super::SettingsActions,
 ) {
     ui.label(egui::RichText::new(t!("conn.servers_heading")).strong());
     ui.add_space(6.0);
 
     let w_act = 20.0;
     let w_win = 20.0;
-    let w_flag = 18.0; // одна галка фильтра приёма
-    let n_flags = 8.0;
-    let w_flags = w_flag * n_flags;
-    let w_port = 44.0;
+    let w_data = 46.0; // кнопка-свёртка галок приёма
     // Color-кнопка рисуется в свою НАТУРАЛЬНУЮ ширину (≈interact_size), а
     // allocate_ui её не ограничивает — поэтому берём реальную ширину из стиля,
     // иначе строка окажется шире бюджета и «Удал» уедет под правую панель.
     let w_color = ui.spacing().interact_size.x;
     let w_del = 44.0;
+    let w_recon = 24.0; // кнопка переподключения
+    let w_status = 16.0; // кружок статуса подключения в конце строки
     let sp = ui.spacing().item_spacing.x;
-    // Фиксированные (нерастяжимые) ширины + межвиджетные отступы.
-    // В строке 17 виджетов → 16 промежутков. Остаток делим между 4 текстовыми
-    // полями. Без горизонтального скролла: всё всегда влезает в доступную ширину.
-    let fixed = w_act + w_win + w_flags + w_port + w_color + w_del;
-    let gaps = sp * 16.0;
+    // Фиксированные (нерастяжимые) ширины + межвиджетные отступы. В строке 10
+    // виджетов → 9 промежутков. Остаток делим между 3 текстовыми полями.
+    let fixed = w_act + w_win + w_data + w_color + w_del + w_recon + w_status;
+    let gaps = sp * 9.0;
     let flex = (ui.available_width() - fixed - gaps - 4.0).max(120.0);
-    let w_name = flex * 0.20;
-    let w_host = flex * 0.26;
-    let w_key = flex * 0.34;
-    let w_group = flex * 0.20;
+    let w_name = flex * 0.30;
+    let w_key = flex * 0.45;
+    let w_group = flex * 0.25;
 
     egui::ScrollArea::vertical()
         .id_salt("servers_scroll")
@@ -120,20 +124,13 @@ fn servers_panel(
                 head_tip(ui, w_act, t!("conn.col.act"), t!("conn.tip.act"));
                 head_tip(ui, w_win, t!("conn.col.win"), t!("conn.tip.win"));
                 head(ui, w_name, t!("conn.col.name"));
-                head(ui, w_host, "Host");
-                head(ui, w_port, "Port");
                 head(ui, w_key, t!("conn.col.key"));
                 head(ui, w_group, t!("conn.col.group"));
-                head_tip(ui, w_flag, t!("conn.col.orders"), t!("conn.tip.orders"));
-                head_tip(ui, w_flag, t!("conn.col.detects"), t!("conn.tip.detects"));
-                head_tip(ui, w_flag, t!("conn.col.reports"), t!("conn.tip.reports"));
-                head_tip(ui, w_flag, t!("conn.col.balance"), t!("conn.tip.balance"));
-                head_tip(ui, w_flag, t!("conn.col.strat"), t!("conn.tip.strat"));
-                head_tip(ui, w_flag, t!("conn.col.log"), t!("conn.tip.log"));
-                head_tip(ui, w_flag, t!("conn.col.alerts"), t!("conn.tip.alerts"));
-                head_tip(ui, w_flag, t!("conn.col.arb"), t!("conn.tip.arb"));
+                head_tip(ui, w_data, t!("conn.col.data"), t!("conn.tip.flags"));
                 head(ui, w_color, t!("conn.col.color"));
                 head(ui, w_del, "");
+                head(ui, w_recon, "");
+                head(ui, w_status, "");
             });
 
             let mut remove = None;
@@ -143,32 +140,6 @@ fn servers_panel(
                     flag(ui, w_act, &mut s.active, t!("conn.tip.act"));
                     flag(ui, w_win, &mut s.show_window, t!("conn.tip.win"));
                     ui.add_sized([w_name, H], egui::TextEdit::singleline(&mut s.name));
-                    // Host/Port маскируем (для скриншотов), раскрываем по фокусу.
-                    let host_id = egui::Id::new(("srv-host", s.id));
-                    let host_focused = ui.memory(|m| m.has_focus(host_id));
-                    ui.add_sized(
-                        [w_host, H],
-                        egui::TextEdit::singleline(&mut s.host)
-                            .password(!host_focused)
-                            .id(host_id),
-                    );
-                    let port_id = egui::Id::new(("srv-port", s.id));
-                    let port_focused = ui.memory(|m| m.has_focus(port_id));
-                    let buf = port_buf.entry(s.id).or_insert_with(|| s.port.to_string());
-                    if !port_focused {
-                        // Пока не редактируем — держим буфер в синхроне с конфигом.
-                        *buf = s.port.to_string();
-                    }
-                    let port_resp = ui.add_sized(
-                        [w_port, H],
-                        egui::TextEdit::singleline(buf)
-                            .password(!port_focused)
-                            .id(port_id),
-                    );
-                    if port_resp.changed() {
-                        let digits: String = buf.chars().filter(|c| c.is_ascii_digit()).collect();
-                        s.port = digits.parse::<u32>().unwrap_or(0).min(65535) as u16;
-                    }
                     ui.add_sized(
                         [w_key, H],
                         egui::TextEdit::singleline(s.key.buffer_mut())
@@ -176,17 +147,7 @@ fn servers_panel(
                             .hint_text("key"),
                     );
                     ui.add_sized([w_group, H], egui::TextEdit::singleline(&mut s.group));
-                    // Фильтры приёма. Подсказка честно поясняет: ядро всё равно
-                    // шлёт — выкл лишь не читаем/не складываем/не рисуем.
-                    let note = t!("conn.filter_note");
-                    flag(ui, w_flag, &mut s.feed.orders, format!("{} ({})", t!("conn.tip.orders"), note));
-                    flag(ui, w_flag, &mut s.feed.detects, format!("{} ({})", t!("conn.tip.detects"), note));
-                    flag(ui, w_flag, &mut s.feed.reports, format!("{} ({})", t!("conn.tip.reports"), note));
-                    flag(ui, w_flag, &mut s.feed.balance, format!("{} ({})", t!("conn.tip.balance"), note));
-                    flag(ui, w_flag, &mut s.feed.strategies, format!("{} ({})", t!("conn.tip.strat"), note));
-                    flag(ui, w_flag, &mut s.feed.log, format!("{} ({})", t!("conn.tip.log"), note));
-                    flag(ui, w_flag, &mut s.feed.alerts, format!("{} ({})", t!("conn.tip.alerts"), note));
-                    flag(ui, w_flag, &mut s.feed.arb, format!("{} ({})", t!("conn.tip.arb"), note));
+                    feed_button(ui, s, w_data);
                     ui.allocate_ui(egui::vec2(w_color, H), |ui| {
                         let mut col =
                             egui::Color32::from_rgb(s.color[0], s.color[1], s.color[2]);
@@ -194,12 +155,21 @@ fn servers_panel(
                             s.color = [col.r(), col.g(), col.b()];
                         }
                     });
-                    if ui
-                        .add_sized([w_del, H], egui::Button::new(t!("conn.delete").to_string()))
-                        .clicked()
-                    {
+                    let del = t!("conn.delete").to_string();
+                    if theme::seg_btn_h(ui, &del, false, Some(w_del), false, H).clicked() {
                         remove = Some(i);
                     }
+                    // Реконнект — только для активных ядер (у неактивных нет сессии).
+                    if s.active {
+                        let r = theme::seg_btn_h(ui, "↻", false, Some(w_recon), false, H)
+                            .on_hover_text(t!("conn.reconnect"));
+                        if r.clicked() {
+                            actions.reconnect.push(s.id);
+                        }
+                    } else {
+                        ui.allocate_exact_size(egui::vec2(w_recon, H), egui::Sense::hover());
+                    }
+                    status_dot(ui, w_status, s.active, status.get(&s.id));
                 });
             }
             if let Some(i) = remove {
@@ -208,7 +178,8 @@ fn servers_panel(
         });
 
     ui.add_space(8.0);
-    if ui.button(t!("conn.add_core").to_string()).clicked() {
+    let add = t!("conn.add_core").to_string();
+    if theme::seg_btn_h(ui, &add, false, None, false, H).clicked() {
         let next_id = cfg.servers.iter().map(|s| s.id).max().unwrap_or(0) + 1;
         cfg.servers.push(ServerConfig {
             id: next_id,
@@ -217,14 +188,56 @@ fn servers_panel(
             active: true,
             show_window: true,
             feed: crate::config::FeedFlags::default(),
-            host: String::new(),
-            port: 0,
             key: Secret::default(),
             group: default_group(),
             market: default_market(),
             color: default_color(),
         });
     }
+}
+
+/// Кнопка «Данные» — свёртка 8 галок приёма в попап. Подпись = «n/8» (сколько
+/// включено). Все включены → обычная серая кнопка; есть выключенные → заливка
+/// градиентом цвета сервера (сигнал «часть категорий не принимаем»).
+fn feed_button(ui: &mut egui::Ui, s: &mut ServerConfig, w: f32) {
+    let on = [
+        s.feed.orders,
+        s.feed.detects,
+        s.feed.reports,
+        s.feed.balance,
+        s.feed.strategies,
+        s.feed.log,
+        s.feed.alerts,
+        s.feed.arb,
+    ];
+    let on_count = on.iter().filter(|b| **b).count();
+    let all_on = on_count == on.len();
+    let tint = (!all_on).then(|| egui::Color32::from_rgb(s.color[0], s.color[1], s.color[2]));
+
+    let label = format!("{on_count}/{}", on.len());
+    let resp = theme::seg_btn_tinted(ui, &label, Some(w), H, tint).on_hover_text(t!("conn.tip.flags"));
+    let popup_id = ui.make_persistent_id(("feed_popup", s.id));
+    if resp.clicked() {
+        ui.memory_mut(|m| m.toggle_popup(popup_id));
+    }
+    let note = t!("conn.filter_note");
+    egui::popup_below_widget(
+        ui,
+        popup_id,
+        &resp,
+        egui::PopupCloseBehavior::CloseOnClickOutside,
+        |ui| {
+            ui.set_min_width(200.0);
+            ui.checkbox(&mut s.feed.orders, format!("{} ({})", t!("conn.tip.orders"), note));
+            ui.checkbox(&mut s.feed.detects, format!("{} ({})", t!("conn.tip.detects"), note));
+            ui.checkbox(&mut s.feed.reports, format!("{} ({})", t!("conn.tip.reports"), note));
+            ui.checkbox(&mut s.feed.balance, format!("{} ({})", t!("conn.tip.balance"), note));
+            ui.checkbox(&mut s.feed.strategies, format!("{} ({})", t!("conn.tip.strat"), note));
+            ui.checkbox(&mut s.feed.log, format!("{} ({})", t!("conn.tip.log"), note));
+            ui.checkbox(&mut s.feed.alerts, format!("{} ({})", t!("conn.tip.alerts"), note));
+            ui.checkbox(&mut s.feed.arb, format!("{} ({})", t!("conn.tip.arb"), note));
+        },
+    );
 }
 
 fn groups_panel(
@@ -285,10 +298,8 @@ fn groups_panel(
                 [w_name, H],
                 egui::Label::new(egui::RichText::new(&g.name).strong()).truncate(),
             );
-            if ui
-                .add_sized([w_pick, H], egui::Button::new(t!("conn.pick").to_string()))
-                .clicked()
-            {
+            let pick = t!("conn.pick").to_string();
+            if theme::seg_btn_h(ui, &pick, false, Some(w_pick), false, H).clicked() {
                 *picking = Some(name.clone());
             }
         });
@@ -344,4 +355,26 @@ fn head_tip(ui: &mut egui::Ui, w: f32, text: impl Into<String>, tip: impl Into<S
 fn flag(ui: &mut egui::Ui, w: f32, value: &mut bool, tip: impl Into<String>) {
     ui.add_sized([w, H], egui::Checkbox::without_text(value))
         .on_hover_text(tip.into());
+}
+
+/// Кружок статуса подключения в конце строки сервера. Цвет = состояние, подсказка
+/// поясняет (для Failed — текст ошибки). `active=false` или нет записи в сессии →
+/// серый «не подключается». Статус берётся из ЖИВОЙ сессии (по сохранённому
+/// конфигу), поэтому несохранённые правила галки «Акт» он ещё не отражает.
+fn status_dot(ui: &mut egui::Ui, w: f32, active: bool, status: Option<&crate::feed::ConnStatus>) {
+    use crate::feed::ConnStatus;
+    use crate::shell::theme::{ACCENT, GREEN, MUTED, RED};
+
+    let (color, tip) = match status {
+        _ if !active => (MUTED, t!("conn.status.inactive").to_string()),
+        Some(ConnStatus::Ready) => (GREEN, t!("conn.status.ready").to_string()),
+        Some(ConnStatus::Connecting) => (ACCENT, t!("conn.status.connecting").to_string()),
+        Some(ConnStatus::Stage(s)) => (ACCENT, t!("conn.status.stage", stage = s).to_string()),
+        Some(ConnStatus::Failed(e)) => (RED, t!("conn.status.failed", err = e).to_string()),
+        Some(ConnStatus::Disconnected) => (MUTED, t!("conn.status.disconnected").to_string()),
+        None => (MUTED, t!("conn.status.none").to_string()),
+    };
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, H), egui::Sense::hover());
+    ui.painter().circle_filled(rect.center(), 5.0, color);
+    resp.on_hover_text(tip);
 }

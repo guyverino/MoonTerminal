@@ -86,7 +86,7 @@ pub struct DetectRow {
     pub keep_alert_secs: u32,
 }
 
-/// Одна стратегия ядра (для будущего окна стратегий). Декаплено от moonproto.
+/// Одна стратегия ядра (для окна стратегий). Декаплено от moonproto.
 #[derive(Debug, Clone)]
 pub struct StrategyRow {
     pub id: u64,
@@ -94,17 +94,66 @@ pub struct StrategyRow {
     pub name: String,
     /// Тип (вид) стратегии — человекочитаемо.
     pub kind: String,
-    /// Отмечена (checked) в дереве стратегий.
+    /// Ordinal вида (для связи со схемой при показе секций/полей).
+    pub kind_ordinal: u8,
+    /// Путь папки в дереве стратегий (например "test cpu/20").
+    pub folder_path: String,
+    /// Отмечена (checked) = запущена.
     pub checked: bool,
     pub is_short: bool,
     /// SoundAlert=Yes.
     pub sound_alert: bool,
     /// KeepAlert, сек.
     pub keep_alert_secs: u32,
+    /// Значения полей стратегии (имя → форматированная строка) для read-only плашек.
+    pub fields: Vec<(String, String)>,
+}
+
+/// Вид виджета поля схемы (из moonproto `StrategyFieldUiKind`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SchemaFieldUi {
+    Edit,
+    Checkbox,
+    Combo,
+    Color,
+}
+
+/// Описание одного поля схемы стратегий (декаплено от moonproto).
+#[derive(Debug, Clone)]
+pub struct SchemaField {
+    pub name: String,
+    /// Имя типа ("Bool"/"Int32"/"Double"/…), для подписи/форматирования.
+    pub type_name: String,
+    pub ui: SchemaFieldUi,
+    /// Статический список значений (для Combo).
+    pub picklist: Vec<String>,
+    /// Значение по умолчанию (форматированное), если есть в схеме.
+    pub default: Option<String>,
+}
+
+/// Секция (раздел) полей одного вида стратегии (main/filters/…).
+#[derive(Debug, Clone)]
+pub struct SchemaSection {
+    pub title: String,
+    pub fields: Vec<SchemaField>,
+}
+
+/// Схема одного вида стратегии: его секции.
+#[derive(Debug, Clone)]
+pub struct SchemaKind {
+    pub ordinal: u8,
+    pub name: String,
+    pub sections: Vec<SchemaSection>,
+}
+
+/// Полная схема стратегий ядра (все виды). Шлётся при смене revision схемы.
+#[derive(Debug, Clone, Default)]
+pub struct StrategySchemaModel {
+    pub kinds: Vec<SchemaKind>,
 }
 
 /// Статус соединения с ядром.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConnStatus {
     Connecting,
     /// Промежуточная стадия подключения/инициализации (текст для бейджа).
@@ -132,6 +181,8 @@ pub enum FeedMsg {
     Orders(Vec<OrderRow>),
     /// Пачка новых детектов (накопленных за тик дренажа событий).
     Detects(Vec<DetectRow>),
-    /// Снимок стратегий ядра (троттлится; под будущее окно стратегий).
+    /// Снимок стратегий ядра (шлётся при изменении сигнатуры).
     Strategies(Vec<StrategyRow>),
+    /// Схема стратегий ядра (секции/поля по видам). Шлётся при смене revision.
+    StrategySchema(StrategySchemaModel),
 }

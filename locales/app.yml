@@ -24,6 +24,10 @@ status.disconnected:
   ru: "отключено"
   en: "disconnected"
   es: "desconectado"
+status.connected_count:
+  ru: "подключено"
+  en: "connected"
+  es: "conectado"
 
 # --- Тулбар ---
 toolbar.size:
@@ -66,6 +70,88 @@ toolbar.strategies:
   ru: "Стратегии"
   en: "Strategies"
   es: "Estrategias"
+
+# --- Окно стратегий ---
+strat.window_title:
+  ru: "Стратегии — MoonTerminal"
+  en: "Strategies — MoonTerminal"
+  es: "Estrategias — MoonTerminal"
+strat.search:
+  ru: "поиск по названию"
+  en: "search by name"
+  es: "buscar por nombre"
+strat.clear:
+  ru: "Очистить"
+  en: "Clear"
+  es: "Limpiar"
+strat.only_active:
+  ru: "только активные"
+  en: "active only"
+  es: "solo activos"
+strat.selected_count:
+  ru: "выбрано: %{n}"
+  en: "selected: %{n}"
+  es: "seleccionados: %{n}"
+strat.differs:
+  ru: "значения у выбранных различаются"
+  en: "values differ across selection"
+  es: "los valores difieren en la selección"
+strat.start_checked:
+  ru: "Старт отмеченных"
+  en: "Start checked"
+  es: "Iniciar marcadas"
+strat.stop_checked:
+  ru: "Стоп отмеченных"
+  en: "Stop checked"
+  es: "Detener marcadas"
+strat.staged:
+  ru: "изменений: %{n}"
+  en: "staged: %{n}"
+  es: "pendientes: %{n}"
+strat.root:
+  ru: "(корень)"
+  en: "(root)"
+  es: "(raíz)"
+strat.sections:
+  ru: "Разделы"
+  en: "Sections"
+  es: "Secciones"
+strat.fields_count:
+  ru: "полей: %{n}"
+  en: "fields: %{n}"
+  es: "campos: %{n}"
+strat.help:
+  ru: "Описание"
+  en: "Description"
+  es: "Descripción"
+strat.folder:
+  ru: "папка"
+  en: "folder"
+  es: "carpeta"
+strat.type:
+  ru: "тип"
+  en: "type"
+  es: "tipo"
+strat.default:
+  ru: "по умолчанию"
+  en: "default"
+  es: "por defecto"
+strat.options:
+  ru: "варианты"
+  en: "options"
+  es: "opciones"
+strat.no_selection:
+  ru: "выберите стратегию в дереве"
+  en: "select a strategy in the tree"
+  es: "selecciona una estrategia en el árbol"
+strat.no_schema:
+  ru: "схема не получена"
+  en: "schema not received"
+  es: "esquema no recibido"
+strat.pick_field:
+  ru: "выберите поле для описания"
+  en: "select a field for details"
+  es: "selecciona un campo para detalles"
 
 # --- Правая панель ордера ---
 order.title:
@@ -266,10 +352,44 @@ conn.delete:
   ru: "Удал"
   en: "Del"
   es: "Elim"
+conn.reconnect:
+  ru: "Переподключить ядро"
+  en: "Reconnect core"
+  es: "Reconectar núcleo"
 conn.filter_note:
   ru: "фильтр на клиенте"
   en: "client-side filter"
   es: "filtro en el cliente"
+
+# Кружок статуса подключения в конце строки сервера
+conn.status.ready:
+  ru: "Подключено"
+  en: "Connected"
+  es: "Conectado"
+conn.status.connecting:
+  ru: "Подключение…"
+  en: "Connecting…"
+  es: "Conectando…"
+conn.status.stage:
+  ru: "Подключение: %{stage}"
+  en: "Connecting: %{stage}"
+  es: "Conectando: %{stage}"
+conn.status.failed:
+  ru: "Ошибка: %{err}"
+  en: "Error: %{err}"
+  es: "Error: %{err}"
+conn.status.disconnected:
+  ru: "Отключено"
+  en: "Disconnected"
+  es: "Desconectado"
+conn.status.inactive:
+  ru: "Не подключается (галка «Акт» снята)"
+  en: "Not connecting (the “Act” box is off)"
+  es: "Sin conexión (la casilla «Act» está desactivada)"
+conn.status.none:
+  ru: "Нет данных (сохрани настройки, чтобы подключиться)"
+  en: "No data (save settings to connect)"
+  es: "Sin datos (guarda los ajustes para conectar)"
 
 # Заголовки колонок таблицы серверов
 conn.col.act:
@@ -296,6 +416,10 @@ conn.col.color:
   ru: "Цвет"
   en: "Color"
   es: "Color"
+conn.col.data:
+  ru: "Данные"
+  en: "Data"
+  es: "Datos"
 conn.col.orders:
   ru: "Орд"
   en: "Ord"
@@ -344,6 +468,10 @@ conn.tip.win:
   ru: "Рисовать окно/чарт. Выкл = headless: данные в БД/память без окна"
   en: "Draw window/chart. Off = headless: data to DB/memory without a window"
   es: "Dibujar ventana/gráfico. Desactivado = headless: datos a BD/memoria sin ventana"
+conn.tip.flags:
+  ru: "Приём данных от ядра. Серая = принимаем всё; цветная = часть категорий выключена. Клик — настроить."
+  en: "Data received from the core. Gray = all on; colored = some categories off. Click to configure."
+  es: "Datos recibidos del núcleo. Gris = todo activado; en color = algunas categorías desactivadas. Clic para configurar."
 conn.tip.orders:
   ru: "Открытые ордера"
   en: "Open orders"
@@ -382,10 +510,10 @@ err.dup_name:
   ru: "Дубликат имени сервера: «%{name}»"
   en: "Duplicate server name: «%{name}»"
   es: "Nombre de servidor duplicado: «%{name}»"
-err.dup_endpoint:
-  ru: "Дубликат host:port: %{ep}"
-  en: "Duplicate host:port: %{ep}"
-  es: "host:port duplicado: %{ep}"
+err.dup_key:
+  ru: "Дубликат ключа у сервера «%{name}» (такое ядро уже есть)"
+  en: "Duplicate key on server «%{name}» (this core already exists)"
+  es: "Clave duplicada en el servidor «%{name}» (ese núcleo ya existe)"
 err.no_gpu:
   ru: "нет подходящего GPU adapter"
   en: "no suitable GPU adapter"

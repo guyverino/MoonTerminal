@@ -13,7 +13,14 @@ impl SettingsTab for GeneralTab {
         t!("tab.general").to_string()
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, cfg: &mut AppConfig, _icons: &mut IconSet) {
+    fn ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        cfg: &mut AppConfig,
+        _icons: &mut IconSet,
+        _status: &super::CoreStatuses,
+        _actions: &mut super::SettingsActions,
+    ) {
         ui.add_space(6.0);
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new(t!("general.language")).strong());

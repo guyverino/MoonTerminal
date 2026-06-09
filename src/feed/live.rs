@@ -12,12 +12,14 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use moonproto::state::OrderBookKind;
 use moonproto::{
     ClientConfig, ConnectConfig, Event, FieldValue, InitConfig, InitialStrategies, LifecycleEvent,
-    MoonClient, StrategySnapshot, TradesStreamMode, TransportMode,
+    MoonClient, StrategyFieldUiKind, StrategySchema, StrategySnapshot, TradesStreamMode,
+    TransportMode,
 };
 
 use super::{
-    ConnStatus, CoreCmd, DetectRow, ExchangeId, FeedMsg, FeedTx, Level, OrderBook, OrderRow, Side,
-    StrategyRow, Tick,
+    ConnStatus, CoreCmd, DetectRow, ExchangeId, FeedMsg, FeedTx, Level, OrderBook, OrderRow,
+    SchemaField, SchemaFieldUi, SchemaKind, SchemaSection, Side, StrategyRow, StrategySchemaModel,
+    Tick,
 };
 use crate::config::ServerConfig;
 use crate::db::{ReportRow, ReportTx};
@@ -70,20 +72,14 @@ pub fn run(
     let info = moonproto::parse_key_info(server.key.expose())
         .ok_or_else(|| anyhow::anyhow!("не удалось разобрать ключ MoonBot (server.key)"))?;
 
-    // 2. Endpoint: конфиг важнее, иначе — из ключа.
+    // 2. Endpoint берётся из ключа (host/port/transport зашиты в нём; отдельных
+    //    полей в конфиге больше нет).
     let net = info.network.as_ref();
-    let host: String = if !server.host.is_empty() {
-        server.host.clone()
-    } else {
-        net.and_then(|n| n.address)
-            .map(|a| a.to_string())
-            .unwrap_or_else(|| "127.0.0.1".to_string())
-    };
-    let port: u16 = if server.port != 0 {
-        server.port
-    } else {
-        net.map(|n| n.port).filter(|p| *p != 0).unwrap_or(3000)
-    };
+    let host: String = net
+        .and_then(|n| n.address)
+        .map(|a| a.to_string())
+        .unwrap_or_else(|| "127.0.0.1".to_string());
+    let port: u16 = net.map(|n| n.port).filter(|p| *p != 0).unwrap_or(3000);
     let transport = net.map(|n| n.transport_mode).unwrap_or(TransportMode::V0);
     log::info!("live connect {host}:{port} market={}", server.market);
 
@@ -119,6 +115,10 @@ pub fn run(
     let mut last_book = Instant::now();
     let mut last_orders = Instant::now();
     let mut last_strats = Instant::now();
+    // Курсоры выгрузки стратегий: revision схемы и сигнатура состава/checked —
+    // шлём только при изменениях (поля стратегий тяжёлые, гонять каждую секунду незачем).
+    let mut last_schema_rev: u64 = u64::MAX;
+    let mut last_strat_sig: u64 = u64::MAX;
     // Монотонный per-core номер детекта — курсор ингеста в ленту детектов UI.
     let mut detect_seq: u64 = 0;
     // Полные данные ордера копим по СТАБИЛЬНОМУ uid (есть с открытия). А db_id у
@@ -167,6 +167,32 @@ pub fn run(
                         }
                     }
                     wanted = markets;
+                }
+                Ok(CoreCmd::StrategiesAction { checks, start_stop }) => {
+                    // 1. Синхронизация галок: правим локальный checked у изменённых и
+                    //    шлём серверу дельту (CheckedSync).
+                    for (id, checked) in &checks {
+                        let _ = client.strategies().set_checked(*id, *checked);
+                    }
+                    if !checks.is_empty() {
+                        let _ = client.strategies().send_checked_delta();
+                    }
+                    // 2. Старт/стоп отмеченных (отдельная команда движка).
+                    match start_stop {
+                        Some(true) => {
+                            let _ = client.strategies().start();
+                        }
+                        Some(false) => {
+                            let _ = client.strategies().stop();
+                        }
+                        None => {}
+                    }
+                    log::info!(
+                        "core {} strategies action: checks={} start_stop={:?}",
+                        server.id,
+                        checks.len(),
+                        start_stop
+                    );
                 }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
@@ -388,33 +414,70 @@ pub fn run(
             }
         }
 
-        // Стратегии ядра (под будущее окно) — троттлим ~1 Гц.
+        // Стратегии ядра (для окна стратегий) — проверяем ~1 Гц, но шлём только при
+        // изменениях: схему по revision, состав/значения — по сигнатуре.
         if server.feed.strategies && last_strats.elapsed() >= Duration::from_secs(1) {
             last_strats = Instant::now();
             if let Some(snap) = client.snapshot() {
-                let strategies: Vec<StrategyRow> = snap
-                    .strats()
-                    .snapshots()
-                    .map(|s| {
-                        let (sound_alert, keep_alert_secs) = alert_params(s);
-                        let name = s
-                            .strategy_name()
-                            .filter(|n| !n.is_empty())
-                            .map(str::to_string)
-                            .unwrap_or_else(|| format!("strat {}", s.strategy_id));
-                        StrategyRow {
-                            id: s.strategy_id,
-                            name,
-                            kind: strat_kind_name(s.kind().ordinal()).to_string(),
-                            checked: s.checked,
-                            is_short: s.is_short(),
-                            sound_alert,
-                            keep_alert_secs,
+                let strats = snap.strats();
+
+                // Схема (секции/поля по видам) — при смене revision.
+                let sr = strats.strategy_schema_revision();
+                if sr != last_schema_rev {
+                    last_schema_rev = sr;
+                    if let Some(schema) = strats.strategy_schema() {
+                        if tx
+                            .send(FeedMsg::StrategySchema(build_schema_model(schema)))
+                            .is_err()
+                        {
+                            break;
                         }
-                    })
-                    .collect();
-                if tx.send(FeedMsg::Strategies(strategies)).is_err() {
-                    break;
+                    }
+                }
+
+                // Состав/значения — при смене сигнатуры (id/ver/last_date/checked).
+                let mut sig = 0u64;
+                for s in strats.snapshots() {
+                    sig = sig
+                        .wrapping_mul(1099511628211)
+                        .wrapping_add(s.strategy_id)
+                        .wrapping_add((s.strategy_ver as u32 as u64).wrapping_shl(1))
+                        .wrapping_add(s.last_date)
+                        .wrapping_add(s.checked as u64);
+                }
+                if sig != last_strat_sig {
+                    last_strat_sig = sig;
+                    let strategies: Vec<StrategyRow> = strats
+                        .snapshots()
+                        .map(|s| {
+                            let (sound_alert, keep_alert_secs) = alert_params(s);
+                            let name = s
+                                .strategy_name()
+                                .filter(|n| !n.is_empty())
+                                .map(str::to_string)
+                                .unwrap_or_else(|| format!("strat {}", s.strategy_id));
+                            let fields = s
+                                .fields
+                                .iter()
+                                .map(|(n, v)| (n.to_string(), fmt_field(v)))
+                                .collect();
+                            StrategyRow {
+                                id: s.strategy_id,
+                                name,
+                                kind: strat_kind_name(s.kind().ordinal()).to_string(),
+                                kind_ordinal: s.kind().ordinal(),
+                                folder_path: s.path.to_string(),
+                                checked: s.checked,
+                                is_short: s.is_short(),
+                                sound_alert,
+                                keep_alert_secs,
+                                fields,
+                            }
+                        })
+                        .collect();
+                    if tx.send(FeedMsg::Strategies(strategies)).is_err() {
+                        break;
+                    }
                 }
             }
         }
@@ -515,6 +578,78 @@ fn alert_params(s: &StrategySnapshot) -> (bool, u32) {
         _ => 60,
     };
     (sound, keep)
+}
+
+/// Форматирует значение поля стратегии в строку (read-only показ в плашках).
+fn fmt_field(v: &FieldValue) -> String {
+    match v {
+        FieldValue::Bool(b) => if *b { "Yes" } else { "No" }.to_string(),
+        FieldValue::Int32(n) => n.to_string(),
+        FieldValue::Int64(n) => n.to_string(),
+        FieldValue::UInt32(n) => n.to_string(),
+        FieldValue::UInt64(n) => n.to_string(),
+        FieldValue::Byte(n) => n.to_string(),
+        FieldValue::Word(n) => n.to_string(),
+        FieldValue::Double(d) => fmt_num(*d),
+        FieldValue::Single(f) => fmt_num(*f as f64),
+        FieldValue::String(s) => s.clone(),
+    }
+}
+
+/// Компактное число без хвостовых нулей.
+fn fmt_num(d: f64) -> String {
+    let s = format!("{d:.6}");
+    let s = s.trim_end_matches('0').trim_end_matches('.');
+    if s.is_empty() {
+        "0".to_string()
+    } else {
+        s.to_string()
+    }
+}
+
+/// Декаплированная модель схемы из moonproto `StrategySchema`: по каждому виду —
+/// его секции (editor sections) с полями (имя/тип/вид виджета/пиклист/дефолт).
+fn build_schema_model(schema: &StrategySchema) -> StrategySchemaModel {
+    let kinds = schema
+        .kinds
+        .iter()
+        .map(|k| {
+            let kind = k.kind();
+            let sections = schema
+                .editor_sections_for_strategy_kind(kind)
+                .into_iter()
+                .map(|sec| SchemaSection {
+                    title: sec.title,
+                    fields: sec
+                        .fields
+                        .iter()
+                        .map(|f| SchemaField {
+                            name: f.name.clone(),
+                            type_name: f.type_id.name().to_string(),
+                            ui: map_ui(f.ui_kind),
+                            picklist: f.static_picklist.clone(),
+                            default: f.default_value.as_ref().map(fmt_field),
+                        })
+                        .collect(),
+                })
+                .collect();
+            SchemaKind {
+                ordinal: k.ordinal(),
+                name: k.name.clone(),
+                sections,
+            }
+        })
+        .collect();
+    StrategySchemaModel { kinds }
+}
+
+fn map_ui(u: StrategyFieldUiKind) -> SchemaFieldUi {
+    match u {
+        StrategyFieldUiKind::Checkbox => SchemaFieldUi::Checkbox,
+        StrategyFieldUiKind::Combo => SchemaFieldUi::Combo,
+        StrategyFieldUiKind::Color => SchemaFieldUi::Color,
+        _ => SchemaFieldUi::Edit, // Edit + Unknown
+    }
 }
 
 /// Тип (вид) стратегии MoonBot по ordinal `StrategyKind`.

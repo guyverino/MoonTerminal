@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 
-use crate::feed::{ConnStatus, DetectRow, FeedMsg, OrderRow, StrategyRow};
+use crate::feed::{ConnStatus, DetectRow, FeedMsg, OrderRow, StrategyRow, StrategySchemaModel};
 
 /// Сколько последних детектов держим в памяти на ядро.
 const MAX_DETECTS: usize = 2000;
@@ -20,12 +20,15 @@ pub struct CoreData {
     pub orders: Vec<OrderRow>,
     /// Последние детекты ядра (кольцо, обрезается до MAX_DETECTS).
     pub detects: Vec<DetectRow>,
-    /// Стратегии ядра (последний снимок; под будущее окно стратегий).
+    /// Стратегии ядра (последний снимок; для окна стратегий).
     pub strategies: Vec<StrategyRow>,
-    /// Растёт при изменении ордеров / детектов / стратегий.
+    /// Схема стратегий ядра (секции/поля по видам). None пока не пришла.
+    pub schema: Option<StrategySchemaModel>,
+    /// Растёт при изменении ордеров / детектов / стратегий / схемы.
     pub orders_rev: u64,
     pub detects_rev: u64,
     pub strategies_rev: u64,
+    pub schema_rev: u64,
 }
 
 impl CoreData {
@@ -35,9 +38,11 @@ impl CoreData {
             orders: Vec::new(),
             detects: Vec::new(),
             strategies: Vec::new(),
+            schema: None,
             orders_rev: 0,
             detects_rev: 0,
             strategies_rev: 0,
+            schema_rev: 0,
         }
     }
 
@@ -64,6 +69,10 @@ impl CoreData {
             FeedMsg::Strategies(strategies) => {
                 self.strategies = strategies;
                 self.strategies_rev = self.strategies_rev.wrapping_add(1);
+            }
+            FeedMsg::StrategySchema(schema) => {
+                self.schema = Some(schema);
+                self.schema_rev = self.schema_rev.wrapping_add(1);
             }
             // Рыночные/идентификационные сообщения сюда не маршрутизируются.
             FeedMsg::Identity(_) | FeedMsg::Ticks { .. } | FeedMsg::OrderBook { .. } => {}
@@ -93,5 +102,10 @@ impl CoreStore {
 
     pub fn core_mut(&mut self, id: CoreId) -> Option<&mut CoreData> {
         self.cores.get_mut(&id)
+    }
+
+    /// Снимок статусов всех ядер (id → клон статуса) — для бейджей в Настройках.
+    pub fn statuses(&self) -> impl Iterator<Item = (CoreId, ConnStatus)> + '_ {
+        self.cores.iter().map(|(id, d)| (*id, d.status.clone()))
     }
 }

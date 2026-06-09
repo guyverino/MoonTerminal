@@ -59,8 +59,6 @@ pub fn merge(sf: ServersFile, meta: SettingsFile) -> Merged {
                 active: m.map(|m| m.active).unwrap_or(true),
                 show_window: m.map(|m| m.show_window).unwrap_or(true),
                 feed: m.map(|m| m.feed).unwrap_or_default(),
-                host: e.host,
-                port: e.port,
                 key: e.key,
                 group: m
                     .map(|m| m.group.clone())
@@ -95,8 +93,6 @@ pub fn split(
             .map(|s| ServerEntry {
                 uid: s.uid,
                 name: s.name.clone(),
-                host: s.host.clone(),
-                port: s.port,
                 key: s.key.clone(),
             })
             .collect(),

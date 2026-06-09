@@ -24,6 +24,14 @@ pub enum CoreCmd {
     /// помечая именем рынка. `provider=false` → никаких рыночных подписок (ядро
     /// отдаёт только аккаунтный план: ордера/детекты/стратегии).
     SetMarket { provider: bool, markets: Vec<String> },
+    /// Действие со стратегиями ядра. Сначала синхронизирует галки (`set_checked`
+    /// по каждой паре + `send_checked_delta`), затем, если задано, шлёт «старт
+    /// отмеченных» (`start_stop=Some(true)`) или «стоп отмеченных» (`Some(false)`).
+    /// `checks` — только изменённые галки; `start_stop=None` — лишь синхронизация.
+    StrategiesAction {
+        checks: Vec<(u64, bool)>,
+        start_stop: Option<bool>,
+    },
 }
 
 /// Хэндл backend-потока. Дроп закрывает каналы → поток завершается.

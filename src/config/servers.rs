@@ -76,13 +76,7 @@ pub struct ServerConfig {
     /// Что принимаем от ядра (клиентский фильтр).
     #[serde(default)]
     pub feed: FeedFlags,
-    /// Host ядра. Пусто => взять из ключа.
-    #[serde(default)]
-    pub host: String,
-    /// Порт ядра. 0 => взять из ключа.
-    #[serde(default)]
-    pub port: u16,
-    /// Base64-ключ MoonBot.
+    /// Base64-ключ MoonBot. Внутри зашиты host/port/transport — отдельных полей нет.
     #[serde(default)]
     pub key: Secret,
     /// Группа = имя окна, куда попадает ядро. Цвет/иконка — на группе (GroupConfig).
@@ -122,8 +116,6 @@ impl ServerConfig {
             active: true,
             show_window: true,
             feed: FeedFlags::default(),
-            host: String::new(),
-            port: 0,
             key: Secret::default(),
             group: default_group(),
             market: default_market(),

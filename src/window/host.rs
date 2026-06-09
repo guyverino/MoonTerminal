@@ -23,6 +23,7 @@ use crate::workspace::Workspace;
 pub struct HostRender {
     pub gear_clicked: bool,
     pub reports_clicked: bool,
+    pub strategies_clicked: bool,
 }
 
 /// Принудительный прогон egui хотя бы раз в этот интервал — освежает живые
@@ -466,6 +467,7 @@ impl WindowHost {
         let none = HostRender {
             gear_clicked: false,
             reports_clicked: false,
+            strategies_clicked: false,
         };
 
         let now = Instant::now();
@@ -517,6 +519,9 @@ impl WindowHost {
             .core(status_core)
             .map(|d| d.status.clone())
             .unwrap_or(ConnStatus::Connecting);
+        // Сводка по ВСЕМ ядрам (для счётчика «N/M подключено» в статус-баре).
+        let conn = session.conn_summary();
+        let conn_sig = conn_summary_sig(&conn);
 
         // Сумма orders_rev группы — для хром-сигнатуры (таблица ордеров) и трекинга.
         let mut orders_sig = 0u64;
@@ -530,7 +535,7 @@ impl WindowHost {
         // переиспользуем кэш-сетку: smooth scroll и hover над графиком не меняют
         // хром → нет CPU на тесселяцию хрома каждый кадр.
         let size_now = (self.gpu.size.width, self.gpu.size.height);
-        let sig = chrome_sig(&market, &status, last_price, orders_sig);
+        let sig = chrome_sig(&market, &status, last_price, orders_sig, conn_sig);
         let run_egui = self.egui_tris.is_none()
             || self.egui_dirty
             || self.egui_wants_repaint
@@ -566,6 +571,7 @@ impl WindowHost {
 
         let mut gear_clicked = false;
         let mut reports_clicked = false;
+        let mut strategies_clicked = false;
         let mut open_detect: Option<(crate::session::CoreId, String)> = None;
         let mut close_chart = false;
         // Открыли/закрыли чарт в этом кадре → форсим ещё один кадр (перестроить
@@ -579,7 +585,9 @@ impl WindowHost {
             let group_name = self.workspace.group.clone();
             let info = ShellInfo {
                 group: &group_name,
-                status: &status,
+                conn_ready: conn.ready,
+                conn_total: conn.total,
+                conn_down: &conn.down,
                 tick_count,
                 book_levels,
                 fps: self.fps,
@@ -613,12 +621,16 @@ impl WindowHost {
             let full_output = self.egui_ctx.run(raw_input, |ctx| {
                 let mut open = false;
                 let mut reports = false;
-                shell.ui(ctx, &info, &mut open, &mut reports, icons);
+                let mut strategies = false;
+                shell.ui(ctx, &info, &mut open, &mut reports, &mut strategies, icons);
                 if open {
                     gear_clicked = true;
                 }
                 if reports {
                     reports_clicked = true;
+                }
+                if strategies {
+                    strategies_clicked = true;
                 }
                 let out = dock.show(
                     ctx, cores, store, &order_rows, following, chart_open, now_ms,
@@ -862,14 +874,24 @@ impl WindowHost {
         // только что открыли/закрыли чарт (нужно перестроить хром).
         self.dirty = self.egui_wants_repaint || layout_changed;
 
-        HostRender { gear_clicked, reports_clicked }
+        HostRender {
+            gear_clicked,
+            reports_clicked,
+            strategies_clicked,
+        }
     }
 }
 
 /// Сигнатура содержимого хрома: меняется только при смене рынка/статуса/цены
 /// (до копеек) / набора ордеров. Живые счётчики статус-бара (fps/present/CPU/RAM)
 /// СЮДА НЕ входят — их освежает EGUI_THROTTLE, иначе хром «менялся» бы каждый кадр.
-fn chrome_sig(market: &str, status: &ConnStatus, last_price: Option<f32>, orders_sig: u64) -> u64 {
+fn chrome_sig(
+    market: &str,
+    status: &ConnStatus,
+    last_price: Option<f32>,
+    orders_sig: u64,
+    conn_sig: u64,
+) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     market.hash(&mut h);
@@ -887,5 +909,32 @@ fn chrome_sig(market: &str, status: &ConnStatus, last_price: Option<f32>, orders
         .unwrap_or(i64::MIN)
         .hash(&mut h);
     orders_sig.hash(&mut h);
+    conn_sig.hash(&mut h);
+    h.finish()
+}
+
+/// Хэш сводки подключений (ready/total + список упавших) — чтобы статус-бар
+/// перерисовывался при смене статуса ЛЮБОГО ядра, а не только активного.
+fn conn_summary_sig(summary: &crate::session::ConnSummary) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    summary.ready.hash(&mut h);
+    summary.total.hash(&mut h);
+    for (name, st) in &summary.down {
+        name.hash(&mut h);
+        match st {
+            ConnStatus::Connecting => 0u8.hash(&mut h),
+            ConnStatus::Stage(s) => {
+                1u8.hash(&mut h);
+                s.hash(&mut h);
+            }
+            ConnStatus::Ready => 2u8.hash(&mut h),
+            ConnStatus::Failed(e) => {
+                3u8.hash(&mut h);
+                e.hash(&mut h);
+            }
+            ConnStatus::Disconnected => 4u8.hash(&mut h),
+        }
+    }
     h.finish()
 }

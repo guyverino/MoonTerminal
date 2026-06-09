@@ -23,6 +23,7 @@ mod metrics;
 mod session;
 mod settings;
 mod shell;
+mod strategies;
 mod symbol;
 mod win_taskbar;
 mod window;

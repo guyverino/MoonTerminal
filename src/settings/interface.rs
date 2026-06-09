@@ -33,7 +33,14 @@ impl SettingsTab for InterfaceTab {
         t!("tab.interface").to_string()
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, cfg: &mut AppConfig, _icons: &mut IconSet) {
+    fn ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        cfg: &mut AppConfig,
+        _icons: &mut IconSet,
+        _status: &super::CoreStatuses,
+        _actions: &mut super::SettingsActions,
+    ) {
         let t = &mut cfg.theme;
 
         section(ui, t!("iface.sec_chart").to_string());

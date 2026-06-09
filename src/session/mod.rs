@@ -19,7 +19,7 @@ use std::time::Instant;
 
 use crate::config::AppConfig;
 use crate::db::ReportTx;
-use crate::feed::{self, ExchangeId, FeedHandle, FeedMsg};
+use crate::feed::{self, ConnStatus, CoreCmd, ExchangeId, FeedHandle, FeedMsg};
 use crate::market::{MarketDataMode, MarketStore, MarketView};
 
 pub struct CoreSession {
@@ -27,6 +27,15 @@ pub struct CoreSession {
     pub name: String,
     pub group: String,
     handle: FeedHandle,
+}
+
+/// Сводка подключений для статус-бара: сколько ядер готово из общего числа +
+/// список «лежащих» (имя, статус) для всплывающей подсказки.
+pub struct ConnSummary {
+    pub ready: usize,
+    pub total: usize,
+    /// Не-Ready ядра: (имя, статус). Для тултипа «кто не подключён и почему».
+    pub down: Vec<(String, ConnStatus)>,
 }
 
 pub struct SessionManager {
@@ -116,6 +125,77 @@ impl SessionManager {
                     }
                 }
             }
+        }
+    }
+
+    /// Снимок статусов подключения всех ядер (id → статус) — для бейджей в окне
+    /// Настроек. Владеющая копия, чтобы не держать заём на сессию.
+    pub fn status_map(&self) -> HashMap<CoreId, ConnStatus> {
+        self.store.statuses().collect()
+    }
+
+    /// Сводка подключений по живым сессиям: ready/total + список не-Ready ядер
+    /// (имя, статус) для статус-бара и его тултипа.
+    pub fn conn_summary(&self) -> ConnSummary {
+        let total = self.sessions.len();
+        let mut ready = 0;
+        let mut down = Vec::new();
+        for s in &self.sessions {
+            let st = self
+                .store
+                .core(s.id)
+                .map(|d| d.status.clone())
+                .unwrap_or(ConnStatus::Connecting);
+            if st == ConnStatus::Ready {
+                ready += 1;
+            } else {
+                down.push((s.name.clone(), st));
+            }
+        }
+        ConnSummary { ready, total, down }
+    }
+
+    /// Переподключить одно ядро: гасит старый backend-поток (дроп хэндла закрывает
+    /// его каналы) и поднимает новый по текущему конфигу. Сбрасывает рыночную роль
+    /// ядра, чтобы провайдер переизбрался. Неактивные ядра/группы игнорирует.
+    pub fn reconnect(&mut self, id: CoreId, config: &AppConfig, reports: Option<&ReportTx>) {
+        let Some(server) = config.servers.iter().find(|s| s.id == id).cloned() else {
+            return;
+        };
+        if !(server.active && config.group(&server.group).active) {
+            return;
+        }
+        let name = server.name.clone();
+        let group = server.group.clone();
+        let handle = feed::spawn(server, reports.cloned());
+        match self.sessions.iter_mut().find(|s| s.id == id) {
+            Some(sess) => sess.handle = handle, // дроп старого хэндла → старый поток завершится
+            None => self.sessions.push(CoreSession { id, name, group, handle }),
+        }
+        self.store.ensure(id);
+        if let Some(core) = self.store.core_mut(id) {
+            core.status = ConnStatus::Connecting;
+        }
+        // Сброс координации для ядра: пусть провайдер/роль переизберутся заново.
+        self.core_key.remove(&id);
+        self.core_provider.remove(&id);
+        self.providers.retain(|_, prov| *prov != id);
+        self.last_cmd.remove(&id);
+        log::info!("reconnect: core={id}");
+    }
+
+    /// Действие со стратегиями ядра (из окна стратегий): единый путь команд через
+    /// per-core канал. Сначала синхронизирует галки (`checks`), затем — старт/стоп
+    /// отмеченных (`start_stop`). Пустое действие — no-op.
+    pub fn apply_strategies(&self, core: CoreId, checks: Vec<(u64, bool)>, start_stop: Option<bool>) {
+        if checks.is_empty() && start_stop.is_none() {
+            return;
+        }
+        if let Some(s) = self.sessions.iter().find(|s| s.id == core) {
+            let _ = s
+                .handle
+                .cmd_tx
+                .send(CoreCmd::StrategiesAction { checks, start_stop });
         }
     }
 

@@ -134,7 +134,36 @@ fn install_fonts(ctx: &egui::Context) {
     fonts
         .families
         .insert(FontFamily::Name("bold".into()), vec!["GeistMono-Bold".to_owned()]);
+
+    // CJK-фолбэк: системный шрифт (китайский/японский/корейский в тикерах/именах
+    // стратегий). Без него такие глифы рисуются квадратиками-«тофу». Грузим из ОС
+    // (не вшиваем — он большой); добавляем ПОСЛЕДНИМ в цепочку обоих семейств.
+    if let Some(bytes) = load_cjk_font() {
+        fonts
+            .font_data
+            .insert("CJK".to_owned(), FontData::from_owned(bytes));
+        for fam in [FontFamily::Proportional, FontFamily::Monospace] {
+            fonts.families.entry(fam).or_default().push("CJK".to_owned());
+        }
+    }
+
     ctx.set_fonts(fonts);
+}
+
+/// Читает системный CJK-шрифт (первый найденный). `.ttc` грузится как face index 0.
+fn load_cjk_font() -> Option<Vec<u8>> {
+    // Windows: YaHei/SimSun; macOS: PingFang; Linux: Noto CJK (типовые пути).
+    const CANDIDATES: &[&str] = &[
+        r"C:\Windows\Fonts\msyh.ttc",
+        r"C:\Windows\Fonts\simsun.ttc",
+        r"C:\Windows\Fonts\msjh.ttc",
+        "/System/Library/Fonts/PingFang.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+    ];
+    CANDIDATES
+        .iter()
+        .find_map(|p| std::fs::read(p).ok())
 }
 
 pub const ACCENT: Color32 = Color32::from_rgb(0xff, 0xb3, 0x47); // --accent
@@ -171,11 +200,25 @@ pub fn seg_btn(
     fixed_w: Option<f32>,
     rest_gradient: bool,
 ) -> egui::Response {
+    seg_btn_h(ui, text, active, fixed_w, rest_gradient, 28.0)
+}
+
+/// Как [`seg_btn`], но с произвольной высотой `height`. Нужно для мест, где высота
+/// строки задана извне (таблица настроек H=22) и трогать её нельзя, а вид кнопки
+/// должен совпадать с основным шаблоном.
+pub fn seg_btn_h(
+    ui: &mut egui::Ui,
+    text: &str,
+    active: bool,
+    fixed_w: Option<f32>,
+    rest_gradient: bool,
+    height: f32,
+) -> egui::Response {
     use egui::{vec2, Align2, Rounding, Sense, Stroke};
 
     let f = font();
     let w = fixed_w.unwrap_or_else(|| text_w(ui, text, &f) + 16.0);
-    let (rect, resp) = ui.allocate_exact_size(vec2(w, 28.0), Sense::click());
+    let (rect, resp) = ui.allocate_exact_size(vec2(w, height), Sense::click());
     if ui.is_rect_visible(rect) {
         let hovered = resp.hovered();
         let round = Rounding::same(4.0);
@@ -190,6 +233,51 @@ pub fn seg_btn(
         p.rect_filled(rect, round, fill);
         if rest_gradient && !hovered {
             raise_sheen(p, rect, 4.0);
+        }
+        if hovered {
+            hover_glow(p, rect, 4.0);
+        }
+        p.rect_stroke(rect, round, Stroke::new(1.0, border));
+        p.text(rect.center(), Align2::CENTER_CENTER, text, f, fg);
+    }
+    resp
+}
+
+/// Кнопка-сегмент по шаблону [`seg_btn`], но с цветным градиентом-заливкой снизу
+/// для индикации «частичного» состояния. `tint = Some(color)` → лёгкий градиент от
+/// прозрачного сверху к `color` снизу + рамка цвета (например, часть галок ядра
+/// выключена → подсветка цветом сервера). `tint = None` → обычная серая кнопка.
+pub fn seg_btn_tinted(
+    ui: &mut egui::Ui,
+    text: &str,
+    fixed_w: Option<f32>,
+    height: f32,
+    tint: Option<Color32>,
+) -> egui::Response {
+    use egui::{vec2, Align2, Rounding, Sense, Stroke};
+
+    let f = font();
+    let w = fixed_w.unwrap_or_else(|| text_w(ui, text, &f) + 16.0);
+    let (rect, resp) = ui.allocate_exact_size(vec2(w, height), Sense::click());
+    if ui.is_rect_visible(rect) {
+        let hovered = resp.hovered();
+        let round = Rounding::same(4.0);
+        let (border, fg) = if hovered {
+            (ACCENT.gamma_multiply(0.55), TEXT)
+        } else if let Some(c) = tint {
+            (c.gamma_multiply(0.75), TEXT)
+        } else {
+            (BORDER, TEXT_2)
+        };
+        let p = ui.painter();
+        p.rect_filled(rect, round, if hovered { LIFT_HOVER } else { LIFT });
+        // Цветной градиент в покое (на ховере уступает место акцентному глоу).
+        if let Some(c) = tint {
+            if !hovered {
+                let g0 = Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), 0);
+                let g1 = Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), 96);
+                rounded_grad(p, rect, 4.0, g0, g1, 0.30);
+            }
         }
         if hovered {
             hover_glow(p, rect, 4.0);

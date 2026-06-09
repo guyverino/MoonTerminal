@@ -1,5 +1,6 @@
-//! Отдельное нативное окно настроек: обычное ОС-окно (системная рамка + крестик),
-//! вкладки в ScrollArea, футер с «Сохранить». Свой surface + egui.
+//! Отдельное нативное окно «Стратегии»: 4 панели (дерево/секции/параметры/хэлп).
+//! Читает аккуратный план ядер из `SessionManager` (store + имена ядер); по
+//! «Применить» возвращает наружу команды старт/стоп (App шлёт их через session).
 
 use std::sync::Arc;
 
@@ -8,40 +9,41 @@ use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
 use winit::window::Window;
 
-use crate::config::AppConfig;
 use crate::gpu::GpuContext;
-use crate::icons::IconSet;
-use crate::settings::{CoreStatuses, SettingsState};
+use crate::session::{CoreId, SessionManager};
 use crate::shell::theme;
+use crate::strategies::{StratAction, StrategiesState};
 
-pub struct SettingsWinOut {
-    pub saved: bool,
+/// Итог кадра окна для App: действия со стратегиями (синхронизация галок + старт/стоп).
+pub struct StrategiesWinOut {
+    pub actions: Vec<StratAction>,
 }
 
-pub struct SettingsWindow {
+pub struct StrategiesWindow {
     pub window: Arc<Window>,
     gpu: GpuContext,
     egui_ctx: egui::Context,
     egui_state: egui_winit::State,
     egui_renderer: egui_wgpu::Renderer,
-    icons: IconSet,
     dirty: bool,
+    state: StrategiesState,
+    /// Сигнатура данных стратегий/схемы по ядрам — для авто-перерисовки при приходе
+    /// новых снимков (как generation у окна отчётов).
+    last_data_sig: u64,
 }
 
-impl SettingsWindow {
+impl StrategiesWindow {
     pub fn new(event_loop: &ActiveEventLoop) -> anyhow::Result<Self> {
         let attrs = Window::default_attributes()
-            .with_title(t!("settings.window_title").to_string())
+            .with_title(t!("strat.window_title").to_string())
             .with_resizable(true)
-            .with_inner_size(winit::dpi::LogicalSize::new(860.0, 580.0));
+            .with_inner_size(winit::dpi::LogicalSize::new(1180.0, 680.0));
         let window = Arc::new(event_loop.create_window(attrs)?);
-        // Иконка окна/taskbar — общая «лунная» 0.png (как у окна отчётов). Вшита в
-        // бинарь, поэтому показывается и в release-запуске без assets/ рядом с exe.
         window.set_window_icon(crate::icons::brand_winit_icon());
 
         let gpu = GpuContext::new(window.clone())?;
         let egui_ctx = egui::Context::default();
-        theme::apply(&egui_ctx);
+        theme::apply(&egui_ctx); // тема проекта: шрифт Geist Mono + стиль виджетов
         let egui_state = egui_winit::State::new(
             egui_ctx.clone(),
             egui::ViewportId::ROOT,
@@ -58,9 +60,32 @@ impl SettingsWindow {
             egui_ctx,
             egui_state,
             egui_renderer,
-            icons: IconSet::discover(),
             dirty: true,
+            state: StrategiesState::default(),
+            last_data_sig: 0,
         })
+    }
+
+    /// Сверяет сигнатуру данных стратегий/схемы всех ядер: пришёл новый снимок →
+    /// перерисовать (отразить новые checked/состав/схему).
+    pub fn poll(&mut self, session: &SessionManager) {
+        let mut sig = 0u64;
+        for s in &session.sessions {
+            if let Some(cd) = session.store.core(s.id) {
+                sig = sig
+                    .wrapping_add(cd.strategies_rev)
+                    .wrapping_mul(31)
+                    .wrapping_add(cd.schema_rev);
+            }
+        }
+        if sig != self.last_data_sig {
+            self.last_data_sig = sig;
+            self.dirty = true;
+        }
+        // Hot-reload правил зависимостей (param_deps.toml) — правка файла видна на лету.
+        if self.state.rules.reload_if_changed() {
+            self.dirty = true;
+        }
     }
 
     pub fn on_egui_event(&mut self, event: &WindowEvent) -> bool {
@@ -77,18 +102,11 @@ impl SettingsWindow {
         self.dirty
     }
 
-    /// Принудительно перерисовать на следующем кадре (напр. изменился статус ядра).
-    pub fn mark_dirty(&mut self) {
-        self.dirty = true;
-    }
-
-    pub fn render(
-        &mut self,
-        settings: &mut SettingsState,
-        config: &mut AppConfig,
-        status: &CoreStatuses,
-    ) -> SettingsWinOut {
-        let mut out = SettingsWinOut { saved: false };
+    /// Кадр окна. Читает данные из `session`; возвращает команды старт/стоп.
+    pub fn render(&mut self, session: &SessionManager) -> StrategiesWinOut {
+        let mut out = StrategiesWinOut {
+            actions: Vec::new(),
+        };
 
         let frame = match self.gpu.surface.get_current_texture() {
             Ok(f) => f,
@@ -97,7 +115,7 @@ impl SettingsWindow {
                 return out;
             }
             Err(e) => {
-                log::warn!("settings surface error: {e:?}");
+                log::warn!("strategies surface error: {e:?}");
                 return out;
             }
         };
@@ -108,31 +126,23 @@ impl SettingsWindow {
             .gpu
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("settings-encoder"),
+                label: Some("strategies-encoder"),
             });
+
+        let cores: Vec<(CoreId, String)> = session
+            .sessions
+            .iter()
+            .map(|s| (s.id, s.name.clone()))
+            .collect();
 
         let raw_input = self.egui_state.take_egui_input(&self.window);
-        let icons = &mut self.icons;
-        let mut saved = false;
-
+        let state = &mut self.state;
+        let store = &session.store;
+        let mut panel_out = crate::strategies::StrategiesOut::default();
         let full_output = self.egui_ctx.run(raw_input, |ctx| {
-            // Футер с кнопкой Сохранить (вне прокрутки).
-            egui::TopBottomPanel::bottom("settings-footer")
-                .exact_height(40.0)
-                .show(ctx, |ui| {
-                    ui.add_space(6.0);
-                    if let Some(new_cfg) = settings.footer(ui) {
-                        // footer уже провалидировал и записал файлы.
-                        *config = new_cfg;
-                        saved = true;
-                    }
-                });
-
-            egui::CentralPanel::default().show(ctx, |ui| {
-                settings.body(ui, icons, status);
-            });
+            panel_out = state.ui(ctx, &cores, store);
         });
-        out.saved = saved;
+        out.actions = panel_out.actions;
 
         self.egui_state
             .handle_platform_output(&self.window, full_output.platform_output);
@@ -143,15 +153,15 @@ impl SettingsWindow {
             size_in_pixels: [self.gpu.size.width, self.gpu.size.height],
             pixels_per_point: full_output.pixels_per_point,
         };
-        for (tex_id, delta) in &full_output.textures_delta.set {
+        for (id, delta) in &full_output.textures_delta.set {
             self.egui_renderer
-                .update_texture(&self.gpu.device, &self.gpu.queue, *tex_id, delta);
+                .update_texture(&self.gpu.device, &self.gpu.queue, *id, delta);
         }
         self.egui_renderer
             .update_buffers(&self.gpu.device, &self.gpu.queue, &mut encoder, &tris, &screen);
         {
             let rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("settings-pass"),
+                label: Some("strategies-pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
                     resolve_target: None,
@@ -174,8 +184,8 @@ impl SettingsWindow {
         }
         self.gpu.queue.submit(Some(encoder.finish()));
         frame.present();
-        for tex_id in &full_output.textures_delta.free {
-            self.egui_renderer.free_texture(tex_id);
+        for id in &full_output.textures_delta.free {
+            self.egui_renderer.free_texture(id);
         }
 
         self.dirty = self.egui_ctx.has_requested_repaint();

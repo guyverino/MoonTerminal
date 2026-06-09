@@ -25,6 +25,10 @@ pub fn default_version() -> u32 {
 }
 
 /// Запись сервера в servers.enc (секрет + стабильный uid).
+///
+/// host/port НЕ храним: они зашиты в самом ключе MoonBot (см. `parse_key_info` в
+/// feed/live.rs). Старые servers.enc с полями host/port читаются без ошибки —
+/// неизвестные поля serde просто игнорирует, подключение пойдёт по ключу.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ServerEntry {
     /// Стабильный идентификатор ядра (см. `ServerConfig::uid`). 0 в старых файлах →
@@ -32,10 +36,6 @@ pub struct ServerEntry {
     #[serde(default)]
     pub uid: u64,
     pub name: String,
-    #[serde(default)]
-    pub host: String,
-    #[serde(default)]
-    pub port: u16,
     #[serde(default)]
     pub key: Secret,
 }

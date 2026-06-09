@@ -13,7 +13,7 @@ use crate::db::{self, ReportsHandle};
 use crate::metrics::{Metrics, MetricsSnapshot};
 use crate::session::SessionManager;
 use crate::settings::SettingsState;
-use crate::window::{ReportsWindow, SettingsWindow, WindowHost};
+use crate::window::{ReportsWindow, SettingsWindow, StrategiesWindow, WindowHost};
 use crate::workspace::Workspace;
 
 fn now_ms() -> f64 {
@@ -30,6 +30,8 @@ pub struct App {
     open_settings_requested: bool,
     reports_window: Option<ReportsWindow>,
     open_reports_requested: bool,
+    strategies_window: Option<StrategiesWindow>,
+    open_strategies_requested: bool,
     session: SessionManager,
     /// Хэндл БД отчётов: канал записи + счётчик-генерация (None = БД недоступна).
     reports: Option<ReportsHandle>,
@@ -37,6 +39,9 @@ pub struct App {
     windows: HashMap<WindowId, WindowHost>,
     needs_rebuild: bool,
     metrics: Metrics,
+    /// Последний снимок статусов ядер, показанный в окне настроек. Сравниваем,
+    /// чтобы перерисовывать настройки только при реальной смене статуса.
+    settings_statuses: crate::settings::CoreStatuses,
 }
 
 impl App {
@@ -52,12 +57,15 @@ impl App {
             open_settings_requested: false,
             reports_window: None,
             open_reports_requested: false,
+            strategies_window: None,
+            open_strategies_requested: false,
             session,
             reports,
             epoch_ms,
             windows: HashMap::new(),
             needs_rebuild: false,
             metrics: Metrics::new(),
+            settings_statuses: HashMap::new(),
         }
     }
 
@@ -88,6 +96,7 @@ impl App {
         let now = now_ms();
         let mut gear = false;
         let mut reports = false;
+        let mut strategies = false;
         {
             let session = &self.session;
             if let Some(host) = self.windows.get_mut(&id) {
@@ -97,6 +106,7 @@ impl App {
                 let out = host.render(session, now, metrics);
                 gear = out.gear_clicked;
                 reports = out.reports_clicked;
+                strategies = out.strategies_clicked;
             }
         }
         if gear {
@@ -104,6 +114,9 @@ impl App {
         }
         if reports {
             self.open_reports_requested = true;
+        }
+        if strategies {
+            self.open_strategies_requested = true;
         }
     }
 
@@ -145,7 +158,46 @@ impl App {
         }
     }
 
+    fn open_strategies(&mut self, event_loop: &ActiveEventLoop) {
+        self.open_strategies_requested = false;
+        if let Some(sw) = &self.strategies_window {
+            sw.window.focus_window();
+            return;
+        }
+        match StrategiesWindow::new(event_loop) {
+            Ok(w) => self.strategies_window = Some(w),
+            Err(e) => log::error!("окно стратегий: {e:#}"),
+        }
+    }
+
+    fn render_strategies(&mut self) {
+        // Новые снимки стратегий/схемы → перерисовка (poll), затем кадр. Действия
+        // (синхронизация галок + старт/стоп отмеченных) шлём через единый диспетчер.
+        let mut actions: Vec<crate::strategies::StratAction> = Vec::new();
+        if let Some(sw) = self.strategies_window.as_mut() {
+            sw.poll(&self.session);
+            if sw.needs_render() {
+                actions = sw.render(&self.session).actions;
+            }
+        }
+        for a in actions {
+            self.session.apply_strategies(a.core, a.checks, a.start_stop);
+        }
+    }
+
     fn render_settings(&mut self) {
+        if self.settings_window.is_none() {
+            return;
+        }
+        // Снимок статусов из живой сессии. Если он изменился с прошлого кадра —
+        // форсируем перерисовку настроек, чтобы кружки статуса обновлялись вживую.
+        let statuses = self.session.status_map();
+        if statuses != self.settings_statuses {
+            self.settings_statuses = statuses.clone();
+            if let Some(sw) = self.settings_window.as_mut() {
+                sw.mark_dirty();
+            }
+        }
         // Рисуем окно настроек только если оно открыто и просит кадр.
         let render = self
             .settings_window
@@ -158,7 +210,13 @@ impl App {
         let before = self.config.clone();
         let mut saved = false;
         if let Some(sw) = self.settings_window.as_mut() {
-            saved = sw.render(&mut self.settings, &mut self.config).saved;
+            saved = sw.render(&mut self.settings, &mut self.config, &statuses).saved;
+        }
+        // Действия вкладок (ручной реконнект ядра по кнопке) — применяем независимо
+        // от сохранения: реконнект работает по живому (сохранённому) конфигу.
+        for id in self.settings.take_actions().reconnect {
+            self.session
+                .reconnect(id, &self.config, self.reports.as_ref().map(|h| &h.tx));
         }
         if !saved {
             return;
@@ -252,6 +310,28 @@ impl ApplicationHandler for App {
             }
             if close {
                 self.reports_window = None;
+            }
+            return;
+        }
+
+        // Окно стратегий?
+        let is_strategies = self
+            .strategies_window
+            .as_ref()
+            .is_some_and(|sw| sw.window.id() == id);
+        if is_strategies {
+            let mut close = false;
+            if let Some(sw) = self.strategies_window.as_mut() {
+                sw.on_egui_event(&event);
+                if let WindowEvent::Resized(size) = &event {
+                    sw.resize(*size);
+                }
+                if matches!(event, WindowEvent::CloseRequested) {
+                    close = true;
+                }
+            }
+            if close {
+                self.strategies_window = None;
             }
             return;
         }
@@ -355,6 +435,11 @@ impl ApplicationHandler for App {
             self.open_reports(event_loop);
         }
         self.render_reports();
+
+        if self.open_strategies_requested {
+            self.open_strategies(event_loop);
+        }
+        self.render_strategies();
 
         event_loop.set_control_flow(ControlFlow::WaitUntil(
             Instant::now() + Duration::from_millis(8),
