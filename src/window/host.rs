@@ -471,10 +471,6 @@ impl WindowHost {
         }
     }
 
-    pub fn request_redraw(&self) {
-        self.window.request_redraw();
-    }
-
     /// Открытые ордера всех ядер группы (с именем ядра) — для вкладки «Ордера»
     /// дока и её окна открепления. Дёшево копирует строки на кадр.
     pub fn collect_orders(&self, store: &CoreStore) -> Vec<(String, OrderRow)> {

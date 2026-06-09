@@ -173,11 +173,4 @@ impl AppConfig {
     pub fn has_keyed_server(&self) -> bool {
         self.servers.iter().any(|s| !s.key.is_empty())
     }
-
-    pub fn primary_server(&self) -> ServerConfig {
-        self.servers
-            .first()
-            .cloned()
-            .unwrap_or_else(ServerConfig::placeholder)
-    }
 }

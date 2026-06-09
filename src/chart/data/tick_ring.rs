@@ -82,10 +82,6 @@ impl TickRing {
         self.instances.is_empty()
     }
 
-    pub fn last_price(&self) -> Option<f32> {
-        self.instances.last().map(|i| i.price)
-    }
-
     /// Мин/макс цены среди среза [start, start+count) — авто-диапазон Y по
     /// ВИДИМОМУ окну (на паузе окно заморожено → вертикаль не дёргается).
     pub fn price_range_in(&self, start: u32, count: u32) -> Option<(f32, f32)> {
@@ -100,21 +96,6 @@ impl TickRing {
         let mut lo = f32::MAX;
         let mut hi = f32::MIN;
         for i in &self.instances[s..e] {
-            lo = lo.min(i.price);
-            hi = hi.max(i.price);
-        }
-        Some((lo, hi))
-    }
-
-    /// Мин/макс цены среди последних `n` тиков — для авто-диапазона Y.
-    pub fn price_range_tail(&self, n: usize) -> Option<(f32, f32)> {
-        if self.instances.is_empty() {
-            return None;
-        }
-        let start = self.instances.len().saturating_sub(n);
-        let mut lo = f32::MAX;
-        let mut hi = f32::MIN;
-        for i in &self.instances[start..] {
             lo = lo.min(i.price);
             hi = hi.max(i.price);
         }

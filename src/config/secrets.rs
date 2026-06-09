@@ -24,11 +24,6 @@ impl Secret {
         self.0.is_empty()
     }
 
-    /// Маска для UI: точки по длине (ограничено).
-    pub fn masked(&self) -> String {
-        "•".repeat(self.0.chars().count().min(24))
-    }
-
     /// Изменяемый буфер для поля ввода в UI (egui password TextEdit).
     pub fn buffer_mut(&mut self) -> &mut String {
         &mut self.0

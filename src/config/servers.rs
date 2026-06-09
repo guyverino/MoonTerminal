@@ -105,21 +105,3 @@ pub fn default_market() -> String {
 pub fn default_true() -> bool {
     true
 }
-
-impl ServerConfig {
-    /// Заглушка для отображения, когда серверов в конфиге ещё нет (не подключается).
-    pub fn placeholder() -> Self {
-        Self {
-            id: 0,
-            uid: 0,
-            name: "—".to_string(),
-            active: true,
-            show_window: true,
-            feed: FeedFlags::default(),
-            key: Secret::default(),
-            group: default_group(),
-            market: default_market(),
-            color: default_color(),
-        }
-    }
-}
