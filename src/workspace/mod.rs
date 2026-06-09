@@ -16,19 +16,10 @@ pub struct CoreInfo {
     pub quote: String,
 }
 
-/// Открытый чарт окна: какое ядро и какой рынок сейчас показываем.
-#[derive(Clone)]
-pub struct OpenChart {
-    pub core: CoreId,
-    pub market: String,
-}
-
 pub struct Workspace {
     pub group: String,
     pub icon: u32,
     pub cores: Vec<CoreInfo>,
-    /// Открытый чарт (по клику на детект). None = пусто (серый контейнер).
-    pub open: Option<OpenChart>,
     pub dock: Dock,
 }
 
@@ -59,33 +50,11 @@ impl Workspace {
                     group: s.group.clone(),
                     icon: config.group(&s.group).icon,
                     cores: vec![info],
-                    open: None,
                     dock: Dock::new(),
                 });
             }
         }
         out
-    }
-
-    /// Ядро открытого чарта (0 = ничего не открыто) — для подписки/данных.
-    pub fn active_core(&self) -> CoreId {
-        self.open.as_ref().map(|o| o.core).unwrap_or(0)
-    }
-
-    /// Базовая монета открытого рынка (без quote подключения) или «—», когда пусто.
-    pub fn active_market(&self) -> &str {
-        match &self.open {
-            Some(o) => {
-                let quote = self
-                    .cores
-                    .iter()
-                    .find(|c| c.id == o.core)
-                    .map(|c| c.quote.as_str())
-                    .unwrap_or("");
-                crate::symbol::base_symbol(&o.market, quote)
-            }
-            None => "—",
-        }
     }
 
     /// Пустой workspace, чтобы было одно окно (открыть Настройки), когда серверов нет.
@@ -94,7 +63,6 @@ impl Workspace {
             group: "—".to_string(),
             icon: 0,
             cores: Vec::new(),
-            open: None,
             dock: Dock::new(),
         }
     }

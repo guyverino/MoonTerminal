@@ -669,17 +669,12 @@ impl ApplicationHandler for App {
 
         self.session.drain();
 
-        // Открытые чарты по окнам: ядро → рынок (динамическая подписка). Окно без
-        // открытого чарта в карту не попадает → ничего не подписываем.
-        let open: HashMap<crate::session::CoreId, String> = self
+        // Открытые рынки всех панелей всех контейнеров всех окон → подписки
+        // (список пар; ядро может иметь несколько открытых рынков — мульти-панель).
+        let open: Vec<(crate::session::CoreId, String)> = self
             .windows
             .values()
-            .filter_map(|h| {
-                h.workspace
-                    .open
-                    .as_ref()
-                    .map(|o| (o.core, o.market.clone()))
-            })
+            .flat_map(|h| h.open_markets())
             .collect();
         self.session.set_open(&open);
 

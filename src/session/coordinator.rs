@@ -19,11 +19,13 @@ impl SessionManager {
     /// Сообщает, какой рынок открыт у каждого ядра (ядро → рынок). Зовётся каждый
     /// кадр. Перевыбирает провайдеров, считает обслуживаемые рынки на провайдера и
     /// шлёт ядрам рыночную роль (только при изменении).
-    pub fn set_open(&mut self, desired: &HashMap<CoreId, String>) {
+    pub fn set_open(&mut self, desired: &[(CoreId, String)]) {
         let now = Instant::now();
         self.reconcile_providers();
 
-        // 1. Желаемые рынки на провайдера = union открытых чартов ядер этого провайдера.
+        // 1. Желаемые рынки на провайдера = union открытых чартов ядер этого
+        //    провайдера. Принимаем СПИСОК пар (ядро может иметь несколько открытых
+        //    рынков — мульти-панель), агрегируем в множество на провайдера.
         let mut desired_pm: HashMap<CoreId, HashSet<String>> = HashMap::new();
         for (core, market) in desired {
             if let Some(&p) = self.core_provider.get(core) {

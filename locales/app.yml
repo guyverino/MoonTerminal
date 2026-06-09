@@ -205,6 +205,12 @@ orders.col.price:
   en: "Price"
   es: "Precio"
 
+# --- Верхняя полоса вкладок-контейнеров графиков ---
+chart.tab.main:
+  ru: "Графики"
+  en: "Charts"
+  es: "Gráficos"
+
 # --- Нижний док: вкладки ---
 dock.tab.orders:
   ru: "Ордера"

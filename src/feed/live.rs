@@ -274,11 +274,11 @@ pub fn run(
             for ev in events {
                 match ev {
                     Event::Detect(d) if server.feed.detects => {
-                        let (sound_alert, keep_alert_secs) = detect_snap
+                        let params = detect_snap
                             .as_ref()
                             .and_then(|s| s.strats().snapshot(d.strategy_id))
                             .map(alert_params)
-                            .unwrap_or((false, 60));
+                            .unwrap_or_default();
                         detect_seq += 1;
                         detects.push(DetectRow {
                             seq: detect_seq,
@@ -288,8 +288,10 @@ pub fn run(
                             kind_bits: d.kind_bits,
                             msg: d.msg,
                             time_ms: now_ms(),
-                            sound_alert,
-                            keep_alert_secs,
+                            sound_alert: params.sound_alert,
+                            keep_alert_secs: params.keep_alert_secs,
+                            add_to_chart: params.add_to_chart,
+                            keep_in_chart_secs: params.keep_in_chart_secs,
                         });
                     }
                     Event::ClosedSellOrderReport(r) if server.feed.reports => {
@@ -480,7 +482,7 @@ pub fn run(
                     let strategies: Vec<StrategyRow> = strats
                         .snapshots()
                         .map(|s| {
-                            let (sound_alert, keep_alert_secs) = alert_params(s);
+                            let ap = alert_params(s);
                             let name = s
                                 .strategy_name()
                                 .filter(|n| !n.is_empty())
@@ -499,8 +501,8 @@ pub fn run(
                                 folder_path: s.path.to_string(),
                                 checked: s.checked,
                                 is_short: s.is_short(),
-                                sound_alert,
-                                keep_alert_secs,
+                                sound_alert: ap.sound_alert,
+                                keep_alert_secs: ap.keep_alert_secs,
                                 fields,
                             }
                         })
@@ -600,14 +602,30 @@ pub fn run(
 
 /// (SoundAlert, KeepAlert сек) из полей стратегии. Дефолт — (false, 60):
 /// кнопку-детект показываем только при SoundAlert=Yes, держим KeepAlert секунд.
-fn alert_params(s: &StrategySnapshot) -> (bool, u32) {
-    let sound = s.field_bool_or_false("SoundAlert");
-    let keep = match s.fields.get("KeepAlert") {
+/// Параметры стратегии-источника, влияющие на UI детекта.
+#[derive(Default)]
+struct AlertParams {
+    sound_alert: bool,
+    keep_alert_secs: u32,
+    add_to_chart: bool,
+    keep_in_chart_secs: u32,
+}
+
+fn field_secs_or(s: &StrategySnapshot, name: &str, default: u32) -> u32 {
+    match s.fields.get(name) {
         Some(FieldValue::Int32(v)) => (*v).max(0) as u32,
         Some(FieldValue::UInt32(v)) => *v,
-        _ => 60,
-    };
-    (sound, keep)
+        _ => default,
+    }
+}
+
+fn alert_params(s: &StrategySnapshot) -> AlertParams {
+    AlertParams {
+        sound_alert: s.field_bool_or_false("SoundAlert"),
+        keep_alert_secs: field_secs_or(s, "KeepAlert", 60),
+        add_to_chart: s.field_bool_or_false("AddToChart"),
+        keep_in_chart_secs: field_secs_or(s, "KeepInChart", 60),
+    }
 }
 
 /// Форматирует значение поля стратегии в строку (read-only показ в плашках).

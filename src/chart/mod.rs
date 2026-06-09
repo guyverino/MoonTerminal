@@ -3,6 +3,7 @@
 
 pub mod axes;
 pub mod canvas;
+pub mod container;
 pub mod data;
 pub mod layers;
 pub mod style;
@@ -19,7 +20,7 @@ use crate::config::ChartTheme;
 use crate::market::MarketView;
 
 /// sRGB → linear (для clear-цвета; свопчейн sRGB сам кодирует обратно).
-fn srgb_to_linear(c: u8) -> f64 {
+pub fn srgb_to_linear(c: u8) -> f64 {
     let s = c as f64 / 255.0;
     if s <= 0.04045 {
         s / 12.92
@@ -103,31 +104,35 @@ impl Chart {
         now_ms: f64,
         data: Option<&MarketView>,
         open: bool,
+        clear: bool,
         theme: &ChartTheme,
     ) {
         // Чарт закрыт — заливаем кадр нейтральным серым (пустой контейнер). egui
-        // поверх дорисует панели; центральная зона остаётся серой.
+        // поверх дорисует панели; центральная зона остаётся серой. `clear=false`
+        // (не первая панель тайла) — ничего не делаем, фон уже залит соседом.
         if !open {
-            encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("chart-empty"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: target,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        // Цвет пустого контейнера — из темы (sRGB→linear).
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: srgb_to_linear(theme.closed_bg[0]),
-                            g: srgb_to_linear(theme.closed_bg[1]),
-                            b: srgb_to_linear(theme.closed_bg[2]),
-                            a: 1.0,
-                        }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
+            if clear {
+                encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("chart-empty"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: target,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            // Цвет пустого контейнера — из темы (sRGB→linear).
+                            load: wgpu::LoadOp::Clear(wgpu::Color {
+                                r: srgb_to_linear(theme.closed_bg[0]),
+                                g: srgb_to_linear(theme.closed_bg[1]),
+                                b: srgb_to_linear(theme.closed_bg[2]),
+                                a: 1.0,
+                            }),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+            }
             return;
         }
         // Тема → style-uniform (group 1) для grid/cursor.
@@ -264,13 +269,18 @@ impl Chart {
                 resolve_target: None,
                 ops: wgpu::Operations {
                     // Фон стакана/незакрытых зон — из темы. Свопчейн sRGB → задаём
-                    // в linear, иначе фон осветляется в серый.
-                    load: wgpu::LoadOp::Clear(wgpu::Color {
-                        r: srgb_to_linear(theme.bg[0]),
-                        g: srgb_to_linear(theme.bg[1]),
-                        b: srgb_to_linear(theme.bg[2]),
-                        a: 1.0,
-                    }),
+                    // в linear, иначе фон осветляется в серый. `clear=false` (не
+                    // первая панель тайла) → Load, чтобы не стереть соседей.
+                    load: if clear {
+                        wgpu::LoadOp::Clear(wgpu::Color {
+                            r: srgb_to_linear(theme.bg[0]),
+                            g: srgb_to_linear(theme.bg[1]),
+                            b: srgb_to_linear(theme.bg[2]),
+                            a: 1.0,
+                        })
+                    } else {
+                        wgpu::LoadOp::Load
+                    },
                     store: wgpu::StoreOp::Store,
                 },
             })],
