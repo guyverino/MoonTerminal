@@ -53,9 +53,10 @@ pub struct App {
     repin_reqs: Vec<(WindowId, DockTab)>,
     /// ОБЩИЙ для всех окон групп `ReportView` (один экземпляр, одно SQLite-чтение).
     report: crate::dock::ReportView,
-    /// ОБЩЕЕ состояние лог-панели (выбор источника/файла/поиск) — одно на все окна и
-    /// откреплённое окно лога. Сбрасывается к дефолту при закрытии окна лога.
-    log_panel: crate::dock::LogPanelState,
+    /// Состояние лог-панели ОТКРЕПЛЁННОГО окна лога (одно общее окно на все группы;
+    /// область видимости — все ядра). Состояние докового лога — своё у каждого окна
+    /// (в его `Dock`). Сбрасывается к дефолту при закрытии окна лога.
+    detached_log: crate::dock::LogPanelState,
     /// Глобальные флаги открепления Report/Log/Assets (по [`DockTab::idx`]; Orders
     /// игнорируется — его открепление пер-окно живёт в доке окна).
     global_detached: [bool; 4],
@@ -102,7 +103,7 @@ impl App {
             detach_reqs: Vec::new(),
             repin_reqs: Vec::new(),
             report,
-            log_panel: crate::dock::LogPanelState::default(),
+            detached_log: crate::dock::LogPanelState::default(),
             global_detached: [false; 4],
             last_log_rev: 0,
             last_report_gen: 0,
@@ -120,19 +121,34 @@ impl App {
         }
     }
 
-    /// Список источников лога для селектора: «Локальный» + каждое ядро (по конфигу,
-    /// включая headless/неактивные — у них могут быть прошлые файлы). `id` сервера =
-    /// рантайм-CoreId (совпадает с ключом store). Метка файла = очищенное имя ядра.
-    fn build_log_sources(&self) -> Vec<crate::dock::LogSourceItem> {
-        let mut v = Vec::with_capacity(self.config.servers.len() + 1);
-        v.push(crate::dock::LogSourceItem {
-            source: crate::dock::LogSource::Local,
-            display: t!("log.source.local").to_string(),
-            file_label: "app".to_string(),
-        });
+    /// Список источников лога для селектора. Порядок: агрегат (по умолчанию) →
+    /// «Локальный» → ядра. `scope`=Some(группа) — только ядра этой группы (для дока
+    /// окна группы; агрегат = «Лог группы»); None — все ядра (для откреплённого окна;
+    /// агрегат = «Все ядра»). `id` сервера = рантайм-CoreId (ключ store).
+    fn build_log_sources(&self, scope: Option<&str>) -> Vec<crate::dock::LogSourceItem> {
+        use crate::dock::{LogSource, LogSourceItem};
+        let agg_label = match scope {
+            Some(_) => t!("log.source.group"),
+            None => t!("log.source.all"),
+        };
+        let mut v = vec![
+            LogSourceItem {
+                source: LogSource::Aggregate,
+                display: agg_label.to_string(),
+                file_label: String::new(),
+            },
+            LogSourceItem {
+                source: LogSource::Local,
+                display: t!("log.source.local").to_string(),
+                file_label: "app".to_string(),
+            },
+        ];
         for s in &self.config.servers {
-            v.push(crate::dock::LogSourceItem {
-                source: crate::dock::LogSource::Core(s.id),
+            if scope.is_some_and(|g| g != s.group) {
+                continue; // в доке окна — только ядра его группы
+            }
+            v.push(LogSourceItem {
+                source: LogSource::Core(s.id),
                 display: s.name.clone(),
                 file_label: crate::applog::sanitize_label(&s.name),
             });
@@ -218,7 +234,9 @@ impl App {
             .map(|w| w.chart_kind())
             .collect();
         let split_by_core = self.config.charts_split_by_core;
-        let log_sources = self.build_log_sources();
+        // Источники лога этого окна — только ядра его группы (агрегат = «Лог группы»).
+        let group = self.windows.get(&id).map(|h| h.workspace.group.clone());
+        let log_sources = self.build_log_sources(group.as_deref());
         let mut addto: Vec<(
             crate::chart::container::ContainerKind,
             crate::session::CoreId,
@@ -228,7 +246,6 @@ impl App {
         {
             let session = &self.session;
             let report = &mut self.report;
-            let log = &mut self.log_panel;
             let global_detached = self.global_detached;
             if let Some(host) = self.windows.get_mut(&id) {
                 if !host.needs_render(session, now) {
@@ -239,7 +256,6 @@ impl App {
                     now,
                     metrics,
                     report,
-                    log,
                     &log_sources,
                     global_detached,
                     &detached_keys,
@@ -581,7 +597,9 @@ impl ApplicationHandler for App {
         // Живые ОБЩИЕ вкладки (Лог/Отчёт): при изменении данных форсим кадр окнам,
         // где такая вкладка активна и НЕ откреплена (её состояние/флаг — глобальны,
         // поэтому решает App, а не per-window needs_render).
-        let log_rev = crate::applog::revision();
+        // Активность лога = локальный лог + лог всех ядер (доковый лог может смотреть
+        // на ядро/группу, не только на локальный).
+        let log_rev = crate::applog::revision().wrapping_add(self.session.store().log_activity());
         let report_gen = self.report.generation();
         let log_changed = log_rev != self.last_log_rev;
         let report_changed = report_gen != self.last_report_gen;

@@ -136,4 +136,12 @@ impl CoreStore {
     pub fn statuses(&self) -> impl Iterator<Item = (CoreId, ConnStatus)> + '_ {
         self.cores.iter().map(|(id, d)| (*id, d.status.clone()))
     }
+
+    /// Суммарная ревизия лога всех ядер — дёшево ловит «появились новые строки лога
+    /// хоть у какого-то ядра» (App форсит кадр окнам с активной вкладкой «Лог»).
+    pub fn log_activity(&self) -> u64 {
+        self.cores
+            .values()
+            .fold(0u64, |a, c| a.wrapping_add(c.log_rev))
+    }
 }

@@ -33,6 +33,10 @@ pub struct Dock {
     orders_detached: bool,
     /// Док свёрнут — видна только полоска вкладок, без контента (кнопка справа).
     collapsed: bool,
+    /// Состояние лог-панели ЭТОГО окна (источник/файл/поиск/ошибки). Своё у каждого
+    /// окна → в разных окнах группы во вкладках можно смотреть разный лог. Откреплённое
+    /// окно лога использует ОТДЕЛЬНОЕ общее состояние (живёт в App).
+    log: crate::dock::LogPanelState,
 }
 
 pub struct DockOutput {
@@ -63,6 +67,7 @@ impl Dock {
             tab: DockTab::default(),
             orders_detached: false,
             collapsed: false,
+            log: crate::dock::LogPanelState::default(),
         }
     }
 
@@ -96,7 +101,6 @@ impl Dock {
         chart_open: bool,
         now_ms: f64,
         report: &mut ReportView,
-        log: &mut crate::dock::LogPanelState,
         log_sources: &[crate::dock::LogSourceItem],
         global_detached: [bool; 4],
     ) -> DockOutput {
@@ -114,7 +118,7 @@ impl Dock {
             report,
             orders,
             store,
-            log,
+            log: &mut self.log,
             log_sources,
         };
         let tabs_out = tabs::show(ctx, &mut self.tab, &mut data, &detached, &mut self.collapsed);

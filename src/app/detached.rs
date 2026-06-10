@@ -191,10 +191,9 @@ impl App {
                     crate::config::GeomRect { x: pos.x, y: pos.y, w: size.width, h: size.height },
                 );
             }
-            // Закрыли окно лога → состояние лог-панели возвращается к дефолту
-            // (Локальный · Live), как просил пользователь.
+            // Закрыли окно лога → состояние откреплённого лога к дефолту (агрегат · Live).
             if p.tab == DockTab::Log {
-                self.log_panel.reset();
+                self.detached_log.reset();
             }
             if p.global {
                 self.global_detached[p.tab.idx()] = false;
@@ -225,8 +224,9 @@ impl App {
     /// `report` / глобальный лог), Orders — из окна-владельца. Единый `content_ui`,
     /// без дубля состояния.
     pub(super) fn render_detached(&mut self) {
-        // Источники лога (Локальный + ядра) — строим до мутабельных заёмов полей.
-        let log_sources = self.build_log_sources();
+        // Откреплённое окно лога видит ВСЕ ядра (scope=None; агрегат = «Все ядра»).
+        // Строим до мутабельных заёмов полей.
+        let log_sources = self.build_log_sources(None);
         let ids: Vec<WindowId> = self.detached.keys().copied().collect();
         for det_id in ids {
             let Some(panel) = self.detached.get_mut(&det_id) else {
@@ -238,7 +238,9 @@ impl App {
             // Живость: перерисовать, если данные вкладки изменились с прошлого кадра.
             let rev = match tab {
                 DockTab::Report => self.report.generation(),
-                DockTab::Log => self.log_panel.live_revision(self.session.store()),
+                DockTab::Log => self
+                    .detached_log
+                    .live_revision(self.session.store(), &log_sources),
                 DockTab::Orders => self
                     .windows
                     .get(&owner)
@@ -265,7 +267,7 @@ impl App {
                 Vec::new()
             };
             let report = &mut self.report;
-            let log = &mut self.log_panel;
+            let log = &mut self.detached_log;
             let store = self.session.store();
             let log_sources = &log_sources;
             panel.egui.render(&panel.window, "detached-pass", |ctx| {
