@@ -5,12 +5,17 @@
 //! Версии (revision) заменяют dirty-флаги: каждая панель сама решает, когда
 //! перезаливать данные (важно, когда одно ядро показано в нескольких панелях).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
+use crate::applog::LogLine;
 use crate::feed::{ConnStatus, DetectRow, FeedMsg, OrderRow, StrategyRow, StrategySchemaModel};
 
 /// Сколько последних детектов держим в памяти на ядро.
 const MAX_DETECTS: usize = 2000;
+
+/// Сколько последних строк серверного лога держим в памяти на ядро (для живого
+/// просмотра/поиска). История глубже — в файлах logs/<дата>_<ядро>.log.
+const MAX_LOG: usize = 5000;
 
 pub type CoreId = u64;
 
@@ -24,11 +29,14 @@ pub struct CoreData {
     pub strategies: Vec<StrategyRow>,
     /// Схема стратегий ядра (секции/поля по видам). None пока не пришла.
     pub schema: Option<StrategySchemaModel>,
-    /// Растёт при изменении ордеров / детектов / стратегий / схемы.
+    /// Последние строки серверного лога ядра (кольцо, обрезается до MAX_LOG).
+    pub log: VecDeque<LogLine>,
+    /// Растёт при изменении ордеров / детектов / стратегий / схемы / лога.
     pub orders_rev: u64,
     pub detects_rev: u64,
     pub strategies_rev: u64,
     pub schema_rev: u64,
+    pub log_rev: u64,
 }
 
 impl CoreData {
@@ -39,11 +47,19 @@ impl CoreData {
             detects: Vec::new(),
             strategies: Vec::new(),
             schema: None,
+            log: VecDeque::new(),
             orders_rev: 0,
             detects_rev: 0,
             strategies_rev: 0,
             schema_rev: 0,
+            log_rev: 0,
         }
+    }
+
+    /// Снимок последних `max` строк лога ядра (старые→новые) для панели лога.
+    pub fn log_snapshot(&self, max: usize) -> Vec<LogLine> {
+        let start = self.log.len().saturating_sub(max);
+        self.log.iter().skip(start).cloned().collect()
     }
 
     /// Применяет только АККАУНТНЫЕ сообщения. Identity/Ticks/OrderBook координатор
@@ -73,6 +89,18 @@ impl CoreData {
             FeedMsg::StrategySchema(schema) => {
                 self.schema = Some(schema);
                 self.schema_rev = self.schema_rev.wrapping_add(1);
+            }
+            FeedMsg::ServerLog(lines) => {
+                if !lines.is_empty() {
+                    for l in lines {
+                        self.log.push_back(LogLine::core(l.time_ms, l.msg));
+                    }
+                    if self.log.len() > MAX_LOG {
+                        let drop = self.log.len() - MAX_LOG;
+                        self.log.drain(0..drop);
+                    }
+                    self.log_rev = self.log_rev.wrapping_add(1);
+                }
             }
             // Рыночные/идентификационные сообщения сюда не маршрутизируются.
             FeedMsg::Identity(_) | FeedMsg::Ticks { .. } | FeedMsg::OrderBook { .. } => {}

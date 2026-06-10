@@ -11,6 +11,7 @@ pub mod tabs;
 pub mod toolbar;
 
 pub use controls::{OrderControls, ScaleAction};
+pub use log_panel::{LogPanelState, LogSource, LogSourceItem};
 pub use report_view::ReportView;
 pub use tabs::DockTab;
 
@@ -95,6 +96,8 @@ impl Dock {
         chart_open: bool,
         now_ms: f64,
         report: &mut ReportView,
+        log: &mut crate::dock::LogPanelState,
+        log_sources: &[crate::dock::LogSourceItem],
         global_detached: [bool; 4],
     ) -> DockOutput {
         // Лента: втянуть новые детекты ядер группы и выбросить просроченные.
@@ -107,14 +110,14 @@ impl Dock {
         // остальное — глобально (global_detached). Активная вкладка живёт в self.tab.
         let mut detached = global_detached;
         detached[DockTab::Orders.idx()] = self.orders_detached;
-        let tabs_out = tabs::show(
-            ctx,
-            &mut self.tab,
+        let mut data = tabs::TabData {
             report,
             orders,
-            &detached,
-            &mut self.collapsed,
-        );
+            store,
+            log,
+            log_sources,
+        };
+        let tabs_out = tabs::show(ctx, &mut self.tab, &mut data, &detached, &mut self.collapsed);
 
         // Правый док детектов — вертикальная колонка кнопок (новые сверху). Виден
         // всегда: детекты приходят группе независимо от открытого чарта. Создаём

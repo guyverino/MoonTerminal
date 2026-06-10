@@ -21,6 +21,10 @@ pub struct Merged {
     pub market_mode: MarketDataMode,
     /// Отдельная чарт-вкладка на ядро (AddToChart).
     pub charts_split_by_core: bool,
+    /// Писать лог в файлы logs/.
+    pub log_to_file: bool,
+    /// Срок хранения файлов лога (дней; 0 = хранить всё).
+    pub log_retention_days: u32,
     /// Нужно пере-сохранить на диск: присвоены новые uid и/или версия схемы
     /// устарела (надо дослоить дефолты новых полей в settings.toml).
     pub dirty: bool,
@@ -34,6 +38,8 @@ pub fn merge(sf: ServersFile, meta: SettingsFile) -> Merged {
     let language = meta.language;
     let market_mode = meta.market_mode;
     let charts_split_by_core = meta.charts_split_by_core;
+    let log_to_file = meta.log_to_file;
+    let log_retention_days = meta.log_retention_days;
 
     let servers = sf
         .servers
@@ -80,17 +86,22 @@ pub fn merge(sf: ServersFile, meta: SettingsFile) -> Merged {
         language,
         market_mode,
         charts_split_by_core,
+        log_to_file,
+        log_retention_days,
         dirty,
     }
 }
 
 /// Рантайм-`AppConfig` → два файловых формата (для записи).
+#[allow(clippy::too_many_arguments)]
 pub fn split(
     servers: &[ServerConfig],
     groups: &[GroupConfig],
     language: Language,
     market_mode: MarketDataMode,
     charts_split_by_core: bool,
+    log_to_file: bool,
+    log_retention_days: u32,
 ) -> (ServersFile, SettingsFile) {
     let sf = ServersFile {
         servers: servers
@@ -107,6 +118,8 @@ pub fn split(
         language,
         market_mode,
         charts_split_by_core,
+        log_to_file,
+        log_retention_days,
         groups: groups.to_vec(),
         servers: servers
             .iter()

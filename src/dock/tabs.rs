@@ -10,9 +10,20 @@
 //! также возвращает вкладку (это решает App). Реально наполнены Orders/Log/Report;
 //! Assets — заглушка до подключения данных.
 
-use super::ReportView;
+use super::{LogPanelState, LogSourceItem, ReportView};
 use crate::feed::OrderRow;
+use crate::session::CoreStore;
 use crate::shell::theme;
+
+/// Данные для рендера контента вкладок дока — единый контекст для дока (inline) и
+/// откреплённого окна. Report/Log — общие (живут в App); Orders — окна-владельца.
+pub struct TabData<'a> {
+    pub report: &'a mut ReportView,
+    pub orders: &'a [(String, OrderRow)],
+    pub store: &'a CoreStore,
+    pub log: &'a mut LogPanelState,
+    pub log_sources: &'a [LogSourceItem],
+}
 
 /// Активная вкладка дока. Хранится в [`crate::dock::Dock`].
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
@@ -74,8 +85,7 @@ const STRIP_H: f32 = 46.0;
 pub fn show(
     ctx: &egui::Context,
     active: &mut DockTab,
-    report: &mut ReportView,
-    orders: &[(String, OrderRow)],
+    data: &mut TabData,
     detached: &[bool; 4],
     collapsed: &mut bool,
 ) -> TabsOutput {
@@ -182,7 +192,7 @@ pub fn show(
         if detached[active.idx()] {
             detached_placeholder(ui, &mut out, *active);
         } else {
-            content_ui(ui, *active, report, orders);
+            content_ui(ui, *active, data);
         }
     });
     out
@@ -256,17 +266,12 @@ fn tab_button(ui: &mut egui::Ui, label: &str, selected: bool, _detached: bool) -
 
 /// Рендер контента конкретной вкладки в данный `ui`. Зовётся и из дока (inline), и
 /// из App для откреплённого окна — единый источник, без дубля состояния.
-pub fn content_ui(
-    ui: &mut egui::Ui,
-    tab: DockTab,
-    report: &mut ReportView,
-    orders: &[(String, OrderRow)],
-) {
+pub fn content_ui(ui: &mut egui::Ui, tab: DockTab, data: &mut TabData) {
     match tab {
-        DockTab::Orders => super::orders_panel::ui(ui, orders),
+        DockTab::Orders => super::orders_panel::ui(ui, data.orders),
         DockTab::Assets => placeholder(ui, t!("dock.todo.assets").to_string()),
-        DockTab::Log => super::log_panel::ui(ui),
-        DockTab::Report => report.ui(ui),
+        DockTab::Log => super::log_panel::ui(ui, data.log, data.log_sources, data.store),
+        DockTab::Report => data.report.ui(ui),
     }
 }
 

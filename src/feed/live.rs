@@ -18,8 +18,8 @@ use moonproto::{
 use super::report::{delphi_to_unix, send_close_report, OrderIndex, OrderMeta};
 use super::strategies::{alert_params, build_schema_model, fmt_field, fv_from_str, strat_kind_name};
 use super::{
-    ConnStatus, CoreCmd, DetectRow, ExchangeId, FeedMsg, FeedTx, Level, OrderBook, OrderRow, Side,
-    StrategyRow, Tick,
+    ConnStatus, CoreCmd, CoreLogLine, DetectRow, ExchangeId, FeedMsg, FeedTx, Level, OrderBook,
+    OrderRow, Side, StrategyRow, Tick,
 };
 use crate::config::ServerConfig;
 use crate::db::ReportTx;
@@ -94,6 +94,10 @@ pub fn run(
     let mut detect_seq: u64 = 0;
     // Полные данные ордеров для close-report'ов (uid/db_id) — см. feed::report.
     let mut orders_index = OrderIndex::default();
+    // Файловый писатель серверного лога этого ядра (logs/<дата>_<ядро>.log) с дневной
+    // ротацией. Пишем на ПОТОКЕ ФИДА (не на UI), т.к. лога много — UI не должен ждать
+    // диск. В UI уходит лишь in-memory копия для живого просмотра/поиска.
+    let mut log_writer = crate::applog::DatedWriter::new(&server.name);
 
     loop {
         // Команды роли от координатора (полное желаемое состояние, не дельта).
@@ -233,12 +237,21 @@ pub fn run(
         // Дренируем доменные события. Тики/стакан/ордера берём из snapshot;
         // детекты и отчёты — только из потока событий, по флагам сервера.
         let events = client.drain_events();
-        if server.feed.detects || (server.feed.reports && reports.is_some()) {
+        let want_log = server.feed.log;
+        if server.feed.detects || (server.feed.reports && reports.is_some()) || want_log {
             let mut detects: Vec<DetectRow> = Vec::new();
+            let mut logs: Vec<CoreLogLine> = Vec::new();
             // Снимок для полей стратегии-источника детекта (SoundAlert/KeepAlert).
             let detect_snap = server.feed.detects.then(|| client.snapshot()).flatten();
             for ev in events {
                 match ev {
+                    Event::ServerLog(l) if want_log => {
+                        let ms = l.unix_millis();
+                        // На диск — сразу (буферизованно); время бьём на дату+часы.
+                        let (date, hms) = crate::applog::split_unix_ms(ms);
+                        log_writer.write(&date, &hms, "INFO", "", &l.msg);
+                        logs.push(CoreLogLine { time_ms: ms, msg: l.msg });
+                    }
                     Event::Detect(d) if server.feed.detects => {
                         let params = detect_snap
                             .as_ref()
@@ -277,6 +290,12 @@ pub fn run(
                         }
                     }
                     _ => {}
+                }
+            }
+            if !logs.is_empty() {
+                log_writer.flush(); // один флаш на пачку (не на строку) — диск не узкое место
+                if tx.send(FeedMsg::ServerLog(logs)).is_err() {
+                    break;
                 }
             }
             if !detects.is_empty() && tx.send(FeedMsg::Detects(detects)).is_err() {

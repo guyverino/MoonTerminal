@@ -52,6 +52,8 @@ impl WindowHost {
         now_ms: f64,
         metrics: MetricsSnapshot,
         report: &mut crate::dock::ReportView,
+        log: &mut crate::dock::LogPanelState,
+        log_sources: &[crate::dock::LogSourceItem],
         global_detached: [bool; 4],
         detached_keys: &HashSet<ContainerKind>,
         split_by_core: bool,
@@ -143,6 +145,8 @@ impl WindowHost {
                 store,
                 now_ms,
                 report,
+                log,
+                log_sources,
                 global_detached,
                 &metrics,
                 &header,
@@ -338,6 +342,8 @@ impl WindowHost {
         store: &crate::session::CoreStore,
         now_ms: f64,
         report: &mut crate::dock::ReportView,
+        log: &mut crate::dock::LogPanelState,
+        log_sources: &[crate::dock::LogSourceItem],
         global_detached: [bool; 4],
         metrics: &MetricsSnapshot,
         header: &Header,
@@ -411,8 +417,8 @@ impl WindowHost {
                 strategies_clicked = true;
             }
             let out = dock.show(
-                ctx, cores, store, &order_rows, following, chart_open, now_ms, report,
-                global_detached,
+                ctx, cores, store, &order_rows, following, chart_open, now_ms, report, log,
+                log_sources, global_detached,
             );
             central = out.central;
             detects_rect = out.detects_rect;

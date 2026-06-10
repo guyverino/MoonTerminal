@@ -16,8 +16,8 @@ use crate::market::MarketDataMode;
 /// Текущая версия схемы settings.toml. Поднимай на +1, когда добавил новое поле
 /// и хочешь, чтобы старые файлы один раз пере-сохранились с его дефолтом.
 /// v2: добавлено поле `language`. v3: добавлено `market_mode`.
-/// v4: добавлено `charts_split_by_core`.
-pub const SCHEMA_VERSION: u32 = 4;
+/// v4: добавлено `charts_split_by_core`. v5: добавлены `log_to_file` + `log_retention_days`.
+pub const SCHEMA_VERSION: u32 = 5;
 
 /// Старые файлы без поля `version` читаются как 0 → меньше SCHEMA_VERSION →
 /// триггерят досейв с дослоением новых дефолтов.
@@ -84,6 +84,12 @@ pub struct SettingsFile {
     /// false = все ядра в одной вкладке 1-HL. Старые файлы → дефолт true.
     #[serde(default = "servers::default_true")]
     pub charts_split_by_core: bool,
+    /// Писать лог (приложения и ядер) в файлы logs/<дата>_<источник>.log. Дефолт on.
+    #[serde(default = "servers::default_true")]
+    pub log_to_file: bool,
+    /// Сколько дней хранить файлы лога; старее — удаляются. 0 = хранить всё. Дефолт 14.
+    #[serde(default = "servers::default_log_retention_days")]
+    pub log_retention_days: u32,
     #[serde(default)]
     pub groups: Vec<GroupConfig>,
     #[serde(default)]

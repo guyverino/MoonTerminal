@@ -53,6 +53,9 @@ pub struct App {
     repin_reqs: Vec<(WindowId, DockTab)>,
     /// ОБЩИЙ для всех окон групп `ReportView` (один экземпляр, одно SQLite-чтение).
     report: crate::dock::ReportView,
+    /// ОБЩЕЕ состояние лог-панели (выбор источника/файла/поиск) — одно на все окна и
+    /// откреплённое окно лога. Сбрасывается к дефолту при закрытии окна лога.
+    log_panel: crate::dock::LogPanelState,
     /// Глобальные флаги открепления Report/Log/Assets (по [`DockTab::idx`]; Orders
     /// игнорируется — его открепление пер-окно живёт в доке окна).
     global_detached: [bool; 4],
@@ -64,6 +67,8 @@ pub struct App {
     layout: crate::config::WindowLayout,
     layout_dirty: bool,
     last_layout_save: Instant,
+    /// Когда последний раз чистили старые файлы лога (раз в сутки).
+    last_purge: Instant,
     session: SessionManager,
     /// Хэндл БД отчётов: канал записи + счётчик-генерация (None = БД недоступна).
     reports: Option<ReportsHandle>,
@@ -97,12 +102,14 @@ impl App {
             detach_reqs: Vec::new(),
             repin_reqs: Vec::new(),
             report,
+            log_panel: crate::dock::LogPanelState::default(),
             global_detached: [false; 4],
             last_log_rev: 0,
             last_report_gen: 0,
             layout: crate::config::WindowLayout::load(),
             layout_dirty: false,
             last_layout_save: Instant::now(),
+            last_purge: Instant::now(),
             session,
             reports,
             epoch_ms,
@@ -111,6 +118,26 @@ impl App {
             metrics: Metrics::new(),
             settings_statuses: HashMap::new(),
         }
+    }
+
+    /// Список источников лога для селектора: «Локальный» + каждое ядро (по конфигу,
+    /// включая headless/неактивные — у них могут быть прошлые файлы). `id` сервера =
+    /// рантайм-CoreId (совпадает с ключом store). Метка файла = очищенное имя ядра.
+    fn build_log_sources(&self) -> Vec<crate::dock::LogSourceItem> {
+        let mut v = Vec::with_capacity(self.config.servers.len() + 1);
+        v.push(crate::dock::LogSourceItem {
+            source: crate::dock::LogSource::Local,
+            display: t!("log.source.local").to_string(),
+            file_label: "app".to_string(),
+        });
+        for s in &self.config.servers {
+            v.push(crate::dock::LogSourceItem {
+                source: crate::dock::LogSource::Core(s.id),
+                display: s.name.clone(),
+                file_label: crate::applog::sanitize_label(&s.name),
+            });
+        }
+        v
     }
 
     /// (Пере)создаёт окна групп. Нет групп — одно пустое окно (для Настроек).
@@ -191,6 +218,7 @@ impl App {
             .map(|w| w.chart_kind())
             .collect();
         let split_by_core = self.config.charts_split_by_core;
+        let log_sources = self.build_log_sources();
         let mut addto: Vec<(
             crate::chart::container::ContainerKind,
             crate::session::CoreId,
@@ -200,6 +228,7 @@ impl App {
         {
             let session = &self.session;
             let report = &mut self.report;
+            let log = &mut self.log_panel;
             let global_detached = self.global_detached;
             if let Some(host) = self.windows.get_mut(&id) {
                 if !host.needs_render(session, now) {
@@ -210,6 +239,8 @@ impl App {
                     now,
                     metrics,
                     report,
+                    log,
+                    &log_sources,
                     global_detached,
                     &detached_keys,
                     split_by_core,
@@ -327,6 +358,15 @@ impl App {
         self.show_group_reqs.extend(acts.show_group);
         if !saved {
             return;
+        }
+
+        // Настройки файлового лога применяем живо (без реконнекта). Если включили
+        // запись или сократили срок — сразу подчищаем старые файлы.
+        if before.log_to_file != self.config.log_to_file
+            || before.log_retention_days != self.config.log_retention_days
+        {
+            crate::applog::set_file_logging(self.config.log_to_file, self.config.log_retention_days);
+            crate::applog::purge_old();
         }
 
         // Реконнект к ядрам + пересоздание окон — ТОЛЬКО при смене серверов/групп
@@ -617,6 +657,12 @@ impl ApplicationHandler for App {
         // свернули док, открепили) → раз в ~1.2 с снимаем состояние живых окон.
         if self.layout_dirty && self.last_layout_save.elapsed() > Duration::from_millis(1200) {
             self.save_layout();
+        }
+
+        // Чистка старых файлов лога раз в сутки (плюс одноразово при старте/сохранении).
+        if self.last_purge.elapsed() > Duration::from_secs(24 * 3600) {
+            crate::applog::purge_old();
+            self.last_purge = Instant::now();
         }
 
         if self.open_settings_requested {

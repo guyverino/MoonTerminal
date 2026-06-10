@@ -53,6 +53,9 @@ fn main() -> anyhow::Result<()> {
     let cfg = AppConfig::load()?;
     // Применяем язык интерфейса до создания окон (дефолт — системная локаль).
     rust_i18n::set_locale(cfg.language.code());
+    // Файловый лог: режим из конфига + одноразовая чистка старых файлов при старте.
+    crate::applog::set_file_logging(cfg.log_to_file, cfg.log_retention_days);
+    crate::applog::purge_old();
     log::info!("ядер в конфиге: {}", cfg.servers.len());
 
     let event_loop = EventLoop::new()?;

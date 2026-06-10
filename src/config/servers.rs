@@ -105,3 +105,8 @@ pub fn default_market() -> String {
 pub fn default_true() -> bool {
     true
 }
+
+/// Дефолт срока хранения файлов лога (дней). См. SettingsFile::log_retention_days.
+pub fn default_log_retention_days() -> u32 {
+    14
+}

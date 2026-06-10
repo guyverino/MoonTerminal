@@ -191,6 +191,11 @@ impl App {
                     crate::config::GeomRect { x: pos.x, y: pos.y, w: size.width, h: size.height },
                 );
             }
+            // Закрыли окно лога → состояние лог-панели возвращается к дефолту
+            // (Локальный · Live), как просил пользователь.
+            if p.tab == DockTab::Log {
+                self.log_panel.reset();
+            }
             if p.global {
                 self.global_detached[p.tab.idx()] = false;
                 for host in self.windows.values_mut() {
@@ -220,6 +225,8 @@ impl App {
     /// `report` / глобальный лог), Orders — из окна-владельца. Единый `content_ui`,
     /// без дубля состояния.
     pub(super) fn render_detached(&mut self) {
+        // Источники лога (Локальный + ядра) — строим до мутабельных заёмов полей.
+        let log_sources = self.build_log_sources();
         let ids: Vec<WindowId> = self.detached.keys().copied().collect();
         for det_id in ids {
             let Some(panel) = self.detached.get_mut(&det_id) else {
@@ -231,7 +238,7 @@ impl App {
             // Живость: перерисовать, если данные вкладки изменились с прошлого кадра.
             let rev = match tab {
                 DockTab::Report => self.report.generation(),
-                DockTab::Log => crate::applog::revision(),
+                DockTab::Log => self.log_panel.live_revision(self.session.store()),
                 DockTab::Orders => self
                     .windows
                     .get(&owner)
@@ -258,9 +265,19 @@ impl App {
                 Vec::new()
             };
             let report = &mut self.report;
+            let log = &mut self.log_panel;
+            let store = self.session.store();
+            let log_sources = &log_sources;
             panel.egui.render(&panel.window, "detached-pass", |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
-                    crate::dock::tabs::content_ui(ui, tab, report, &orders);
+                    let mut data = crate::dock::tabs::TabData {
+                        report,
+                        orders: &orders,
+                        store,
+                        log,
+                        log_sources,
+                    };
+                    crate::dock::tabs::content_ui(ui, tab, &mut data);
                 });
             });
         }

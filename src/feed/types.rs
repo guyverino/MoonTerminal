@@ -84,6 +84,14 @@ pub struct DetectRow {
     pub keep_in_chart_secs: u32,
 }
 
+/// Одна строка серверного лога ядра (`Event::ServerLog`). Декаплено от moonproto.
+#[derive(Debug, Clone)]
+pub struct CoreLogLine {
+    /// Unix-время строки, мс (из `ServerLogEvent::unix_millis`).
+    pub time_ms: i64,
+    pub msg: String,
+}
+
 /// Одна стратегия ядра (для окна стратегий). Декаплено от moonproto.
 #[derive(Debug, Clone)]
 pub struct StrategyRow {
@@ -182,6 +190,8 @@ pub enum FeedMsg {
     Orders(Vec<OrderRow>),
     /// Пачка новых детектов (накопленных за тик дренажа событий).
     Detects(Vec<DetectRow>),
+    /// Пачка новых строк серверного лога ядра (за тик дренажа событий).
+    ServerLog(Vec<CoreLogLine>),
     /// Снимок стратегий ядра (шлётся при изменении сигнатуры).
     Strategies(Vec<StrategyRow>),
     /// Схема стратегий ядра (секции/поля по видам). Шлётся при смене revision.

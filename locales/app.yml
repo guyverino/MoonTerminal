@@ -236,6 +236,34 @@ dock.log.empty:
   ru: "Лог пуст"
   en: "Log is empty"
   es: "El registro está vacío"
+log.source.local:
+  ru: "Локальный"
+  en: "Local"
+  es: "Local"
+log.live:
+  ru: "Live (текущий)"
+  en: "Live (current)"
+  es: "Live (actual)"
+log.file:
+  ru: "Файл"
+  en: "File"
+  es: "Archivo"
+log.search:
+  ru: "Поиск…"
+  en: "Search…"
+  es: "Buscar…"
+log.errors_only:
+  ru: "Только ошибки"
+  en: "Errors only"
+  es: "Solo errores"
+log.empty_filtered:
+  ru: "Нет строк по фильтру"
+  en: "No lines match the filter"
+  es: "Ninguna línea coincide con el filtro"
+log.count:
+  ru: "%{shown} из %{total}"
+  en: "%{shown} of %{total}"
+  es: "%{shown} de %{total}"
 dock.collapse:
   ru: "Свернуть док"
   en: "Collapse dock"
@@ -386,6 +414,26 @@ general.charts_split_by_core_hint:
   ru: "AddToChart: вкл — 1-HL-ядро (своя вкладка на ядро), выкл — все ядра в одной 1-HL."
   en: "AddToChart: on — 1-HL-core (per-core tab), off — all cores in one 1-HL."
   es: "AddToChart: act — 1-HL-núcleo (pestaña por núcleo), des — todos en uno 1-HL."
+general.log_to_file:
+  ru: "Писать лог в файлы"
+  en: "Write log to files"
+  es: "Escribir registro en archivos"
+general.log_to_file_hint:
+  ru: "Лог приложения и ядер пишется в logs/<дата>_<источник>.log (по файлу на источник в день)."
+  en: "App and core logs are written to logs/<date>_<source>.log (one file per source per day)."
+  es: "Los registros de app y núcleos se escriben en logs/<fecha>_<fuente>.log (un archivo por fuente al día)."
+general.log_retention:
+  ru: "Хранить лог, дней"
+  en: "Keep log, days"
+  es: "Conservar registro, días"
+general.log_retention_hint:
+  ru: "Файлы старше указанного срока удаляются при запуске и раз в сутки. 0 — хранить всё."
+  en: "Files older than this are deleted on startup and once a day. 0 — keep everything."
+  es: "Los archivos más antiguos se eliminan al iniciar y una vez al día. 0 — conservar todo."
+general.days:
+  ru: "дн."
+  en: "days"
+  es: "días"
 
 # --- Вкладка «Подключения» ---
 conn.servers_heading:

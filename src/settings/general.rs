@@ -46,5 +46,28 @@ impl SettingsTab for GeneralTab {
         );
         ui.add_space(4.0);
         ui.label(egui::RichText::new(t!("general.charts_split_by_core_hint")).weak());
+
+        ui.add_space(12.0);
+        ui.separator();
+        ui.add_space(6.0);
+        // Лог: писать в файлы + срок хранения.
+        ui.checkbox(&mut cfg.log_to_file, t!("general.log_to_file"));
+        ui.add_space(4.0);
+        ui.label(egui::RichText::new(t!("general.log_to_file_hint")).weak());
+        ui.add_space(6.0);
+        ui.add_enabled_ui(cfg.log_to_file, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(t!("general.log_retention"));
+                ui.add_space(8.0);
+                ui.add(
+                    egui::DragValue::new(&mut cfg.log_retention_days)
+                        .range(0..=365)
+                        .speed(1.0)
+                        .suffix(format!(" {}", t!("general.days"))),
+                );
+            });
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new(t!("general.log_retention_hint")).weak());
+        });
     }
 }

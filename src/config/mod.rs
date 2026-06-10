@@ -51,6 +51,10 @@ pub struct AppConfig {
     pub market_mode: MarketDataMode,
     /// Отдельная чарт-вкладка на каждое ядро для AddToChart (settings.toml).
     pub charts_split_by_core: bool,
+    /// Писать лог (приложения и ядер) в файлы logs/ (settings.toml). Дефолт on.
+    pub log_to_file: bool,
+    /// Срок хранения файлов лога, дней; 0 = хранить всё (settings.toml). Дефолт 14.
+    pub log_retention_days: u32,
     /// Тема оформления чарта (отдельный переносимый theme.toml).
     pub theme: ChartTheme,
 }
@@ -69,6 +73,8 @@ impl AppConfig {
                 language: merged.language,
                 market_mode: merged.market_mode,
                 charts_split_by_core: merged.charts_split_by_core,
+                log_to_file: merged.log_to_file,
+                log_retention_days: merged.log_retention_days,
                 theme,
             };
             log::info!(
@@ -91,6 +97,8 @@ impl AppConfig {
             let mut cfg = migrate::from_legacy_enc()?;
             cfg.theme = theme;
             cfg.charts_split_by_core = true;
+            cfg.log_to_file = true;
+            cfg.log_retention_days = 14;
             cfg.save()?;
             log::info!("мигрировано из config.enc → servers.enc + settings.toml");
             return Ok(cfg);
@@ -99,6 +107,8 @@ impl AppConfig {
             let mut cfg = migrate::from_legacy_toml()?;
             cfg.theme = theme;
             cfg.charts_split_by_core = true;
+            cfg.log_to_file = true;
+            cfg.log_retention_days = 14;
             cfg.save()?;
             log::info!("мигрировано из config.toml → servers.enc + settings.toml");
             return Ok(cfg);
@@ -108,6 +118,8 @@ impl AppConfig {
         Ok(Self {
             theme,
             charts_split_by_core: true, // дефолт — отдельная вкладка на ядро
+            log_to_file: true,
+            log_retention_days: 14,
             ..Self::default()
         })
     }
@@ -124,6 +136,8 @@ impl AppConfig {
             self.language,
             self.market_mode,
             self.charts_split_by_core,
+            self.log_to_file,
+            self.log_retention_days,
         );
         store::write_servers(&sf)?;
         store::write_settings(&meta)?;
@@ -167,6 +181,8 @@ impl AppConfig {
             Language::default(),
             MarketDataMode::default(),
             true, // нейтрализуем: тумблер чартов не влияет на структуру (без ребилда)
+            true, // лог-настройки тоже не структурные (без реконнекта/ребилда)
+            14,
         );
         let a = toml::to_string(&sf).unwrap_or_default();
         let b = toml::to_string(&meta).unwrap_or_default();
