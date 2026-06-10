@@ -13,6 +13,7 @@ impl App {
         if let Some(h) = self.windows.get(&id) {
             if let Ok(pos) = h.window.outer_position() {
                 let size = h.window.inner_size();
+                let (primary, newest, only_current, kind) = h.workspace.dock.orders_layout();
                 self.layout.groups.insert(
                     h.workspace.group.clone(),
                     crate::config::GroupLayout {
@@ -23,6 +24,11 @@ impl App {
                         maximized: h.window.is_maximized(),
                         collapsed: h.workspace.dock.collapsed(),
                         tab: h.workspace.dock.tab.idx() as u8,
+                        dock_h: h.workspace.dock.dock_height(),
+                        orders_primary: primary,
+                        orders_newest_first: newest,
+                        orders_only_current: only_current,
+                        orders_kind: kind,
                     },
                 );
             }

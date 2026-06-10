@@ -30,6 +30,40 @@ pub enum PrimarySort {
     Creation,
 }
 
+impl PrimarySort {
+    pub fn to_u8(self) -> u8 {
+        match self {
+            PrimarySort::Creation => 0,
+            PrimarySort::SellFirst => 1,
+            PrimarySort::BuyFirst => 2,
+        }
+    }
+    pub fn from_u8(v: u8) -> Self {
+        match v {
+            1 => PrimarySort::SellFirst,
+            2 => PrimarySort::BuyFirst,
+            _ => PrimarySort::Creation,
+        }
+    }
+}
+
+impl OrderKind {
+    pub fn to_u8(self) -> u8 {
+        match self {
+            OrderKind::All => 0,
+            OrderKind::Real => 1,
+            OrderKind::Emu => 2,
+        }
+    }
+    pub fn from_u8(v: u8) -> Self {
+        match v {
+            1 => OrderKind::Real,
+            2 => OrderKind::Emu,
+            _ => OrderKind::All,
+        }
+    }
+}
+
 /// Источник ордеров: все ядра группы или конкретное ядро (поле-список сверху).
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum OrdersSource {
@@ -37,10 +71,19 @@ pub enum OrdersSource {
     Core(CoreId),
 }
 
-/// Состояние вида таблицы ордеров (источник + фильтр + сортировка). Своё у окна/дока.
+/// Фильтр по типу ордера (поле-список): все / реальные / эмуляторные.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum OrderKind {
+    All,
+    Real,
+    Emu,
+}
+
+/// Состояние вида таблицы ордеров (источник + тип + фильтр + сортировка). Своё у окна.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct OrdersViewState {
     pub source: OrdersSource,
+    pub kind: OrderKind,
     pub only_current_market: bool,
     pub primary: PrimarySort,
     pub newest_first: bool,
@@ -50,6 +93,7 @@ impl Default for OrdersViewState {
     fn default() -> Self {
         Self {
             source: OrdersSource::All,
+            kind: OrderKind::All,
             only_current_market: false,
             primary: PrimarySort::Creation,
             newest_first: true,
@@ -68,9 +112,19 @@ enum Al {
     Right,
 }
 
-/// Ордер исполнен (вход заполнен) → сторона показывается как SELL.
+/// Вход (покупка) заполнен.
 fn executed(r: &OrderRow) -> bool {
     r.fill_pct >= 99.95
+}
+
+/// SELL — исполненный ЛОНГ: куплен (вход заполнен) и выставлен на продажу. НЕ шорт.
+fn is_sell(r: &OrderRow) -> bool {
+    !r.is_short && executed(r)
+}
+
+/// BUY — лонг, ещё не исполнен (ждёт покупки).
+fn is_buy(r: &OrderRow) -> bool {
+    !r.is_short && !executed(r)
 }
 
 /// Рендер таблицы ордеров. `current` — (ядро, маркет) текущего Main-фуллскрина (для
@@ -82,6 +136,10 @@ pub fn ui(
     view: &mut OrdersViewState,
     current: Option<(CoreId, &str)>,
 ) -> Option<(CoreId, String)> {
+    // Не делаем текст ячеек выделяемым — иначе над ними I-beam-курсор (как в поле
+    // ввода). Над колонкой токена курсор выставим «рукой» вручную.
+    ui.style_mut().interaction.selectable_labels = false;
+
     let mut shown: Vec<&OrderEntry> = entries
         .iter()
         .filter(|e| {
@@ -89,7 +147,13 @@ pub fn ui(
                 OrdersSource::All => true,
                 OrdersSource::Core(id) => e.core == id,
             };
+            let by_kind = match view.kind {
+                OrderKind::All => true,
+                OrderKind::Real => !e.row.emulator,
+                OrderKind::Emu => e.row.emulator,
+            };
             by_source
+                && by_kind
                 && (!view.only_current_market
                     || match current {
                         Some((c, m)) => e.core == c && e.row.market == m,
@@ -125,6 +189,28 @@ pub fn ui(
                     }
                 }
             });
+
+        // Тип ордеров: Все / Реальные / Эмуляторные.
+        let kind_label = match view.kind {
+            OrderKind::All => t!("orders.kind.all"),
+            OrderKind::Real => t!("orders.kind.real"),
+            OrderKind::Emu => t!("orders.kind.emu"),
+        };
+        egui::ComboBox::from_id_salt("orders_kind")
+            .selected_text(kind_label)
+            .show_ui(ui, |ui| {
+                for (k, key) in [
+                    (OrderKind::All, "orders.kind.all"),
+                    (OrderKind::Real, "orders.kind.real"),
+                    (OrderKind::Emu, "orders.kind.emu"),
+                ] {
+                    if ui.selectable_label(view.kind == k, t!(key)).clicked() {
+                        view.kind = k;
+                    }
+                }
+            });
+
+        // Счётчик показанных — после полей-списков.
         ui.label(
             egui::RichText::new(format!("{}", shown.len()))
                 .size(theme::LABEL_SIZE)
@@ -141,8 +227,8 @@ pub fn ui(
     ui.add_space(2.0);
 
     let mut clicked: Option<(CoreId, String)> = None;
-    // (y-диапазон строки, ядро, маркет) — для попадания клика по строке.
-    let mut hits: Vec<(egui::Rangef, CoreId, String)> = Vec::new();
+    // (rect колонки токена, ядро, маркет) — клик/курсор-рука ТОЛЬКО над ней.
+    let mut hits: Vec<(egui::Rect, CoreId, String)> = Vec::new();
 
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
@@ -163,22 +249,27 @@ pub fn ui(
                         ui.end_row();
                     }
                     for e in &shown {
-                        let yr = data_row(ui, e, &w);
-                        hits.push((yr, e.core, e.row.market.clone()));
+                        let token_rect = data_row(ui, e, &w);
+                        hits.push((token_rect, e.core, e.row.market.clone()));
                     }
                 });
 
-            // Единый обработчик поверх ячеек (они — не-интерактивные Label): ЛКМ по
-            // строке → открыть чарт; ПКМ в любом месте → меню. Поверх → ловит везде,
-            // ничего не «крадёт» (под ним кнопок нет). Полоса прокрутки вне rect грида.
+            // Единый обработчик поверх ячеек (Label не-интерактивны): ЛКМ ТОЛЬКО по
+            // колонке токена → открыть чарт; ПКМ в любом месте → меню.
             let area = ui.interact(
                 grid.response.rect,
                 ui.id().with("orders_area"),
                 egui::Sense::click(),
             );
+            // Курсор-рука, когда над колонкой монеты (намёк, что кликабельно).
+            if let Some(pos) = area.hover_pos() {
+                if hits.iter().any(|(rc, _, _)| rc.contains(pos)) {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
+            }
             if area.clicked() {
                 if let Some(pos) = area.interact_pointer_pos() {
-                    if let Some((_, c, m)) = hits.iter().find(|(yr, _, _)| yr.contains(pos.y)) {
+                    if let Some((_, c, m)) = hits.iter().find(|(rc, _, _)| rc.contains(pos)) {
                         clicked = Some((*c, m.clone()));
                     }
                 }
@@ -208,7 +299,7 @@ struct Widths {
 impl Widths {
     fn compute(avail: f32) -> Self {
         let (wc, ws, wt, wsz, wsl, wts, wv, wb, wp, wf, wstr) =
-            (1.1, 0.8, 1.0, 1.3, 0.9, 0.9, 1.1, 1.5, 1.6, 1.1, 1.5);
+            (1.1, 1.1, 1.0, 1.3, 0.9, 0.9, 1.1, 1.5, 1.6, 1.1, 1.5);
         let total = wc + ws + wt + wsz + wsl + wts + wv + wb + wp + wf + wstr;
         let gaps = COL_SPACING * 10.0;
         let usable = (avail - gaps - 4.0).max(120.0);
@@ -229,26 +320,31 @@ impl Widths {
     }
 }
 
-/// Одна строка ордера. Возвращает y-диапазон строки (для попадания клика).
-fn data_row(ui: &mut egui::Ui, e: &OrderEntry, w: &Widths) -> egui::Rangef {
+/// Одна строка ордера. Возвращает rect колонки токена (для клика/курсора по ней).
+fn data_row(ui: &mut egui::Ui, e: &OrderEntry, w: &Widths) -> egui::Rect {
     let r = &e.row;
 
-    // Ядро — слева. Запоминаем его rect как y-диапазон строки.
-    let y = cell_text(ui, w.core, Al::Left, &e.core_name, theme::TEXT_2);
+    cell_text(ui, w.core, Al::Left, &e.core_name, theme::TEXT_2);
 
-    // Сторона: BUY/SHORT/SELL.
-    let (side, col) = if executed(r) {
+    // Сторона: SELL (исполненный лонг, синий) / SHORT (красный) / BUY (зелёный).
+    // Эмуляторный ордер помечаем «(E)».
+    let (side, col) = if is_sell(r) {
         ("SELL", theme::BLUE)
     } else if r.is_short {
         ("SHORT", theme::RED)
     } else {
         ("BUY", theme::GREEN)
     };
-    cell_text(ui, w.side, Al::Left, side, col);
+    let side = if r.emulator {
+        format!("{side} (E)")
+    } else {
+        side.to_string()
+    };
+    cell_text(ui, w.side, Al::Left, &side, col);
 
     // Токен без quote (`ADAUSDT` → `ADA`) — справа, акцентом (намёк на клик).
     let token = crate::symbol::base_symbol(&r.market, &e.quote);
-    cell_text(ui, w.token, Al::Right, token, theme::ACCENT);
+    let token_rect = cell_text(ui, w.token, Al::Right, token, theme::ACCENT);
 
     cell_job(ui, w.size, Al::Right, "Sz:", &fmt4(r.size), theme::TEXT_2);
     cell_onoff(ui, w.sl, "SL:", r.sl_on);
@@ -259,7 +355,7 @@ fn data_row(ui: &mut egui::Ui, e: &OrderEntry, w: &Widths) -> egui::Rangef {
     cell_job(ui, w.fill, Al::Right, "Fill:", &format!("{:.0}%", r.fill_pct), theme::TEXT_2);
     cell_text(ui, w.strat, Al::Right, &r.strat, theme::TEXT_2);
     ui.end_row();
-    y.y_range()
+    token_rect
 }
 
 fn fmt4(v: f64) -> String {
@@ -327,8 +423,10 @@ fn cell_onoff(ui: &mut egui::Ui, w: f32, label: &str, on: bool) {
 
 fn sort_entries(entries: &mut [&OrderEntry], view: &OrdersViewState) {
     entries.sort_by(|a, b| {
-        let ka = primary_key(view.primary, a.row.is_short);
-        let kb = primary_key(view.primary, b.row.is_short);
+        // Сначала группа по выбранной стороне (Sell/Buy всегда первыми), ВНУТРИ группы
+        // — по времени (новые/старые). Та же сортировка по времени и в остальных.
+        let ka = primary_key(view.primary, &a.row);
+        let kb = primary_key(view.primary, &b.row);
         ka.cmp(&kb).then_with(|| {
             let c = a.row.uid.cmp(&b.row.uid);
             if view.newest_first {
@@ -340,11 +438,14 @@ fn sort_entries(entries: &mut [&OrderEntry], view: &OrdersViewState) {
     });
 }
 
-fn primary_key(p: PrimarySort, is_short: bool) -> u8 {
+/// Ключ группировки по ОТОБРАЖАЕМОЙ стороне (с учётом исполнения → SELL). 0 = выше.
+fn primary_key(p: PrimarySort, r: &OrderRow) -> u8 {
     match p {
         PrimarySort::Creation => 0,
-        PrimarySort::SellFirst => u8::from(!is_short),
-        PrimarySort::BuyFirst => u8::from(is_short),
+        // SELL (исполненный лонг) первыми.
+        PrimarySort::SellFirst => u8::from(!is_sell(r)),
+        // BUY (лонг, ещё не исполнен) первыми.
+        PrimarySort::BuyFirst => u8::from(!is_buy(r)),
     }
 }
 

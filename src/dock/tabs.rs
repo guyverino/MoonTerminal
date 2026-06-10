@@ -80,6 +80,8 @@ pub struct TabsOutput {
     pub repin: Option<DockTab>,
     /// Клик по токену в «Ордерах» → открыть его чарт на Main (ядро, маркет).
     pub open_market: Option<(CoreId, String)>,
+    /// Фактическая высота развёрнутого дока (для персиста). 0 у свёрнутого.
+    pub dock_height: f32,
 }
 
 /// Высота свёрнутого дока — только полоска вкладок (без контента).
@@ -95,21 +97,22 @@ pub fn show(
     data: &mut TabData,
     detached: &[bool; 4],
     collapsed: &mut bool,
+    default_h: f32,
 ) -> TabsOutput {
     let mut out = TabsOutput::default();
     let is_collapsed = *collapsed;
     // Свёрнутый и развёрнутый — РАЗНЫЕ id панели: так egui хранит высоту ресайза
     // развёрнутого дока отдельно и восстанавливает её после разворота (свёрнутая
-    // полоса не затирает запомненную высоту). Дефолт развёрнутого +50% (≈285).
+    // полоса не затирает запомненную высоту). default_h — восстановленная из layout.
     let id = if is_collapsed { "dock_collapsed" } else { "dock" };
     let mut panel = egui::TopBottomPanel::bottom(id);
     panel = if is_collapsed {
         // Свёрнут: фиксированная высота полоски, без ресайза — «уезжает» вниз.
         panel.resizable(false).exact_height(STRIP_H)
     } else {
-        panel.resizable(true).default_height(285.0).min_height(90.0)
+        panel.resizable(true).default_height(default_h).min_height(90.0)
     };
-    panel.show(ctx, |ui| {
+    let panel_resp = panel.show(ctx, |ui| {
         ui.add_space(4.0);
         // Полоска вкладок (underline-стиль). Клик — выбор; двойной клик —
         // открепить/вернуть; перетаскивание — открепить. Активную подчёркиваем
@@ -202,6 +205,10 @@ pub fn show(
             out.open_market = content_ui(ui, *active, data);
         }
     });
+    // Фактическая высота развёрнутого дока — для персиста в layout.toml.
+    if !is_collapsed {
+        out.dock_height = panel_resp.response.rect.height();
+    }
     out
 }
 

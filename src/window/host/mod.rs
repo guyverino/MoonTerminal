@@ -194,6 +194,13 @@ impl WindowHost {
             workspace
                 .dock
                 .restore(crate::dock::DockTab::from_idx(l.tab as usize), l.collapsed);
+            workspace.dock.restore_extra(
+                l.dock_h,
+                l.orders_primary,
+                l.orders_newest_first,
+                l.orders_only_current,
+                l.orders_kind,
+            );
         }
         let window = Arc::new(event_loop.create_window(attrs)?);
         if layout.as_ref().map(|l| l.maximized).unwrap_or(false) {

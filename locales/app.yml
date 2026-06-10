@@ -212,6 +212,18 @@ orders.all_cores:
   ru: "Все ядра"
   en: "All cores"
   es: "Todos los núcleos"
+orders.kind.all:
+  ru: "Все"
+  en: "All"
+  es: "Todas"
+orders.kind.real:
+  ru: "Реальные"
+  en: "Real"
+  es: "Reales"
+orders.kind.emu:
+  ru: "Эмуляторные"
+  en: "Emulator"
+  es: "Emulador"
 orders.only_current:
   ru: "Только ордера текущего маркета"
   en: "Only current market orders"

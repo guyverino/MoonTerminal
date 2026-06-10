@@ -12,7 +12,7 @@ pub mod toolbar;
 
 pub use controls::{OrderControls, ScaleAction};
 pub use log_panel::{LogPanelState, LogSource, LogSourceItem};
-pub use orders_panel::{OrderEntry, OrdersViewState};
+pub use orders_panel::{OrderEntry, OrderKind, OrdersViewState, PrimarySort};
 pub use report_view::ReportView;
 pub use tabs::DockTab;
 
@@ -40,7 +40,13 @@ pub struct Dock {
     log: crate::dock::LogPanelState,
     /// Состояние вида таблицы ордеров (фильтр/сортировка) — своё у окна.
     orders_view: crate::dock::OrdersViewState,
+    /// Высота развёрнутого дока (точки egui) — для персиста в layout.toml.
+    /// Передаётся в tabs::show как default_height и обновляется фактической высотой.
+    dock_height: f32,
 }
+
+/// Дефолтная высота развёрнутого дока (точки egui).
+pub const DEFAULT_DOCK_H: f32 = 285.0;
 
 pub struct DockOutput {
     /// Центральная область (точки egui) под график+стакан.
@@ -72,7 +78,35 @@ impl Dock {
             collapsed: false,
             log: crate::dock::LogPanelState::default(),
             orders_view: crate::dock::OrdersViewState::default(),
+            dock_height: DEFAULT_DOCK_H,
         }
+    }
+
+    /// Высота развёрнутого дока (для сохранения раскладки).
+    pub fn dock_height(&self) -> f32 {
+        self.dock_height
+    }
+
+    /// Состояние вида ордеров в примитивах (для сохранения): (primary, newest, only_current, kind).
+    pub fn orders_layout(&self) -> (u8, bool, bool, u8) {
+        let v = &self.orders_view;
+        (
+            v.primary.to_u8(),
+            v.newest_first,
+            v.only_current_market,
+            v.kind.to_u8(),
+        )
+    }
+
+    /// Восстановить высоту дока и состояние ордеров из раскладки (источник — All).
+    pub fn restore_extra(&mut self, dock_h: f32, primary: u8, newest: bool, only_current: bool, kind: u8) {
+        if dock_h > 0.0 {
+            self.dock_height = dock_h;
+        }
+        self.orders_view.primary = crate::dock::PrimarySort::from_u8(primary);
+        self.orders_view.newest_first = newest;
+        self.orders_view.only_current_market = only_current;
+        self.orders_view.kind = crate::dock::OrderKind::from_u8(kind);
     }
 
     /// Пометить вкладку «Ордера» этого окна откреплённой/прикреплённой (App).
@@ -132,7 +166,18 @@ impl Dock {
             log: &mut self.log,
             log_sources,
         };
-        let tabs_out = tabs::show(ctx, &mut self.tab, &mut data, &detached, &mut self.collapsed);
+        let tabs_out = tabs::show(
+            ctx,
+            &mut self.tab,
+            &mut data,
+            &detached,
+            &mut self.collapsed,
+            self.dock_height,
+        );
+        // Запоминаем фактическую высоту развёрнутого дока (для персиста).
+        if tabs_out.dock_height > 0.0 {
+            self.dock_height = tabs_out.dock_height;
+        }
 
         // Правый док детектов — вертикальная колонка кнопок (новые сверху). Виден
         // всегда: детекты приходят группе независимо от открытого чарта. Создаём

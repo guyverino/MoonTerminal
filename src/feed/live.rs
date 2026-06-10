@@ -212,6 +212,14 @@ pub fn run(
         }
 
         // Lifecycle -> статус (стадии и ошибки видны прямо в бейдже).
+        // ConnectFailed — ТЕРМИНАЛЬНЫЙ отказ начального connect/init: фоновый рантайм
+        // moonproto при нём делает break и больше НЕ реконнектится (авто-реконнект у
+        // него только для потери линка ПОСЛЕ успешного коннекта). При этом сам
+        // MoonClient::connect неблокирующий и уже вернул Ok, так что без явного выхода
+        // мы бы крутились вечно со статусом Failed и app-level реконнект (feed/mod.rs)
+        // не запустился бы. Поэтому ловим ConnectFailed и возвращаем Err → внешний
+        // цикл пересоздаст клиент с backoff. (Ровно баг «5/7, авто-реконнекта нет».)
+        let mut connect_failed: Option<String> = None;
         for ev in client.drain_lifecycle_events() {
             log::info!("lifecycle: {ev:?}");
             let st = match ev {
@@ -234,13 +242,22 @@ pub fn run(
                 LifecycleEvent::Ready => ConnStatus::Ready,
                 LifecycleEvent::Reconnecting => ConnStatus::Stage("reconnecting…".into()),
                 LifecycleEvent::ServerRestart => ConnStatus::Stage("server restart…".into()),
-                LifecycleEvent::ConnectFailed { error } => ConnStatus::Failed(error.to_string()),
+                LifecycleEvent::ConnectFailed { error } => {
+                    let msg = error.to_string();
+                    connect_failed = Some(msg.clone());
+                    ConnStatus::Failed(msg)
+                }
                 LifecycleEvent::BindFailed { consecutive_failures } => ConnStatus::Failed(format!(
                     "UDP bind failed x{consecutive_failures} (VPN/firewall/порты?)"
                 )),
                 LifecycleEvent::Disconnected => ConnStatus::Disconnected,
             };
             let _ = tx.send(FeedMsg::Status(st));
+        }
+        // Терминальный отказ старта → наружу как Err: пусть app-level цикл пересоздаст
+        // клиент (moonproto сам этот рантайм уже не оживит).
+        if let Some(e) = connect_failed {
+            return Err(anyhow::anyhow!("{e}"));
         }
 
         // Дренируем доменные события. Тики/стакан/ордера берём из snapshot;
@@ -381,6 +398,7 @@ pub fn run(
                         fill_pct,
                         strat,
                         uid: o.uid,
+                        emulator: o.emulator_mode,
                     });
                 }
                 if orders_due {

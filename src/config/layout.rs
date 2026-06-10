@@ -25,6 +25,25 @@ pub struct GroupLayout {
     /// Индекс активной вкладки дока (см. `DockTab::idx`).
     #[serde(default)]
     pub tab: u8,
+    /// Высота развёрнутого дока (точки egui). 0 = не задано → дефолт.
+    #[serde(default)]
+    pub dock_h: f32,
+    /// Сортировка ордеров: 0=по созданию, 1=Sell первые, 2=Buy первые.
+    #[serde(default)]
+    pub orders_primary: u8,
+    /// Сортировка ордеров по времени: новые первыми.
+    #[serde(default = "def_true")]
+    pub orders_newest_first: bool,
+    /// Фильтр ордеров «только текущий маркет».
+    #[serde(default)]
+    pub orders_only_current: bool,
+    /// Фильтр типа ордеров: 0=все, 1=реальные, 2=эмуляторные.
+    #[serde(default)]
+    pub orders_kind: u8,
+}
+
+fn def_true() -> bool {
+    true
 }
 
 /// Прямоугольник окна (внешняя позиция + внутренний размер, физ. пиксели).
