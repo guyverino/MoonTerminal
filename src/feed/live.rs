@@ -382,10 +382,34 @@ pub fn run(
                     } else {
                         0.0
                     };
+                    // Размер в базовой монете: «живое» количество в разных стадиях лежит
+                    // в разных ногах/полях (пендинг-вход → quantity входной ноги; открытая
+                    // позиция → quantity_base/quantity_remaining ноги выхода). Берём
+                    // наибольшую осмысленную величину по обеим ногам (приоритет quantity_base).
+                    let pick = |qb: f64, q: f64, qr: f64| {
+                        if qb != 0.0 {
+                            qb
+                        } else if q != 0.0 {
+                            q
+                        } else {
+                            qr
+                        }
+                    };
+                    let bs = pick(
+                        o.buy_order.quantity_base,
+                        o.buy_order.quantity,
+                        o.buy_order.quantity_remaining,
+                    );
+                    let ss = pick(
+                        o.sell_order.quantity_base,
+                        o.sell_order.quantity,
+                        o.sell_order.quantity_remaining,
+                    );
+                    let size = if bs.abs() >= ss.abs() { bs } else { ss };
                     order_rows.push(OrderRow {
                         market: o.market_name.clone(),
                         is_short: o.is_short,
-                        size: leg.quantity,
+                        size,
                         sl_on: o.stops.stop_loss_enabled(),
                         ts_on: o.stops.trailing_enabled(),
                         vstop_on: o.vstop_on,

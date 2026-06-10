@@ -336,7 +336,7 @@ fn data_row(ui: &mut egui::Ui, e: &OrderEntry, w: &Widths) -> egui::Rect {
         ("BUY", theme::GREEN)
     };
     let side = if r.emulator {
-        format!("{side} (E)")
+        format!("{side}(E)")
     } else {
         side.to_string()
     };
@@ -346,20 +346,21 @@ fn data_row(ui: &mut egui::Ui, e: &OrderEntry, w: &Widths) -> egui::Rect {
     let token = crate::symbol::base_symbol(&r.market, &e.quote);
     let token_rect = cell_text(ui, w.token, Al::Right, token, theme::ACCENT);
 
-    cell_job(ui, w.size, Al::Right, "Sz:", &fmt4(r.size), theme::TEXT_2);
+    cell_job(ui, w.size, Al::Right, "Sz:", &num(r.size), theme::TEXT_2);
     cell_onoff(ui, w.sl, "SL:", r.sl_on);
     cell_onoff(ui, w.ts, "TS:", r.ts_on);
     cell_onoff(ui, w.vstop, "Vstop:", r.vstop_on);
-    cell_job(ui, w.buy, Al::Right, "Buy:", &fmt4(r.buy_price), theme::TEXT_2);
-    cell_job(ui, w.price, Al::Right, "Cur.P:", &fmt4(r.price as f64), theme::TEXT_2);
+    cell_job(ui, w.buy, Al::Right, "Buy:", &num(r.buy_price), theme::TEXT_2);
+    cell_job(ui, w.price, Al::Right, "Cur.P:", &num(r.price as f64), theme::TEXT_2);
     cell_job(ui, w.fill, Al::Right, "Fill:", &format!("{:.0}%", r.fill_pct), theme::TEXT_2);
     cell_text(ui, w.strat, Al::Right, &r.strat, theme::TEXT_2);
     ui.end_row();
     token_rect
 }
 
-fn fmt4(v: f64) -> String {
-    format!("{v:.4}")
+/// Адаптивный формат размера/цены (крупные — без дробной, мелкие — со значащими).
+fn num(v: f64) -> String {
+    crate::util::fmt::adaptive(v)
 }
 
 fn layout_of(al: Al) -> egui::Layout {

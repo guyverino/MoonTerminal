@@ -248,7 +248,10 @@ fn reports_table(
     }
     let row_h = ui.text_style_height(&egui::TextStyle::Body) + 4.0;
 
-    egui::ScrollArea::horizontal().show(ui, |ui| {
+    // auto_shrink=false по обеим осям: иначе внешний горизонтальный скролл усаживается
+    // по высоте, внутренний show_rows рендерит ВСЕ строки → контейнер «прыгает» вверх
+    // при переключении на отчёт, а при сжатии строки наезжают на нижний статус-бар.
+    egui::ScrollArea::horizontal().auto_shrink([false, false]).show(ui, |ui| {
         // Заголовки — кликабельные, со стрелкой направления у активной колонки.
         ui.horizontal(|ui| {
             for &i in &vis {
