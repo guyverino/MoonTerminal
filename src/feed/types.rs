@@ -54,6 +54,10 @@ pub struct OrderRow {
     pub vstop_on: bool,
     /// Цена входа (buy_price).
     pub buy_price: f64,
+    /// Цена продажи (sell_price); 0 = не выставлена.
+    pub sell_price: f64,
+    /// Время создания ордера, unix мс (начало линии). 0 = неизвестно.
+    pub create_time_ms: f64,
     /// Текущая цена рынка (p_last).
     pub price: f32,
     /// Заполнение входной ноги, %.
@@ -65,6 +69,25 @@ pub struct OrderRow {
     pub uid: u64,
     /// Эмуляторный ордер (не реальный) — для фильтра и пометки «(E)».
     pub emulator: bool,
+
+    // --- Цены линий на чарте (категория C: горизонтали по цене) ---
+    // Считаются в feed-слое (live.rs) из StopSettings/buy_price/market-liq: проценты
+    // приводятся к абсолютной цене ТАМ, а рендер получает готовые цены и только
+    // маппит их в пиксели через shader-uniform. `None` = линия не активна.
+    /// Ордер ещё не исполнен (pending) — линию входа рисуем пунктиром.
+    pub pending: bool,
+    /// Стоп-лосс (абсолютная цена).
+    pub stop_loss: Option<f64>,
+    /// Трейлинг-стоп (абсолютная цена; для %-режима — оценка от входа).
+    pub trailing: Option<f64>,
+    /// Тейк-профит (абсолютная цена).
+    pub take_profit: Option<f64>,
+    /// VStop (абсолютная цена уровня).
+    pub vstop: Option<f64>,
+    /// Цена условия pending-ордера (BuyCondPrice).
+    pub pending_cond: Option<f64>,
+    /// Цена ликвидации позиции (из рынка, по стороне).
+    pub liq: Option<f64>,
 }
 
 /// Один детект ядра (для тулбара/истории). Декаплено от moonproto.

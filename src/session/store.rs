@@ -9,6 +9,7 @@ use std::collections::{HashMap, VecDeque};
 
 use crate::applog::LogLine;
 use crate::feed::{ConnStatus, DetectRow, FeedMsg, OrderRow, StrategyRow, StrategySchemaModel};
+use crate::session::order_lines::OrderLineStore;
 
 /// Сколько последних детектов держим в памяти на ядро.
 const MAX_DETECTS: usize = 2000;
@@ -23,6 +24,8 @@ pub struct CoreData {
     pub status: ConnStatus,
     /// Открытые ордера ядра (все рынки).
     pub orders: Vec<OrderRow>,
+    /// Ретейн-стор линий ордеров для чарта (история + закрытые, всю сессию).
+    pub order_lines: OrderLineStore,
     /// Последние детекты ядра (кольцо, обрезается до MAX_DETECTS).
     pub detects: Vec<DetectRow>,
     /// Стратегии ядра (последний снимок; для окна стратегий).
@@ -44,6 +47,7 @@ impl CoreData {
         Self {
             status: ConnStatus::Connecting,
             orders: Vec::new(),
+            order_lines: OrderLineStore::default(),
             detects: Vec::new(),
             strategies: Vec::new(),
             schema: None,
@@ -68,6 +72,9 @@ impl CoreData {
         match msg {
             FeedMsg::Status(s) => self.status = s,
             FeedMsg::Orders(orders) => {
+                // Сначала обновляем ретейн-стор линий (трассы/узлы/закрытия) по
+                // свежему снимку, затем перемещаем его в список для дока.
+                self.order_lines.update(&orders);
                 self.orders = orders;
                 self.orders_rev = self.orders_rev.wrapping_add(1);
             }

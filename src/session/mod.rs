@@ -10,6 +10,7 @@
 //! избирает провайдера на биржу и шлёт ядрам рыночную роль командой `SetMarket`.
 
 pub mod coordinator;
+pub mod order_lines;
 pub mod store;
 
 pub use store::{CoreId, CoreStore};

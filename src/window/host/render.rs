@@ -180,6 +180,7 @@ impl WindowHost {
             ppp,
             now_ms,
             &self.theme,
+            &self.orders_style,
             self.input.hovered_pane,
             cur,
             session,

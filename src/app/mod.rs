@@ -590,8 +590,11 @@ impl ApplicationHandler for App {
         } else {
             self.config.theme.clone()
         };
+        // Стиль линий ордеров (orders.toml) — без живого превью, из конфига.
+        let orders_style = self.config.orders.clone();
         for host in self.windows.values_mut() {
             host.set_theme(&theme);
+            host.set_orders_style(&orders_style);
         }
 
         // Живые ОБЩИЕ вкладки (Лог/Отчёт): при изменении данных форсим кадр окнам,
@@ -651,6 +654,7 @@ impl ApplicationHandler for App {
         let mut close_charts: Vec<WindowId> = Vec::new();
         for (cid, w) in self.detached_charts.iter_mut() {
             w.set_theme(&theme);
+            w.set_orders_style(&orders_style);
             if let Some((core, market)) = w.take_pending_to_main() {
                 to_main.push((w.owner(), core, market));
             }

@@ -406,6 +406,65 @@ pub fn run(
                         o.sell_order.quantity_remaining,
                     );
                     let size = if bs.abs() >= ss.abs() { bs } else { ss };
+                    // Цены линий ордера для чарта (категория C). Проценты приводим к
+                    // абсолютной цене здесь; рендер получает готовые цены. Стопы —
+                    // на проигрышной стороне (long → ниже входа, short → выше).
+                    let mkt = snap.markets().price(&o.market_name);
+                    let last = mkt.as_ref().map(|p| p.p_last as f32).unwrap_or(0.0);
+                    let entry = o.buy_price;
+                    let valid_entry = entry.is_finite() && entry > 0.0;
+                    let fin = |v: f64| (v.is_finite() && v > 0.0).then_some(v);
+                    let pct_stop = |level: f64| {
+                        if o.is_short {
+                            entry * (1.0 + level / 100.0)
+                        } else {
+                            entry * (1.0 - level / 100.0)
+                        }
+                    };
+                    let stop_loss = if o.stops.stop_loss_enabled() {
+                        if o.stops.stop_loss_fixed() {
+                            fin(o.stops.stop_loss_level())
+                        } else if valid_entry {
+                            fin(pct_stop(o.stops.stop_loss_level()))
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+                    let trailing = if o.stops.trailing_enabled() {
+                        if o.stops.trailing_fixed() {
+                            fin(o.stops.trailing_level())
+                        } else if valid_entry {
+                            fin(pct_stop(o.stops.trailing_level()))
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+                    let take_profit = o
+                        .stops
+                        .take_profit_enabled()
+                        .then(|| fin(o.stops.take_profit()))
+                        .flatten();
+                    let vstop = o.vstop_on.then(|| fin(o.vstop_level)).flatten();
+                    let pending_cond = o.pending_buy_cond_price.and_then(fin);
+                    // Цена ликвидации — на балансе/позиции рынка, не в price-строке.
+                    let liq = snap.markets().get(&o.market_name).and_then(|h| {
+                        let bp = h.balance_position();
+                        let v = if o.is_short {
+                            bp.short_liq_price
+                        } else {
+                            bp.long_liq_price
+                        };
+                        fin(v).or_else(|| fin(bp.liq_price))
+                    });
+                    let pending = o.pending_buy_cond_price.is_some();
+                    // Время создания входной ноги (начало линии ордера), unix мс.
+                    let create_time_ms = delphi_to_unix(leg.create_time)
+                        .map(|s| s as f64 * 1000.0)
+                        .unwrap_or(0.0);
                     order_rows.push(OrderRow {
                         market: o.market_name.clone(),
                         is_short: o.is_short,
@@ -414,15 +473,20 @@ pub fn run(
                         ts_on: o.stops.trailing_enabled(),
                         vstop_on: o.vstop_on,
                         buy_price: o.buy_price,
-                        price: snap
-                            .markets()
-                            .price(&o.market_name)
-                            .map(|p| p.p_last as f32)
-                            .unwrap_or(0.0),
+                        sell_price: o.sell_price,
+                        create_time_ms,
+                        price: last,
                         fill_pct,
                         strat,
                         uid: o.uid,
                         emulator: o.emulator_mode,
+                        pending,
+                        stop_loss,
+                        trailing,
+                        take_profit,
+                        vstop,
+                        pending_cond,
+                        liq,
                     });
                 }
                 if orders_due {

@@ -4,11 +4,13 @@ pub mod crosses;
 pub mod cursor;
 pub mod glass;
 pub mod grid;
+pub mod order_lines;
 
 pub use crosses::CrossesLayer;
 pub use cursor::CursorLayer;
 pub use glass::GlassLayer;
 pub use grid::GridLayer;
+pub use order_lines::{LineInstance, MarkerInstance, OrderLinesLayer, SegInstance};
 
 /// Создаёт простой render pipeline (triangle list) с заданными layout/шейдером.
 pub fn make_pipeline(

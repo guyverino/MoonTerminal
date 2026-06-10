@@ -18,6 +18,7 @@ pub mod crypto;
 pub mod groups;
 pub mod lang;
 pub mod layout;
+pub mod orders;
 pub mod paths;
 pub mod secrets;
 pub mod servers;
@@ -32,6 +33,7 @@ mod toml_io;
 pub use groups::GroupConfig;
 pub use lang::Language;
 pub use layout::{DetachedLayout, GeomRect, GroupLayout, WindowLayout};
+pub use orders::{LineStyle, OrdersStyle};
 pub use secrets::Secret;
 pub use servers::{FeedFlags, ServerConfig};
 pub use theme::ChartTheme;
@@ -57,12 +59,16 @@ pub struct AppConfig {
     pub log_retention_days: u32,
     /// Тема оформления чарта (отдельный переносимый theme.toml).
     pub theme: ChartTheme,
+    /// Стиль линий ордеров (отдельный переносимый orders.toml).
+    pub orders: OrdersStyle,
 }
 
 impl AppConfig {
     pub fn load() -> anyhow::Result<Self> {
-        // Тема — отдельный переносимый файл, грузится независимо от серверов/групп.
+        // Тема и стиль линий ордеров — отдельные переносимые файлы, грузятся
+        // независимо от серверов/групп.
         let theme = ChartTheme::load();
+        let orders = OrdersStyle::load();
         if paths::servers_path().exists() {
             let sf = store::read_servers()?;
             let meta = store::read_settings();
@@ -76,6 +82,7 @@ impl AppConfig {
                 log_to_file: merged.log_to_file,
                 log_retention_days: merged.log_retention_days,
                 theme,
+                orders,
             };
             log::info!(
                 "конфиг: {} серверов, {} групп",
@@ -96,6 +103,7 @@ impl AppConfig {
         if paths::legacy_enc_path().exists() {
             let mut cfg = migrate::from_legacy_enc()?;
             cfg.theme = theme;
+            cfg.orders = orders;
             cfg.charts_split_by_core = true;
             cfg.log_to_file = true;
             cfg.log_retention_days = 14;
@@ -106,6 +114,7 @@ impl AppConfig {
         if paths::legacy_toml_path().exists() {
             let mut cfg = migrate::from_legacy_toml()?;
             cfg.theme = theme;
+            cfg.orders = orders;
             cfg.charts_split_by_core = true;
             cfg.log_to_file = true;
             cfg.log_retention_days = 14;
@@ -117,6 +126,7 @@ impl AppConfig {
         log::warn!("конфиг не найден — добавь сервера в Настройках");
         Ok(Self {
             theme,
+            orders,
             charts_split_by_core: true, // дефолт — отдельная вкладка на ядро
             log_to_file: true,
             log_retention_days: 14,

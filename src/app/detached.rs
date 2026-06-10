@@ -139,6 +139,7 @@ impl App {
         idx: usize,
     ) {
         let theme = self.config.theme.clone();
+        let orders_style = self.config.orders.clone();
         let epoch = self.epoch_ms;
         let taken = self
             .windows
@@ -176,7 +177,7 @@ impl App {
         // сворачивается/разворачивается вместе с родителем).
         let owner_hwnd = owner_host.and_then(|h| crate::win_taskbar::hwnd_of(&h.window));
         match ChartWindow::new(
-            event_loop, owner, owner_hwnd, &display, kind, mode, spec, theme, epoch,
+            event_loop, owner, owner_hwnd, &display, kind, mode, spec, theme, orders_style, epoch,
         ) {
             Ok(w) => {
                 self.detached_charts.insert(w.window.id(), w);

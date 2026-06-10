@@ -13,7 +13,7 @@ use winit::window::{CursorIcon, Window};
 use crate::chart::container::{Container, ContainerKind, Mode, Pane, PaneSource};
 use crate::chart::paint::MIN_FRAME_DT;
 use crate::chart::view::Rect;
-use crate::config::ChartTheme;
+use crate::config::{ChartTheme, OrdersStyle};
 use crate::session::CoreId;
 use crate::gpu::GpuContext;
 use crate::session::{CoreStore, SessionManager};
@@ -133,6 +133,8 @@ pub struct WindowHost {
     pub workspace: Workspace,
     /// Тема оформления чарта (приходит из App; смена → dirty-кадр).
     theme: ChartTheme,
+    /// Стиль линий ордеров (приходит из App вместе с темой).
+    orders_style: OrdersStyle,
     last_frame: Instant,
     /// Время последнего present — для капа частоты кадров (MIN_FRAME_DT).
     last_present_at: Instant,
@@ -244,6 +246,7 @@ impl WindowHost {
             epoch_ms,
             workspace,
             theme: ChartTheme::default(),
+            orders_style: OrdersStyle::default(),
             last_frame: Instant::now(),
             last_present_at: Instant::now() - MIN_FRAME_DT,
             fps: 0.0,
@@ -479,6 +482,15 @@ impl WindowHost {
             self.egui_ctx.set_style(style);
             self.egui_dirty = true; // перетесселировать хром с новым фоном
         }
+        self.dirty = true;
+    }
+
+    /// Применить стиль линий ордеров (orders.toml). Смена → dirty-кадр.
+    pub fn set_orders_style(&mut self, style: &OrdersStyle) {
+        if &self.orders_style == style {
+            return;
+        }
+        self.orders_style = style.clone();
         self.dirty = true;
     }
 

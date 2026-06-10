@@ -6,7 +6,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::chart::container::{Container, Pane};
 use crate::chart::view::Rect;
-use crate::config::ChartTheme;
+use crate::config::{ChartTheme, OrdersStyle};
 use crate::session::SessionManager;
 
 /// Кап частоты кадров: не презентим чаще этого. Общий для окна группы и
@@ -30,6 +30,10 @@ pub fn panes_visible_sig(panes: &[Pane], session: &SessionManager, now_ms: f64) 
         if let Some(v) = session.market_view(p.core, &p.market) {
             v.ticks_rev.hash(&mut h);
             v.book_rev.hash(&mut h);
+        }
+        // Ревизия линий ордеров ядра — новый ордер/узел/закрытие → нужен кадр.
+        if let Some(c) = session.store().core(p.core) {
+            c.order_lines.rev.hash(&mut h);
         }
         let edge = if p.chart.view.is_live(now_ms) {
             now_ms
@@ -77,6 +81,7 @@ pub fn render_panes(
     ppp: f32,
     now_ms: f64,
     theme: &ChartTheme,
+    orders_style: &OrdersStyle,
     hovered: Option<usize>,
     cursor: Option<(f32, f32)>,
     session: &SessionManager,
@@ -112,12 +117,15 @@ pub fn render_panes(
             (p.core, p.market.clone())
         };
         let data = session.market_view(core, &market);
+        // Ретейн-стор линий ордеров ядра панели (история + закрытые; чарт фильтрует
+        // по market и культит по окну времени).
+        let lines = session.store().core(core).map(|c| &c.order_lines);
         let pcur = if hovered == Some(*idx) { cursor } else { None };
         let pane = &mut container.panes[*idx];
         pane.chart.set_cursor(pcur);
         pane.chart.render(
-            device, queue, encoder, target, *rect, resolution, ppp, now_ms, data, true, clear,
-            theme,
+            device, queue, encoder, target, *rect, resolution, ppp, now_ms, data, lines, &market,
+            orders_style, true, clear, theme,
         );
     }
     layout

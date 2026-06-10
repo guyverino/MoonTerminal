@@ -24,6 +24,11 @@ pub fn theme_path() -> PathBuf {
     exe_dir().join("theme.toml")
 }
 
+/// Стиль линий ордеров — отдельный переносимый файл рядом с exe.
+pub fn orders_path() -> PathBuf {
+    exe_dir().join("orders.toml")
+}
+
 /// Раскладка окон (позиции/размеры/свёрнутость/активная вкладка + откреплённые
 /// окна) — отдельный переносимый файл рядом с exe.
 pub fn layout_path() -> PathBuf {

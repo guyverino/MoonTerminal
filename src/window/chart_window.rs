@@ -13,7 +13,7 @@ use winit::window::{CursorIcon, Window, WindowId};
 use crate::chart::container::{Container, ContainerKind, Mode, PaneSource};
 use crate::chart::paint::MIN_FRAME_DT;
 use crate::chart::view::Rect;
-use crate::config::ChartTheme;
+use crate::config::{ChartTheme, OrdersStyle};
 use crate::dock::controls::SCALES;
 use crate::dock::ScaleAction;
 use crate::gpu::GpuContext;
@@ -37,6 +37,7 @@ pub struct ChartWindow {
     overlay_renderer: egui_wgpu::Renderer,
     container: Container,
     theme: ChartTheme,
+    orders_style: OrdersStyle,
     /// Активный пресет масштаба (индекс в `SCALES`) — подсветка кнопки.
     scale_idx: usize,
 
@@ -63,6 +64,7 @@ impl ChartWindow {
         mode: Mode,
         spec: Vec<(CoreId, String, PaneSource)>,
         theme: ChartTheme,
+        orders_style: OrdersStyle,
         epoch_ms: f64,
     ) -> anyhow::Result<Self> {
         // Заголовок окна — переданное имя (формируется из номера и группы, см. App).
@@ -115,6 +117,7 @@ impl ChartWindow {
             overlay_renderer,
             container,
             theme,
+            orders_style,
             scale_idx: 0,
             input: crate::chart::input::ChartInput::default(),
             close_requested: false,
@@ -127,6 +130,14 @@ impl ChartWindow {
     pub fn set_theme(&mut self, theme: &ChartTheme) {
         if &self.theme != theme {
             self.theme = theme.clone();
+            self.dirty = true;
+        }
+    }
+
+    /// Применить стиль линий ордеров (orders.toml). Смена → dirty-кадр.
+    pub fn set_orders_style(&mut self, style: &OrdersStyle) {
+        if &self.orders_style != style {
+            self.orders_style = style.clone();
             self.dirty = true;
         }
     }
@@ -384,6 +395,7 @@ impl ChartWindow {
             ppp,
             now_ms,
             &self.theme,
+            &self.orders_style,
             self.input.hovered_pane,
             cur,
             session,

@@ -13,13 +13,18 @@ pub mod transform;
 pub mod view;
 
 use canvas::ChartCanvas;
-use layers::{CrossesLayer, CursorLayer, GlassLayer, GridLayer};
+use layers::{
+    CrossesLayer, CursorLayer, GlassLayer, GridLayer, LineInstance, MarkerInstance, OrderLinesLayer,
+    SegInstance,
+};
 use style::{StyleGlobals, StyleUniform};
 use transform::ChartGlobals;
 use view::{ChartView, Rect};
 
+use crate::config::{LineStyle, OrdersStyle};
 use crate::config::ChartTheme;
 use crate::market::MarketView;
+use crate::session::order_lines::{LineKind, OrderLineStore, RetainedOrder};
 
 /// sRGB → linear (для clear-цвета; свопчейн sRGB сам кодирует обратно).
 pub fn srgb_to_linear(c: u8) -> f64 {
@@ -42,11 +47,17 @@ pub struct Chart {
     glass: GlassLayer,
     cursor: CursorLayer,
     canvas: ChartCanvas,
+    order_lines: OrderLinesLayer,
 
     cursor_pos: Option<(f32, f32)>,
     // какую ревизию данных уже залили в GPU-буферы этой панели
     last_ticks_rev: u64,
     last_book_rev: u64,
+    // Скретч-буферы геометрии линий ордеров (переиспользуются). Пересобираются
+    // каждый рисуемый кадр (объём мал; нужен живой правый край у активных линий).
+    hlines_scratch: Vec<LineInstance>,
+    segs_scratch: Vec<SegInstance>,
+    markers_scratch: Vec<MarkerInstance>,
     // Скретч-буфер инстансов стакана: нормировка зависит от видимого окна ЭТОЙ
     // панели, поэтому строим локально (книга-модель шарится между панелями).
     glass_scratch: Vec<crate::chart::data::LevelInstance>,
@@ -67,6 +78,7 @@ impl Chart {
         let glass = GlassLayer::new(device, format, &globals.layout, &style.layout);
         let cursor = CursorLayer::new(device, format, &style.layout);
         let canvas = ChartCanvas::new(device, format);
+        let order_lines = OrderLinesLayer::new(device, format, &globals.layout);
 
         Self {
             view: ChartView::new(epoch_ms),
@@ -78,9 +90,13 @@ impl Chart {
             glass,
             cursor,
             canvas,
+            order_lines,
             cursor_pos: None,
             last_ticks_rev: u64::MAX,
             last_book_rev: u64::MAX,
+            hlines_scratch: Vec::new(),
+            segs_scratch: Vec::new(),
+            markers_scratch: Vec::new(),
             glass_scratch: Vec::new(),
             last_glass_lo: f32::NAN,
             last_glass_hi: f32::NAN,
@@ -91,9 +107,11 @@ impl Chart {
         self.cursor_pos = pos;
     }
 
-    /// Кадр графика в `target`. `data` — данные активного ядра (или None).
-    /// `open=false` — чарт закрыт: только серый clear (пустой контейнер), слои не
-    /// рисуем.
+    /// Кадр графика в `target`. `data` — рыночные данные (крестики/стакан, или None).
+    /// `lines` — ретейн-стор линий ордеров ядра ЭТОЙ панели (фильтр по `market`);
+    /// `style` — стиль линий (orders.toml). `open=false` — чарт закрыт: только серый
+    /// clear (пустой контейнер), слои не рисуем.
+    #[allow(clippy::too_many_arguments)]
     pub fn render(
         &mut self,
         device: &wgpu::Device,
@@ -105,6 +123,9 @@ impl Chart {
         ppp: f32,
         now_ms: f64,
         data: Option<&MarketView>,
+        lines: Option<&OrderLineStore>,
+        market: &str,
+        style: &OrdersStyle,
         open: bool,
         clear: bool,
         theme: &ChartTheme,
@@ -223,6 +244,38 @@ impl Chart {
                 self.last_glass_hi = hi;
             }
         }
+        // Линии ордеров (слой 5): отрезки лестницы + кресты начала/конца + узелки.
+        // Геометрия логическая (time_rel/price) → пан/зум/Y-scale делает шейдер;
+        // пересобираем каждый кадр (объём мал, нужен живой правый край активных).
+        // Куллинг по видимому окну времени держит объём малым на длинной сессии.
+        if let Some(store) = lines {
+            let left_rel = view_time0;
+            let right_rel = view_time0 + window_ms;
+            build_order_geometry(
+                store,
+                market,
+                style,
+                self.view.epoch_ms,
+                now_ms,
+                left_rel,
+                right_rel,
+                &mut self.hlines_scratch,
+                &mut self.segs_scratch,
+                &mut self.markers_scratch,
+            );
+        } else {
+            self.hlines_scratch.clear();
+            self.segs_scratch.clear();
+            self.markers_scratch.clear();
+        }
+        self.order_lines.upload(
+            device,
+            queue,
+            &self.hlines_scratch,
+            &self.segs_scratch,
+            &self.markers_scratch,
+        );
+
         // Перекрестие живёт над всей plot-областью (чарт + стакан): шкала цены
         // общая, поэтому горизонталь/вертикаль проходят и через стакан; в жёлоба
         // шкал (слева/снизу) крест не заходит.
@@ -297,6 +350,8 @@ impl Chart {
         // Крестики — блитом из канваса поверх grid с целочисленным UV-сдвигом.
         self.canvas
             .composite(queue, &mut rpass, chart_area, resolution, scroll);
+        // Линии ордеров — поверх сетки/крестиков, в зоне чарта (тот же uniform).
+        self.order_lines.render(&mut rpass, cbg);
 
         scissor(&mut rpass, glass_area, resolution);
         self.glass
@@ -305,6 +360,174 @@ impl Chart {
         // Курсор — поверх всего, по plot-области (чарт + стакан, без жёлобов шкал).
         scissor(&mut rpass, plot_area, resolution);
         self.cursor.render(&mut rpass, &self.style.bind_group);
+    }
+}
+
+/// sRGB-цвет [u8;3] + alpha → [f32;4] (шейдер переводит rgb в linear).
+fn rgba(c: [u8; 3], alpha: f32) -> [f32; 4] {
+    [
+        c[0] as f32 / 255.0,
+        c[1] as f32 / 255.0,
+        c[2] as f32 / 255.0,
+        alpha,
+    ]
+}
+
+/// Виды трассируемых линий: (стиль, индекс в RetainedOrder::lines).
+fn traced_kinds(s: &OrdersStyle) -> [(&LineStyle, usize); 7] {
+    [
+        (&s.buy, LineKind::Buy as usize),
+        (&s.sell, LineKind::Sell as usize),
+        (&s.stop, LineKind::Stop as usize),
+        (&s.trailing, LineKind::Trailing as usize),
+        (&s.take_profit, LineKind::TakeProfit as usize),
+        (&s.vstop, LineKind::VStop as usize),
+        (&s.pending_cond, LineKind::PendingCond as usize),
+    ]
+}
+
+/// Собирает геометрию линий ордеров рынка `market`: отрезки лестницы (горизонтали
+/// на ступенях + вертикальные стыки), кресты начала/конца, узелки перестановок и
+/// непрерывную линию ликвидации. Куллит ордера вне видимого окна по времени.
+#[allow(clippy::too_many_arguments)]
+fn build_order_geometry(
+    store: &OrderLineStore,
+    market: &str,
+    style: &OrdersStyle,
+    epoch_ms: f64,
+    now_ms: f64,
+    left_rel: f32,
+    right_rel: f32,
+    hlines: &mut Vec<LineInstance>,
+    segs: &mut Vec<SegInstance>,
+    markers: &mut Vec<MarkerInstance>,
+) {
+    hlines.clear();
+    segs.clear();
+    markers.clear();
+    let to_rel = |t_ms: f64| (t_ms - epoch_ms) as f32;
+    let kinds = traced_kinds(style);
+
+    // Отбор видимых: по cap закрытых (новые-первые) и окну времени. Активные всегда
+    // тянутся к правому краю → видимы; закрытые культим по [create, closed].
+    let mut visible: Vec<&RetainedOrder> = store.iter_market(market).collect();
+    // Новые-первые для cap по закрытым.
+    visible.sort_unstable_by(|a, b| b.seq.cmp(&a.seq));
+    let mut closed_drawn = 0u32;
+    for ord in visible {
+        let closed = ord.closed_ms.is_some();
+        if closed {
+            if closed_drawn >= style.max_closed_orders {
+                continue;
+            }
+            closed_drawn += 1;
+        }
+        let order_end = ord.closed_ms.unwrap_or(now_ms);
+        // Куллинг по окну времени (rel ms).
+        let start_rel = to_rel(ord.create_ms);
+        let end_rel = to_rel(order_end);
+        if end_rel < left_rel || start_rel > right_rel {
+            continue;
+        }
+        let alpha = if closed {
+            style.closed_alpha
+        } else {
+            style.active_alpha
+        };
+
+        // Ликвидация — непрерывная горизонталь без маркеров.
+        if let Some(p) = ord.liq {
+            let s = &style.liq;
+            hlines.push(LineInstance {
+                price: p,
+                color: rgba(s.color, alpha),
+                style: if s.dashed { 1.0 } else { 0.0 },
+                thickness: s.thickness,
+            });
+        }
+
+        for (st, idx) in kinds {
+            let line = &ord.lines[idx];
+            let n = line.steps.len();
+            if n == 0 {
+                continue;
+            }
+            // Линия завершена, если выключена сама или закрыт ордер. У активной
+            // (незавершённой) линии конец = живой правый край (now), креста конца нет.
+            let ended = line.off_ms.is_some() || closed;
+            let line_end = line.off_ms.unwrap_or(order_end);
+            let dashed = st.dashed
+                || (idx == LineKind::Buy as usize && ord.pending && style.pending_dashed);
+            let col = rgba(st.color, alpha);
+            let dash = if dashed { 1.0 } else { 0.0 };
+
+            for i in 0..n {
+                let (t, p) = line.steps[i];
+                let seg_end_t = if i + 1 < n {
+                    line.steps[i + 1].0
+                } else {
+                    line_end
+                };
+                // Горизонталь ступени.
+                if seg_end_t > t {
+                    segs.push(SegInstance {
+                        t0_rel: to_rel(t),
+                        p0: p,
+                        t1_rel: to_rel(seg_end_t),
+                        p1: p,
+                        thickness: st.thickness,
+                        dashed: dash,
+                        color: col,
+                    });
+                }
+                // Вертикальный стык к следующей ступени + узелок.
+                if i + 1 < n {
+                    let p2 = line.steps[i + 1].1;
+                    segs.push(SegInstance {
+                        t0_rel: to_rel(seg_end_t),
+                        p0: p,
+                        t1_rel: to_rel(seg_end_t),
+                        p1: p2,
+                        thickness: st.thickness,
+                        dashed: 0.0,
+                        color: col,
+                    });
+                    if st.knots {
+                        markers.push(MarkerInstance {
+                            t_rel: to_rel(seg_end_t),
+                            price: p2,
+                            size: st.knot_size,
+                            thickness: st.marker_thickness,
+                            shape: 1.0,
+                            color: col,
+                        });
+                    }
+                }
+            }
+
+            if st.start_marker {
+                let (t0, p0) = line.steps[0];
+                markers.push(MarkerInstance {
+                    t_rel: to_rel(t0),
+                    price: p0,
+                    size: st.marker_size,
+                    thickness: st.marker_thickness,
+                    shape: 0.0,
+                    color: col,
+                });
+            }
+            if st.end_marker && ended {
+                let plast = line.steps[n - 1].1;
+                markers.push(MarkerInstance {
+                    t_rel: to_rel(line_end),
+                    price: plast,
+                    size: st.marker_size,
+                    thickness: st.marker_thickness,
+                    shape: 0.0,
+                    color: col,
+                });
+            }
+        }
     }
 }
 
