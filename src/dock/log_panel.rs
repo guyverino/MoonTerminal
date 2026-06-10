@@ -70,7 +70,7 @@ impl Default for LogPanelState {
             source: LogSource::Aggregate,
             file: LogFile::Live,
             query: String::new(),
-            errors_only: false,
+            errors_only: true, // по умолчанию показываем только ошибки/предупреждения
             loaded_name: None,
             loaded_lines: Vec::new(),
         }
