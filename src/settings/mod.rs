@@ -4,6 +4,7 @@
 pub mod connections;
 pub mod general;
 pub mod interface;
+pub mod lines;
 
 use std::collections::HashMap;
 
@@ -58,6 +59,7 @@ impl SettingsState {
                 Box::new(connections::ConnectionsTab::default()),
                 Box::new(general::GeneralTab::default()),
                 Box::new(interface::InterfaceTab),
+                Box::new(lines::LinesTab),
             ],
             status: None,
             actions: SettingsActions::default(),
@@ -78,6 +80,11 @@ impl SettingsState {
     /// Тема из редактируемой копии — для живого превью чарта, пока окно открыто.
     pub fn draft_theme(&self) -> &crate::config::ChartTheme {
         &self.draft.theme
+    }
+
+    /// Стиль линий ордеров из редактируемой копии — для живого превью.
+    pub fn draft_orders(&self) -> &crate::config::OrdersStyle {
+        &self.draft.orders
     }
 
     /// Тело окна настроек: таб-бар + активная вкладка (в ScrollArea).

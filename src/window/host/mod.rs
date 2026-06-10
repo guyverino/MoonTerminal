@@ -533,11 +533,19 @@ impl WindowHost {
             .containers
             .iter()
             .find(|c| c.kind == ContainerKind::Main)?;
-        if let Mode::Fullscreen(i) = main.mode {
-            let p = main.panes.get(i)?;
-            Some((p.core, p.market.clone()))
-        } else {
-            None
+        match main.mode {
+            Mode::Fullscreen(i) => {
+                let p = main.panes.get(i)?;
+                Some((p.core, p.market.clone()))
+            }
+            // Один график = он и есть «текущий маркет» (выходить из фулскрина некуда,
+            // ПКМ не должен сбрасывать фильтр «только текущий маркет»). Несколько
+            // панелей в тайле — текущий маркет не определён (None → показываем все).
+            Mode::Tiled if main.panes.len() == 1 => {
+                let p = &main.panes[0];
+                Some((p.core, p.market.clone()))
+            }
+            Mode::Tiled => None,
         }
     }
 

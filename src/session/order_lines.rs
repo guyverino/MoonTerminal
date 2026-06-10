@@ -31,6 +31,12 @@ pub enum LineKind {
 /// Safety-cap хранения ордеров на ядро (бережём память при «всю сессию»).
 const STORE_CAP: usize = 4000;
 
+/// Грейс перед пометкой ордера закрытым после исчезновения из снимка, мс. Снимок
+/// ордеров может кратко прийти пустым/частичным (реконнект, churn подписки) — без
+/// грейса линии мигали бы active↔closed. Закрываем, только если ордер не виделся
+/// дольше этого срока.
+const CLOSE_GRACE_MS: f64 = 2500.0;
+
 /// Текущее unix-время, мс (та же шкала, что time_ms тиков).
 fn now_unix_ms() -> f64 {
     SystemTime::now()
@@ -54,15 +60,16 @@ pub struct LineTrace {
 }
 
 impl LineTrace {
-    /// Обновляет лестницу новым значением цены. Возвращает true при изменении
-    /// (новая ступень / выключение) — для бампа ревизии стора.
-    fn update(&mut self, price: Option<f32>, create_ms: f64, now_ms: f64) -> bool {
+    /// Обновляет лестницу новым значением цены. `start_ms` — время первой ступени
+    /// (для линии входа = создание ордера; для стопов = момент фила). Возвращает
+    /// true при изменении (новая ступень / выключение) — для бампа ревизии стора.
+    fn update(&mut self, price: Option<f32>, start_ms: f64, now_ms: f64) -> bool {
         match price {
             Some(p) if p.is_finite() && p > 0.0 => {
                 let was_off = self.off_ms.take().is_some();
                 match self.steps.last().copied() {
                     None => {
-                        let t0 = if create_ms > 1.0 { create_ms } else { now_ms };
+                        let t0 = if start_ms > 1.0 { start_ms } else { now_ms };
                         self.steps.push((t0, p));
                         true
                     }
@@ -100,6 +107,8 @@ pub struct RetainedOrder {
     pub create_ms: f64,
     /// Время закрытия (отмена/исполнение); None = ордер активен.
     pub closed_ms: Option<f64>,
+    /// Когда ордер в последний раз был в снимке (для грейса закрытия).
+    last_seen_ms: f64,
     /// Порядок появления (для cap-обрезки старых закрытых).
     pub seq: u64,
     /// Трассы по видам (индекс = LineKind as usize).
@@ -110,8 +119,10 @@ pub struct RetainedOrder {
 
 impl RetainedOrder {
     fn new(r: &OrderRow, now_ms: f64, seq: u64) -> Self {
+        // Старт не может быть в будущем (часы ядра могут опережать локальные) —
+        // иначе сегмент линии вырождается/уходит за правый край.
         let create_ms = if r.create_time_ms > 1.0 {
-            r.create_time_ms
+            r.create_time_ms.min(now_ms)
         } else {
             now_ms
         };
@@ -122,6 +133,7 @@ impl RetainedOrder {
             pending: r.pending,
             create_ms,
             closed_ms: None,
+            last_seen_ms: now_ms,
             seq,
             lines: Default::default(),
             liq: None,
@@ -156,37 +168,49 @@ impl OrderLineStore {
             if order.seq == seq {
                 self.seq_counter += 1;
             }
+            order.last_seen_ms = now_ms;
             // Воскрешение закрытого uid (редко) → снова активен.
             if order.closed_ms.take().is_some() {
                 changed = true;
             }
             order.is_short = r.is_short;
             order.pending = r.pending;
-            let new_liq = r.liq.map(|v| v as f32);
+            let f = r.filled;
+            // Вход (для long и short) — всегда BUY pending-ордер: видна сразу, старт =
+            // создание. SELL (закрытие, в противоположную сторону) появляется только
+            // после исполнения входа, старт = момент фила. Стопы/TP/vstop/liq — тоже
+            // только после фила.
+            let new_liq = if f { r.liq.map(|v| v as f32) } else { None };
             if order.liq != new_liq {
                 order.liq = new_liq;
                 changed = true;
             }
-            let opt = |v: f64| (v.is_finite() && v > 0.0).then_some(v as f32);
-            let vals: [Option<f32>; TRACED_KINDS] = [
-                opt(r.buy_price),
-                opt(r.sell_price),
-                r.stop_loss.map(|v| v as f32),
-                r.trailing.map(|v| v as f32),
-                r.take_profit.map(|v| v as f32),
-                r.vstop.map(|v| v as f32),
-                r.pending_cond.map(|v| v as f32),
+            let g = |show: bool, v: f64| (show && v.is_finite() && v > 0.0).then_some(v as f32);
+            let go = |show: bool, v: Option<f64>| if show { v.map(|x| x as f32) } else { None };
+            // (значение, время первой ступени) по видам.
+            let vals: [(Option<f32>, f64); TRACED_KINDS] = [
+                (g(true, r.buy_price), order.create_ms), // вход (buy) — всегда
+                (g(f, r.sell_price), now_ms),            // закрытие (sell) — после фила
+                (go(f, r.stop_loss), now_ms),
+                (go(f, r.trailing), now_ms),
+                (go(f, r.take_profit), now_ms),
+                (go(f, r.vstop), now_ms),
+                // Pending-условие осмысленно только до фила (старт = создание).
+                (go(!f, r.pending_cond), order.create_ms),
             ];
-            let create_ms = order.create_ms;
-            for (i, v) in vals.into_iter().enumerate() {
-                changed |= order.lines[i].update(v, create_ms, now_ms);
+            for (i, (v, start_ms)) in vals.into_iter().enumerate() {
+                changed |= order.lines[i].update(v, start_ms, now_ms);
             }
         }
 
-        // Исчезли из снимка → закрыты.
+        // Исчезли из снимка дольше грейса → закрыты (грейс гасит мигание на
+        // кратком пустом/частичном снимке при реконнекте/churn подписки).
         for (uid, ord) in self.orders.iter_mut() {
-            if !seen.contains(uid) && ord.closed_ms.is_none() {
-                ord.closed_ms = Some(now_ms);
+            if !seen.contains(uid)
+                && ord.closed_ms.is_none()
+                && now_ms - ord.last_seen_ms > CLOSE_GRACE_MS
+            {
+                ord.closed_ms = Some(ord.last_seen_ms);
                 changed = true;
             }
         }
@@ -224,5 +248,28 @@ impl OrderLineStore {
         market: &'a str,
     ) -> impl Iterator<Item = &'a RetainedOrder> + 'a {
         self.orders.values().filter(move |o| o.market == market)
+    }
+
+    /// Диапазон цен (min,max) текущих линий BUY и SELL открытых (не закрытых)
+    /// ордеров рынка — для авто-масштаба Y. ТОЛЬКО buy/sell (не стопы/liq/прочее).
+    pub fn buy_sell_range(&self, market: &str) -> Option<(f32, f32)> {
+        let mut lo = f32::MAX;
+        let mut hi = f32::MIN;
+        let mut any = false;
+        for o in self.iter_market(market) {
+            if o.closed_ms.is_some() {
+                continue;
+            }
+            for idx in [LineKind::Buy as usize, LineKind::Sell as usize] {
+                if let Some(&(_, p)) = o.lines[idx].steps.last() {
+                    if p.is_finite() && p > 0.0 {
+                        lo = lo.min(p);
+                        hi = hi.max(p);
+                        any = true;
+                    }
+                }
+            }
+        }
+        any.then_some((lo, hi))
     }
 }

@@ -156,9 +156,19 @@ impl OrderLinesLayer {
         );
     }
 
-    pub fn render<'a>(&'a self, rpass: &mut wgpu::RenderPass<'a>, chart_bg: &'a wgpu::BindGroup) {
-        // Порядок: ликвидация (низ) → отрезки → маркеры (верх).
+    /// Линия ликвидации (hline, во всю ширину графика). Рисуется в зоне графика
+    /// ДО стакана — она не должна заходить в стакан.
+    pub fn render_liq<'a>(&'a self, rpass: &mut wgpu::RenderPass<'a>, chart_bg: &'a wgpu::BindGroup) {
         draw(rpass, &self.hline_pipeline, &self.hlines, chart_bg);
+    }
+
+    /// Отрезки линий ордеров + маркеры. Рисуются ПОСЛЕ стакана в общей plot-зоне
+    /// (поверх стакана) — линии без конца проходят через стакан вправо.
+    pub fn render_overlay<'a>(
+        &'a self,
+        rpass: &mut wgpu::RenderPass<'a>,
+        chart_bg: &'a wgpu::BindGroup,
+    ) {
         draw(rpass, &self.seg_pipeline, &self.segments, chart_bg);
         draw(rpass, &self.marker_pipeline, &self.markers, chart_bg);
     }

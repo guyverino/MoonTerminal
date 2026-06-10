@@ -41,7 +41,7 @@ impl Default for LineStyle {
             thickness: 1.5,
             start_marker: true,
             end_marker: true,
-            marker_size: 10.0,
+            marker_size: 4.0,
             marker_thickness: 1.5,
             knots: true,
             knot_size: 3.0,
@@ -55,6 +55,38 @@ impl LineStyle {
         Self {
             color,
             ..Self::default()
+        }
+    }
+    /// Тот же стиль, но без крестов начала/конца (для trailing/tp/vstop).
+    fn no_markers(mut self) -> Self {
+        self.start_marker = false;
+        self.end_marker = false;
+        self
+    }
+}
+
+/// Стиль «пути» (trail) — змейка реального движения линии по истории перестановок.
+/// Отдельно от основной (прямой) линии: своя галка показа, цвет, толщина, пунктир.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct PathStyle {
+    /// Показывать путь (змейку исторических позиций).
+    pub show: bool,
+    /// Цвет пути (sRGB).
+    pub color: [u8; 3],
+    /// Толщина пути, px.
+    pub thickness: f32,
+    /// Пунктир.
+    pub dashed: bool,
+}
+
+impl Default for PathStyle {
+    fn default() -> Self {
+        Self {
+            show: false,
+            color: palette::TEXT_3,
+            thickness: 1.0,
+            dashed: true,
         }
     }
 }
@@ -79,6 +111,8 @@ pub struct OrdersStyle {
     pub pending_cond: LineStyle,
     /// Линия ликвидации. Красная, БЕЗ маркеров начала/конца (непрерывная).
     pub liq: LineStyle,
+    /// Путь (trail) — змейка движения линий по истории перестановок (опц.).
+    pub path: PathStyle,
 
     /// Прозрачность активных линий, 0..1.
     pub active_alpha: f32,
@@ -111,11 +145,12 @@ impl Default for OrdersStyle {
             buy: LineStyle::with(palette::ORANGE),
             sell: LineStyle::with(BLUE),
             stop: LineStyle::with(palette::RED),
-            trailing: LineStyle::with(LIGHT_BLUE),
-            take_profit: LineStyle::with(palette::GREEN),
-            vstop: LineStyle::with(PURPLE),
+            trailing: LineStyle::with(LIGHT_BLUE).no_markers(),
+            take_profit: LineStyle::with(palette::GREEN).no_markers(),
+            vstop: LineStyle::with(PURPLE).no_markers(),
             pending_cond,
             liq,
+            path: PathStyle::default(),
             active_alpha: 0.95,
             closed_alpha: 0.35,
             pending_dashed: true,

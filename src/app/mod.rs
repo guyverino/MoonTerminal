@@ -590,8 +590,12 @@ impl ApplicationHandler for App {
         } else {
             self.config.theme.clone()
         };
-        // Стиль линий ордеров (orders.toml) — без живого превью, из конфига.
-        let orders_style = self.config.orders.clone();
+        // Стиль линий ордеров: пока открыто окно настроек — draft (живое превью).
+        let orders_style = if self.settings_window.is_some() {
+            self.settings.draft_orders().clone()
+        } else {
+            self.config.orders.clone()
+        };
         for host in self.windows.values_mut() {
             host.set_theme(&theme);
             host.set_orders_style(&orders_style);

@@ -151,8 +151,9 @@ impl AppConfig {
         );
         store::write_servers(&sf)?;
         store::write_settings(&meta)?;
-        // Тема — в свой переносимый файл (theme.toml), независимо от settings.toml.
+        // Тема и стиль линий — в свои переносимые файлы, независимо от settings.toml.
         self.theme.save()?;
+        self.orders.save()?;
         Ok(())
     }
 

@@ -461,8 +461,14 @@ pub fn run(
                         fin(v).or_else(|| fin(bp.liq_price))
                     });
                     let pending = o.pending_buy_cond_price.is_some();
-                    // Время создания входной ноги (начало линии ордера), unix мс.
-                    let create_time_ms = delphi_to_unix(leg.create_time)
+                    // Стоп/трейлинг/liq/sell появляются ТОЛЬКО после исполнения входа.
+                    // Признак — РЕАЛЬНО исполненный объём входной ноги (`fill_pct`):
+                    // у pending-ордера он 0 (нога стоит, но не исполнена), у открытой
+                    // позиции > 0. Это надёжнее статуса/is_opened и учитывает сторону
+                    // (нога входа: buy для long, sell для short).
+                    let filled = fill_pct > 0.0;
+                    // Время создания входной (buy) ноги — начало линии ордера, unix мс.
+                    let create_time_ms = delphi_to_unix(o.buy_order.create_time)
                         .map(|s| s as f64 * 1000.0)
                         .unwrap_or(0.0);
                     order_rows.push(OrderRow {
@@ -481,6 +487,7 @@ pub fn run(
                         uid: o.uid,
                         emulator: o.emulator_mode,
                         pending,
+                        filled,
                         stop_loss,
                         trailing,
                         take_profit,
