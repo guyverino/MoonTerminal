@@ -208,6 +208,10 @@ orders.open_hint:
   ru: "Открыть чарт на Main (это ядро)"
   en: "Open chart on Main (this core)"
   es: "Abrir gráfico en Main (este núcleo)"
+orders.all_cores:
+  ru: "Все ядра"
+  en: "All cores"
+  es: "Todos los núcleos"
 orders.only_current:
   ru: "Только ордера текущего маркета"
   en: "Only current market orders"

@@ -268,13 +268,21 @@ impl App {
 
             // Orders — ордера окна-владельца + его Main-маркет (для фильтра); глобальные
             // — пустой срез. Report везде рисует ОБЩИЙ self.report.
-            let (orders, main_market) = if tab == DockTab::Orders {
+            let (orders, main_market, order_cores) = if tab == DockTab::Orders {
                 match self.windows.get(&owner) {
-                    Some(h) => (h.collect_orders(self.session.store()), h.main_fullscreen()),
+                    Some(h) => (
+                        h.collect_orders(self.session.store()),
+                        h.main_fullscreen(),
+                        h.workspace
+                            .cores
+                            .iter()
+                            .map(|c| (c.id, c.name.clone()))
+                            .collect::<Vec<_>>(),
+                    ),
                     None => continue, // владелец Orders-окна закрыт
                 }
             } else {
-                (Vec::new(), None)
+                (Vec::new(), None, Vec::new())
             };
             let report = &mut self.report;
             let log = &mut self.detached_log;
@@ -287,6 +295,7 @@ impl App {
                     let mut data = crate::dock::tabs::TabData {
                         report,
                         orders: &orders,
+                        order_cores: &order_cores,
                         orders_view: ov,
                         main_market: main_market.clone(),
                         store,

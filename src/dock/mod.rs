@@ -119,9 +119,13 @@ impl Dock {
         // остальное — глобально (global_detached). Активная вкладка живёт в self.tab.
         let mut detached = global_detached;
         detached[DockTab::Orders.idx()] = self.orders_detached;
+        // Ядра группы для поля-списка источника ордеров.
+        let order_cores: Vec<(CoreId, String)> =
+            cores.iter().map(|c| (c.id, c.name.clone())).collect();
         let mut data = tabs::TabData {
             report,
             orders,
+            order_cores: &order_cores,
             orders_view: &mut self.orders_view,
             main_market,
             store,

@@ -19,7 +19,9 @@ use crate::shell::theme;
 pub struct TabData<'a> {
     pub report: &'a mut ReportView,
     pub orders: &'a [OrderEntry],
-    /// Состояние вида ордеров (фильтр/сортировка) — своё у окна/панели.
+    /// Ядра группы (id, имя) — для поля-списка источника в «Ордерах».
+    pub order_cores: &'a [(CoreId, String)],
+    /// Состояние вида ордеров (источник/фильтр/сортировка) — своё у окна/панели.
     pub orders_view: &'a mut OrdersViewState,
     /// (Ядро, маркет) текущего Main-фуллскрина — для фильтра «только текущий маркет».
     pub main_market: Option<(CoreId, String)>,
@@ -275,7 +277,13 @@ pub fn content_ui(ui: &mut egui::Ui, tab: DockTab, data: &mut TabData) -> Option
     match tab {
         DockTab::Orders => {
             let cur = data.main_market.as_ref().map(|(c, m)| (*c, m.as_str()));
-            return super::orders_panel::ui(ui, data.orders, data.orders_view, cur);
+            return super::orders_panel::ui(
+                ui,
+                data.orders,
+                data.order_cores,
+                data.orders_view,
+                cur,
+            );
         }
         DockTab::Assets => placeholder(ui, t!("dock.todo.assets").to_string()),
         DockTab::Log => super::log_panel::ui(ui, data.log, data.log_sources, data.store),

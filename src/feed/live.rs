@@ -217,7 +217,16 @@ pub fn run(
             let st = match ev {
                 LifecycleEvent::Connecting => ConnStatus::Stage("connecting…".into()),
                 LifecycleEvent::Connected { fresh } => {
-                    ConnStatus::Stage(if fresh { "connected, init…".into() } else { "reconnected".into() })
+                    // fresh=true → дальше идёт одноразовый init, ждём Ready.
+                    // fresh=false → реконнект: moonproto НЕ повторяет init и НЕ шлёт
+                    // Ready снова, но подписки/индексы уже восстановлены и клиент
+                    // операционен — иначе статус навсегда застрял бы на «reconnected»
+                    // (0/N), хотя данные идут. Поэтому реконнект = сразу Ready.
+                    if fresh {
+                        ConnStatus::Stage("connected, init…".into())
+                    } else {
+                        ConnStatus::Ready
+                    }
                 }
                 LifecycleEvent::InitStepCompleted { step, .. } => {
                     ConnStatus::Stage(format!("init: {step}"))

@@ -30,9 +30,17 @@ pub enum PrimarySort {
     Creation,
 }
 
-/// Состояние вида таблицы ордеров (фильтр + сортировка). Своё у каждого окна/дока.
+/// Источник ордеров: все ядра группы или конкретное ядро (поле-список сверху).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum OrdersSource {
+    All,
+    Core(CoreId),
+}
+
+/// Состояние вида таблицы ордеров (источник + фильтр + сортировка). Своё у окна/дока.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct OrdersViewState {
+    pub source: OrdersSource,
     pub only_current_market: bool,
     pub primary: PrimarySort,
     pub newest_first: bool,
@@ -41,6 +49,7 @@ pub struct OrdersViewState {
 impl Default for OrdersViewState {
     fn default() -> Self {
         Self {
+            source: OrdersSource::All,
             only_current_market: false,
             primary: PrimarySort::Creation,
             newest_first: true,
@@ -69,23 +78,58 @@ fn executed(r: &OrderRow) -> bool {
 pub fn ui(
     ui: &mut egui::Ui,
     entries: &[OrderEntry],
+    cores: &[(CoreId, String)],
     view: &mut OrdersViewState,
     current: Option<(CoreId, &str)>,
 ) -> Option<(CoreId, String)> {
     let mut shown: Vec<&OrderEntry> = entries
         .iter()
         .filter(|e| {
-            !view.only_current_market
-                || match current {
-                    Some((c, m)) => e.core == c && e.row.market == m,
-                    None => true,
-                }
+            let by_source = match view.source {
+                OrdersSource::All => true,
+                OrdersSource::Core(id) => e.core == id,
+            };
+            by_source
+                && (!view.only_current_market
+                    || match current {
+                        Some((c, m)) => e.core == c && e.row.market == m,
+                        None => true,
+                    })
         })
         .collect();
     sort_entries(&mut shown, view);
 
+    // Поле-список источника (как в логе): «Все ядра» + каждое ядро группы.
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new(t!("orders.title", count = shown.len())).weak());
+        let cur = match view.source {
+            OrdersSource::All => t!("orders.all_cores").to_string(),
+            OrdersSource::Core(id) => cores
+                .iter()
+                .find(|(c, _)| *c == id)
+                .map(|(_, n)| n.clone())
+                .unwrap_or_else(|| t!("orders.all_cores").to_string()),
+        };
+        egui::ComboBox::from_id_salt("orders_source")
+            .selected_text(cur)
+            .show_ui(ui, |ui| {
+                if ui
+                    .selectable_label(matches!(view.source, OrdersSource::All), t!("orders.all_cores"))
+                    .clicked()
+                {
+                    view.source = OrdersSource::All;
+                }
+                for (id, name) in cores {
+                    let sel = matches!(view.source, OrdersSource::Core(c) if c == *id);
+                    if ui.selectable_label(sel, name).clicked() {
+                        view.source = OrdersSource::Core(*id);
+                    }
+                }
+            });
+        ui.label(
+            egui::RichText::new(format!("{}", shown.len()))
+                .size(theme::LABEL_SIZE)
+                .color(theme::TEXT_3),
+        );
         if view.only_current_market {
             ui.label(
                 egui::RichText::new(format!("· {}", t!("orders.only_current")))
@@ -96,7 +140,6 @@ pub fn ui(
     });
     ui.add_space(2.0);
 
-    let w = Widths::compute(ui.available_width());
     let mut clicked: Option<(CoreId, String)> = None;
     // (y-диапазон строки, ядро, маркет) — для попадания клика по строке.
     let mut hits: Vec<(egui::Rangef, CoreId, String)> = Vec::new();
@@ -105,6 +148,9 @@ pub fn ui(
         .auto_shrink([false, false])
         .drag_to_scroll(false)
         .show(ui, |ui| {
+            // Ширину считаем ВНУТРИ scroll — здесь доступная ширина уже без полосы
+            // прокрутки, иначе сумма колонок шире вьюпорта и правый край обрежется.
+            let w = Widths::compute(ui.available_width());
             ui.spacing_mut().item_spacing.x = COL_SPACING;
             let grid = egui::Grid::new("orders_grid")
                 .striped(true)
@@ -204,7 +250,7 @@ fn data_row(ui: &mut egui::Ui, e: &OrderEntry, w: &Widths) -> egui::Rangef {
     let token = crate::symbol::base_symbol(&r.market, &e.quote);
     cell_text(ui, w.token, Al::Right, token, theme::ACCENT);
 
-    cell_job(ui, w.size, Al::Right, "Size:", &fmt4(r.size), theme::TEXT_2);
+    cell_job(ui, w.size, Al::Right, "Sz:", &fmt4(r.size), theme::TEXT_2);
     cell_onoff(ui, w.sl, "SL:", r.sl_on);
     cell_onoff(ui, w.ts, "TS:", r.ts_on);
     cell_onoff(ui, w.vstop, "Vstop:", r.vstop_on);
@@ -245,11 +291,7 @@ fn cell_text(ui: &mut egui::Ui, w: f32, al: Al, text: &str, color: egui::Color32
     let mut job = egui::text::LayoutJob::default();
     job.wrap.max_width = f32::INFINITY;
     job.append(text, 0.0, fmt_seg(color));
-    ui.allocate_ui_with_layout(egui::vec2(w, ROW_H), layout_of(al), |ui| {
-        ui.add(egui::Label::new(job).truncate());
-    })
-    .response
-    .rect
+    cell_job_raw(ui, w, al, job)
 }
 
 /// Ячейка «подпись:значение» (подпись тусклая, значение — своим цветом).
@@ -258,9 +300,19 @@ fn cell_job(ui: &mut egui::Ui, w: f32, al: Al, label: &str, value: &str, vcolor:
     job.wrap.max_width = f32::INFINITY;
     job.append(label, 0.0, fmt_seg(theme::TEXT_3));
     job.append(value, 0.0, fmt_seg(vcolor));
+    cell_job_raw(ui, w, al, job);
+}
+
+/// Рисует ячейку ТОЧНОЙ ширины `w` (через set_min_width — иначе egui усаживает
+/// ячейку до контента и колонки выходят неравномерными). Возвращает её прямоугольник.
+fn cell_job_raw(ui: &mut egui::Ui, w: f32, al: Al, job: egui::text::LayoutJob) -> egui::Rect {
     ui.allocate_ui_with_layout(egui::vec2(w, ROW_H), layout_of(al), |ui| {
+        ui.set_min_width(w);
+        ui.set_min_height(ROW_H);
         ui.add(egui::Label::new(job).truncate());
-    });
+    })
+    .response
+    .rect
 }
 
 /// Ячейка флага по центру: «SL:ON» (зелёным) / «SL:OFF» (тускло).
