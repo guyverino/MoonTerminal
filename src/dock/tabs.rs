@@ -81,12 +81,16 @@ pub fn show(
 ) -> TabsOutput {
     let mut out = TabsOutput::default();
     let is_collapsed = *collapsed;
-    let mut panel = egui::TopBottomPanel::bottom("dock");
+    // Свёрнутый и развёрнутый — РАЗНЫЕ id панели: так egui хранит высоту ресайза
+    // развёрнутого дока отдельно и восстанавливает её после разворота (свёрнутая
+    // полоса не затирает запомненную высоту). Дефолт развёрнутого +50% (≈285).
+    let id = if is_collapsed { "dock_collapsed" } else { "dock" };
+    let mut panel = egui::TopBottomPanel::bottom(id);
     panel = if is_collapsed {
         // Свёрнут: фиксированная высота полоски, без ресайза — «уезжает» вниз.
         panel.resizable(false).exact_height(STRIP_H)
     } else {
-        panel.resizable(true).default_height(190.0).min_height(90.0)
+        panel.resizable(true).default_height(285.0).min_height(90.0)
     };
     panel.show(ctx, |ui| {
         ui.add_space(4.0);
@@ -170,6 +174,11 @@ pub fn show(
         ui.add_space(8.0);
 
         // Контент активной вкладки — или плашка, если она откреплена в окно.
+        // egui хранит высоту панели как высоту КОНТЕНТА (panel.rs: PanelState{rect}),
+        // поэтому короткий контент «съёживает» док и он прыгает при смене вкладки.
+        // Решение: КАЖДАЯ вкладка должна заполнять высоту целиком — лог и таблица
+        // отчёта делают это через ScrollArea(auto_shrink=false); ордера и заглушки —
+        // через fill_rest ниже (НЕ оба сразу, иначе высота «храповиком» растёт).
         if detached[active.idx()] {
             detached_placeholder(ui, &mut out, *active);
         } else {
@@ -271,6 +280,7 @@ fn detached_placeholder(ui: &mut egui::Ui, out: &mut TabsOutput, tab: DockTab) {
             out.repin = Some(tab);
         }
     });
+    fill_rest(ui);
 }
 
 /// Заглушка контента вкладки (пока нет данных/модуля).
@@ -279,4 +289,16 @@ fn placeholder(ui: &mut egui::Ui, text: String) {
     ui.vertical_centered(|ui| {
         ui.label(egui::RichText::new(text).weak());
     });
+    fill_rest(ui);
+}
+
+/// Заполнить остаток высоты дока пустым местом — чтобы короткий контент (заглушка,
+/// плашка, пустой лог) не «съёживал» панель (egui хранит высоту = высоту контента).
+/// Применять ТОЛЬКО на вкладках БЕЗ заполняющего ScrollArea(auto_shrink=false),
+/// иначе два филлера дают рост высоты «храповиком».
+pub fn fill_rest(ui: &mut egui::Ui) {
+    let rest = ui.available_height();
+    if rest > 0.0 {
+        ui.allocate_space(egui::vec2(ui.available_width(), rest));
+    }
 }

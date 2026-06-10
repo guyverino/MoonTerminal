@@ -20,40 +20,52 @@ pub fn ui(ui: &mut egui::Ui) {
         ui.vertical_centered(|ui| {
             ui.label(egui::RichText::new(t!("dock.log.empty")).weak());
         });
+        super::tabs::fill_rest(ui); // не дать пустому логу «съёжить» док
         return;
     }
 
-    let row_h = FONT_PX + 4.0;
+    // Точная высота строки = высота моноширинного шрифта (одна строка = один
+    // галлей). Иначе фактическая высота не совпадёт с row_h и stick_to_bottom
+    // начинает «дребезжать» (туда-сюда) при автоскролле вниз.
+    let font = egui::FontId::monospace(FONT_PX);
+    let row_h = ui.fonts(|f| f.row_height(&font));
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .stick_to_bottom(true)
         .show_rows(ui, row_h, lines.len(), |ui, range| {
+            ui.spacing_mut().item_spacing.y = 0.0; // без зазора между строками
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
             for line in &lines[range] {
-                row(ui, line);
+                row(ui, line, &font);
             }
         });
 }
 
-fn row(ui: &mut egui::Ui, line: &LogLine) {
-    let font = egui::FontId::monospace(FONT_PX);
+fn row(ui: &mut egui::Ui, line: &LogLine, font: &egui::FontId) {
+    use egui::text::{LayoutJob, TextFormat};
     // Время — только HH:MM:SS.mmm (дата в логе одного дня избыточна).
     let time = line.ts.rsplit(' ').next().unwrap_or(line.ts.as_str());
     let (tag, col) = level_tag(line.level);
     let flat = line.msg.replace('\n', " ⏎ ");
 
-    ui.horizontal(|ui| {
-        // Не переносим строки — длинные обрезаются краем панели (полный текст по
-        // наведению ниже), иначе высота строки «поедет» и сломает show_rows.
-        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
-        ui.spacing_mut().item_spacing.x = 8.0;
-        ui.label(egui::RichText::new(time).font(font.clone()).color(theme::MUTED));
-        ui.label(egui::RichText::new(tag).font(font.clone()).color(col));
-        ui.label(egui::RichText::new(&line.target).font(font.clone()).color(theme::MUTED));
-        let msg = ui.label(egui::RichText::new(flat).font(font).color(theme::TEXT_2));
-        if line.msg.len() > 1 {
-            msg.on_hover_text(&line.msg);
-        }
-    });
+    // Вся строка — ОДИН галлей (LayoutJob), без переноса: сегменты разного цвета,
+    // но высота ровно одна строка → show_rows/stick_to_bottom не дрожат.
+    let mut job = LayoutJob::default();
+    job.wrap.max_width = f32::INFINITY;
+    let fmt = |color| TextFormat {
+        font_id: font.clone(),
+        color,
+        ..Default::default()
+    };
+    job.append(&format!("{time} "), 0.0, fmt(theme::MUTED));
+    job.append(&format!("{tag} "), 0.0, fmt(col));
+    job.append(&format!("{}  ", line.target), 0.0, fmt(theme::MUTED));
+    job.append(&flat, 0.0, fmt(theme::TEXT_2));
+
+    let resp = ui.label(job);
+    if line.msg.len() > 1 {
+        resp.on_hover_text(&line.msg);
+    }
 }
 
 /// Бейдж уровня + цвет.

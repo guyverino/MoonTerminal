@@ -162,7 +162,12 @@ impl App {
             }
             crate::chart::container::ContainerKind::Main => group.clone(),
         };
-        match ChartWindow::new(event_loop, owner, &display, kind, mode, spec, theme, epoch) {
+        // HWND окна-владельца → чарт-окно станет дочерним (без кнопки в таскбаре,
+        // сворачивается/разворачивается вместе с родителем).
+        let owner_hwnd = owner_host.and_then(|h| crate::win_taskbar::hwnd_of(&h.window));
+        match ChartWindow::new(
+            event_loop, owner, owner_hwnd, &display, kind, mode, spec, theme, epoch,
+        ) {
             Ok(w) => {
                 self.detached_charts.insert(w.window.id(), w);
             }

@@ -102,10 +102,8 @@ impl Shell {
                         if theme::seg_btn(ui, &t!("shell.settings_btn"), false, None, false).clicked() {
                             *open_settings = true;
                         }
-                        ui.add_space(theme::BTN_GAP);
-                        if theme::seg_btn(ui, &t!("toolbar.reports"), false, None, false).clicked() {
-                            *reports_clicked = true;
-                        }
+                        // Кнопка «Отчёты» убрана из шапки — отчёт во вкладке нижнего дока.
+                        let _ = &mut *reports_clicked;
                         ui.add_space(theme::BTN_GAP);
                         if theme::seg_btn(ui, &t!("toolbar.help"), false, None, false).clicked() {
                             log::info!("[ui] Справка (todo)");

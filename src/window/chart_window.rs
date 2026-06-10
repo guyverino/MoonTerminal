@@ -53,9 +53,11 @@ pub struct ChartWindow {
 impl ChartWindow {
     /// Создаёт окно и контейнер из спецификации панелей (ядро/рынок/источник).
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         event_loop: &ActiveEventLoop,
         owner: WindowId,
+        owner_hwnd: Option<isize>,
         title: &str,
         kind: ContainerKind,
         mode: Mode,
@@ -64,10 +66,22 @@ impl ChartWindow {
         epoch_ms: f64,
     ) -> anyhow::Result<Self> {
         // Заголовок окна — переданное имя (формируется из номера и группы, см. App).
-        let attrs = Window::default_attributes()
+        #[allow(unused_mut)]
+        let mut attrs = Window::default_attributes()
             .with_title(format!("{title} — MoonTerminal"))
             .with_resizable(true)
             .with_inner_size(winit::dpi::LogicalSize::new(900.0, 700.0));
+        // Windows: делаем чарт-окно «дочерним» к окну группы — оно НЕ получает свою
+        // кнопку в таскбаре и сворачивается/разворачивается вместе с родителем.
+        #[cfg(windows)]
+        {
+            use winit::platform::windows::WindowAttributesExtWindows;
+            if let Some(h) = owner_hwnd {
+                attrs = attrs.with_owner_window(h);
+            }
+            attrs = attrs.with_skip_taskbar(true);
+        }
+        let _ = owner_hwnd; // на не-Windows не используется
         let window = Arc::new(event_loop.create_window(attrs)?);
         window.set_window_icon(crate::icons::brand_winit_icon());
 
@@ -325,14 +339,14 @@ impl ChartWindow {
                     });
                 });
         });
-        // Масштаб — ко ВСЕМ графикам окна. Крестик — закрыть окно (App уберёт).
+        // Масштаб — ко ВСЕМ графикам окна; запоминаем в контейнере (новые графики
+        // откроются с ним же). Крестик — закрыть окно (App уберёт).
         if let Some(a) = set_scale {
-            for p in &mut self.container.panes {
-                match a {
-                    ScaleAction::Auto => p.chart.view.set_auto(),
-                    ScaleAction::Percent(pct) => p.chart.view.set_scale_percent(pct),
-                }
-            }
+            let pct = match a {
+                ScaleAction::Auto => None,
+                ScaleAction::Percent(p) => Some(p),
+            };
+            self.container.set_scale(pct);
         }
         if clear_all {
             self.close_requested = true;

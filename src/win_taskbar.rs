@@ -37,3 +37,19 @@ pub fn set_app_id(window: &winit::window::Window, id: &str) {
 
 #[cfg(not(windows))]
 pub fn set_app_id(_window: &winit::window::Window, _id: &str) {}
+
+/// HWND окна как isize (для owner-window дочерних чарт-окон). None — не Windows
+/// или хендл недоступен.
+#[cfg(windows)]
+pub fn hwnd_of(window: &winit::window::Window) -> Option<isize> {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    let handle = window.window_handle().ok()?;
+    match handle.as_raw() {
+        RawWindowHandle::Win32(w) => Some(w.hwnd.get()),
+        _ => None,
+    }
+}
+#[cfg(not(windows))]
+pub fn hwnd_of(_window: &winit::window::Window) -> Option<isize> {
+    None
+}

@@ -537,21 +537,22 @@ impl WindowHost {
         };
 
         // Кнопки тулбара (масштаб Y, live/пауза) действуют на ВЕСЬ активный
-        // контейнер — на все его панели, а не только на фокус-панель.
-        if set_scale.is_some() || set_follow.is_some() {
-            for p in &mut self.containers[self.active_container].panes {
-                if let Some(action) = set_scale {
-                    match action {
-                        crate::dock::ScaleAction::Auto => p.chart.view.set_auto(),
-                        crate::dock::ScaleAction::Percent(pct) => p.chart.view.set_scale_percent(pct),
-                    }
-                }
-                if let Some(f) = set_follow {
-                    if f {
-                        p.chart.view.resume_live(now_ms); // к «сейчас», сброс удержания
-                    } else {
-                        p.chart.view.follow = false; // пауза: вид замораживается
-                    }
+        // контейнер. Масштаб запоминаем в контейнере → новые графики откроются с
+        // ним же (а не в Авто).
+        let ac = self.active_container;
+        if let Some(action) = set_scale {
+            let pct = match action {
+                crate::dock::ScaleAction::Auto => None,
+                crate::dock::ScaleAction::Percent(p) => Some(p),
+            };
+            self.containers[ac].set_scale(pct);
+        }
+        if let Some(f) = set_follow {
+            for p in &mut self.containers[ac].panes {
+                if f {
+                    p.chart.view.resume_live(now_ms); // к «сейчас», сброс удержания
+                } else {
+                    p.chart.view.follow = false; // пауза: вид замораживается
                 }
             }
         }

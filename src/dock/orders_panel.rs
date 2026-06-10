@@ -9,7 +9,9 @@ pub fn ui(ui: &mut egui::Ui, rows: &[(String, OrderRow)]) {
     ui.label(egui::RichText::new(t!("orders.title", count = rows.len())).weak());
     ui.add_space(2.0);
 
-    egui::ScrollArea::vertical().show(ui, |ui| {
+    // auto_shrink=false → ScrollArea заполняет высоту дока (иначе короткая таблица
+    // «съёживает» панель и док прыгает при переключении на эту вкладку).
+    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         egui::Grid::new("orders_grid")
             .striped(true)
             .num_columns(11)

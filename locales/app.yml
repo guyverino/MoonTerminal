@@ -416,6 +416,10 @@ conn.no_groups:
   ru: "задай группы серверам слева"
   en: "assign groups to the servers on the left"
   es: "asigna grupos a los servidores de la izquierda"
+conn.show_group:
+  ru: "Показать окно группы (создать, если закрыто)"
+  en: "Show group window (create if closed)"
+  es: "Mostrar ventana del grupo (crear si está cerrada)"
 conn.add_core:
   ru: "+ Добавить ядро"
   en: "+ Add core"

@@ -22,6 +22,9 @@ pub type CoreStatuses = HashMap<CoreId, ConnStatus>;
 pub struct SettingsActions {
     /// Ядра (CoreId), для которых нажата кнопка «переподключить».
     pub reconnect: Vec<CoreId>,
+    /// Группы, окно которых попросили показать (кнопка «глаз»): если окно закрыто —
+    /// создать (с сохранённой раскладкой), иначе сфокусировать.
+    pub show_group: Vec<String>,
 }
 
 pub trait SettingsTab {

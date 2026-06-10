@@ -8,7 +8,8 @@ pub mod types;
 
 pub use types::*;
 
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::mpsc::{Receiver, Sender, TryRecvError};
+use std::time::Duration;
 
 use crate::config::ServerConfig;
 use crate::db::ReportTx;
@@ -60,9 +61,36 @@ pub fn spawn(server: ServerConfig, reports: Option<ReportTx>) -> FeedHandle {
     let join = std::thread::Builder::new()
         .name(format!("feed-{}", server.id))
         .spawn(move || {
-            if let Err(e) = live::run(&server, &tx, &cmd_rx, reports.as_ref()) {
-                log::error!("live backend упал: {e:#}");
-                let _ = tx.send(FeedMsg::Status(ConnStatus::Failed(e.to_string())));
+            // Авто-реконнект на уровне приложения: если live::run упал (например,
+            // НЕ удалось первичное подключение — moonproto умеет реконнект только
+            // ПОСЛЕ успешного connect), повторяем с нарастающим backoff. Штатный
+            // выход (Ok = координатор/UI ушёл) — завершаемся.
+            let mut backoff = Duration::from_secs(2);
+            loop {
+                match live::run(&server, &tx, &cmd_rx, reports.as_ref()) {
+                    Ok(()) => break,
+                    Err(e) => {
+                        log::error!(
+                            "live backend «{}» упал: {e:#}; реконнект через {:?}",
+                            server.name,
+                            backoff
+                        );
+                        if tx
+                            .send(FeedMsg::Status(ConnStatus::Failed(format!(
+                                "{e} · переподключение…"
+                            ))))
+                            .is_err()
+                        {
+                            break; // UI закрыт
+                        }
+                        // Координатор/сессия ушли (cmd-канал закрыт) → не крутимся.
+                        if matches!(cmd_rx.try_recv(), Err(TryRecvError::Disconnected)) {
+                            break;
+                        }
+                        std::thread::sleep(backoff);
+                        backoff = (backoff * 2).min(Duration::from_secs(30));
+                    }
+                }
             }
         })
         .expect("spawn feed thread");

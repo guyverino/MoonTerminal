@@ -49,7 +49,7 @@ impl SettingsTab for ConnectionsTab {
             .resizable(false)
             .exact_width(right_w)
             .show_inside(ui, |ui| {
-                groups_panel(ui, cfg, icons, picking);
+                groups_panel(ui, cfg, icons, picking, actions);
             });
         egui::CentralPanel::default().show_inside(ui, |ui| {
             servers_panel(ui, cfg, status, actions);
@@ -245,6 +245,7 @@ fn groups_panel(
     cfg: &mut AppConfig,
     icons: &mut IconSet,
     picking: &mut Option<String>,
+    actions: &mut super::SettingsActions,
 ) {
     ui.label(egui::RichText::new(t!("conn.groups_heading")).strong());
     ui.add_space(6.0);
@@ -263,16 +264,21 @@ fn groups_panel(
         return;
     }
 
-    let w_act = 22.0;
-    let w_ico = 24.0;
-    let w_pick = 50.0;
-    // запас под 3 межвиджетных отступа (~24) + полосу прокрутки (~16) + слак.
-    let w_name = (ui.available_width() - w_act - w_ico - w_pick - 24.0).max(40.0);
+    let w_act = 20.0;
+    let w_ico = 22.0;
+    let w_eye = 22.0;
+    let w_pick = 46.0;
+    let gap = 4.0; // плотные отступы между колонками (5 колонок → 4 зазора)
+    // фикс. колонки + зазоры + полоса прокрутки (~16) + слак → остаток имени.
+    let w_name =
+        (ui.available_width() - w_act - w_ico - w_eye - w_pick - gap * 4.0 - 20.0).max(30.0);
 
     ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = gap;
         head(ui, w_act, t!("conn.col.act"));
         head(ui, w_ico, t!("conn.gcol.ico"));
         head(ui, w_name, t!("conn.col.name"));
+        head(ui, w_eye, "");
         head(ui, w_pick, t!("conn.pick"));
     });
 
@@ -282,6 +288,7 @@ fn groups_panel(
         }
         let g = cfg.groups.iter_mut().find(|g| &g.name == name).unwrap();
         ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = gap;
             ui.add_sized([w_act, H], egui::Checkbox::without_text(&mut g.active));
             match icons.texture(ui.ctx(), g.icon) {
                 Some(tex) => {
@@ -298,6 +305,14 @@ fn groups_panel(
                 [w_name, H],
                 egui::Label::new(egui::RichText::new(&g.name).strong()).truncate(),
             );
+            // Кнопка-«глаз»: показать окно группы (создать, если закрыто). Иконку
+            // рисуем painter'ом (глифы/эмодзи в Geist Mono дают «тофу»-квадрат).
+            if eye_button(ui, w_eye, H)
+                .on_hover_text(t!("conn.show_group"))
+                .clicked()
+            {
+                actions.show_group.push(name.clone());
+            }
             let pick = t!("conn.pick").to_string();
             if theme::seg_btn_h(ui, &pick, false, Some(w_pick), false, H).clicked() {
                 *picking = Some(name.clone());
@@ -343,6 +358,45 @@ fn groups_panel(
 
 fn head(ui: &mut egui::Ui, w: f32, text: impl Into<String>) {
     ui.add_sized([w, H], egui::Label::new(egui::RichText::new(text.into()).weak()));
+}
+
+/// Кнопка-«глаз» (показать окно группы) — иконка нарисована painter'ом: контур
+/// глаза (две дуги) + зрачок. Так читается на любом шрифте (без «тофу»).
+fn eye_button(ui: &mut egui::Ui, w: f32, h: f32) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, h), egui::Sense::click());
+    if ui.is_rect_visible(rect) {
+        let hovered = resp.hovered();
+        let round = egui::Rounding::same(4.0);
+        let (fill, border) = if hovered {
+            (theme::LIFT_HOVER, theme::ACCENT.gamma_multiply(0.6))
+        } else {
+            (theme::LIFT, theme::BORDER)
+        };
+        let p = ui.painter();
+        p.rect_filled(rect, round, fill);
+        p.rect_stroke(rect, round, egui::Stroke::new(1.0, border));
+        let c = rect.center();
+        let col = if hovered { theme::TEXT } else { theme::TEXT_2 };
+        let stroke = egui::Stroke::new(1.3, col);
+        // Контур глаза — две дуги (верх/низ) как ломаные; зрачок — кружок в центре.
+        let rw = 6.0; // полуширина глаза
+        let rh = 3.2; // полувысота дуги
+        let arc = |up: bool| {
+            let s = if up { -1.0 } else { 1.0 };
+            (0..=8)
+                .map(|i| {
+                    let t = i as f32 / 8.0;
+                    let x = c.x - rw + 2.0 * rw * t;
+                    let y = c.y + s * rh * (std::f32::consts::PI * t).sin();
+                    egui::pos2(x, y)
+                })
+                .collect::<Vec<_>>()
+        };
+        p.add(egui::Shape::line(arc(true), stroke));
+        p.add(egui::Shape::line(arc(false), stroke));
+        p.circle_filled(c, 1.6, col);
+    }
+    resp
 }
 
 /// Заголовок колонки с всплывающей подсказкой (для сокращённых имён галок).

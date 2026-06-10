@@ -4,9 +4,17 @@
 //! кликами по детектам (фулскрин-фокус), AddToChart-контейнер — авто-панелями с
 //! TTL (`KeepInChart`). См. docs/CHART_CONTAINERS_PLAN.md.
 
-use crate::chart::view::Rect;
+use crate::chart::view::{ChartView, Rect};
 use crate::chart::Chart;
 use crate::session::CoreId;
+
+/// Применить масштаб цены к виду: None = Авто, Some(доля) = процент от цены.
+fn apply_scale(view: &mut ChartView, pct: Option<f32>) {
+    match pct {
+        None => view.set_auto(),
+        Some(p) => view.set_scale_percent(p),
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ContainerKind {
@@ -47,6 +55,9 @@ pub struct Container {
     pub kind: ContainerKind,
     pub panes: Vec<Pane>,
     pub mode: Mode,
+    /// Текущий масштаб цены контейнера: None = Авто, Some(доля) = процент. Новые
+    /// панели создаются сразу с ним (иначе свежий график открывался бы в Авто).
+    scale: Option<f32>,
 }
 
 impl Container {
@@ -55,7 +66,29 @@ impl Container {
             kind,
             panes: Vec::new(),
             mode: Mode::Fullscreen(0),
+            scale: None,
         }
+    }
+
+    /// Задать масштаб цены контейнера: применить ко ВСЕМ панелям и запомнить для
+    /// будущих (новые графики откроются с ним же). None = Авто.
+    pub fn set_scale(&mut self, pct: Option<f32>) {
+        self.scale = pct;
+        for p in &mut self.panes {
+            apply_scale(&mut p.chart.view, pct);
+        }
+    }
+
+    /// Новый `Chart` с применённым текущим масштабом контейнера.
+    fn new_chart(
+        &self,
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        epoch_ms: f64,
+    ) -> Chart {
+        let mut chart = Chart::new(device, format, epoch_ms);
+        apply_scale(&mut chart.view, self.scale);
+        chart
     }
 
     /// Спецификация панелей (ядро/рынок/источник) — для переноса в откреплённое
@@ -85,7 +118,12 @@ impl Container {
                 chart: Chart::new(device, format, epoch_ms),
             })
             .collect();
-        Self { kind, panes, mode }
+        Self {
+            kind,
+            panes,
+            mode,
+            scale: None,
+        }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -107,15 +145,19 @@ impl Container {
         format: wgpu::TextureFormat,
         epoch_ms: f64,
     ) {
-        let idx = self.find(core, market).unwrap_or_else(|| {
-            self.panes.push(Pane {
-                core,
-                market: market.to_string(),
-                source: PaneSource::Manual,
-                chart: Chart::new(device, format, epoch_ms),
-            });
-            self.panes.len() - 1
-        });
+        let idx = match self.find(core, market) {
+            Some(i) => i,
+            None => {
+                let chart = self.new_chart(device, format, epoch_ms);
+                self.panes.push(Pane {
+                    core,
+                    market: market.to_string(),
+                    source: PaneSource::Manual,
+                    chart,
+                });
+                self.panes.len() - 1
+            }
+        };
         self.mode = Mode::Fullscreen(idx);
     }
 
@@ -135,11 +177,12 @@ impl Container {
                 self.panes[i].source = PaneSource::AddToChart { born_ms: now_ms, ttl_ms };
             }
             None => {
+                let chart = self.new_chart(device, format, epoch_ms);
                 self.panes.push(Pane {
                     core,
                     market: market.to_string(),
                     source: PaneSource::AddToChart { born_ms: now_ms, ttl_ms },
-                    chart: Chart::new(device, format, epoch_ms),
+                    chart,
                 });
             }
         }

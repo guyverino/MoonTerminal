@@ -45,6 +45,8 @@ pub struct App {
     detached_charts: HashMap<WindowId, ChartWindow>,
     /// Очередь запросов на откреп чарт-вкладки: (окно-владелец, индекс контейнера).
     detach_chart_reqs: Vec<(WindowId, usize)>,
+    /// Группы, окно которых попросили показать (кнопка «глаз» в Настройках).
+    show_group_reqs: Vec<String>,
     /// Очередь запросов на открепление/возврат вкладок (создание окна требует
     /// ActiveEventLoop, доступного только в about_to_wait/window_event).
     detach_reqs: Vec<(WindowId, DockTab)>,
@@ -91,6 +93,7 @@ impl App {
             detached: HashMap::new(),
             detached_charts: HashMap::new(),
             detach_chart_reqs: Vec::new(),
+            show_group_reqs: Vec::new(),
             detach_reqs: Vec::new(),
             repin_reqs: Vec::new(),
             report,
@@ -148,6 +151,27 @@ impl App {
             if let Some(owner) = owner {
                 let tab = DockTab::from_idx(d.tab as usize);
                 self.open_detached(event_loop, owner, tab, Some((d.x, d.y, d.w, d.h)));
+            }
+        }
+    }
+
+    /// Показать окно группы по кнопке «глаз»: если открыто — сфокусировать; если
+    /// закрыто — создать заново (с сохранённой раскладкой).
+    fn show_group(&mut self, event_loop: &ActiveEventLoop, name: &str) {
+        if let Some(h) = self.windows.values().find(|h| h.workspace.group == name) {
+            h.window.focus_window();
+            return;
+        }
+        let gl = self.layout.groups.get(name).copied();
+        let ws = Workspace::build_all(&self.config)
+            .into_iter()
+            .find(|w| w.group == name);
+        if let Some(ws) = ws {
+            match WindowHost::new(event_loop, ws, self.epoch_ms, gl) {
+                Ok(host) => {
+                    self.windows.insert(host.window.id(), host);
+                }
+                Err(e) => log::error!("показать группу «{name}»: {e:#}"),
             }
         }
     }
@@ -293,12 +317,14 @@ impl App {
         if let Some(sw) = self.settings_window.as_mut() {
             saved = sw.render(&mut self.settings, &mut self.config, &statuses).saved;
         }
-        // Действия вкладок (ручной реконнект ядра по кнопке) — применяем независимо
-        // от сохранения: реконнект работает по живому (сохранённому) конфигу.
-        for id in self.settings.take_actions().reconnect {
+        // Действия вкладок — применяем независимо от сохранения. Реконнект работает
+        // по живому конфигу; «показать группу» откладываем (нужен event_loop).
+        let acts = self.settings.take_actions();
+        for id in acts.reconnect {
             self.session
                 .reconnect(id, &self.config, self.reports.as_ref().map(|h| &h.tx));
         }
+        self.show_group_reqs.extend(acts.show_group);
         if !saved {
             return;
         }
@@ -361,9 +387,8 @@ impl ApplicationHandler for App {
         if let Some(w) = self.settings_window.as_mut().filter(|w| w.window.id() == id) {
             if handle_aux_event(w, &event) {
                 self.settings_window = None;
-                // Настройки были единственным окном (первый запуск без серверов) —
-                // закрыли, открывать больше нечего → выходим.
-                if self.windows.is_empty() {
+                // Выходим, если больше открывать нечего (нет окон групп и стратегий).
+                if self.windows.is_empty() && self.strategies_window.is_none() {
                     event_loop.exit();
                 }
             }
@@ -372,6 +397,9 @@ impl ApplicationHandler for App {
         if let Some(w) = self.strategies_window.as_mut().filter(|w| w.window.id() == id) {
             if handle_aux_event(w, &event) {
                 self.strategies_window = None;
+                if self.windows.is_empty() && self.settings_window.is_none() {
+                    event_loop.exit();
+                }
             }
             return;
         }
@@ -469,7 +497,12 @@ impl ApplicationHandler for App {
             self.detached_charts.retain(|_, w| w.owner() != id);
             self.update_detached_layout();
             self.layout.save();
-            if self.windows.is_empty() {
+            // Выходим, только когда не осталось НИ окон групп, НИ Настроек/Стратегий
+            // — иначе из открытых Настроек можно вернуть закрытую группу «глазом».
+            if self.windows.is_empty()
+                && self.settings_window.is_none()
+                && self.strategies_window.is_none()
+            {
                 event_loop.exit();
             }
         }
@@ -590,6 +623,10 @@ impl ApplicationHandler for App {
             self.open_settings(event_loop);
         }
         self.render_settings();
+        // «Показать окно группы» (кнопка-глаз) — нужен event_loop для создания окна.
+        for name in std::mem::take(&mut self.show_group_reqs) {
+            self.show_group(event_loop, &name);
+        }
 
         if self.open_strategies_requested {
             self.open_strategies(event_loop);
