@@ -10,16 +10,19 @@
 //! также возвращает вкладку (это решает App). Реально наполнены Orders/Log/Report;
 //! Assets — заглушка до подключения данных.
 
-use super::{LogPanelState, LogSourceItem, ReportView};
-use crate::feed::OrderRow;
-use crate::session::CoreStore;
+use super::{LogPanelState, LogSourceItem, OrderEntry, OrdersViewState, ReportView};
+use crate::session::{CoreId, CoreStore};
 use crate::shell::theme;
 
 /// Данные для рендера контента вкладок дока — единый контекст для дока (inline) и
 /// откреплённого окна. Report/Log — общие (живут в App); Orders — окна-владельца.
 pub struct TabData<'a> {
     pub report: &'a mut ReportView,
-    pub orders: &'a [(String, OrderRow)],
+    pub orders: &'a [OrderEntry],
+    /// Состояние вида ордеров (фильтр/сортировка) — своё у окна/панели.
+    pub orders_view: &'a mut OrdersViewState,
+    /// (Ядро, маркет) текущего Main-фуллскрина — для фильтра «только текущий маркет».
+    pub main_market: Option<(CoreId, String)>,
     pub store: &'a CoreStore,
     pub log: &'a mut LogPanelState,
     pub log_sources: &'a [LogSourceItem],
@@ -73,6 +76,8 @@ pub struct TabsOutput {
     pub detach: Option<DockTab>,
     /// Нажата «вернуть в док» на плашке откреплённой вкладки.
     pub repin: Option<DockTab>,
+    /// Клик по токену в «Ордерах» → открыть его чарт на Main (ядро, маркет).
+    pub open_market: Option<(CoreId, String)>,
 }
 
 /// Высота свёрнутого дока — только полоска вкладок (без контента).
@@ -192,7 +197,7 @@ pub fn show(
         if detached[active.idx()] {
             detached_placeholder(ui, &mut out, *active);
         } else {
-            content_ui(ui, *active, data);
+            out.open_market = content_ui(ui, *active, data);
         }
     });
     out
@@ -266,13 +271,17 @@ fn tab_button(ui: &mut egui::Ui, label: &str, selected: bool, _detached: bool) -
 
 /// Рендер контента конкретной вкладки в данный `ui`. Зовётся и из дока (inline), и
 /// из App для откреплённого окна — единый источник, без дубля состояния.
-pub fn content_ui(ui: &mut egui::Ui, tab: DockTab, data: &mut TabData) {
+pub fn content_ui(ui: &mut egui::Ui, tab: DockTab, data: &mut TabData) -> Option<(CoreId, String)> {
     match tab {
-        DockTab::Orders => super::orders_panel::ui(ui, data.orders),
+        DockTab::Orders => {
+            let cur = data.main_market.as_ref().map(|(c, m)| (*c, m.as_str()));
+            return super::orders_panel::ui(ui, data.orders, data.orders_view, cur);
+        }
         DockTab::Assets => placeholder(ui, t!("dock.todo.assets").to_string()),
         DockTab::Log => super::log_panel::ui(ui, data.log, data.log_sources, data.store),
         DockTab::Report => data.report.ui(ui),
     }
+    None
 }
 
 /// Плашка на месте откреплённой вкладки: «открыто в окне» + кнопка «вернуть».

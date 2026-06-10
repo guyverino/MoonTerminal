@@ -380,8 +380,10 @@ impl WindowHost {
             mem_mb: metrics.mem_mb,
             mem_delta_mb: metrics.mem_delta_mb,
         };
-        // Открытые ордера всех ядер группы для нижнего дока (с именем ядра).
+        // Открытые ордера всех ядер группы для нижнего дока (с ядром-источником).
         let order_rows = self.collect_orders(store);
+        // Текущий маркет Main-фуллскрина — для фильтра «только текущий маркет».
+        let main_market = self.main_fullscreen();
 
         let mut central = egui::Rect::NOTHING;
         let mut detects_rect = egui::Rect::NOTHING;
@@ -414,8 +416,8 @@ impl WindowHost {
                 strategies_clicked = true;
             }
             let out = dock.show(
-                ctx, cores, store, &order_rows, following, chart_open, now_ms, report,
-                log_sources, global_detached,
+                ctx, cores, store, &order_rows, main_market.clone(), following, chart_open, now_ms,
+                report, log_sources, global_detached,
             );
             central = out.central;
             detects_rect = out.detects_rect;

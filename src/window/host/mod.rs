@@ -15,7 +15,6 @@ use crate::chart::paint::MIN_FRAME_DT;
 use crate::chart::view::Rect;
 use crate::config::ChartTheme;
 use crate::session::CoreId;
-use crate::feed::OrderRow;
 use crate::gpu::GpuContext;
 use crate::session::{CoreStore, SessionManager};
 use crate::shell::Shell;
@@ -491,16 +490,36 @@ impl WindowHost {
 
     /// Открытые ордера всех ядер группы (с именем ядра) — для вкладки «Ордера»
     /// дока и её окна открепления. Дёшево копирует строки на кадр.
-    pub fn collect_orders(&self, store: &CoreStore) -> Vec<(String, OrderRow)> {
+    pub fn collect_orders(&self, store: &CoreStore) -> Vec<crate::dock::OrderEntry> {
         let mut rows = Vec::new();
         for ci in &self.workspace.cores {
             if let Some(d) = store.core(ci.id) {
                 for o in &d.orders {
-                    rows.push((ci.name.clone(), o.clone()));
+                    rows.push(crate::dock::OrderEntry {
+                        core: ci.id,
+                        core_name: ci.name.clone(),
+                        quote: ci.quote.clone(),
+                        row: o.clone(),
+                    });
                 }
             }
         }
         rows
+    }
+
+    /// (Ядро, маркет) монеты, открытой сейчас на Main-вкладке в фулскрине — для
+    /// фильтра «только текущий маркет» в «Ордерах». None, если Main не в фулскрине.
+    pub fn main_fullscreen(&self) -> Option<(CoreId, String)> {
+        let main = self
+            .containers
+            .iter()
+            .find(|c| c.kind == ContainerKind::Main)?;
+        if let Mode::Fullscreen(i) = main.mode {
+            let p = main.panes.get(i)?;
+            Some((p.core, p.market.clone()))
+        } else {
+            None
+        }
     }
 
     /// Сумма orders_rev ядер группы — дёшево ловит изменение набора ордеров (для

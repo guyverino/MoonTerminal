@@ -29,6 +29,8 @@ pub(super) struct DetachedPanel {
     /// Ревизия данных вкладки на прошлом кадре — для авто-перерисовки (живой
     /// отчёт/лог/ордера без необходимости двигать мышь).
     pub last_rev: u64,
+    /// Состояние вида ордеров (фильтр/сортировка) этого окна (для Orders-окна).
+    pub orders_view: crate::dock::OrdersViewState,
 }
 
 /// Глобальные вкладки (один экземпляр на все окна групп) vs пер-окно (Orders).
@@ -116,7 +118,15 @@ impl App {
         }
         self.detached.insert(
             det_id,
-            DetachedPanel { owner, tab, global, window, egui, last_rev: u64::MAX },
+            DetachedPanel {
+                owner,
+                tab,
+                global,
+                window,
+                egui,
+                last_rev: u64::MAX,
+                orders_view: crate::dock::OrdersViewState::default(),
+            },
         );
     }
 
@@ -256,32 +266,44 @@ impl App {
                 continue;
             }
 
-            // Orders — ордера окна-владельца; глобальные — пустой срез (контент их
-            // не использует). Report везде рисует ОБЩИЙ self.report.
-            let orders = if tab == DockTab::Orders {
+            // Orders — ордера окна-владельца + его Main-маркет (для фильтра); глобальные
+            // — пустой срез. Report везде рисует ОБЩИЙ self.report.
+            let (orders, main_market) = if tab == DockTab::Orders {
                 match self.windows.get(&owner) {
-                    Some(h) => h.collect_orders(self.session.store()),
+                    Some(h) => (h.collect_orders(self.session.store()), h.main_fullscreen()),
                     None => continue, // владелец Orders-окна закрыт
                 }
             } else {
-                Vec::new()
+                (Vec::new(), None)
             };
             let report = &mut self.report;
             let log = &mut self.detached_log;
             let store = self.session.store();
+            let ov = &mut panel.orders_view;
             let log_sources = &log_sources;
+            let mut clicked: Option<(crate::session::CoreId, String)> = None;
             panel.egui.render(&panel.window, "detached-pass", |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     let mut data = crate::dock::tabs::TabData {
                         report,
                         orders: &orders,
+                        orders_view: ov,
+                        main_market: main_market.clone(),
                         store,
                         log,
                         log_sources,
                     };
-                    crate::dock::tabs::content_ui(ui, tab, &mut data);
+                    clicked = crate::dock::tabs::content_ui(ui, tab, &mut data);
                 });
             });
+            // Клик по токену в откреплённых «Ордерах» → открыть на Main окна-владельца.
+            if let Some((core, market)) = clicked {
+                let now = super::now_ms();
+                if let Some(h) = self.windows.get_mut(&owner) {
+                    h.open_on_main(core, &market, now);
+                    h.mark_egui_dirty();
+                }
+            }
         }
     }
 }

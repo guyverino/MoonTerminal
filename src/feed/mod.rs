@@ -9,7 +9,7 @@ pub mod types;
 pub use types::*;
 
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::config::ServerConfig;
 use crate::db::ReportTx;
@@ -53,27 +53,59 @@ pub struct FeedHandle {
     _join: std::thread::JoinHandle<()>,
 }
 
+/// Базовый шаг backoff и его потолок (между попытками первичного коннекта).
+const BACKOFF_MIN: Duration = Duration::from_secs(2);
+const BACKOFF_MAX: Duration = Duration::from_secs(30);
+/// Сколько `live::run` должен продержаться, чтобы счесть коннект стабильным и
+/// сбросить backoff на минимум (редкий разрыв после долгой работы ≠ штормящий хост).
+const STABLE_AFTER: Duration = Duration::from_secs(60);
+
+/// Случайный множитель в диапазоне 0.75..1.25 (джиттер ±25%). Разносит во времени
+/// синхронные реконнекты множества ядер (упал хост → 200 ядер не бьются в такт).
+fn jittered(d: Duration) -> Duration {
+    let mut b = [0u8; 8];
+    let _ = getrandom::getrandom(&mut b);
+    let frac = (u64::from_le_bytes(b) % 1000) as f64 / 1000.0; // 0.0..1.0
+    d.mul_f64(0.75 + frac * 0.5)
+}
+
 /// Поднимает live-backend для одного ядра (подключение есть всегда; подписка — по команде).
 /// `reports` — канал к SQLite-writer'у (None = БД недоступна, отчёты не пишем).
-pub fn spawn(server: ServerConfig, reports: Option<ReportTx>) -> FeedHandle {
+/// `startup_delay` — пауза перед ПЕРВЫМ коннектом: на старте сессии ядра разносятся
+/// веером (см. `SessionManager::start`), чтобы не бить в сеть/UDP-bind все разом.
+/// Ручной реконнект передаёт `Duration::ZERO` — он должен срабатывать мгновенно.
+pub fn spawn(server: ServerConfig, reports: Option<ReportTx>, startup_delay: Duration) -> FeedHandle {
     let (tx, rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<CoreCmd>();
     let join = std::thread::Builder::new()
         .name(format!("feed-{}", server.id))
         .spawn(move || {
+            // Стаггер начального коннекта: спим ДО первой попытки. Каждый поток ждёт
+            // сам по себе, поэтому цикл start() не блокируется — коннекты расходятся
+            // во времени. Нулевая задержка (ручной реконнект) = сразу в дело.
+            if !startup_delay.is_zero() {
+                std::thread::sleep(startup_delay);
+            }
             // Авто-реконнект на уровне приложения: если live::run упал (например,
             // НЕ удалось первичное подключение — moonproto умеет реконнект только
-            // ПОСЛЕ успешного connect), повторяем с нарастающим backoff. Штатный
-            // выход (Ok = координатор/UI ушёл) — завершаемся.
-            let mut backoff = Duration::from_secs(2);
+            // ПОСЛЕ успешного connect), повторяем с нарастающим backoff + джиттер.
+            // Штатный выход (Ok = координатор/UI ушёл) — завершаемся.
+            let mut backoff = BACKOFF_MIN;
             loop {
+                let started = Instant::now();
                 match live::run(&server, &tx, &cmd_rx, reports.as_ref()) {
                     Ok(()) => break,
                     Err(e) => {
+                        // Коннект продержался долго перед падением → не штормящий хост,
+                        // лечим как свежий: сбрасываем backoff на минимум.
+                        if started.elapsed() >= STABLE_AFTER {
+                            backoff = BACKOFF_MIN;
+                        }
+                        let wait = jittered(backoff);
                         log::error!(
                             "live backend «{}» упал: {e:#}; реконнект через {:?}",
                             server.name,
-                            backoff
+                            wait
                         );
                         if tx
                             .send(FeedMsg::Status(ConnStatus::Failed(format!(
@@ -87,8 +119,8 @@ pub fn spawn(server: ServerConfig, reports: Option<ReportTx>) -> FeedHandle {
                         if matches!(cmd_rx.try_recv(), Err(TryRecvError::Disconnected)) {
                             break;
                         }
-                        std::thread::sleep(backoff);
-                        backoff = (backoff * 2).min(Duration::from_secs(30));
+                        std::thread::sleep(wait);
+                        backoff = (backoff * 2).min(BACKOFF_MAX);
                     }
                 }
             }

@@ -12,6 +12,7 @@ pub mod toolbar;
 
 pub use controls::{OrderControls, ScaleAction};
 pub use log_panel::{LogPanelState, LogSource, LogSourceItem};
+pub use orders_panel::{OrderEntry, OrdersViewState};
 pub use report_view::ReportView;
 pub use tabs::DockTab;
 
@@ -37,6 +38,8 @@ pub struct Dock {
     /// окна → в разных окнах группы во вкладках можно смотреть разный лог. Откреплённое
     /// окно лога использует ОТДЕЛЬНОЕ общее состояние (живёт в App).
     log: crate::dock::LogPanelState,
+    /// Состояние вида таблицы ордеров (фильтр/сортировка) — своё у окна.
+    orders_view: crate::dock::OrdersViewState,
 }
 
 pub struct DockOutput {
@@ -68,6 +71,7 @@ impl Dock {
             orders_detached: false,
             collapsed: false,
             log: crate::dock::LogPanelState::default(),
+            orders_view: crate::dock::OrdersViewState::default(),
         }
     }
 
@@ -96,7 +100,8 @@ impl Dock {
         ctx: &egui::Context,
         cores: &[CoreInfo],
         store: &CoreStore,
-        orders: &[(String, crate::feed::OrderRow)],
+        orders: &[crate::dock::OrderEntry],
+        main_market: Option<(CoreId, String)>,
         following: bool,
         chart_open: bool,
         now_ms: f64,
@@ -117,6 +122,8 @@ impl Dock {
         let mut data = tabs::TabData {
             report,
             orders,
+            orders_view: &mut self.orders_view,
+            main_market,
             store,
             log: &mut self.log,
             log_sources,
@@ -133,7 +140,8 @@ impl Dock {
                 ui.add_space(6.0);
                 self.ribbon.show(ui, now_ms)
             });
-        let open_detect = detects_resp.inner;
+        // Открытие монеты на Main: клик по детекту (лента) ИЛИ по токену в «Ордерах».
+        let open_detect = detects_resp.inner.or(tabs_out.open_market);
         let detects_rect = detects_resp.response.rect;
 
         // Панель ордера — правая колонка контейнера чарта (левее дока детектов).

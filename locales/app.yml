@@ -204,6 +204,38 @@ orders.col.price:
   ru: "Цена"
   en: "Price"
   es: "Precio"
+orders.open_hint:
+  ru: "Открыть чарт на Main (это ядро)"
+  en: "Open chart on Main (this core)"
+  es: "Abrir gráfico en Main (este núcleo)"
+orders.only_current:
+  ru: "Только ордера текущего маркета"
+  en: "Only current market orders"
+  es: "Solo órdenes del mercado actual"
+orders.show_all:
+  ru: "Показать все"
+  en: "Show all"
+  es: "Mostrar todo"
+orders.sort.sell:
+  ru: "Sell первые"
+  en: "Sell first"
+  es: "Sell primero"
+orders.sort.buy:
+  ru: "Buy первые"
+  en: "Buy first"
+  es: "Buy primero"
+orders.sort.creation:
+  ru: "По созданию ордера"
+  en: "By order creation"
+  es: "Por creación de orden"
+orders.sort.new:
+  ru: "Новые первые"
+  en: "Newest first"
+  es: "Más nuevos primero"
+orders.sort.old:
+  ru: "Старые первые"
+  en: "Oldest first"
+  es: "Más antiguos primero"
 
 # --- Откреплённое чарт-окно ---
 chartwin.clear:

@@ -371,6 +371,7 @@ pub fn run(
                             .unwrap_or(0.0),
                         fill_pct,
                         strat,
+                        uid: o.uid,
                     });
                 }
                 if orders_due {

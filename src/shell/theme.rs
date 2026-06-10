@@ -182,6 +182,7 @@ fn load_cjk_font() -> Option<Vec<u8>> {
 pub const ACCENT: Color32 = c(palette::ACCENT); // --accent
 pub const GREEN: Color32 = c(palette::GREEN); // --long
 pub const RED: Color32 = c(palette::RED); // --sl
+pub const BLUE: Color32 = Color32::from_rgb(74, 144, 255); // SELL (исполненный ордер)
 pub const MUTED: Color32 = c(palette::TEXT_2); // --text-2 (== TEXT_2)
 pub const TP: Color32 = c(palette::TP); // --tp (take-profit)
 
