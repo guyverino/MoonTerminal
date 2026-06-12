@@ -80,6 +80,12 @@ pub struct App {
     /// Последний снимок статусов ядер, показанный в окне настроек. Сравниваем,
     /// чтобы перерисовывать настройки только при реальной смене статуса.
     settings_statuses: crate::settings::CoreStatuses,
+    /// Сфокусированное OS-окно (`WindowEvent::Focused`) — для пониженной каденции
+    /// рендера фоновых окон (рычаг A). None до первого фокуса.
+    focused_window: Option<WindowId>,
+    /// Кап кадра для ФОНОВЫХ (не в фокусе) окон: Some = пониженная каденция
+    /// (`MOON_BG_FPS`), None = выключено (60 fps везде, как до рычага A).
+    bg_frame_dt: Option<Duration>,
     /// СТРЕСС-БЕНЧ (MOON_STRESS): рамп окон — раз в интервал открепляем синт-контейнер.
     bench_stress: bool,
     bench_group: String,
@@ -114,6 +120,24 @@ impl App {
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(10_000),
         );
+        // Рычаг A: фоновые (не в фокусе) окна рендерим с пониженной РОВНОЙ каденцией —
+        // меньше CPU/GPU при многих окнах + плавнее, чем рваные dirty-кадры. Параметр
+        // MOON_BG_FPS: дефолт 20; 0 или >=60 → выключено (60 fps везде, как раньше).
+        let bg_fps = std::env::var("MOON_BG_FPS")
+            .ok()
+            .and_then(|v| v.parse::<f64>().ok())
+            .unwrap_or(20.0);
+        let bg_frame_dt = if bg_fps > 0.0 && bg_fps < 59.9 {
+            Some(Duration::from_secs_f64(1.0 / bg_fps))
+        } else {
+            None
+        };
+        log::info!(
+            "render cadence: фоновые окна {} (MOON_BG_FPS)",
+            bg_frame_dt
+                .map(|_| format!("{bg_fps} fps"))
+                .unwrap_or_else(|| "60 fps (выкл)".into())
+        );
         Self {
             config,
             settings: SettingsState::new(),
@@ -143,6 +167,8 @@ impl App {
             needs_rebuild: false,
             metrics: Metrics::new(),
             settings_statuses: HashMap::new(),
+            focused_window: None,
+            bg_frame_dt,
             bench_stress,
             bench_group,
             bench_windows,
@@ -250,8 +276,18 @@ impl App {
         }
     }
 
+    /// Кап частоты кадров для окна `id`: сфокусированное — 60 fps; фоновые —
+    /// пониженная каденция (рычаг A, `MOON_BG_FPS`). None в `bg_frame_dt` = выкл.
+    fn window_frame_dt(&self, id: WindowId) -> Duration {
+        match self.bg_frame_dt {
+            Some(bg) if Some(id) != self.focused_window => bg,
+            _ => crate::chart::paint::MIN_FRAME_DT,
+        }
+    }
+
     fn render_window(&mut self, id: WindowId, metrics: MetricsSnapshot) {
         let now = now_ms();
+        let min_frame_dt = self.window_frame_dt(id);
         let mut gear = false;
         let mut strategies = false;
         let mut detach = None;
@@ -291,6 +327,7 @@ impl App {
                     global_detached,
                     &detached_keys,
                     split_by_core,
+                    min_frame_dt,
                 );
                 gear = out.gear_clicked;
                 strategies = out.strategies_clicked;
@@ -469,6 +506,12 @@ impl ApplicationHandler for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        // Какое OS-окно в фокусе — для пониженной каденции фоновых окон (рычаг A).
+        // Не сбрасываем на Focused(false): теряя фокус всем приложением, держим
+        // последнее активное на 60 fps. Событие идёт дальше в обычную обработку.
+        if let WindowEvent::Focused(true) = event {
+            self.focused_window = Some(id);
+        }
         // Окна-утилиты (Настройки/Стратегии) обрабатывают ввод/ресайз одинаково
         // (handle_aux_event); различается только реакция на закрытие.
         if let Some(w) = self.settings_window.as_mut().filter(|w| w.window.id() == id) {
@@ -707,6 +750,11 @@ impl ApplicationHandler for App {
         let mut to_main: Vec<(WindowId, crate::session::CoreId, String)> = Vec::new();
         // Сбор окон на закрытие (по крестику тулбара).
         let mut close_charts: Vec<WindowId> = Vec::new();
+        // Каденция фоновых окон (рычаг A) — снимаем в локали, чтобы не занимать self
+        // внутри iter_mut. Сфокусированное чарт-окно остаётся на 60 fps.
+        let focused = self.focused_window;
+        let bg_frame_dt = self.bg_frame_dt;
+        let fg_dt = crate::chart::paint::MIN_FRAME_DT;
         for (cid, w) in self.detached_charts.iter_mut() {
             w.set_theme(&theme);
             w.set_orders_style(&orders_style);
@@ -717,7 +765,11 @@ impl ApplicationHandler for App {
                 close_charts.push(*cid);
             }
             if w.needs_render(&self.session, now_chart) {
-                w.render(&self.session, now_chart);
+                let mfd = match bg_frame_dt {
+                    Some(bg) if Some(*cid) != focused => bg,
+                    _ => fg_dt,
+                };
+                w.render(&self.session, now_chart, mfd);
             }
         }
         for cid in close_charts {

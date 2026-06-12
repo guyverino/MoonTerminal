@@ -4,10 +4,9 @@
 //! и оси делегированы в [`crate::chart::paint`]; здесь — сборка кадра и UI-хром.
 
 use std::collections::HashSet;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::chart::container::{ContainerKind, Mode};
-use crate::chart::paint::MIN_FRAME_DT;
 use crate::chart::view::Rect;
 use crate::feed::ConnStatus;
 use crate::metrics::MetricsSnapshot;
@@ -56,6 +55,7 @@ impl WindowHost {
         global_detached: [bool; 4],
         detached_keys: &HashSet<ContainerKind>,
         split_by_core: bool,
+        min_frame_dt: Duration,
     ) -> HostRender {
         let store = session.store();
         let none = HostRender {
@@ -71,7 +71,9 @@ impl WindowHost {
         // Кап частоты кадров: при движении мыши перекрестие иначе гонит present в
         // потолок монитора (120/144) и греет GPU. Скип дёшев — needs_render
         // вернёт true в следующем цикле, кадр случится как только кап позволит.
-        if now.duration_since(self.last_present_at) < MIN_FRAME_DT {
+        // `min_frame_dt` = 60 fps для активного окна; больше (реже) для фоновых
+        // (рычаг A, MOON_BG_FPS) — задаёт App по фокусу окна.
+        if now.duration_since(self.last_present_at) < min_frame_dt {
             return none;
         }
 

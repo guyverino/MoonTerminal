@@ -4,7 +4,7 @@
 //! привязаны к девайсу окна, поэтому панели пересоздаются из спецификации.
 
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
@@ -268,9 +268,10 @@ impl ChartWindow {
         self.input.pointer_drag(x, y, &mut self.container);
     }
 
-    pub fn render(&mut self, session: &SessionManager, now_ms: f64) {
+    pub fn render(&mut self, session: &SessionManager, now_ms: f64, min_frame_dt: Duration) {
         let now = Instant::now();
-        if now.duration_since(self.last_present_at) < MIN_FRAME_DT {
+        // Кап кадра: 60 fps для окна в фокусе, реже для фоновых (рычаг A, MOON_BG_FPS).
+        if now.duration_since(self.last_present_at) < min_frame_dt {
             return;
         }
         let ppp = self.window.scale_factor() as f32;
