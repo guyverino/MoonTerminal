@@ -76,6 +76,7 @@ pub fn merge(sf: ServersFile, meta: SettingsFile) -> Merged {
                     .map(|m| m.market.clone())
                     .unwrap_or_else(servers::default_market),
                 color: m.map(|m| m.color).unwrap_or_else(servers::default_color),
+                synthetic: false,
             }
         })
         .collect();

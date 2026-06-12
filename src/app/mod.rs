@@ -80,6 +80,13 @@ pub struct App {
     /// Последний снимок статусов ядер, показанный в окне настроек. Сравниваем,
     /// чтобы перерисовывать настройки только при реальной смене статуса.
     settings_statuses: crate::settings::CoreStatuses,
+    /// СТРЕСС-БЕНЧ (MOON_STRESS): рамп окон — раз в интервал открепляем синт-контейнер.
+    bench_stress: bool,
+    bench_group: String,
+    bench_windows: u32,
+    bench_interval: std::time::Duration,
+    bench_opened: u32,
+    bench_last: std::time::Instant,
 }
 
 impl App {
@@ -89,6 +96,24 @@ impl App {
         let mut session = SessionManager::start(&config, epoch_ms, reports.as_ref().map(|h| &h.tx));
         session.set_market_mode(config.market_mode);
         let report = crate::dock::ReportView::new(reports.as_ref().map(|h| h.generation.clone()));
+        // СТРЕСС-БЕНЧ (MOON_STRESS): группа берётся у синт-ядра, добавленного в main.rs.
+        let bench_stress = std::env::var("MOON_STRESS").is_ok();
+        let bench_group = config
+            .servers
+            .iter()
+            .find(|s| s.synthetic)
+            .map(|s| s.group.clone())
+            .unwrap_or_default();
+        let bench_windows = std::env::var("MOON_STRESS_WINDOWS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(10);
+        let bench_interval = std::time::Duration::from_millis(
+            std::env::var("MOON_STRESS_INTERVAL_MS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(10_000),
+        );
         Self {
             config,
             settings: SettingsState::new(),
@@ -118,6 +143,12 @@ impl App {
             needs_rebuild: false,
             metrics: Metrics::new(),
             settings_statuses: HashMap::new(),
+            bench_stress,
+            bench_group,
+            bench_windows,
+            bench_interval,
+            bench_opened: 0,
+            bench_last: std::time::Instant::now(),
         }
     }
 
@@ -643,6 +674,26 @@ impl ApplicationHandler for App {
         }
         if had_detach_ops {
             self.layout_dirty = true; // состав откреплённых окон изменился
+        }
+        // СТРЕСС-БЕНЧ (MOON_STRESS): раз в interval открепляем следующий СИНТ-контейнер
+        // (Chart с панелями SYNTH*, созданными синтом через AddToChart) в отдельное
+        // окно. Ищем контейнер по содержимому, а не по фикс-индексу: в host-окне группы
+        // есть и Main, и реальные чарты — фикс idx грабил их / пустоту. Каждый откреп
+        // удаляет контейнер, поэтому следующий тик находит следующий синт-чарт.
+        if self.bench_stress
+            && self.bench_opened < self.bench_windows
+            && self.bench_last.elapsed() >= self.bench_interval
+        {
+            let target = self
+                .windows
+                .iter()
+                .find(|(_, h)| h.workspace.group == self.bench_group)
+                .and_then(|(id, h)| h.synth_chart_index().map(|idx| (*id, idx)));
+            if let Some((id, idx)) = target {
+                self.detach_chart_reqs.push((id, idx));
+                self.bench_opened += 1;
+                self.bench_last = std::time::Instant::now();
+            }
         }
         // Откреп чарт-вкладок в окна (накоплено в render_window — здесь есть event_loop).
         for (owner, idx) in std::mem::take(&mut self.detach_chart_reqs) {

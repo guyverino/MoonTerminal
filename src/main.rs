@@ -50,13 +50,39 @@ fn main() -> anyhow::Result<()> {
         eprintln!("не удалось установить логгер: {e}");
     }
 
-    let cfg = AppConfig::load()?;
+    let mut cfg = AppConfig::load()?;
     // Применяем язык интерфейса до создания окон (дефолт — системная локаль).
     rust_i18n::set_locale(cfg.language.code());
     // Файловый лог: режим из конфига + одноразовая чистка старых файлов при старте.
     crate::applog::set_file_logging(cfg.log_to_file, cfg.log_retention_days);
     crate::applog::purge_old();
     log::info!("ядер в конфиге: {}", cfg.servers.len());
+
+    // Бенч-инъекция синт-ядра (MOON_SYNTH): добавляем синтетический сервер в группу
+    // ПЕРВОГО активного сервера, чтобы его окно ингестило AddToChart-детекты синта.
+    if std::env::var("MOON_SYNTH").is_ok() {
+        let group = cfg
+            .servers
+            .iter()
+            .find(|s| s.active)
+            .map(|s| s.group.clone())
+            .unwrap_or_else(|| "default".into());
+        let id = cfg.servers.iter().map(|s| s.id).max().map(|m| m + 1).unwrap_or(0);
+        cfg.servers.push(crate::config::ServerConfig {
+            id,
+            uid: 0,
+            name: "SYNTH".into(),
+            active: true,
+            show_window: true, // НЕ создаёт 2-е окно: группа уже имеет окно от реальных ядер
+            feed: Default::default(),
+            key: Default::default(),
+            group,
+            market: "SYNTH0".into(),
+            color: [0x47, 0xb3, 0xff],
+            synthetic: true,
+        });
+        log::info!("bench: добавлено синт-ядро id={id} (MOON_SYNTH)");
+    }
 
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(ControlFlow::Poll);

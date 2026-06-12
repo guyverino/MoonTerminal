@@ -4,6 +4,7 @@
 pub mod live;
 mod report;
 mod strategies;
+pub mod synth;
 pub mod types;
 
 pub use types::*;
@@ -90,6 +91,11 @@ pub fn spawn(server: ServerConfig, reports: Option<ReportTx>, startup_delay: Dur
             // НЕ удалось первичное подключение — moonproto умеет реконнект только
             // ПОСЛЕ успешного connect), повторяем с нарастающим backoff + джиттер.
             // Штатный выход (Ok = координатор/UI ушёл) — завершаемся.
+            // Синт-ядро бенчмарка: гоним synth::run (без сети/реконнекта).
+            if server.synthetic {
+                let _ = synth::run(&server, &tx, &cmd_rx);
+                return;
+            }
             let mut backoff = BACKOFF_MIN;
             loop {
                 let started = Instant::now();

@@ -192,6 +192,7 @@ fn servers_panel(
             group: default_group(),
             market: default_market(),
             color: default_color(),
+            synthetic: false,
         });
     }
 }

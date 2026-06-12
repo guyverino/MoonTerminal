@@ -88,6 +88,9 @@ pub struct ServerConfig {
     /// Цвет сервера (RGB) — цвет детекта (используется позже).
     #[serde(default = "default_color")]
     pub color: [u8; 3],
+    /// Синтетическое ядро бенчмарка (MOON_SYNTH): фид гонит synth::run вместо live::run.
+    #[serde(default)]
+    pub synthetic: bool,
 }
 
 pub fn default_color() -> [u8; 3] {

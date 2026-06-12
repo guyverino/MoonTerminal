@@ -301,6 +301,17 @@ impl WindowHost {
         c.panes.get(idx)
     }
 
+    /// Индекс первого Chart-контейнера с синтетическими панелями (рынок `SYNTH*`) —
+    /// для стресс-бенча (MOON_STRESS): рамп откепляет именно синт-чарты, не трогая
+    /// Main и реальные чарты. Контейнер непустой по построению (есть SYNTH-панель),
+    /// поэтому open_detached_chart не отбросит его как пустой.
+    pub fn synth_chart_index(&self) -> Option<usize> {
+        self.containers.iter().position(|c| {
+            matches!(c.kind, ContainerKind::Chart { .. })
+                && c.panes.iter().any(|p| p.market.starts_with("SYNTH"))
+        })
+    }
+
     /// Все открытые (ядро, рынок) по всем контейнерам — для подписок (App).
     pub fn open_markets(&self) -> Vec<(CoreId, String)> {
         let mut out = Vec::new();

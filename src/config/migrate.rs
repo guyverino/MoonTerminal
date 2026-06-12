@@ -51,6 +51,7 @@ pub fn from_legacy_enc() -> anyhow::Result<AppConfig> {
             group: s.group,
             market: s.market,
             color: s.color,
+            synthetic: false,
         })
         .collect();
     Ok(AppConfig {
@@ -90,6 +91,7 @@ pub fn from_legacy_toml() -> anyhow::Result<AppConfig> {
             group: servers::default_group(),
             market,
             color: servers::default_color(),
+            synthetic: false,
         }],
         groups: Vec::new(),
         language: super::Language::default(),

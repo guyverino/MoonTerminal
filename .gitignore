@@ -8,3 +8,5 @@ Cargo.lock
 /legasy
 *.log
 /docAi
+# Выходы бенчмарка (CSV семплов/сводок) — локальные, не коммитим.
+/tools/bench-out/
