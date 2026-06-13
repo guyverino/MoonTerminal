@@ -10,6 +10,7 @@
 //! разборке отрезаем хвост каждой строки. `ppp` = scale_factor окна → жёлоба осей
 //! (PRICE_AXIS_W·ppp / TIME_AXIS_H·ppp) масштабируются как в egui-версии.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use gpui::RenderImage;
@@ -80,6 +81,12 @@ pub struct ChartGpu {
     scale: Option<f32>,
     /// Применённый live-follow (вид бежит за «сейчас»). Совпадает с дефолтом панелей.
     follow: bool,
+    /// Readback в полёте: кадр отправлен в GPU, ждём завершения `map_async` (НЕ
+    /// блокируя UI-поток). Готовность сигналит `map_done` (ставится в колбэке при poll).
+    pending: bool,
+    map_done: Arc<AtomicBool>,
+    /// Раскладка панелей отправленного кадра — отдаётся вводу, когда картинка готова.
+    pending_layout: Vec<(usize, ChartRect)>,
 }
 
 impl ChartGpu {
@@ -115,6 +122,9 @@ impl ChartGpu {
             orders: OrdersStyle::default(),
             scale: None,
             follow: true,
+            pending: false,
+            map_done: Arc::new(AtomicBool::new(false)),
+            pending_layout: Vec::new(),
         }
     }
 
@@ -192,6 +202,9 @@ impl ChartGpu {
         self.padded_bpr = padded_bpr;
         self.w = w;
         self.h = h;
+        // Staging пересоздан → in-flight readback больше не валиден, абортируем его
+        // (старый колбэк сработает на старом Arc и будет проигнорирован).
+        self.pending = false;
     }
 
     /// Открыть монету (фулскрин-панель) — 1:1 как egui host.
@@ -321,16 +334,19 @@ impl ChartGpu {
         }
     }
 
-    /// Рендер панелей движком в offscreen → readback → RenderImage (BGRA для GPUI).
-    /// `ppp` = scale_factor окна (физ.пиксели на лог.точку): жёлоба осей движка
-    /// масштабируются им, как в egui-версии. Перекрестие движок НЕ рисует — оно
-    /// GPUI-оверлеем (дёшево перерисовать без re-render offscreen на сдвиг мыши).
-    /// Возвращает (картинка, раскладка панелей девайс-px) — раскладка нужна вводу.
-    pub fn render(
-        &mut self,
-        session: &SessionManager,
-        ppp: f32,
-    ) -> (Arc<RenderImage>, Vec<(usize, ChartRect)>) {
+    /// Идёт ли readback (кадр отправлен, картинка ещё не забрана).
+    pub fn is_pending(&self) -> bool {
+        self.pending
+    }
+
+    /// Отправить кадр в GPU (движок → offscreen → копия в staging) и начать readback
+    /// БЕЗ блокировки UI-потока (`map_async`, без `poll(Wait)`). Готовность заберёт
+    /// [`poll_image`]. Не отправляет, пока предыдущий readback не забран. `ppp` =
+    /// scale_factor окна (масштаб жёлобов осей, как в egui).
+    pub fn submit(&mut self, session: &SessionManager, ppp: f32) {
+        if self.pending {
+            return;
+        }
         let (w, h) = (self.w, self.h);
         let area = ChartRect { x: 0.0, y: 0.0, w: w as f32, h: h as f32 };
         let mut enc = self
@@ -374,9 +390,31 @@ impl ChartGpu {
         );
         self.queue.submit(Some(enc.finish()));
 
+        // Свежий флаг на этот readback (старый абортированный колбэк его не тронет).
+        let flag = Arc::new(AtomicBool::new(false));
+        let cb = flag.clone();
+        self.staging.slice(..).map_async(wgpu::MapMode::Read, move |res| {
+            if res.is_ok() {
+                cb.store(true, Ordering::Release);
+            }
+        });
+        self.map_done = flag;
+        self.pending = true;
+        self.pending_layout = layout;
+    }
+
+    /// Неблокирующе продвинуть mapping (`poll(Poll)`); когда готово — собрать картинку
+    /// и вернуть (с раскладкой панелей). None — readback не запущен или ещё не готов.
+    pub fn poll_image(&mut self) -> Option<(Arc<RenderImage>, Vec<(usize, ChartRect)>)> {
+        if !self.pending {
+            return None;
+        }
+        let _ = self.device.poll(wgpu::Maintain::Poll);
+        if !self.map_done.load(Ordering::Acquire) {
+            return None;
+        }
+        let (w, h) = (self.w, self.h);
         let slice = self.staging.slice(..);
-        slice.map_async(wgpu::MapMode::Read, |_| {});
-        self.device.poll(wgpu::Maintain::Wait);
         let data = slice.get_mapped_range();
 
         // Отрезаем хвост-паддинг каждой строки: padded_bpr → ровно w*4 байт.
@@ -389,8 +427,10 @@ impl ChartGpu {
         }
         drop(data);
         self.staging.unmap();
+        self.pending = false;
+        let layout = std::mem::take(&mut self.pending_layout);
 
         let buf = ImageBuffer::<Rgba<u8>, Vec<u8>>::from_raw(w, h, pixels).expect("chart buf");
-        (Arc::new(RenderImage::new(vec![Frame::new(buf)])), layout)
+        Some((Arc::new(RenderImage::new(vec![Frame::new(buf)])), layout))
     }
 }

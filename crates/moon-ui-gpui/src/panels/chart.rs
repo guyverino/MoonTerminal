@@ -201,19 +201,27 @@ impl Render for ChartPanel {
             self.chart_dirty = true;
         }
 
-        if self.chart_dirty || self.chart_img.is_none() {
+        // Неблокирующий конвейер кадра: (1) забрать готовый readback, если поспел;
+        // (2) если есть что рисовать и нет незабранного кадра — отправить новый (НЕ
+        // блокирует UI-поток, в отличие от прежнего poll(Wait) — иначе фоновое окно
+        // другой группы фризилось, пока активное окно занимает поток).
+        if let Some((img_arc, layout)) = self.chart.poll_image() {
             if let Some(old) = self.chart_img.take() {
                 cx.drop_image(old, Some(window));
             }
-            let (img_arc, layout) = {
-                let b = self.backend.read(cx);
-                self.chart.render(&b.session, ppp)
-            };
             self.input.pane_rects = layout;
             self.chart_img = Some(img_arc);
+        }
+        if (self.chart_dirty || self.chart_img.is_none()) && !self.chart.is_pending() {
+            let b = self.backend.read(cx);
+            self.chart.submit(&b.session, ppp);
             self.chart_dirty = false;
         }
-        let chart_img = self.chart_img.clone().expect("chart image");
+        // Пока readback в полёте — перерисоваться на следующем кадре, чтобы его забрать.
+        if self.chart.is_pending() {
+            cx.notify();
+        }
+        let chart_img = self.chart_img.clone();
         let axis_panes = self.chart.axis_panes(axes::local_offset_sec());
         let cross = self.chart.crosshair_style();
         let cursor_dev = self.input.cursor;
@@ -297,7 +305,8 @@ impl Render for ChartPanel {
                     cx.notify();
                 }
             }))
-            .child(img(chart_img).absolute().size_full())
+            // Картинка появляется, когда первый readback поспел (None — первые кадры).
+            .children(chart_img.map(|i| img(i).absolute().size_full()))
             .child({
                 let entity = cx.entity();
                 let measured = self.chart_dev;
