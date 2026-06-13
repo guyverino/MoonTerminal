@@ -23,7 +23,11 @@ pub struct CrossStyle {
     pub alpha: f32,
     /// Полутолщина линии (px) — как style.params.x движка.
     pub thickness: f32,
+    /// Поля гало креста из темы: пока крест рисуем без гало (оверлеем), но держим
+    /// в стиле для 1:1 с движком и будущего гало-оверлея.
+    #[allow(dead_code)]
     pub halo_radius: f32,
+    #[allow(dead_code)]
     pub halo_intensity: f32,
 }
 

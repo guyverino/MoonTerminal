@@ -31,19 +31,19 @@ use gpui_component::{
     button::{Button, ButtonVariants},
     dock::{DockArea, DockAreaState, DockEvent, DockItem, PanelView},
     h_flex,
-    table::{Column, TableDelegate, TableState},
     theme::{Theme, ThemeMode},
     v_flex, Root, StyledExt,
 };
 
 use chart_tabs::ChartTabs;
 use dock_persist::DOCK_VERSION;
-use panels::{DetectsPanel, OrderPanel, OrdersPanel, StubPanel};
+use panels::{DetectsPanel, LogPanel, OrderPanel, OrdersPanel, ReportPanel, StubPanel};
 
 use moon_core::config::{AppConfig, GroupLayout, WindowLayout};
+use moon_core::feed::ConnStatus;
 use moon_core::metrics::{Metrics, MetricsSnapshot};
 use moon_core::palette;
-use moon_core::session::{CoreId, SessionManager};
+use moon_core::session::{ConnSummary, CoreId, SessionManager};
 
 /// Палитра проекта [u8;3] → 0xRRGGBB для gpui `rgb()`. Единый источник цветов —
 /// `moon_core::palette` (тот же, что у egui-хрома); никаких литералов в UI.
@@ -95,6 +95,11 @@ fn apply_brand_theme(cx: &mut App) {
 /// Общий backend: живёт в одном `Entity`, дренится таймером, будит окна по notify.
 struct Backend {
     session: SessionManager,
+    /// БД отчётов: канал записи (ядро шлёт close-report → writer пишет в SQLite) +
+    /// счётчик-генерация (окно «Отчёт» по нему перезапрашивает). None = БД недоступна.
+    /// Порт egui `App.reports`. Держим целиком: `tx` нужен сессии (start/reconnect),
+    /// `generation` — панели отчётов.
+    reports: Option<moon_core::db::ReportsHandle>,
     metrics: Metrics,
     snap: MetricsSnapshot,
     /// Желаемые открытые рынки (ядро, рынок) — держим подписку через coordinator.
@@ -141,105 +146,6 @@ struct Backend {
     repin_request: Vec<(String, String)>,
 }
 
-/// Плоская строка ордера для таблицы (владеющая; собирается из OrderRow + имя ядра).
-#[derive(Clone)]
-struct OrderView {
-    core: String,
-    side: &'static str, // LONG / SHORT
-    market: String,
-    size: f64,
-    buy_price: f64,
-    price: f32,
-    fill_pct: f32,
-    strat: String,
-}
-
-/// Делегат виртуализированной таблицы ордеров группы.
-struct OrdersDelegate {
-    columns: Vec<Column>,
-    rows: Vec<OrderView>,
-}
-
-impl OrdersDelegate {
-    fn new() -> Self {
-        let columns = vec![
-            Column::new("core", "Core").width(px(110.0)),
-            Column::new("side", "Side").width(px(64.0)),
-            Column::new("market", "Market").width(px(120.0)),
-            Column::new("size", "Size").width(px(90.0)).text_right(),
-            Column::new("buy", "Buy").width(px(100.0)).text_right(),
-            Column::new("price", "Price").width(px(100.0)).text_right(),
-            Column::new("fill", "Fill%").width(px(70.0)).text_right(),
-            Column::new("strat", "Strat").width(px(140.0)),
-        ];
-        Self { columns, rows: Vec::new() }
-    }
-}
-
-impl TableDelegate for OrdersDelegate {
-    fn columns_count(&self, _: &App) -> usize {
-        self.columns.len()
-    }
-
-    fn rows_count(&self, _: &App) -> usize {
-        self.rows.len()
-    }
-
-    fn column(&self, col_ix: usize, _: &App) -> &Column {
-        &self.columns[col_ix]
-    }
-
-    fn render_td(
-        &mut self,
-        row_ix: usize,
-        col_ix: usize,
-        _: &mut Window,
-        _: &mut Context<TableState<Self>>,
-    ) -> impl IntoElement {
-        let Some(r) = self.rows.get(row_ix) else {
-            return div();
-        };
-        match col_ix {
-            0 => div().child(r.core.clone()),
-            1 => div()
-                .text_color(if r.side == "LONG" { rgb(hex(palette::GREEN)) } else { rgb(hex(palette::RED)) })
-                .child(r.side),
-            2 => div().child(r.market.clone()),
-            3 => div().w_full().child(format!("{:.4}", r.size)),
-            4 => div().w_full().child(format!("{:.4}", r.buy_price)),
-            5 => div().w_full().child(format!("{:.4}", r.price)),
-            6 => div().w_full().child(format!("{:.0}", r.fill_pct)),
-            _ => div().child(r.strat.clone()),
-        }
-    }
-}
-
-/// Собирает ордера всех ядер группы в плоские строки таблицы (новые сверху по uid).
-fn collect_orders(backend: &Backend, group: &str) -> Vec<OrderView> {
-    let store = backend.session.store();
-    let mut out: Vec<(u64, OrderView)> = Vec::new();
-    for s in backend.session.sessions().iter().filter(|s| s.group == group) {
-        let Some(core) = store.core(s.id) else { continue };
-        for o in &core.orders {
-            out.push((
-                o.uid,
-                OrderView {
-                    core: s.name.clone(),
-                    side: if o.is_short { "SHORT" } else { "LONG" },
-                    market: o.market.clone(),
-                    size: o.size,
-                    buy_price: o.buy_price,
-                    price: o.price,
-                    fill_pct: o.fill_pct,
-                    strat: o.strat.clone(),
-                },
-            ));
-        }
-    }
-    out.sort_by(|a, b| b.0.cmp(&a.0)); // новые ордера (больше uid) сверху
-    out.into_iter().map(|(_, v)| v).collect()
-}
-
 /// Оболочка одной группы (= одно ОС-окно): header + единый `DockArea` + статус.
 /// Весь контент — Dock-панели (чарт=center, детекты/ордер=right, нижние вкладки=
 /// bottom), перетаскиваемые/отцепляемые. Header/статус — фикс. полосы вокруг дока.
@@ -247,6 +153,9 @@ struct Shell {
     backend: Entity<Backend>,
     group: String,
     dock: Entity<DockArea>,
+    /// Время прошлого кадра и сглаженный fps рендера — для статус-бара (как egui host).
+    last_frame: Option<Instant>,
+    fps: f32,
 }
 
 impl Shell {
@@ -302,12 +211,16 @@ impl Shell {
                     OrdersPanel::new(backend.clone(), group.clone(), window, cx)
                 })));
             }
-            for (name, title) in [("Assets", "Активы"), ("Log", "Лог"), ("Report", "Отчёт")] {
-                if !detached_set.contains(name) {
-                    bottom_tabs.push(Arc::new(cx.new(|cx| {
-                        StubPanel::new(name, title, group.clone(), backend.clone(), cx)
-                    })));
-                }
+            if !detached_set.contains("Assets") {
+                bottom_tabs.push(Arc::new(cx.new(|cx| {
+                    StubPanel::new("Assets", "Активы", group.clone(), backend.clone(), cx)
+                })));
+            }
+            if !detached_set.contains("Log") {
+                bottom_tabs.push(Arc::new(cx.new(|cx| LogPanel::new(backend.clone(), group.clone(), window, cx))));
+            }
+            if !detached_set.contains("Report") {
+                bottom_tabs.push(Arc::new(cx.new(|cx| ReportPanel::new(backend.clone(), group.clone(), window, cx))));
             }
 
             // ВСЁ — в center-сплите (свободный пересплит drag-to-edge + детач панелей).
@@ -361,7 +274,7 @@ impl Shell {
         })
         .detach();
 
-        Self { backend, group, dock }
+        Self { backend, group, dock, last_frame: None, fps: 0.0 }
     }
 }
 
@@ -428,14 +341,23 @@ impl Render for Shell {
             });
         }
 
-        let order_count = collect_orders(self.backend.read(cx), &self.group).len();
+        let order_count = panels::count_orders(self.backend.read(cx), &self.group);
 
         // Header-данные (рынок/цена/тики/conn). Чарт/ввод/оси — в ChartPanel.
-        let (conn, snap, market_label, price_label, tick_count) = {
+        // FPS рендера (сглаженный) — диагностика статус-бара (порт host.fps).
+        let now_inst = Instant::now();
+        if let Some(prev) = self.last_frame {
+            let dt = now_inst.duration_since(prev).as_secs_f32().max(1e-4);
+            self.fps = self.fps * 0.9 + (1.0 / dt) * 0.1;
+        }
+        self.last_frame = Some(now_inst);
+        let fps = self.fps;
+
+        let (conn, snap, market_label, price_label, tick_count, book_levels) = {
             let b = self.backend.read(cx);
             let conn = b.session.conn_summary_group(&self.group);
             let snap = b.snap;
-            let (market_label, price_label, tick_count) = {
+            let (market_label, price_label, tick_count, book_levels) = {
                 let focus = b
                     .session
                     .sessions()
@@ -455,13 +377,14 @@ impl Render for Shell {
                                 .map(|p| format!("{p:.2}"))
                                 .unwrap_or_else(|| "—".into()),
                             v.ring.len(),
+                            v.book.len(),
                         ),
-                        None => (m, "—".into(), 0),
+                        None => (m, "—".into(), 0, 0),
                     },
-                    None => ("—".into(), "—".into(), 0),
+                    None => ("—".into(), "—".into(), 0, 0),
                 }
             };
-            (conn, snap, market_label, price_label, tick_count)
+            (conn, snap, market_label, price_label, tick_count, book_levels)
         };
 
         // Цвета — ТОЛЬКО из moon_core::palette (единый источник, как egui-хром).
@@ -521,21 +444,90 @@ impl Render for Shell {
             .child(controls::toolbar(&self.backend, cx))
             // ── Центр: единый DockArea (чарт=center, детекты+ордер=right, вкладки=bottom) ──
             .child(div().flex_1().w_full().child(self.dock.clone()))
-            // ── Status bar ──────────────────────────────────────────
+            // ── Status bar (полный порт egui `shell::ui` нижней панели) ──
+            .child(self.status_bar(conn, snap, tick_count, book_levels, fps, panel, border, muted))
+    }
+}
+
+impl Shell {
+    /// Нижняя строка состояния (порт egui `shell::mod`): слева — бейдж соединения
+    /// «● N/M подключено» (зелёный=все на связи, красный=есть упавшие, иначе янтарный)
+    /// с тултипом по не-подключённым; затем диагностика ticks/book/fps/CPU/RAM.
+    #[allow(clippy::too_many_arguments)]
+    fn status_bar(
+        &self,
+        conn: ConnSummary,
+        snap: MetricsSnapshot,
+        tick_count: usize,
+        book_levels: usize,
+        fps: f32,
+        panel: Rgba,
+        border: Rgba,
+        muted: Rgba,
+    ) -> impl IntoElement {
+        let all_ok = conn.total > 0 && conn.ready == conn.total;
+        let any_failed = conn
+            .down
+            .iter()
+            .any(|(_, s)| matches!(s, ConnStatus::Failed(_) | ConnStatus::Disconnected));
+        let badge_col = if all_ok {
+            palette::GREEN
+        } else if any_failed {
+            palette::RED
+        } else {
+            palette::ACCENT
+        };
+        // Текст тултипа — только про НЕ подключённых (имя: причина).
+        let down_text: String = conn
+            .down
+            .iter()
+            .filter_map(|(name, st)| {
+                let reason = match st {
+                    ConnStatus::Connecting => "подключение…".to_string(),
+                    ConnStatus::Stage(s) => s.clone(),
+                    ConnStatus::Failed(e) => e.clone(),
+                    ConnStatus::Disconnected => "отключено".to_string(),
+                    ConnStatus::Ready => return None,
+                };
+                Some(format!("{name}: {reason}"))
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let mut badge = div()
+            .id("conn-badge")
+            .text_color(rgb(hex(badge_col)))
+            .child(format!("● {}/{} подключено", conn.ready, conn.total));
+        if !down_text.is_empty() {
+            badge = badge.tooltip(move |window, cx| {
+                gpui_component::tooltip::Tooltip::new(down_text.clone()).build(window, cx)
+            });
+        }
+
+        h_flex()
+            .w_full()
+            .px_4()
+            .py_1()
+            .gap_4()
+            .items_center()
+            .bg(panel)
+            .border_t_1()
+            .border_color(border)
+            .text_xs()
+            .child(badge)
             .child(
-                h_flex()
-                    .w_full()
-                    .px_4()
-                    .py_1()
-                    .gap_4()
-                    .bg(panel)
-                    .border_t_1()
-                    .border_color(border)
-                    .text_color(muted)
-                    .text_xs()
-                    .child(format!("CPU proc {:.0}%", snap.cpu_process))
-                    .child(format!("CPU sys {:.0}%", snap.cpu_system))
-                    .child(format!("RAM {:.0} MB", snap.mem_mb)),
+                div().text_color(muted).child(format!(
+                    "ticks {}  ·  book {}  ·  {:.0} fps  ·  present {:.0}/s  ·  \
+                     CPU {:.0}% proc / {:.0}% sys  ·  RAM {:.0} MB ({:+.1})",
+                    tick_count,
+                    book_levels,
+                    fps,
+                    fps,
+                    snap.cpu_process,
+                    snap.cpu_system,
+                    snap.mem_mb,
+                    snap.mem_delta_mb,
+                )),
             )
     }
 }
@@ -610,12 +602,21 @@ fn spawn_group_window(
 }
 
 fn main() -> anyhow::Result<()> {
-    env_logger::Builder::from_env(
+    // Строим env_logger как Logger (не .init()) и оборачиваем в TeeLogger — он
+    // дублирует напечатанные записи в in-memory кольцо вкладки «Лог» (порт egui main).
+    let env = env_logger::Builder::from_env(
         env_logger::Env::default().default_filter_or("warn,moon_gpui=info,moon_core=info"),
     )
-    .init();
+    .build();
+    log::set_max_level(env.filter());
+    if let Err(e) = log::set_boxed_logger(Box::new(moon_core::applog::TeeLogger::new(env))) {
+        eprintln!("не удалось установить логгер: {e}");
+    }
 
     let cfg = AppConfig::load()?;
+    // Файловый лог: режим из конфига + одноразовая чистка старых файлов при старте.
+    moon_core::applog::set_file_logging(cfg.log_to_file, cfg.log_retention_days);
+    moon_core::applog::purge_old();
     let group_list = groups(&cfg);
     log::info!("groups: {group_list:?} (servers: {})", cfg.servers.len());
 
@@ -631,8 +632,14 @@ fn main() -> anyhow::Result<()> {
         let dock_states = dock_persist::load_all();
         let detached = detached::load_all();
 
+        // БД отчётов: поднимаем writer (как egui App). Его `tx` отдаём сессии (ядро
+        // шлёт close-report → запись в SQLite), `generation` живёт в Backend для окна
+        // «Отчёт». None = БД недоступна (окно отчётов покажет пусто).
+        let reports = moon_core::db::spawn_writer();
+
         let backend = cx.new(|_| Backend {
-            session: SessionManager::start(&cfg, epoch, None),
+            session: SessionManager::start(&cfg, epoch, reports.as_ref().map(|h| &h.tx)),
+            reports,
             metrics: Metrics::new(),
             snap: MetricsSnapshot::default(),
             // open = рынки ОТКРЫТЫХ чарт-панелей (как App::about_to_wait в egui).
@@ -685,7 +692,7 @@ fn main() -> anyhow::Result<()> {
                             // Реконнект ядер по кнопке ↻ (порт egui take_actions.reconnect).
                             let recon: Vec<CoreId> = b.reconnect_request.drain(..).collect();
                             for id in recon {
-                                b.session.reconnect(id, &b.config, None);
+                                b.session.reconnect(id, &b.config, b.reports.as_ref().map(|h| &h.tx));
                             }
                             // Дебаунс-сохранение раскладки окон (≤10/с).
                             if b.layout_dirty {

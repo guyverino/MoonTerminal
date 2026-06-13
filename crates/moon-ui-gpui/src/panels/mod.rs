@@ -3,18 +3,24 @@
 //! (см. [[prefer-gpui-components]]). По файлу на панель:
 //! - [`chart`] — чарт (offscreen wgpu-движок + ввод + оси), центр дока;
 //! - [`detects`] — лента детектов группы (откпрепляемая);
-//! - [`orders`] — виртуализированная таблица ордеров;
+//! - [`orders`] — таблица открытых ордеров группы (фильтры/сортировка/клик→чарт);
 //! - [`order`] — кнопки BUY/SELL/Cancel/Panic;
-//! - [`stub`] — заглушки Активы/Лог/Отчёт до подключения данных.
+//! - [`log`] — вкладка «Лог» (источник/файл/поиск/только ошибки, виртуализирован);
+//! - [`report`] — вкладка «Отчёт» (закрытые сделки из SQLite, фильтры/сортировка);
+//! - [`stub`] — заглушка Активы до подключения данных.
 
 mod chart;
 mod detects;
+mod log;
 mod order;
 mod orders;
+mod report;
 mod stub;
 
 pub use chart::ChartPanel;
 pub use detects::DetectsPanel;
+pub use log::LogPanel;
 pub use order::OrderPanel;
-pub use orders::OrdersPanel;
+pub use orders::{count_orders, OrdersPanel};
+pub use report::ReportPanel;
 pub use stub::StubPanel;

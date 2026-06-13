@@ -16,7 +16,7 @@ use gpui_component::dock::PanelView;
 use gpui_component::Root;
 use serde::{Deserialize, Serialize};
 
-use crate::panels::{OrdersPanel, StubPanel};
+use crate::panels::{LogPanel, OrdersPanel, ReportPanel, StubPanel};
 use crate::{hex, Backend};
 use moon_core::config::paths;
 use moon_core::palette;
@@ -74,16 +74,6 @@ fn panel_title(name: &str) -> &'static str {
     }
 }
 
-/// Заголовки заглушек (Активы/Лог/Отчёт) по `panel_name`.
-fn stub_title(name: &str) -> &'static str {
-    match name {
-        "Assets" => "Активы",
-        "Log" => "Лог",
-        "Report" => "Отчёт",
-        _ => "Панель",
-    }
-}
-
 /// Свежий экземпляр dock-панели по `panel_name` как `Arc<dyn PanelView>` — для репина
 /// (вернуть в док) и как контент окна открепления.
 pub fn build_panel(
@@ -95,20 +85,9 @@ pub fn build_panel(
 ) -> Option<Arc<dyn PanelView>> {
     let panel: Arc<dyn PanelView> = match name {
         "Orders" => Arc::new(cx.new(|cx| OrdersPanel::new(backend.clone(), group.to_string(), window, cx))),
-        "Assets" | "Log" | "Report" => Arc::new(cx.new(|cx| {
-            StubPanel::new(
-                // `panel_name` должен совпадать с реестром/спекой — берём статический литерал.
-                match name {
-                    "Assets" => "Assets",
-                    "Log" => "Log",
-                    _ => "Report",
-                },
-                stub_title(name),
-                group.to_string(),
-                backend.clone(),
-                cx,
-            )
-        })),
+        "Log" => Arc::new(cx.new(|cx| LogPanel::new(backend.clone(), group.to_string(), window, cx))),
+        "Report" => Arc::new(cx.new(|cx| ReportPanel::new(backend.clone(), group.to_string(), window, cx))),
+        "Assets" => Arc::new(cx.new(|cx| StubPanel::new("Assets", "Активы", group.to_string(), backend.clone(), cx))),
         _ => return None,
     };
     Some(panel)
@@ -197,18 +176,10 @@ pub fn spawn(app: &mut App, backend: &Entity<Backend>, spec: &DetachedSpec) {
     let spec = spec.clone();
     app.open_window(opts, move |window, cx| {
         let content: AnyView = match spec.panel.as_str() {
-            "Orders" => cx
-                .new(|cx| OrdersPanel::new(backend.clone(), spec.group.clone(), window, cx))
-                .into(),
-            name @ ("Assets" | "Log" | "Report") => {
-                let n = match name {
-                    "Assets" => "Assets",
-                    "Log" => "Log",
-                    _ => "Report",
-                };
-                cx.new(|cx| StubPanel::new(n, stub_title(name), spec.group.clone(), backend.clone(), cx))
-                    .into()
-            }
+            "Orders" => cx.new(|cx| OrdersPanel::new(backend.clone(), spec.group.clone(), window, cx)).into(),
+            "Log" => cx.new(|cx| LogPanel::new(backend.clone(), spec.group.clone(), window, cx)).into(),
+            "Report" => cx.new(|cx| ReportPanel::new(backend.clone(), spec.group.clone(), window, cx)).into(),
+            "Assets" => cx.new(|cx| StubPanel::new("Assets", "Активы", spec.group.clone(), backend.clone(), cx)).into(),
             _ => cx.new(|cx| StubPanel::new("?", "Панель", spec.group.clone(), backend.clone(), cx)).into(),
         };
         let dw = cx.new(|cx| {

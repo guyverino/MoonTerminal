@@ -109,7 +109,22 @@ impl ChartGpu {
         self.container.prune_ttl(now_ms)
     }
 
+    /// Сигнатура рыночных данных всех панелей (ticks_rev+book_rev по (ядро,рынок)).
+    /// Сменилась → пришли новые данные, нужен пере-рендер; не сменилась → кадр можно
+    /// пропустить. offscreen-readback дорог (блокирует UI-поток), поэтому НЕ гоняем его
+    /// на холостом ходу — иначе дёрганье при перетаскивании окна и лаг dock-вкладок.
+    pub fn data_signature(&self, session: &SessionManager) -> u64 {
+        let mut sig = 0u64;
+        for p in &self.container.panes {
+            if let Some(v) = session.market_view(p.core, &p.market) {
+                sig = sig.wrapping_mul(31).wrapping_add(v.ticks_rev).wrapping_add(v.book_rev);
+            }
+        }
+        sig
+    }
+
     /// Есть ли TTL-панели (нужно гонять кадры под их истечение).
+    #[allow(dead_code)]
     pub fn has_ttl_panes(&self) -> bool {
         self.container.has_ttl_panes()
     }
@@ -165,6 +180,7 @@ impl ChartGpu {
             .open_manual(core, market, &self.device, self.format, self.epoch);
     }
 
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.container.is_empty()
     }
@@ -180,6 +196,7 @@ impl ChartGpu {
 
     /// Снимок вида активной (фулскрин) панели для шкал. None — пустой контейнер.
     /// Значения текущего кадра — звать ПОСЛЕ `render`.
+    #[allow(dead_code)]
     pub fn axis_snapshot(&self, tz_offset_sec: i64) -> Option<AxisSnapshot> {
         let idx = match self.container.mode {
             Mode::Fullscreen(i) => i,

@@ -25,6 +25,9 @@ pub struct ChartPanel {
     market: Option<String>,
     /// Номер AddToChart-вкладки (None = Main).
     num: Option<u32>,
+    /// Сигнатура рыночных данных прошлого кадра — чтобы НЕ гонять дорогой
+    /// offscreen-readback на холостом ходу (только при реальном приходе данных).
+    data_sig: u64,
     focus: FocusHandle,
 }
 
@@ -48,11 +51,15 @@ impl ChartPanel {
                 }
             });
         }
-        // open_request (дабл-клик→Main) обрабатывает ChartTabs (ему нужно ещё
-        // переключить активную вкладку). Здесь — только prune + перерисовка.
-        cx.observe(&backend, |this, _backend, cx| {
-            this.chart.prune_ttl(now_unix_ms());
-            this.chart_dirty = true;
+        // open_request (дабл-клик→Main) обрабатывает ChartTabs. Здесь — prune +
+        // пере-рендер ТОЛЬКО при приходе данных (сигнатура) или истечении TTL-панели.
+        cx.observe(&backend, |this, backend, cx| {
+            let pruned = this.chart.prune_ttl(now_unix_ms());
+            let sig = this.chart.data_signature(&backend.read(cx).session);
+            if pruned || sig != this.data_sig {
+                this.data_sig = sig;
+                this.chart_dirty = true;
+            }
             cx.notify();
         })
         .detach();
@@ -66,6 +73,7 @@ impl ChartPanel {
             input: input::ChartInput::default(),
             market,
             num: None,
+            data_sig: 0,
             focus: cx.focus_handle(),
         }
     }
@@ -83,19 +91,25 @@ impl ChartPanel {
     }
 
     /// AddToChart-вкладка №`num` (без focus-монеты; наполняется детектами через add_coin).
+    /// `core` — ядро-владелец при `charts_split_by_core` (вкладка «номер-ядро»), иначе None.
     pub fn new_addto(
         backend: Entity<Backend>,
         num: u32,
+        core: Option<CoreId>,
         epoch: f64,
         theme: ChartTheme,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let chart = ChartGpu::new_kind(epoch, theme, ContainerKind::Chart { num, core: None });
-        // Дренаж → prune истёкших панелей + пере-рендер. open_request НЕ берём (Main-only).
-        cx.observe(&backend, |this, _backend, cx| {
-            this.chart.prune_ttl(now_unix_ms());
-            this.chart_dirty = true;
+        let chart = ChartGpu::new_kind(epoch, theme, ContainerKind::Chart { num, core });
+        // Дренаж → prune истёкших панелей + пере-рендер ТОЛЬКО при приходе данных/TTL.
+        cx.observe(&backend, |this, backend, cx| {
+            let pruned = this.chart.prune_ttl(now_unix_ms());
+            let sig = this.chart.data_signature(&backend.read(cx).session);
+            if pruned || sig != this.data_sig {
+                this.data_sig = sig;
+                this.chart_dirty = true;
+            }
             cx.notify();
         })
         .detach();
@@ -109,6 +123,7 @@ impl ChartPanel {
             input: input::ChartInput::default(),
             market: None,
             num: Some(num),
+            data_sig: 0,
             focus: cx.focus_handle(),
         }
     }

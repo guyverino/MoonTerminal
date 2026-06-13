@@ -17,7 +17,7 @@ use moon_core::config::paths;
 use moon_core::session::CoreId;
 
 use crate::chart_tabs::ChartTabs;
-use crate::panels::{DetectsPanel, OrderPanel, OrdersPanel, StubPanel};
+use crate::panels::{DetectsPanel, LogPanel, OrderPanel, OrdersPanel, ReportPanel, StubPanel};
 use crate::Backend;
 
 /// Версия схемы раскладки доков. Поднимаем при несовместимом изменении структуры
@@ -118,8 +118,8 @@ pub fn register_panels(cx: &mut App, backend: Entity<Backend>, epoch: f64) {
     register_panel(cx, "Order", move |_dock, _state, _info, _window, cx| {
         Box::new(cx.new(OrderPanel::new))
     });
-    // Заглушки Активы/Лог/Отчёт: panel_name = имя, заголовок известен по имени; группа
-    // из state, backend — для открепления панели (кнопка «⧉»).
+    // Заглушка Активы: panel_name = имя, заголовок известен по имени; группа из state,
+    // backend — для открепления панели (кнопка «⧉»).
     {
         let backend = backend.clone();
         register_panel(cx, "Assets", move |_d, _s, info, _w, cx| {
@@ -128,20 +128,22 @@ pub fn register_panels(cx: &mut App, backend: Entity<Backend>, epoch: f64) {
             Box::new(cx.new(|cx| StubPanel::new("Assets", "Активы", group, backend, cx)))
         });
     }
+    // Лог: группа из state; нужен `window` (поле поиска — InputState).
     {
         let backend = backend.clone();
-        register_panel(cx, "Log", move |_d, _s, info, _w, cx| {
+        register_panel(cx, "Log", move |_d, _s, info, window, cx| {
             let group = group_of(info);
             let backend = backend.clone();
-            Box::new(cx.new(|cx| StubPanel::new("Log", "Лог", group, backend, cx)))
+            Box::new(cx.new(|cx| LogPanel::new(backend, group, window, cx)))
         });
     }
+    // Отчёт: группа из state; нужен `window` (поля фильтров — InputState).
     {
         let backend = backend.clone();
-        register_panel(cx, "Report", move |_d, _s, info, _w, cx| {
+        register_panel(cx, "Report", move |_d, _s, info, window, cx| {
             let group = group_of(info);
             let backend = backend.clone();
-            Box::new(cx.new(|cx| StubPanel::new("Report", "Отчёт", group, backend, cx)))
+            Box::new(cx.new(|cx| ReportPanel::new(backend, group, window, cx)))
         });
     }
 }

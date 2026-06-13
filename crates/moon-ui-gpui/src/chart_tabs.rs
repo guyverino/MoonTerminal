@@ -18,19 +18,28 @@ use moon_core::config::ChartTheme;
 use moon_core::palette;
 use moon_core::session::CoreId;
 
+/// Идентичность вкладки чарта. Main — фуллскрин; Add(номер, ядро) — AddToChart-вкладка
+/// (ядро задано при `charts_split_by_core`, иначе None — общая на номер). Порт egui
+/// `ContainerKind` (Main / Chart{num, core}).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Tab {
+    Main,
+    Add(u32, Option<CoreId>),
+}
+
 pub struct ChartTabs {
     backend: Entity<Backend>,
     group: String,
     epoch: f64,
     theme: ChartTheme,
-    /// Main-чарт (вкладка 0).
+    /// Main-чарт (вкладка Main).
     main: Entity<ChartPanel>,
-    /// AddToChart-вкладки (номер N → панель), отсортированы по N.
-    add: Vec<(u32, Entity<ChartPanel>)>,
-    /// Активная вкладка: 0 = Main, N = AddToChart-N.
-    active: u32,
+    /// AddToChart-вкладки (номер, ядро, панель), отсортированы по (номер, ядро).
+    add: Vec<(u32, Option<CoreId>, Entity<ChartPanel>)>,
+    /// Активная вкладка.
+    active: Tab,
     /// Вкладка под курсором (для показа ✕ только при наведении). None = нет.
-    hovered: Option<u32>,
+    hovered: Option<Tab>,
     /// Per-core курсор учтённых AddToChart-детектов.
     add_seq: HashMap<CoreId, u64>,
     focus: FocusHandle,
@@ -56,7 +65,7 @@ impl ChartTabs {
             theme,
             main,
             add: Vec::new(),
-            active: 0,
+            active: Tab::Main,
             hovered: None,
             add_seq: HashMap::new(),
             focus: cx.focus_handle(),
@@ -68,15 +77,17 @@ impl ChartTabs {
         let req = self.backend.update(cx, |b, _| b.open_request.take());
         if let Some((core, market)) = req {
             self.main.update(cx, |p, pcx| p.open_market(core, market, pcx));
-            self.active = 0;
+            self.active = Tab::Main;
         }
     }
 
-    /// Ингест AddToChart-детектов (add_to_chart>0) → создать/наполнить вкладку N.
+    /// Ингест AddToChart-детектов (add_to_chart>0) → создать/наполнить вкладку.
+    /// Ключ вкладки — (номер, ядро) при `charts_split_by_core`, иначе (номер, None).
     /// БЕЗ авто-перехода: active не трогаем (порт «не уводить на чарт при детекте»).
     fn ingest(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let (fresh, cursors): (Vec<(u32, CoreId, String, f64)>, Vec<(CoreId, u64)>) = {
+        let (split, fresh, cursors): (bool, Vec<(u32, CoreId, String, f64)>, Vec<(CoreId, u64)>) = {
             let b = self.backend.read(cx);
+            let split = b.config.charts_split_by_core;
             let mut fresh = Vec::new();
             let mut cursors = Vec::new();
             for s in b.session.sessions().iter().filter(|s| s.group == self.group) {
@@ -98,7 +109,7 @@ impl ChartTabs {
                     cursors.push((id, mx));
                 }
             }
-            (fresh, cursors)
+            (split, fresh, cursors)
         };
         for (id, mx) in cursors {
             self.add_seq.insert(id, mx);
@@ -108,31 +119,34 @@ impl ChartTabs {
         }
         let (epoch, theme, backend) = (self.epoch, self.theme.clone(), self.backend.clone());
         for (n, core, market, ttl) in fresh {
+            let key_core = if split { Some(core) } else { None };
             backend.update(cx, |b, _| {
                 if !b.desired.iter().any(|(c, m)| *c == core && m == &market) {
                     b.desired.push((core, market.clone()));
                 }
             });
-            if let Some((_, tab)) = self.add.iter().find(|(num, _)| *num == n) {
+            if let Some((_, _, tab)) = self.add.iter().find(|(num, c, _)| *num == n && *c == key_core) {
                 tab.update(cx, |p, _| p.add_coin(core, &market, ttl));
             } else {
                 let panel = cx.new(|cx| {
-                    ChartPanel::new_addto(backend.clone(), n, epoch, theme.clone(), window, cx)
+                    ChartPanel::new_addto(backend.clone(), n, key_core, epoch, theme.clone(), window, cx)
                 });
                 panel.update(cx, |p, _| p.add_coin(core, &market, ttl));
-                self.add.push((n, panel));
-                self.add.sort_by_key(|(num, _)| *num);
+                self.add.push((n, key_core, panel));
+                // Порядок вкладок: по (номер, ядро) — как egui sort_by_key.
+                self.add.sort_by_key(|(num, c, _)| (*num, c.unwrap_or(0)));
                 // active НЕ меняем — не уводим пользователя на новую вкладку.
             }
         }
     }
 
-    /// Отцепить AddToChart-вкладку N в отдельное ОС-окно (убрать из стрипа).
-    fn detach(&mut self, n: u32, cx: &mut Context<Self>) {
-        let Some(pos) = self.add.iter().position(|(num, _)| *num == n) else { return };
-        let (_, panel) = self.add.remove(pos);
-        if self.active == n {
-            self.active = 0;
+    /// Отцепить AddToChart-вкладку в отдельное ОС-окно (убрать из стрипа).
+    fn detach(&mut self, tab: Tab, cx: &mut Context<Self>) {
+        let Tab::Add(n, core) = tab else { return };
+        let Some(pos) = self.add.iter().position(|(num, c, _)| *num == n && *c == core) else { return };
+        let (_, _, panel) = self.add.remove(pos);
+        if self.active == tab {
+            self.active = Tab::Main;
         }
         let opts = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(Bounds {
@@ -150,16 +164,35 @@ impl ChartTabs {
         cx.notify();
     }
 
-    /// Активная панель (Main или AddToChart-N) для показа.
+    /// Активная панель (Main или AddToChart) для показа.
     fn active_panel(&self) -> Entity<ChartPanel> {
-        if self.active == 0 {
-            self.main.clone()
-        } else {
-            self.add
+        match self.active {
+            Tab::Main => self.main.clone(),
+            Tab::Add(n, core) => self
+                .add
                 .iter()
-                .find(|(n, _)| *n == self.active)
-                .map(|(_, p)| p.clone())
-                .unwrap_or_else(|| self.main.clone())
+                .find(|(num, c, _)| *num == n && *c == core)
+                .map(|(_, _, p)| p.clone())
+                .unwrap_or_else(|| self.main.clone()),
+        }
+    }
+
+    /// Метка вкладки: «номер-ядро» (при split, ядро известно), иначе «номер».
+    fn add_label(&self, n: u32, core: Option<CoreId>, cx: &App) -> String {
+        match core {
+            Some(cid) => {
+                let name = self
+                    .backend
+                    .read(cx)
+                    .session
+                    .sessions()
+                    .iter()
+                    .find(|s| s.id == cid)
+                    .map(|s| s.name.clone())
+                    .unwrap_or_default();
+                format!("{n}-{name}")
+            }
+            None => n.to_string(),
         }
     }
 }
@@ -194,14 +227,12 @@ impl Render for ChartTabs {
         let border = rgb(hex(palette::LIFT_HOVER));
         let bg0 = rgb(hex(palette::BG));
 
-        // Вкладка (underline-стиль, как в egui-полоске): подпись + опц. бейдж-счётчик
-        // панелей + ✕ ТОЛЬКО при наведении. Одиночный клик — выбрать, ДВОЙНОЙ —
-        // открепить в ОС-окно (только AddToChart; Main не открепляется). Никаких
-        // постоянных кнопок рядом — детач это жест по самой вкладке (порт egui).
+        // Вкладка (underline-стиль): подпись + опц. бейдж-счётчик панелей + ✕ ТОЛЬКО при
+        // наведении. Одиночный клик — выбрать, ДВОЙНОЙ — открепить (только AddToChart).
         let tab = |id: SharedString,
                    label: String,
                    on: bool,
-                   n: u32,
+                   tab_id: Tab,
                    detachable: bool,
                    count: usize,
                    show_close: bool| {
@@ -217,7 +248,6 @@ impl Render for ChartTabs {
                 .border_b_2()
                 .border_color(bb)
                 .child(label);
-            // Бейдж-счётчик открытых панелей (как кружок с числом у egui-вкладок).
             if count > 1 {
                 row = row.child(
                     div()
@@ -229,19 +259,18 @@ impl Render for ChartTabs {
                         .child(count.to_string()),
                 );
             }
-            // ✕ закрыть — проявляется только при наведении на вкладку.
             if detachable && show_close {
                 row = row.child(
                     div()
-                        .id(SharedString::from(format!("cl-{n}")))
+                        .id("cl")
                         .px_1()
                         .text_color(muted)
                         .cursor_pointer()
                         .child("✕")
                         .on_click(cx.listener(move |this, _, _, cx| {
-                            this.add.retain(|(num, _)| *num != n);
-                            if this.active == n {
-                                this.active = 0;
+                            this.add.retain(|(n, c, _)| Tab::Add(*n, *c) != tab_id);
+                            if this.active == tab_id {
+                                this.active = Tab::Main;
                             }
                             cx.notify();
                         })),
@@ -249,17 +278,20 @@ impl Render for ChartTabs {
             }
             row.on_click(cx.listener(move |this, e: &ClickEvent, _, cx| {
                 if detachable && e.click_count() >= 2 {
-                    this.detach(n, cx); // двойной клик → открепить в окно
-                } else if n == 0 || this.add.iter().any(|(num, _)| *num == n) {
-                    // одиночный → выбрать (но не «оживлять» только что закрытую ✕ вкладку)
-                    this.active = n;
+                    this.detach(tab_id, cx); // двойной клик → открепить в окно
+                } else {
+                    let exists = matches!(tab_id, Tab::Main)
+                        || this.add.iter().any(|(n, c, _)| Tab::Add(*n, *c) == tab_id);
+                    if exists {
+                        this.active = tab_id;
+                    }
                 }
                 cx.notify();
             }))
             .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
                 if *hovered {
-                    this.hovered = Some(n);
-                } else if this.hovered == Some(n) {
+                    this.hovered = Some(tab_id);
+                } else if this.hovered == Some(tab_id) {
                     this.hovered = None;
                 }
                 cx.notify();
@@ -275,27 +307,24 @@ impl Render for ChartTabs {
             .border_color(border)
             .child(tab(
                 "tab-main".into(),
-                self.main.read(cx).title_text(),
-                self.active == 0,
-                0,
+                // Main-вкладка всегда «Main» (в фуллскрине может быть много монет).
+                "Main".to_string(),
+                self.active == Tab::Main,
+                Tab::Main,
                 false,
                 0,
                 false,
             ));
-        for (n, p) in &self.add {
-            let n = *n;
-            let on = self.active == n;
-            let count = p.read(cx).pane_count();
-            let show_close = self.hovered == Some(n);
-            strip = strip.child(tab(
-                SharedString::from(format!("tab-{n}")),
-                format!("Чарт {n}"),
-                on,
-                n,
-                true,
-                count,
-                show_close,
-            ));
+        // Снимок (номер, ядро, счётчик панелей) — чтобы не держать &self.add при builder.
+        let tabs: Vec<(u32, Option<CoreId>, usize)> =
+            self.add.iter().map(|(n, c, p)| (*n, *c, p.read(cx).pane_count())).collect();
+        for (n, core, count) in tabs {
+            let tab_id = Tab::Add(n, core);
+            let on = self.active == tab_id;
+            let show_close = self.hovered == Some(tab_id);
+            let label = self.add_label(n, core, cx);
+            let id = SharedString::from(format!("tab-{n}-{}", core.unwrap_or(0)));
+            strip = strip.child(tab(id, label, on, tab_id, true, count, show_close));
         }
 
         v_flex()
