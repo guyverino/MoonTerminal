@@ -95,6 +95,10 @@ fn apply_brand_theme(cx: &mut App) {
 /// Общий backend: живёт в одном `Entity`, дренится таймером, будит окна по notify.
 struct Backend {
     session: SessionManager,
+    /// Единая точка отсчёта времени (epoch_ms сессий/чарт-вью). Нужна при пересоздании
+    /// сессии после сохранения настроек (`SettingsView::save` → рестарт). Порт
+    /// egui `App.epoch_ms`.
+    epoch: f64,
     /// БД отчётов: канал записи (ядро шлёт close-report → writer пишет в SQLite) +
     /// счётчик-генерация (окно «Отчёт» по нему перезапрашивает). None = БД недоступна.
     /// Порт egui `App.reports`. Держим целиком: `tx` нужен сессии (start/reconnect),
@@ -533,7 +537,7 @@ impl Shell {
 }
 
 /// Активные группы конфига (уникальные, в порядке появления). Нет — одна "default".
-fn groups(cfg: &AppConfig) -> Vec<String> {
+pub(crate) fn groups(cfg: &AppConfig) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for s in &cfg.servers {
         if s.active && cfg.group(&s.group).active && !out.contains(&s.group) {
@@ -549,7 +553,7 @@ fn groups(cfg: &AppConfig) -> Vec<String> {
 /// Открыть (или сфокусировать, если уже открыто) окно группы. Используется на старте
 /// по окну на группу и по кнопке 👁 «показать группу» в настройках (порт egui
 /// `App::show_group`). Геометрия — из сохранённой раскладки, иначе каскад по `offset`.
-fn spawn_group_window(
+pub(crate) fn spawn_group_window(
     cx: &mut App,
     backend: &Entity<Backend>,
     cfg: &AppConfig,
@@ -639,6 +643,7 @@ fn main() -> anyhow::Result<()> {
 
         let backend = cx.new(|_| Backend {
             session: SessionManager::start(&cfg, epoch, reports.as_ref().map(|h| &h.tx)),
+            epoch,
             reports,
             metrics: Metrics::new(),
             snap: MetricsSnapshot::default(),

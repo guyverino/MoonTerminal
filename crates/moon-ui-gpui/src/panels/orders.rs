@@ -101,15 +101,26 @@ pub struct OrdersPanel {
     backend: Entity<Backend>,
     group: String,
     view: OrdersViewState,
+    /// Сигнатура ордеров прошлого кадра (сумма orders_rev ядер группы) — чтобы НЕ
+    /// перестраивать таблицу каждые 100мс на холостом ходу (иначе вместе с readback
+    /// чарта это перегружает UI-поток → рывки графика, когда вкладка «Ордера» активна).
+    last_sig: u64,
     tab: Option<WeakEntity<TabPanel>>,
     focus: FocusHandle,
 }
 
 impl OrdersPanel {
     pub fn new(backend: Entity<Backend>, group: String, _window: &mut Window, cx: &mut Context<Self>) -> Self {
-        // Перерисовка по дренажу backend (новые ордера/цены).
-        cx.observe(&backend, |_this, _b, cx| cx.notify()).detach();
-        Self { backend, group, view: OrdersViewState::default(), tab: None, focus: cx.focus_handle() }
+        // Перерисовка по дренажу backend — ТОЛЬКО когда реально изменились ордера.
+        cx.observe(&backend, |this, backend, cx| {
+            let sig = orders_sig(backend.read(cx), &this.group);
+            if sig != this.last_sig {
+                this.last_sig = sig;
+                cx.notify();
+            }
+        })
+        .detach();
+        Self { backend, group, view: OrdersViewState::default(), last_sig: 0, tab: None, focus: cx.focus_handle() }
     }
 
     /// Открытые ордера ядер группы (с именем ядра и quote) — порт `collect_orders`.
@@ -521,6 +532,18 @@ fn menu_check(id: impl Into<SharedString>, label: impl Into<SharedString>, check
 
 fn menu_sep() -> impl IntoElement {
     div().my_0p5().w_full().h(px(1.0)).bg(rgb(hex(palette::LIFT_HOVER)))
+}
+
+/// Сигнатура ордеров группы (сумма orders_rev ядер) — растёт при любом изменении
+/// ордеров. Не сменилась → таблицу можно не перестраивать (экономим UI-поток).
+fn orders_sig(b: &Backend, group: &str) -> u64 {
+    let store = b.session.store();
+    b.session
+        .sessions()
+        .iter()
+        .filter(|s| s.group == group)
+        .filter_map(|s| store.core(s.id))
+        .fold(0u64, |a, c| a.wrapping_mul(31).wrapping_add(c.orders_rev))
 }
 
 /// Открытые ордера всех ядер группы — для статус-бара Shell (число ордеров).

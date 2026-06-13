@@ -8,7 +8,7 @@ use gpui_component::{
     checkbox::Checkbox,
     h_flex,
     select::Select,
-    v_flex, StyledExt,
+    v_flex, Disableable, StyledExt,
 };
 
 use super::SettingsView;
@@ -88,22 +88,33 @@ impl SettingsView {
                     })),
             )
             .child(hint("Лог приложения и ядер пишется в logs/<дата>_<источник>.log (по файлу на источник в день)."))
+            // Срок хранения активен только при включённой записи лога (порт
+            // egui `add_enabled_ui(cfg.log_to_file, ...)`): кнопки −/+ задизейблены,
+            // значение/подписи тусклые, пока «Писать лог в файлы» выключено.
             .child(
                 h_flex()
                     .gap_2()
                     .items_center()
-                    .child(div().child("Хранить лог, дней"))
+                    .child(div().text_color(if logf { rgb(hex(palette::TEXT)) } else { muted }).child("Хранить лог, дней"))
                     .child(
                         Button::new("ret-")
                             .ghost()
                             .label("−")
+                            .disabled(!logf)
                             .on_click(cx.listener(|this, _, _, cx| this.adjust_ret(-1, cx))),
                     )
-                    .child(div().w(px(56.0)).text_center().child(format!("{ret} дн.")))
+                    .child(
+                        div()
+                            .w(px(56.0))
+                            .text_center()
+                            .text_color(if logf { rgb(hex(palette::TEXT)) } else { muted })
+                            .child(format!("{ret} дн.")),
+                    )
                     .child(
                         Button::new("ret+")
                             .ghost()
                             .label("+")
+                            .disabled(!logf)
                             .on_click(cx.listener(|this, _, _, cx| this.adjust_ret(1, cx))),
                     ),
             )

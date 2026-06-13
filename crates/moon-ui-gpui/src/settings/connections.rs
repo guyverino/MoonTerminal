@@ -33,16 +33,18 @@ pub(super) struct ConnRow {
     color: Entity<ColorPickerState>,
 }
 
-/// 8 фид-флагов приёма данных ядра (подпись, геттер, сеттер) — для поповера «Данные».
+/// 8 фид-флагов приёма данных ядра (локализованная подпись, геттер, сеттер) — для
+/// поповера «Данные». Подписи = строки локали `conn.tip.*` (RU), к каждой в поповере
+/// добавляется суффикс «(фильтр на клиенте)» (`conn.filter_note`).
 const FEED_FLAGS: [(&str, fn(&FeedFlags) -> bool, fn(&mut FeedFlags, bool)); 8] = [
-    ("orders", |f| f.orders, |f, v| f.orders = v),
-    ("detects", |f| f.detects, |f, v| f.detects = v),
-    ("reports", |f| f.reports, |f, v| f.reports = v),
-    ("balance", |f| f.balance, |f, v| f.balance = v),
-    ("strategies", |f| f.strategies, |f, v| f.strategies = v),
-    ("log", |f| f.log, |f, v| f.log = v),
-    ("alerts", |f| f.alerts, |f, v| f.alerts = v),
-    ("arb", |f| f.arb, |f, v| f.arb = v),
+    ("Открытые ордера", |f| f.orders, |f, v| f.orders = v),
+    ("Детекты", |f| f.detects, |f, v| f.detects = v),
+    ("Отчёты по закрытым ордерам → SQLite", |f| f.reports, |f, v| f.reports = v),
+    ("Балансы / аккаунт", |f| f.balance, |f, v| f.balance = v),
+    ("Стратегии", |f| f.strategies, |f, v| f.strategies = v),
+    ("Серверный лог", |f| f.log, |f, v| f.log = v),
+    ("Chart-алерты / текст", |f| f.alerts, |f, v| f.alerts = v),
+    ("Арбитраж", |f| f.arb, |f, v| f.arb = v),
 ];
 
 /// TextInput, привязанный к полю сервера `servers[i]` (пишет в draft).
@@ -113,7 +115,13 @@ pub(super) fn build_conn(
         .enumerate()
         .map(|(i, s)| ConnRow {
             name: conn_input(window, cx, i, s.name.clone(), |s, v| s.name = v),
-            key: conn_input(window, cx, i, s.key.expose().to_string(), |s, v| s.key = Secret::new(v)),
+            // Ключ — поле пароля (порт egui `.password(true)`): символы скрыты, рядом
+            // переключатель видимости (mask_toggle), чтобы при необходимости показать.
+            key: {
+                let st = conn_input(window, cx, i, s.key.expose().to_string(), |s, v| s.key = Secret::new(v));
+                st.update(cx, |st, c| st.set_masked(true, window, c));
+                st
+            },
             group: conn_input(window, cx, i, s.group.clone(), |s, v| s.group = v),
             color: conn_color(window, cx, i, s.color),
         })
@@ -122,15 +130,26 @@ pub(super) fn build_conn(
 
 /// Кружок статуса подключения ядра (порт egui `status_dot`): зелёный=Ready, акцент=
 /// подключается, красный=ошибка, серый=неактивно/нет. `active=false` → всегда серый.
-fn status_dot(active: bool, status: Option<&ConnStatus>) -> impl IntoElement {
-    let color = match status {
-        _ if !active => palette::TEXT_2,
-        Some(ConnStatus::Ready) => palette::GREEN,
-        Some(ConnStatus::Connecting) | Some(ConnStatus::Stage(_)) => palette::ACCENT,
-        Some(ConnStatus::Failed(_)) => palette::RED,
-        _ => palette::TEXT_2,
+/// Тултип поясняет состояние (для Failed — текст ошибки), как egui `on_hover_text`.
+fn status_dot(i: usize, active: bool, status: Option<&ConnStatus>) -> impl IntoElement {
+    let (color, tip) = match status {
+        _ if !active => (palette::TEXT_2, "Не подключается (галка «Акт» снята)".to_string()),
+        Some(ConnStatus::Ready) => (palette::GREEN, "Подключено".to_string()),
+        Some(ConnStatus::Connecting) => (palette::ACCENT, "Подключение…".to_string()),
+        Some(ConnStatus::Stage(s)) => (palette::ACCENT, format!("Подключение: {s}")),
+        Some(ConnStatus::Failed(e)) => (palette::RED, format!("Ошибка: {e}")),
+        Some(ConnStatus::Disconnected) => (palette::TEXT_2, "Отключено".to_string()),
+        None => (palette::TEXT_2, "Нет данных (сохрани настройки, чтобы подключиться)".to_string()),
     };
-    div().w(px(10.0)).h(px(10.0)).rounded_full().bg(rgb(hex(color)))
+    div()
+        .id(SharedString::from(format!("st-{i}")))
+        .w(px(10.0))
+        .h(px(10.0))
+        .rounded_full()
+        .bg(rgb(hex(color)))
+        .tooltip(move |window, cx| {
+            gpui_component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
+        })
 }
 
 impl SettingsView {
@@ -209,20 +228,27 @@ impl SettingsView {
     /// Поповер «Данные n/8» (порт egui `feed_button`): кнопка с числом включённых
     /// фид-флагов ядра; клик раскрывает 8 чекбоксов приёма данных (пишут в draft).
     fn feed_popover(&self, cx: &Context<Self>, i: usize) -> impl IntoElement {
-        let feed = {
+        let (feed, color) = {
             let b = self.backend.read(cx);
-            b.preview.as_ref().unwrap_or(&b.config).servers.get(i).map(|s| s.feed.clone())
-        }
-        .unwrap_or_default();
+            let s = b.preview.as_ref().unwrap_or(&b.config).servers.get(i);
+            (s.map(|s| s.feed.clone()).unwrap_or_default(), s.map(|s| s.color).unwrap_or(palette::ACCENT))
+        };
         let on = FEED_FLAGS.iter().filter(|(_, g, _)| g(&feed)).count();
+        // Все включены → обычный серый outline; есть выключенные → заливка цветом ядра
+        // (сигнал «часть категорий не принимаем»), порт egui `seg_btn_tinted`.
+        let tinted = on < FEED_FLAGS.len();
+        let trigger = Button::new(SharedString::from(format!("feedbtn-{i}")))
+            .outline()
+            .xsmall()
+            .label(format!("{on}/8"));
+        let trigger = if tinted {
+            trigger.bg(rgb(hex(color))).text_color(rgb(hex(palette::BG)))
+        } else {
+            trigger
+        };
         let backend = self.backend.clone();
         Popover::new(SharedString::from(format!("feed-{i}")))
-            .trigger(
-                Button::new(SharedString::from(format!("feedbtn-{i}")))
-                    .outline()
-                    .xsmall()
-                    .label(format!("{on}/8")),
-            )
+            .trigger(trigger)
             .content(move |_state, _window, cx| {
                 let pop = cx.entity();
                 let mut col = v_flex().gap_1().p_2().min_w(px(180.0));
@@ -235,7 +261,7 @@ impl SettingsView {
                     let pop = pop.clone();
                     col = col.child(
                         Checkbox::new(SharedString::from(format!("feed-{i}-{lbl}")))
-                            .label(lbl)
+                            .label(format!("{lbl} (фильтр на клиенте)"))
                             .checked(cur)
                             .on_click(move |v: &bool, _w, app| {
                                 let v = *v;
@@ -291,7 +317,7 @@ impl SettingsView {
             .child(div().w(px(28.0)).child(self.srv_check(cx, i, "act", "", |s| s.active, |s, v| s.active = v)))
             .child(div().w(px(34.0)).child(self.srv_check(cx, i, "win", "", |s| s.show_window, |s, v| s.show_window = v)))
             .child(div().w(px(150.0)).child(Input::new(&row.name)))
-            .child(div().w(px(200.0)).child(Input::new(&row.key)))
+            .child(div().w(px(200.0)).child(Input::new(&row.key).mask_toggle()))
             .child(div().w(px(110.0)).child(Input::new(&row.group)))
             .child(self.feed_popover(cx, i))
             .child(ColorPicker::new(&row.color))
@@ -303,12 +329,26 @@ impl SettingsView {
                     .on_click(cx.listener(move |this, _, w, cx| this.delete_server(i, w, cx))),
             )
             .child(recon)
-            .child(status_dot(active, status.as_ref()))
+            .child(status_dot(i, active, status.as_ref()))
     }
 
     /// Заголовок колонки таблицы серверов (тусклая подпись фикс. ширины).
     fn col_head(label: &str, w: f32) -> impl IntoElement {
         div().w(px(w)).text_xs().text_color(rgb(hex(palette::TEXT_2))).child(label.to_string())
+    }
+
+    /// Заголовок колонки с тултипом (порт egui `head_tip`): для сокращённых подписей
+    /// галок «Акт»/«Окн» и кнопки «Данные».
+    fn col_head_tip(id: &'static str, label: &str, w: f32, tip: &'static str) -> impl IntoElement {
+        div()
+            .id(id)
+            .w(px(w))
+            .text_xs()
+            .text_color(rgb(hex(palette::TEXT_2)))
+            .child(label.to_string())
+            .tooltip(move |window, cx| {
+                gpui_component::tooltip::Tooltip::new(tip).build(window, cx)
+            })
     }
 
     /// Вкладка «Подключения» — порт egui `settings/connections.rs`: источник данных
@@ -363,12 +403,12 @@ impl SettingsView {
                     .w_full()
                     .gap_1()
                     .items_center()
-                    .child(Self::col_head("Акт", 28.0))
-                    .child(Self::col_head("Окн", 34.0))
+                    .child(Self::col_head_tip("h-act", "Акт", 28.0, "Подключаться к ядру"))
+                    .child(Self::col_head_tip("h-win", "Окн", 34.0, "Рисовать окно/чарт. Выкл = headless: данные в БД/память без окна"))
                     .child(Self::col_head("Имя", 150.0))
                     .child(Self::col_head("Ключ", 200.0))
                     .child(Self::col_head("Группа", 110.0))
-                    .child(Self::col_head("Данные", 52.0)),
+                    .child(Self::col_head_tip("h-data", "Данные", 52.0, "Приём данных от ядра. Серая = принимаем всё; цветная = часть категорий выключена. Клик — настроить.")),
             );
         for (i, (id, active)) in servers.iter().enumerate() {
             if let Some(row) = self.conn.get(i) {
@@ -379,7 +419,7 @@ impl SettingsView {
         servers_col = servers_col.child(
             Button::new("add-srv")
                 .outline()
-                .label("+ Ядро")
+                .label("+ Добавить ядро")
                 .on_click(cx.listener(|this, _, w, cx| this.add_server(w, cx))),
         );
 
@@ -388,6 +428,13 @@ impl SettingsView {
             .w(px(240.0))
             .gap_1()
             .child(div().font_bold().child("Группы"));
+        // Нет групп (ни у одного сервера не задана) → поясняющий хинт (порт egui
+        // `conn.no_groups`), как и в оригинале вместо пустого списка.
+        if groups.is_empty() {
+            groups_col = groups_col.child(
+                div().text_color(rgb(hex(palette::TEXT_2))).child("задай группы серверам слева"),
+            );
+        }
         for (name, active, icon) in &groups {
             let nm_act = name.clone();
             let nm_eye = name.clone();
@@ -507,7 +554,18 @@ impl SettingsView {
                 h_flex()
                     .gap_2()
                     .items_center()
-                    .child(div().font_bold().child("Источник рыночных данных"))
+                    .child(
+                        div()
+                            .id("market-src-lbl")
+                            .font_bold()
+                            .child("Источник рыночных данных")
+                            .tooltip(|window, cx| {
+                                gpui_component::tooltip::Tooltip::new(
+                                    "Откуда брать крестики и стакан. Дедуп: одно ядро-провайдер на биржу тянет рынок за всех (экономно при многих ядрах). По ядрам: каждый чарт берёт рынок со своего ядра (без дедупа).",
+                                )
+                                .build(window, cx)
+                            }),
+                    )
                     .child(div().w(px(260.0)).child(Select::new(&self.mode))),
             )
             .child(h_flex().w_full().gap_4().items_start().child(servers_col).child(groups_col))

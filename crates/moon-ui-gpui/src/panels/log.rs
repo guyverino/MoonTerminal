@@ -66,6 +66,9 @@ pub struct LogPanel {
     /// Отфильтрованные строки текущего кадра (читает рендер списка по индексу).
     lines: Vec<LogLine>,
     list: ListState,
+    /// Сигнатура лога прошлого кадра — чтобы НЕ пересобирать лог каждые 100мс
+    /// (gather клонирует до 5000 строк; на холостом ходу это лишняя нагрузка).
+    last_sig: u64,
     tab: Option<WeakEntity<TabPanel>>,
     focus: FocusHandle,
 }
@@ -79,8 +82,15 @@ impl LogPanel {
             }
         })
         .detach();
-        // Новые строки лога (дренаж backend) → перерисовать.
-        cx.observe(&backend, |_t, _b, cx| cx.notify()).detach();
+        // Перерисовка — ТОЛЬКО когда реально появились новые строки лога.
+        cx.observe(&backend, |this, backend, cx| {
+            let sig = log_sig(backend.read(cx), &this.group);
+            if sig != this.last_sig {
+                this.last_sig = sig;
+                cx.notify();
+            }
+        })
+        .detach();
         Self {
             backend,
             group,
@@ -92,6 +102,7 @@ impl LogPanel {
             loaded_lines: Vec::new(),
             lines: Vec::new(),
             list: ListState::new(0, ListAlignment::Bottom, px(200.0)),
+            last_sig: 0,
             tab: None,
             focus: cx.focus_handle(),
         }
@@ -209,6 +220,21 @@ impl LogPanel {
                 col
             })
     }
+}
+
+/// Сигнатура лога: ревизия кольца applog + сумма log_rev ядер группы. Растёт при
+/// любой новой строке (локальной или ядра). Не сменилась → пересобирать не нужно.
+fn log_sig(b: &Backend, group: &str) -> u64 {
+    let store = b.session.store();
+    let scoped = !group.is_empty();
+    let cores: u64 = b
+        .session
+        .sessions()
+        .iter()
+        .filter(|s| !scoped || s.group == group)
+        .filter_map(|s| store.core(s.id))
+        .fold(0u64, |a, c| a.wrapping_mul(31).wrapping_add(c.log_rev));
+    applog::revision().wrapping_add(cores)
 }
 
 /// Слияние живых логов всех ядер области по времени (ts лексикографичен = хронологичен).

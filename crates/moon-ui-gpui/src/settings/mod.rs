@@ -29,9 +29,10 @@ use gpui_component::{
 
 use crate::icons::IconSet;
 use crate::{hex, Backend};
-use moon_core::config::Language;
+use moon_core::config::{AppConfig, Language};
 use moon_core::market::MarketDataMode;
 use moon_core::palette;
+use moon_core::session::SessionManager;
 
 use connections::ConnRow;
 use interface::Iface;
@@ -196,7 +197,7 @@ impl SettingsView {
         .detach();
         Self {
             backend,
-            active: Tab::Interface,
+            active: Tab::Connections,
             status: None,
             iface,
             lines,
@@ -210,19 +211,89 @@ impl SettingsView {
     }
 
     /// Коммит draft → config + запись на диск (валидация внутри AppConfig::save).
-    /// draft остаётся (правки продолжаются), как egui (Save не закрывает окно).
+    /// draft остаётся (правки продолжаются), как egui (Save не закрывает окно). При
+    /// успехе — применяем изменения (порт egui `App::render_settings`).
     fn save(&mut self, cx: &mut Context<Self>) {
+        // Снимок «до» для diff (структура/режим/язык/лог/чарты). Коммитим draft, пишем
+        // на диск (save может выровнять uid'ы), затем сравниваем с актуальным config.
+        let before = self.backend.read(cx).config.clone();
         let res = self.backend.update(cx, |b, _| {
             if let Some(p) = &b.preview {
                 b.config = p.clone();
             }
             b.config.save()
         });
-        self.status = Some(match res {
-            Ok(()) => ("Сохранено".into(), false),
-            Err(e) => (e.to_string(), true),
-        });
+        match res {
+            Ok(()) => {
+                self.status = Some(("Сохранено".into(), false));
+                self.apply_settings(&before, cx);
+            }
+            Err(e) => self.status = Some((e.to_string(), true)),
+        }
         cx.notify();
+    }
+
+    /// Применить сохранённые настройки (порт egui `App::render_settings` хвост).
+    /// • лог-настройки — живо (set_file_logging + чистка);
+    /// • структурные изменения серверов/групп → рестарт `SessionManager` + пересоздание
+    ///   окон групп; • смена режима рынка — живо (`set_market_mode`); • смена «чарт на
+    ///   ядро» без структурных изменений → тоже пересборка окон (новые чарт-вкладки).
+    /// Язык в GPUI-хроме захардкожен (нет i18n-слоя) — меняем только сохранённое
+    /// значение, перетесселяции нет.
+    fn apply_settings(&mut self, before: &AppConfig, cx: &mut Context<Self>) {
+        let after = self.backend.read(cx).config.clone();
+
+        // Файловый лог — применяем живо: включили запись или сократили срок → чистим.
+        if before.log_to_file != after.log_to_file
+            || before.log_retention_days != after.log_retention_days
+        {
+            moon_core::applog::set_file_logging(after.log_to_file, after.log_retention_days);
+            moon_core::applog::purge_old();
+        }
+
+        let struct_changed = before.structural_sig() != after.structural_sig();
+        let mode_changed = before.market_mode != after.market_mode;
+        let split_changed = before.charts_split_by_core != after.charts_split_by_core;
+
+        if struct_changed {
+            // Рестарт сессий по новому конфигу + пересоздание окон групп (их число/состав
+            // зависит от серверов/групп). epoch сохраняем прежний.
+            self.backend.update(cx, |b, _| {
+                let mut s =
+                    SessionManager::start(&b.config, b.epoch, b.reports.as_ref().map(|h| &h.tx));
+                s.set_market_mode(b.config.market_mode);
+                b.session = s;
+                b.desired.clear();
+            });
+            self.rebuild_group_windows(cx);
+        } else if mode_changed {
+            // Режим рынка — живо: ядра остаются на связи, координатор пере-выберет
+            // провайдеров на следующем тике.
+            self.backend.update(cx, |b, _| b.session.set_market_mode(b.config.market_mode));
+        }
+
+        // Сменили «отдельная чарт-вкладка на ядро» (без структурного ребилда, который и
+        // так всё пересоздаёт) → пересобираем окна, чтобы чарт-вкладки собрались в новом
+        // режиме (egui чистил chart-tabs; в GPUI вкладки живут в окне — пересоздаём окно).
+        if !struct_changed && split_changed {
+            self.rebuild_group_windows(cx);
+        }
+    }
+
+    /// Закрыть все окна групп и открыть заново по актуальному конфигу (порт egui
+    /// `needs_rebuild`). Геометрия восстановится из сохранённой раскладки.
+    fn rebuild_group_windows(&mut self, cx: &mut Context<Self>) {
+        let (handles, cfg, epoch, layout) = self.backend.update(cx, |b, _| {
+            let handles: Vec<WindowHandle<Root>> = b.group_windows.values().copied().collect();
+            b.group_windows.clear();
+            (handles, b.config.clone(), b.epoch, b.layout.clone())
+        });
+        for h in handles {
+            let _ = h.update(cx, |_, window, _| window.remove_window());
+        }
+        for (i, g) in crate::groups(&cfg).into_iter().enumerate() {
+            crate::spawn_group_window(cx, &self.backend, &cfg, g, epoch, &layout, i as f32 * 40.0);
+        }
     }
 }
 

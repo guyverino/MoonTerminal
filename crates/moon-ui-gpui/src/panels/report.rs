@@ -81,8 +81,19 @@ impl ReportPanel {
             })
             .detach();
         }
-        // Перерисовка по дренажу backend → poll generation → перезапрос при новых отчётах.
-        cx.observe(&backend, |_t, _b, cx| cx.notify()).detach();
+        // Перерисовка — ТОЛЬКО когда writer записал новый отчёт (сменился generation);
+        // иначе таблицу не перестраиваем каждые 100мс. Правки фильтров нотифаят сами.
+        cx.observe(&backend, |this, _b, cx| {
+            if let Some(g) = &this.generation {
+                let v = g.load(Ordering::Relaxed);
+                if v != this.last_gen {
+                    this.last_gen = v;
+                    this.needs_query = true;
+                    cx.notify();
+                }
+            }
+        })
+        .detach();
 
         Self {
             backend,

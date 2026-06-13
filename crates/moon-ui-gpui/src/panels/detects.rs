@@ -20,10 +20,24 @@ use moon_core::session::CoreId;
 struct DetectItem {
     core: CoreId,
     core_name: String,
+    /// Полный символ рынка (для подписки при клике).
     market: String,
+    /// Подпись кнопки — монета без quote подключения (`ADAUSDT` → `ADA`).
+    base: String,
     color: [u8; 3],
     born_ms: f64,
     ttl_ms: f64,
+}
+
+/// Линейная смесь двух sRGB-цветов (порт egui `theme::lerp_color`).
+fn lerp_u8(a: [u8; 3], b: [u8; 3], t: f32) -> [u8; 3] {
+    let f = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
+    [f(a[0], b[0]), f(a[1], b[1]), f(a[2], b[2])]
+}
+
+/// Яркость цвета (для инверсии цвета таймера на светлом глоу), порт egui-логики.
+fn luminance(c: [u8; 3]) -> f32 {
+    0.299 * c[0] as f32 + 0.587 * c[1] as f32 + 0.114 * c[2] as f32
 }
 
 pub struct DetectsPanel {
@@ -49,23 +63,26 @@ impl DetectsPanel {
 
     /// Втянуть свежие детекты ядер группы (seq > курсора, sound_alert, не AddToChart).
     fn ingest(&mut self, b: &Backend) {
-        let cores: Vec<(CoreId, String, [u8; 3])> = b
+        // Цвет + quote ядра берём из его сервера в конфиге: quote выводим из рынка по
+        // умолчанию (`server.market`), чтобы резать суффикс монеты (`ADAUSDT` → `ADA`),
+        // как egui `CoreInfo.quote`.
+        let cores: Vec<(CoreId, String, [u8; 3], String)> = b
             .session
             .sessions()
             .iter()
             .filter(|s| s.group == self.group)
             .map(|s| {
-                let color = b
+                let (color, quote) = b
                     .config
                     .servers
                     .iter()
                     .find(|sv| sv.id == s.id)
-                    .map(|sv| sv.color)
-                    .unwrap_or(palette::ACCENT);
-                (s.id, s.name.clone(), color)
+                    .map(|sv| (sv.color, moon_core::symbol::resolve_quote(&sv.market)))
+                    .unwrap_or((palette::ACCENT, String::new()));
+                (s.id, s.name.clone(), color, quote)
             })
             .collect();
-        for (id, name, color) in cores {
+        for (id, name, color, quote) in cores {
             let Some(d) = b.session.store().core(id) else { continue };
             let last = self.last_seq.get(&id).copied().unwrap_or(0);
             let mut fresh: Vec<&moon_core::feed::DetectRow> = Vec::new();
@@ -93,6 +110,7 @@ impl DetectsPanel {
                         core: id,
                         core_name: name.clone(),
                         market: det.market.clone(),
+                        base: moon_core::symbol::base_symbol(&det.market, &quote).to_string(),
                         color,
                         born_ms: det.time_ms,
                         ttl_ms: ttl,
@@ -140,33 +158,56 @@ impl Panel for DetectsPanel {
 impl Render for DetectsPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let now = now_unix_ms();
-        let mut col = v_flex().id("detects").size_full().gap_1().p_2().track_focus(&self.focus);
+        let mut col = v_flex().id("detects").size_full().gap_1p5().p_2().track_focus(&self.focus);
         // Новые сверху.
         for (i, it) in self.items.iter().enumerate().rev() {
             let secs = ((it.ttl_ms - (now - it.born_ms)) / 1000.0).ceil().max(0.0) as u32;
-            let glow = rgb(hex(it.color));
+            // Меш-градиент кнопки (порт egui `detect_button`): верх = LIFT, низ = смесь
+            // LIFT + цвет ядра. В покое доля 0.55, на ховере 0.80 (ярче). Цвет таймера
+            // инвертируем по яркости низа (тёмный на светлом глоу), чтобы не сливался.
+            let bottom = lerp_u8(palette::LIFT, it.color, 0.55);
+            let bottom_hover = lerp_u8(palette::LIFT_HOVER, it.color, 0.80);
+            let grad = |top: [u8; 3], bot: [u8; 3]| {
+                linear_gradient(
+                    180.0,
+                    linear_color_stop(rgb(hex(top)), 0.0),
+                    linear_color_stop(rgb(hex(bot)), 1.0),
+                )
+            };
+            let secs_color = if luminance(bottom) > 140.0 {
+                rgb(0x141416)
+            } else {
+                rgb(hex(palette::TEXT))
+            };
             let (core, market) = (it.core, it.market.clone());
             col = col.child(
                 div()
                     .id(SharedString::from(format!("det-{i}")))
                     .w_full()
+                    .h(px(34.0))
                     .px_2()
                     .py_1()
                     .cursor_pointer()
-                    .border_l_2()
-                    .border_color(glow)
-                    .bg(rgb(hex(palette::LIFT)))
+                    .rounded(px(4.0))
+                    .border_1()
+                    .border_color(rgb(hex(palette::LIFT_HOVER)))
+                    .bg(grad(palette::LIFT, bottom))
+                    .hover(|s| s.border_color(rgb(hex(palette::ACCENT))).bg(grad(palette::LIFT_HOVER, bottom_hover)))
+                    // Токен крупно сверху-слева; нижняя строка — таймер слева, ядро справа.
                     .child(
-                        h_flex()
-                            .w_full()
+                        v_flex()
+                            .size_full()
                             .justify_between()
-                            .items_center()
-                            .child(div().child(it.market.clone()))
+                            .child(div().text_color(rgb(hex(palette::TEXT))).child(it.base.clone()))
                             .child(
-                                div()
+                                h_flex()
+                                    .w_full()
+                                    .justify_between()
+                                    .items_end()
                                     .text_xs()
-                                    .text_color(rgb(hex(palette::TEXT_2)))
-                                    .child(format!("{secs}s · {}", it.core_name)),
+                                    .text_color(secs_color)
+                                    .child(div().child(format!("{secs}s")))
+                                    .child(div().child(it.core_name.clone())),
                             ),
                     )
                     .on_click(cx.listener(move |this, _, _, cx| {
