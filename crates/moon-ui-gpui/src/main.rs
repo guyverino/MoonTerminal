@@ -21,13 +21,15 @@ use gpui_component::{
 
 use moon_core::config::AppConfig;
 use moon_core::metrics::{Metrics, MetricsSnapshot};
-use moon_core::session::SessionManager;
+use moon_core::session::{CoreId, SessionManager};
 
 /// Общий backend: живёт в одном `Entity`, дренится таймером, будит окна по notify.
 struct Backend {
     session: SessionManager,
     metrics: Metrics,
     snap: MetricsSnapshot,
+    /// Желаемые открытые рынки (ядро, рынок) — держим подписку через coordinator.
+    desired: Vec<(CoreId, String)>,
 }
 
 /// Плоская строка ордера для таблицы (владеющая; собирается из OrderRow + имя ядра).
@@ -167,6 +169,34 @@ impl Render for Shell {
         let conn = b.session.conn_summary_group(&self.group);
         let snap = b.snap;
 
+        // Фокус-рынок группы (первое ядро) + цена/тики из market_view — владеющие.
+        let (market_label, price_label, tick_count) = {
+            let focus = b
+                .session
+                .sessions()
+                .iter()
+                .find(|s| s.group == self.group)
+                .map(|s| s.id);
+            match focus.and_then(|core| {
+                b.desired
+                    .iter()
+                    .find(|(id, _)| *id == core)
+                    .map(|(_, m)| (core, m.clone()))
+            }) {
+                Some((core, m)) => match b.session.market_view(core, &m) {
+                    Some(v) => (
+                        m,
+                        v.last_price
+                            .map(|p| format!("{p:.2}"))
+                            .unwrap_or_else(|| "—".into()),
+                        v.ring.len(),
+                    ),
+                    None => (m, "—".into(), 0),
+                },
+                None => ("—".into(), "—".into(), 0),
+            }
+        };
+
         // Цвета (палитра проекта — moon_core::palette).
         let bg = rgb(0x0c0c0c);
         let panel = rgb(0x161616);
@@ -195,8 +225,9 @@ impl Render for Shell {
                             .gap_3()
                             .items_center()
                             .child(div().text_color(accent).font_bold().child(self.group.clone()))
-                            .child(div().text_color(muted).child("—")) // рынок (появится с чартом)
-                            .child(div().text_color(muted).child("price —")),
+                            .child(div().child(market_label))
+                            .child(div().text_color(accent).child(price_label))
+                            .child(div().text_color(muted).text_xs().child(format!("{tick_count} ticks"))),
                     )
                     .child(
                         h_flex()
@@ -314,6 +345,11 @@ fn main() -> anyhow::Result<()> {
             session: SessionManager::start(&cfg, 0.0, None),
             metrics: Metrics::new(),
             snap: MetricsSnapshot::default(),
+            // open = рынки ОТКРЫТЫХ чарт-панелей (как App::about_to_wait в egui).
+            // Пусто на старте; наполнится при открытии монеты (порт чарт-панелей).
+            // set_open всё равно избирает провайдера/биржу на старте → subscribe_all_trades
+            // (ретейн всех трейдов биржи — как было; ради мгновенного открытия монеты).
+            desired: Vec::new(),
         });
 
         // Дренаж сессий + метрики раз в 100мс на UI-потоке → notify окон.
@@ -326,6 +362,12 @@ fn main() -> anyhow::Result<()> {
                     .update(|cx| {
                         drain_backend.update(cx, |b, cx| {
                             b.session.drain();
+                            // Каждый кадр (как egui app/mod.rs): reconcile_providers
+                            // избирает провайдера/биржу + держит подписку на desired-рынки.
+                            // subscribe_all_trades провайдера = ретейн всех трейдов биржи
+                            // (десятки ГБ — by-design, ради мгновенного открытия монеты;
+                            // дедуп держит 1 провайдера/биржу).
+                            b.session.set_open(&b.desired);
                             b.snap = b.metrics.sample(Instant::now());
                             cx.notify();
                         });
