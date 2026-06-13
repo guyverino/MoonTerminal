@@ -10,8 +10,9 @@
 //! разборке отрезаем хвост каждой строки. `ppp` = scale_factor окна → жёлоба осей
 //! (PRICE_AXIS_W·ppp / TIME_AXIS_H·ppp) масштабируются как в egui-версии.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
+use std::time::Instant;
 
 use gpui::RenderImage;
 use image::{Frame, ImageBuffer, Rgba};
@@ -34,6 +35,16 @@ const DEFAULT_H: u32 = 576;
 fn align_up(n: u32, a: u32) -> u32 {
     n.div_ceil(a) * a
 }
+
+// ── ВРЕМЕННАЯ ИНСТРУМЕНТАЦИЯ (диагностика фриза мультиокон) ──────────────────
+/// Сколько раз `ChartPanel::render` отработал (инкремент в panels/chart.rs).
+pub static DBG_RENDERS: AtomicU64 = AtomicU64::new(0);
+/// Сколько readback'ов реально собрано (poll_image вернул картинку).
+pub static DBG_READBACKS: AtomicU64 = AtomicU64::new(0);
+/// Суммарно байт скопировано из staging при readback (объём через PCIe/CPU).
+pub static DBG_READBACK_BYTES: AtomicU64 = AtomicU64::new(0);
+/// Максимальная длительность одного poll_image (мкс) за окно лога — блокирует ли поток.
+pub static DBG_POLL_MAX_US: AtomicU64 = AtomicU64::new(0);
 
 /// ОДИН общий wgpu device/queue на ВСЕ чарты. Создание адаптера+девайса — сотни мс и
 /// блокирует UI-поток; раньше каждый `ChartGpu` делал свой → фриз при появлении новой
@@ -413,6 +424,7 @@ impl ChartGpu {
         if !self.map_done.load(Ordering::Acquire) {
             return None;
         }
+        let t0 = Instant::now();
         let (w, h) = (self.w, self.h);
         let slice = self.staging.slice(..);
         let data = slice.get_mapped_range();
@@ -429,8 +441,13 @@ impl ChartGpu {
         self.staging.unmap();
         self.pending = false;
         let layout = std::mem::take(&mut self.pending_layout);
+        DBG_READBACKS.fetch_add(1, Ordering::Relaxed);
+        DBG_READBACK_BYTES.fetch_add((row * h as usize) as u64, Ordering::Relaxed);
 
         let buf = ImageBuffer::<Rgba<u8>, Vec<u8>>::from_raw(w, h, pixels).expect("chart buf");
-        Some((Arc::new(RenderImage::new(vec![Frame::new(buf)])), layout))
+        let img = Arc::new(RenderImage::new(vec![Frame::new(buf)]));
+        let us = t0.elapsed().as_micros() as u64;
+        DBG_POLL_MAX_US.fetch_max(us, Ordering::Relaxed);
+        Some((img, layout))
     }
 }

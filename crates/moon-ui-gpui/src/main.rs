@@ -679,8 +679,37 @@ fn main() -> anyhow::Result<()> {
         let drain_layout = layout.clone();
         cx.spawn(async move |cx| {
             let executor = cx.update(|cx| cx.background_executor().clone())?;
+            // ВРЕМЕННО: диагностика мультиокон — реальный интервал дренажа (если >>100мс,
+            // главный поток забит) + частота рендеров/readback'ов чартов раз в ~1с.
+            let mut dbg_last = Instant::now();
+            let mut dbg_ticks = 0u32;
+            let (mut dbg_r0, mut dbg_b0, mut dbg_bytes0) = (0u64, 0u64, 0u64);
             loop {
                 executor.timer(Duration::from_millis(100)).await;
+                {
+                    use std::sync::atomic::Ordering::Relaxed;
+                    dbg_ticks += 1;
+                    let now = Instant::now();
+                    let dt = now.duration_since(dbg_last);
+                    if dt >= Duration::from_secs(1) {
+                        let r = chart::DBG_RENDERS.load(Relaxed);
+                        let b = chart::DBG_READBACKS.load(Relaxed);
+                        let by = chart::DBG_READBACK_BYTES.load(Relaxed);
+                        let pmax = chart::DBG_POLL_MAX_US.swap(0, Relaxed);
+                        log::info!(
+                            "DBG dt={:?} ticks={} (ожид ~10) | renders {}/с | readbacks {}/с | {:.1} МБ/с | poll_max {:.1}мс",
+                            dt / dbg_ticks.max(1),
+                            dbg_ticks,
+                            r - dbg_r0,
+                            b - dbg_b0,
+                            (by - dbg_bytes0) as f64 / 1.0e6,
+                            pmax as f64 / 1000.0,
+                        );
+                        dbg_last = now;
+                        dbg_ticks = 0;
+                        (dbg_r0, dbg_b0, dbg_bytes0) = (r, b, by);
+                    }
+                }
                 let ok = cx
                     .update(|cx| {
                         // Сессия/метрики/реконнект — внутри backend.update; запросы

@@ -29,10 +29,10 @@ pub struct ChartPanel {
     /// Сигнатура рыночных данных прошлого кадра — чтобы НЕ гонять дорогой
     /// offscreen-readback на холостом ходу (только при реальном приходе данных).
     data_sig: u64,
-    /// Время последней перерисовки от движения мыши (крестик) — кэп частоты ~60fps,
-    /// как `min_frame_dt` в оригинале. Мышь шлёт до 1000 событий/с; без кэпа активное
-    /// окно молотит и забивает главный поток → фоновое окно другой группы встаёт.
-    last_cursor_notify: Option<Instant>,
+    /// Время прошлого submit (offscreen-рендер+readback) — для кэпа частоты readback'а:
+    /// активное окно ~10fps, фоновое ~3fps (аналог 60/20fps оригинала). readback дорог
+    /// (десятки МБ/с копий+заливок на главном потоке), поэтому фоновое окно гоним реже.
+    last_submit: Option<Instant>,
     focus: FocusHandle,
 }
 
@@ -84,7 +84,7 @@ impl ChartPanel {
             market,
             num: None,
             data_sig: 0,
-            last_cursor_notify: None,
+            last_submit: None,
             focus: cx.focus_handle(),
         }
     }
@@ -138,7 +138,7 @@ impl ChartPanel {
             market: None,
             num: Some(num),
             data_sig: 0,
-            last_cursor_notify: None,
+            last_submit: None,
             focus: cx.focus_handle(),
         }
     }
@@ -194,6 +194,7 @@ impl Panel for ChartPanel {
 }
 impl Render for ChartPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::chart::DBG_RENDERS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let ppp = window.scale_factor();
         self.chart.resize(self.chart_dev.0, self.chart_dev.1);
 
@@ -227,10 +228,20 @@ impl Render for ChartPanel {
             self.input.pane_rects = layout;
             self.chart_img = Some(img_arc);
         }
-        if (self.chart_dirty || self.chart_img.is_none()) && !self.chart.is_pending() {
+        // Кэп частоты readback по активности окна (аналог 60/20fps оригинала): фокусное
+        // окно ~10fps, фоновое ~3fps. readback дорог (десятки МБ/с копий+заливок текстур
+        // на главном потоке) — без кэпа 2 окна забивают поток и фоновое дёргается/встаёт.
+        let min_dt = if window.is_window_active() {
+            Duration::from_millis(90)
+        } else {
+            Duration::from_millis(320)
+        };
+        let due = self.last_submit.map_or(true, |t| Instant::now().duration_since(t) >= min_dt);
+        if (self.chart_dirty || self.chart_img.is_none()) && !self.chart.is_pending() && due {
             let b = self.backend.read(cx);
             self.chart.submit(&b.session, ppp);
             self.chart_dirty = false;
+            self.last_submit = Some(Instant::now());
         }
         // Незабранный readback подберёт следующий дренаж (observe нотифаит, пока pending) —
         // БЕЗ self-notify здесь: иначе активное окно крутится на 60fps и забивает поток,
@@ -308,20 +319,14 @@ impl Render for ChartPanel {
                 this.input.cursor = if within { Some(pos) } else { None };
                 this.input.hovered_pane = if within { this.input.pane_at(pos.0, pos.1) } else { None };
                 let dragging = this.input.pointer_drag(pos.0, pos.1, &mut this.chart.container);
+                // Крестик тикового графика должен ездить плавно → перерисовываемся на
+                // движение мыши. Это ДЁШЕВО: меняется только GPUI-оверлей (canvas с осями/
+                // крестиком), а дорогой offscreen-readback графика НЕ запускается (он
+                // гейтится chart_dirty+last_submit ниже). Драг — ещё и помечает данные.
                 if dragging {
                     this.chart_dirty = true;
                 }
-                // Кэп частоты крестика ~60fps (мышь шлёт до 1000 событий/с). Драг —
-                // всегда (плавный пан/масштаб). Позиция курсора обновлена выше; пропуск
-                // notify лишь придержит перерисовку крестика до следующего окна 16мс.
-                let now = Instant::now();
-                let due = this
-                    .last_cursor_notify
-                    .map_or(true, |t| now.duration_since(t) >= Duration::from_millis(16));
-                if dragging || due {
-                    this.last_cursor_notify = Some(now);
-                    cx.notify();
-                }
+                cx.notify();
             }))
             .on_hover(cx.listener(|this, hovered: &bool, _window, cx| {
                 if !*hovered {
