@@ -14,6 +14,7 @@ mod chart;
 mod chart_tabs;
 mod controls;
 mod dock_persist;
+mod icons;
 mod input;
 mod panels;
 mod settings;
@@ -119,6 +120,14 @@ struct Backend {
     price_scale: Option<f32>,
     /// Live-follow тулбара: true = вид бежит за «сейчас», false = пауза (заморозка).
     follow: bool,
+    /// Запросы реконнекта ядра (кнопка ↻ в «Подключениях») — дренаж зовёт
+    /// `session.reconnect`. Порт egui `SettingsActions.reconnect`.
+    reconnect_request: Vec<CoreId>,
+    /// Запросы «показать окно группы» (кнопка 👁) — дренаж открывает/фокусирует окно.
+    /// Порт egui `SettingsActions.show_group`.
+    show_group_request: Vec<String>,
+    /// Открытые окна групп (группа → handle) — фокус по 👁, дедуп окон.
+    group_windows: HashMap<String, WindowHandle<Root>>,
 }
 
 /// Плоская строка ордера для таблицы (владеющая; собирается из OrderRow + имя ядра).
@@ -485,6 +494,61 @@ fn groups(cfg: &AppConfig) -> Vec<String> {
     out
 }
 
+/// Открыть (или сфокусировать, если уже открыто) окно группы. Используется на старте
+/// по окну на группу и по кнопке 👁 «показать группу» в настройках (порт egui
+/// `App::show_group`). Геометрия — из сохранённой раскладки, иначе каскад по `offset`.
+fn spawn_group_window(
+    cx: &mut App,
+    backend: &Entity<Backend>,
+    cfg: &AppConfig,
+    group: String,
+    epoch: f64,
+    layout: &WindowLayout,
+    offset: f32,
+) {
+    // Уже открыто → сфокусировать (handle.update вернёт Err, если окно закрыли).
+    if let Some(handle) = backend.read(cx).group_windows.get(&group).copied() {
+        if handle.update(cx, |_, window, _| window.activate_window()).is_ok() {
+            return;
+        }
+    }
+    // Фокус-монета группы: первое активное ядро группы + его настроенный рынок.
+    let focus: Option<(CoreId, String)> = cfg
+        .servers
+        .iter()
+        .find(|s| s.active && cfg.group(&s.group).active && s.group == group)
+        .map(|s| (s.id, s.market.clone()));
+    let win_bounds = match layout.groups.get(&group) {
+        Some(g) => Bounds {
+            origin: point(px(g.x as f32), px(g.y as f32)),
+            size: size(px(g.w as f32), px(g.h as f32)),
+        },
+        None => Bounds {
+            origin: point(px(80.0 + offset), px(80.0 + offset)),
+            size: size(px(1100.0), px(720.0)),
+        },
+    };
+    let opts = WindowOptions {
+        window_bounds: Some(WindowBounds::Windowed(win_bounds)),
+        titlebar: Some(TitlebarOptions {
+            title: Some(format!("MoonTerminal — {group}").into()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let theme = cfg.theme.clone();
+    let b = backend.clone();
+    let g = group.clone();
+    if let Ok(handle) = cx.open_window(opts, move |window, cx| {
+        let view = cx.new(|cx| Shell::new(b, g, focus, epoch, theme, window, cx));
+        cx.new(|cx| Root::new(view, window, cx))
+    }) {
+        backend.update(cx, |bk, _| {
+            bk.group_windows.insert(group, handle);
+        });
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(
         env_logger::Env::default().default_filter_or("warn,moon_gpui=info,moon_core=info"),
@@ -524,6 +588,9 @@ fn main() -> anyhow::Result<()> {
             dock_dirty: false,
             price_scale: None,
             follow: true,
+            reconnect_request: Vec::new(),
+            show_group_request: Vec::new(),
+            group_windows: HashMap::new(),
         });
 
         // Фабрики панелей для восстановления раскладки доков (PanelRegistry — глобален).
@@ -531,13 +598,17 @@ fn main() -> anyhow::Result<()> {
 
         // Дренаж сессий + метрики раз в 100мс на UI-потоке → notify окон.
         let drain_backend = backend.clone();
+        let drain_cfg = cfg.clone();
+        let drain_layout = layout.clone();
         cx.spawn(async move |cx| {
             let executor = cx.update(|cx| cx.background_executor().clone())?;
             loop {
                 executor.timer(Duration::from_millis(100)).await;
                 let ok = cx
                     .update(|cx| {
-                        drain_backend.update(cx, |b, cx| {
+                        // Сессия/метрики/реконнект — внутри backend.update; запросы
+                        // «показать группу» забираем наружу (нужен &mut App для окон).
+                        let show_reqs = drain_backend.update(cx, |b, cx| {
                             b.session.drain();
                             // Каждый кадр (как egui app/mod.rs): reconcile_providers
                             // избирает провайдера/биржу + держит подписку на desired-рынки.
@@ -546,6 +617,11 @@ fn main() -> anyhow::Result<()> {
                             // дедуп держит 1 провайдера/биржу).
                             b.session.set_open(&b.desired);
                             b.snap = b.metrics.sample(Instant::now());
+                            // Реконнект ядер по кнопке ↻ (порт egui take_actions.reconnect).
+                            let recon: Vec<CoreId> = b.reconnect_request.drain(..).collect();
+                            for id in recon {
+                                b.session.reconnect(id, &b.config, None);
+                            }
                             // Дебаунс-сохранение раскладки окон (≤10/с).
                             if b.layout_dirty {
                                 b.layout.save();
@@ -557,7 +633,12 @@ fn main() -> anyhow::Result<()> {
                                 b.dock_dirty = false;
                             }
                             cx.notify();
+                            std::mem::take(&mut b.show_group_request)
                         });
+                        // Открыть/сфокусировать окна по запросам 👁.
+                        for g in show_reqs {
+                            spawn_group_window(cx, &drain_backend, &drain_cfg, g, epoch, &drain_layout, 0.0);
+                        }
                     })
                     .is_ok();
                 if !ok {
@@ -568,42 +649,9 @@ fn main() -> anyhow::Result<()> {
         })
         .detach();
 
-        // По окну на группу.
+        // По окну на группу (тем же helper'ом, что и кнопка 👁 «показать группу»).
         for (i, group) in group_list.into_iter().enumerate() {
-            let backend = backend.clone();
-            // Фокус-монета группы: первое активное ядро группы + его настроенный рынок
-            // (открываем сразу — провайдер уже ретейнит трейды). 1:1 с egui-открытием.
-            let focus: Option<(CoreId, String)> = cfg
-                .servers
-                .iter()
-                .find(|s| s.active && cfg.group(&s.group).active && s.group == group)
-                .map(|s| (s.id, s.market.clone()));
-            let off = i as f32 * 40.0;
-            // Восстановить геометрию окна группы из сохранённой раскладки.
-            let win_bounds = match layout.groups.get(&group) {
-                Some(g) => Bounds {
-                    origin: point(px(g.x as f32), px(g.y as f32)),
-                    size: size(px(g.w as f32), px(g.h as f32)),
-                },
-                None => Bounds {
-                    origin: point(px(80.0 + off), px(80.0 + off)),
-                    size: size(px(1100.0), px(720.0)),
-                },
-            };
-            let opts = WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(win_bounds)),
-                titlebar: Some(TitlebarOptions {
-                    title: Some(format!("MoonTerminal — {group}").into()),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            };
-            let theme = cfg.theme.clone();
-            cx.open_window(opts, |window, cx| {
-                let view = cx.new(|cx| Shell::new(backend, group, focus, epoch, theme, window, cx));
-                cx.new(|cx| Root::new(view, window, cx))
-            })
-            .expect("open_window");
+            spawn_group_window(cx, &backend, &cfg, group, epoch, &layout, i as f32 * 40.0);
         }
     });
     Ok(())
