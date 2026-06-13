@@ -35,6 +35,12 @@ pub fn layout_path() -> PathBuf {
     exe_dir().join("layout.toml")
 }
 
+/// Раскладка доков GPUI-оболочки (DockAreaState по группам) — отдельный JSON рядом
+/// с exe (структура задаётся gpui-component, потому не toml; см. moon-ui-gpui).
+pub fn docks_path() -> PathBuf {
+    exe_dir().join("docks.json")
+}
+
 /// SQLite-БД с отчётами по закрытым ордерам (`ClosedSellOrderReport`).
 pub fn reports_db_path() -> PathBuf {
     exe_dir().join("reports.sqlite")

@@ -6,6 +6,7 @@
 pub const PRICE_AXIS_W: f32 = 56.0;
 pub const TIME_AXIS_H: f32 = 16.0;
 
+pub mod axes;
 pub mod canvas;
 pub mod container;
 // `data` (TickRing/OrderBookModel) переехал в moon-core (его тянет market).

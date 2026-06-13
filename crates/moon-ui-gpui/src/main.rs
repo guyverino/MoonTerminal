@@ -9,24 +9,85 @@
 //! Цель этапа — доказать сквозную связку config→сессии→окна→живые данные→GPUI.
 //! Чарт/dock/таблицы/настройки — следующие этапы.
 
+mod axes;
 mod chart;
+mod chart_tabs;
+mod controls;
+mod dock_persist;
+mod input;
+mod panels;
+mod settings;
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::*;
 
-use chart::ChartGpu;
 use gpui_component::{
     button::{Button, ButtonVariants},
+    dock::{DockArea, DockAreaState, DockEvent, DockItem, PanelView},
     h_flex,
-    table::{Column, Table, TableDelegate, TableState},
+    table::{Column, TableDelegate, TableState},
+    theme::{Theme, ThemeMode},
     v_flex, Root, StyledExt,
 };
 
-use moon_core::config::AppConfig;
+use chart_tabs::ChartTabs;
+use dock_persist::DOCK_VERSION;
+use panels::{DetectsPanel, OrderPanel, OrdersPanel, StubPanel};
+
+use moon_core::config::{AppConfig, GroupLayout, WindowLayout};
 use moon_core::metrics::{Metrics, MetricsSnapshot};
+use moon_core::palette;
 use moon_core::session::{CoreId, SessionManager};
+
+/// Палитра проекта [u8;3] → 0xRRGGBB для gpui `rgb()`. Единый источник цветов —
+/// `moon_core::palette` (тот же, что у egui-хрома); никаких литералов в UI.
+fn hex(c: [u8; 3]) -> u32 {
+    (c[0] as u32) << 16 | (c[1] as u32) << 8 | c[2] as u32
+}
+
+/// Брендируем глобальную тему gpui-component из `moon_core::palette` → ВСЕ компоненты
+/// (кнопки/инпуты/таблицы/док/вкладки/тулбар) сразу в наших цветах. Форсируем Dark,
+/// затем перекрываем ключевые поля. `ChartTheme` (движок чарта) — отдельно.
+fn apply_brand_theme(cx: &mut App) {
+    Theme::change(ThemeMode::Dark, None, cx);
+    let h = |c: [u8; 3]| -> Hsla { rgb(hex(c)).into() };
+    let c = &mut Theme::global_mut(cx).colors;
+    c.background = h(palette::BG);
+    c.foreground = h(palette::TEXT);
+    c.border = h(palette::LIFT_HOVER);
+    c.muted = h(palette::SURFACE_1);
+    c.muted_foreground = h(palette::TEXT_2);
+    c.accent = h(palette::ACCENT);
+    c.accent_foreground = h(palette::BG);
+    c.primary = h(palette::ACCENT);
+    c.primary_foreground = h(palette::BG);
+    c.secondary = h(palette::LIFT);
+    c.secondary_foreground = h(palette::TEXT);
+    c.input = h(palette::LIFT);
+    c.popover = h(palette::SURFACE_1);
+    c.popover_foreground = h(palette::TEXT);
+    c.list = h(palette::BG);
+    c.list_head = h(palette::SURFACE_1);
+    c.list_hover = h(palette::LIFT_HOVER);
+    c.table = h(palette::BG);
+    c.table_head = h(palette::SURFACE_1);
+    c.table_hover = h(palette::LIFT_HOVER);
+    c.table_row_border = h(palette::LIFT);
+    c.tab_bar = h(palette::SURFACE_1);
+    c.tab = h(palette::SURFACE_1);
+    c.tab_active = h(palette::BG);
+    c.tab_active_foreground = h(palette::ACCENT);
+    c.tab_foreground = h(palette::TEXT_2);
+    c.title_bar = h(palette::SURFACE_1);
+    c.title_bar_border = h(palette::LIFT_HOVER);
+    c.danger = h(palette::RED);
+    c.success = h(palette::GREEN);
+    c.ring = h(palette::ACCENT);
+    c.selection = h(palette::ACCENT);
+}
 
 /// Общий backend: живёт в одном `Entity`, дренится таймером, будит окна по notify.
 struct Backend {
@@ -35,6 +96,29 @@ struct Backend {
     snap: MetricsSnapshot,
     /// Желаемые открытые рынки (ядро, рынок) — держим подписку через coordinator.
     desired: Vec<(CoreId, String)>,
+    /// Закоммиченный конфиг (тема/ордер-стиль/серверы) — то, что сохранено на диск.
+    config: AppConfig,
+    /// Черновик окна настроек (draft) — Some, пока окно открыто. Группы-окна, если
+    /// он есть, рисуют чарт ИМ (живой предпросмотр); «Сохранить» коммитит его в
+    /// config+диск; закрытие окна без сохранения сбрасывает (→ откат к config). 1:1
+    /// с egui (SettingsState.draft).
+    preview: Option<AppConfig>,
+    /// Запрос «открыть монету на Main» (клик по детекту в DetectsPanel) — Shell
+    /// читает и открывает в своём чарте. Порт egui open_detect→host.
+    open_request: Option<(CoreId, String)>,
+    /// Раскладка окон (геометрия по группам) — load на старте, save на изменении
+    /// (дебаунс через дренаж-таймер). Порт egui WindowLayout/layout.toml.
+    layout: WindowLayout,
+    layout_dirty: bool,
+    /// Раскладка доков (группа → DockAreaState) — load на старте, save по
+    /// DockEvent::LayoutChanged (дебаунс тем же таймером). Пишется в docks.json.
+    dock_states: HashMap<String, DockAreaState>,
+    dock_dirty: bool,
+    /// Масштаб цены (Y) тулбара: None = «Авто». Правит `ScalePanel`, применяет
+    /// `ChartPanel` ко всем графикам. Порт egui `OrderControls`/тулбара.
+    price_scale: Option<f32>,
+    /// Live-follow тулбара: true = вид бежит за «сейчас», false = пауза (заморозка).
+    follow: bool,
 }
 
 /// Плоская строка ордера для таблицы (владеющая; собирается из OrderRow + имя ядра).
@@ -98,7 +182,7 @@ impl TableDelegate for OrdersDelegate {
         match col_ix {
             0 => div().child(r.core.clone()),
             1 => div()
-                .text_color(if r.side == "LONG" { rgb(0x4ade80) } else { rgb(0xf87171) })
+                .text_color(if r.side == "LONG" { rgb(hex(palette::GREEN)) } else { rgb(hex(palette::RED)) })
                 .child(r.side),
             2 => div().child(r.market.clone()),
             3 => div().w_full().child(format!("{:.4}", r.size)),
@@ -136,13 +220,13 @@ fn collect_orders(backend: &Backend, group: &str) -> Vec<OrderView> {
     out.into_iter().map(|(_, v)| v).collect()
 }
 
-/// Оболочка одной группы (= одно ОС-окно).
+/// Оболочка одной группы (= одно ОС-окно): header + единый `DockArea` + статус.
+/// Весь контент — Dock-панели (чарт=center, детекты/ордер=right, нижние вкладки=
+/// bottom), перетаскиваемые/отцепляемые. Header/статус — фикс. полосы вокруг дока.
 struct Shell {
     backend: Entity<Backend>,
     group: String,
-    orders: Entity<TableState<OrdersDelegate>>,
-    chart: ChartGpu,
-    prev_chart: Option<Arc<RenderImage>>,
+    dock: Entity<DockArea>,
 }
 
 impl Shell {
@@ -155,44 +239,136 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let orders = cx.new(|cx| TableState::new(OrdersDelegate::new(), window, cx));
-        let mut chart = ChartGpu::new(epoch, theme);
-        // Открываем монету сразу (как egui): провайдер уже ретейнит трейды → данные
-        // появятся, как только подписка из set_open дойдёт. Добавляем рынок в desired.
-        if let Some((core, market)) = focus {
-            chart.open(core, &market);
-            backend.update(cx, |b, _| {
-                if !b.desired.iter().any(|(c, m)| *c == core && m == &market) {
-                    b.desired.push((core, market));
+        // Единый DockArea на окно. Панели: чарт=center, детекты+ордер=right (split),
+        // нижние вкладки=bottom. Все перетаскиваемые/отцепляемые (gpui-component Dock).
+        let dock = cx.new(|cx| DockArea::new("group-dock", Some(DOCK_VERSION), window, cx));
+        let weak = dock.downgrade();
+
+        // Сохранённая раскладка этой группы (совместимой версии) → восстановить через
+        // DockArea::load (панели пересоздаёт PanelRegistry по panel_name+группе). Иначе
+        // строим дефолтную раскладку. Порт «сохранение всего» для доков.
+        let saved = backend
+            .read(cx)
+            .dock_states
+            .get(&group)
+            .filter(|s| s.version == Some(DOCK_VERSION))
+            .cloned();
+
+        if let Some(state) = saved {
+            dock.update(cx, |area, cx| {
+                if let Err(e) = area.load(state, window, cx) {
+                    log::warn!("не восстановил раскладку доков группы {group}: {e}");
                 }
             });
+        } else {
+            // Чарт-вкладки (Main + AddToChart-N) — свой таб-стрип (chart_tabs.rs), полный
+            // контроль активной вкладки/детача. Детекты/ордер/нижние — gpui-Dock-панели.
+            let charts = cx.new(|cx| ChartTabs::new(backend.clone(), group.clone(), focus, epoch, theme.clone(), window, cx));
+            let detects = cx.new(|cx| DetectsPanel::new(backend.clone(), group.clone(), cx));
+            let order = cx.new(|cx| OrderPanel::new(cx));
+            let orders_panel = cx.new(|cx| OrdersPanel::new(backend.clone(), group.clone(), window, cx));
+            let assets = cx.new(|cx| StubPanel::new("Assets", "Активы", cx));
+            let log = cx.new(|cx| StubPanel::new("Log", "Лог", cx));
+            let report = cx.new(|cx| StubPanel::new("Report", "Отчёт", cx));
+
+            // ВСЁ — в center-сплите (свободный пересплит drag-to-edge + детач панелей).
+            // Чарт-вкладки слева, детекты+ордер стопкой справа (≈220px), нижние вкладки внизу.
+            // Тулбар (Размеры/Продажа/Масштаб) — отдельная фикс. полоса в Shell::render, не док.
+            let chart_item = DockItem::tab(charts, &weak, window, cx);
+            let right = DockItem::v_split(
+                vec![
+                    DockItem::tab(detects, &weak, window, cx),
+                    DockItem::tab(order, &weak, window, cx),
+                ],
+                &weak,
+                window,
+                cx,
+            );
+            let top = DockItem::split_with_sizes(
+                Axis::Horizontal,
+                vec![chart_item, right],
+                vec![None, Some(px(220.0))],
+                &weak,
+                window,
+                cx,
+            );
+            let bottom_tabs: Vec<Arc<dyn PanelView>> = vec![
+                Arc::new(orders_panel),
+                Arc::new(assets),
+                Arc::new(log),
+                Arc::new(report),
+            ];
+            let bottom = DockItem::tabs(bottom_tabs, &weak, window, cx);
+            let center = DockItem::split_with_sizes(
+                Axis::Vertical,
+                vec![top, bottom],
+                vec![None, Some(px(220.0))],
+                &weak,
+                window,
+                cx,
+            );
+
+            dock.update(cx, |area, cx| area.set_center(center, window, cx));
         }
-        // Когда backend дренится — пересобираем строки таблицы и перерисовываемся.
-        let g = group.clone();
-        cx.observe(&backend, move |this, backend, cx| {
-            let rows = collect_orders(backend.read(cx), &g);
-            this.orders.update(cx, |st, cx| {
-                st.delegate_mut().rows = rows;
-                cx.notify();
-            });
-            cx.notify();
+
+        // Header читает backend каждый кадр → перерисовка по дренажу.
+        cx.observe(&backend, |_this, _backend, cx| cx.notify()).detach();
+
+        // Любое изменение раскладки доков (drag/split/resize/detach) → дамп в backend,
+        // сохранение дебаунсит дренаж-таймер (docks.json). Порт персиста раскладки.
+        cx.subscribe(&dock, |this, dock, event: &DockEvent, cx| {
+            if let DockEvent::LayoutChanged = event {
+                let state = dock.read(cx).dump(cx);
+                let group = this.group.clone();
+                this.backend.update(cx, |b, _| {
+                    b.dock_states.insert(group, state);
+                    b.dock_dirty = true;
+                });
+            }
         })
         .detach();
-        Self { backend, group, orders, chart, prev_chart: None }
+
+        Self { backend, group, dock }
     }
 }
 
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Текстуру прошлого кадра чарта — из атласа (иначе течёт, см. Лаба 2).
-        if let Some(p) = self.prev_chart.take() {
-            cx.drop_image(p, Some(window));
+        // Снять геометрию окна → раскладка (save дебаунсит дренаж-таймер).
+        if let WindowBounds::Windowed(b) = window.window_bounds() {
+            let g = GroupLayout {
+                x: f32::from(b.origin.x) as i32,
+                y: f32::from(b.origin.y) as i32,
+                w: f32::from(b.size.width) as u32,
+                h: f32::from(b.size.height) as u32,
+                maximized: window.is_maximized(),
+                collapsed: false,
+                tab: 0,
+                dock_h: 220.0,
+                orders_primary: 0,
+                orders_newest_first: true,
+                orders_only_current: false,
+                orders_kind: 0,
+            };
+            let group = self.group.clone();
+            self.backend.update(cx, |bk, _| {
+                let changed = bk
+                    .layout
+                    .groups
+                    .get(&group)
+                    .map(|o| o.x != g.x || o.y != g.y || o.w != g.w || o.h != g.h)
+                    .unwrap_or(true);
+                if changed {
+                    bk.layout.groups.insert(group, g);
+                    bk.layout_dirty = true;
+                }
+            });
         }
 
-        let order_count = self.orders.read(cx).delegate().rows.len();
+        let order_count = collect_orders(self.backend.read(cx), &self.group).len();
 
-        // Данные header + рендер чарта движком (backend и chart — разные поля self).
-        let (conn, snap, market_label, price_label, tick_count, chart_img) = {
+        // Header-данные (рынок/цена/тики/conn). Чарт/ввод/оси — в ChartPanel.
+        let (conn, snap, market_label, price_label, tick_count) = {
             let b = self.backend.read(cx);
             let conn = b.session.conn_summary_group(&self.group);
             let snap = b.snap;
@@ -222,23 +398,20 @@ impl Render for Shell {
                     None => ("—".into(), "—".into(), 0),
                 }
             };
-            // Движок рисует панели в offscreen → readback → RenderImage (вариант A).
-            let chart_img = self.chart.render(&b.session);
-            (conn, snap, market_label, price_label, tick_count, chart_img)
+            (conn, snap, market_label, price_label, tick_count)
         };
-        self.prev_chart = Some(chart_img.clone());
 
-        // Цвета (палитра проекта — moon_core::palette).
-        let bg = rgb(0x0c0c0c);
-        let panel = rgb(0x161616);
-        let border = rgb(0x262626);
-        let muted = rgb(0x9a9a9a);
-        let accent = rgb(0x47b3ff);
+        // Цвета — ТОЛЬКО из moon_core::palette (единый источник, как egui-хром).
+        let bg = rgb(hex(palette::BG));
+        let panel = rgb(hex(palette::SURFACE_1));
+        let border = rgb(hex(palette::LIFT_HOVER));
+        let muted = rgb(hex(palette::TEXT_2));
+        let accent = rgb(hex(palette::ACCENT));
 
         v_flex()
             .size_full()
             .bg(bg)
-            .text_color(rgb(0xe6e6e6))
+            .text_color(rgb(hex(palette::TEXT)))
             .text_sm()
             // ── Header ──────────────────────────────────────────────
             .child(
@@ -267,61 +440,18 @@ impl Render for Shell {
                             .child(div().child(format!("{}/{} connected", conn.ready, conn.total)))
                             .child(div().child(format!("orders {order_count}")))
                             .child(
-                                Button::new("gear")
-                                    .ghost()
-                                    .label("⚙")
-                                    .on_click(|_, _, _| log::info!("settings clicked")),
+                                Button::new("gear").ghost().label("⚙").on_click({
+                                    let backend = self.backend.clone();
+                                    move |_, _, cx| settings::open(backend.clone(), cx)
+                                }),
                             ),
                     ),
             )
-            // ── Центр: wgpu-чарт (движок moon_chart, offscreen→readback) | панель ордера ──
-            .child(
-                h_flex()
-                    .flex_1()
-                    .w_full()
-                    .child(
-                        div()
-                            .flex_1()
-                            .h_full()
-                            .overflow_hidden()
-                            .child(img(chart_img).w_full().h_full()),
-                    )
-                    .child(
-                        v_flex()
-                            .w(px(260.0))
-                            .h_full()
-                            .p_3()
-                            .gap_2()
-                            .bg(panel)
-                            .border_l_1()
-                            .border_color(border)
-                            .child(div().text_color(muted).text_xs().child("ORDER"))
-                            .child(Button::new("buy").success().label("BUY").on_click(|_, _, _| log::info!("BUY")))
-                            .child(Button::new("sell").danger().label("SELL").on_click(|_, _, _| log::info!("SELL")))
-                            .child(Button::new("cancel").warning().label("Cancel Buy").on_click(|_, _, _| log::info!("Cancel")))
-                            .child(Button::new("panic").danger().label("PANIC SELL").on_click(|_, _, _| log::info!("PANIC"))),
-                    ),
-            )
-            // ── Нижний док: открытые ордера группы на виртуализированной Table ──
-            .child(
-                v_flex()
-                    .w_full()
-                    .h(px(220.0))
-                    .bg(rgb(0x101010))
-                    .border_t_1()
-                    .border_color(border)
-                    .child(
-                        div()
-                            .w_full()
-                            .px_3()
-                            .py_1()
-                            .text_color(muted)
-                            .text_xs()
-                            .bg(panel)
-                            .child("ORDERS"),
-                    )
-                    .child(div().flex_1().w_full().child(Table::new(&self.orders))),
-            )
+            // ── Тулбар: тонкая фикс. полоса (Размеры/Продажа/Масштаб+Live), порт верхней
+            //    полосы стенда. Не dock-панель — единый ряд на высоту кнопки. ──
+            .child(controls::toolbar(&self.backend, cx))
+            // ── Центр: единый DockArea (чарт=center, детекты+ордер=right, вкладки=bottom) ──
+            .child(div().flex_1().w_full().child(self.dock.clone()))
             // ── Status bar ──────────────────────────────────────────
             .child(
                 h_flex()
@@ -371,6 +501,10 @@ fn main() -> anyhow::Result<()> {
     let app = Application::new().with_assets(gpui_component_assets::Assets);
     app.run(move |cx| {
         gpui_component::init(cx);
+        apply_brand_theme(cx);
+
+        let layout = WindowLayout::load();
+        let dock_states = dock_persist::load_all();
 
         let backend = cx.new(|_| Backend {
             session: SessionManager::start(&cfg, epoch, None),
@@ -381,7 +515,19 @@ fn main() -> anyhow::Result<()> {
             // set_open всё равно избирает провайдера/биржу на старте → subscribe_all_trades
             // (ретейн всех трейдов биржи — как было; ради мгновенного открытия монеты).
             desired: Vec::new(),
+            config: cfg.clone(),
+            preview: None,
+            open_request: None,
+            layout: layout.clone(),
+            layout_dirty: false,
+            dock_states,
+            dock_dirty: false,
+            price_scale: None,
+            follow: true,
         });
+
+        // Фабрики панелей для восстановления раскладки доков (PanelRegistry — глобален).
+        dock_persist::register_panels(cx, backend.clone(), epoch);
 
         // Дренаж сессий + метрики раз в 100мс на UI-потоке → notify окон.
         let drain_backend = backend.clone();
@@ -400,6 +546,16 @@ fn main() -> anyhow::Result<()> {
                             // дедуп держит 1 провайдера/биржу).
                             b.session.set_open(&b.desired);
                             b.snap = b.metrics.sample(Instant::now());
+                            // Дебаунс-сохранение раскладки окон (≤10/с).
+                            if b.layout_dirty {
+                                b.layout.save();
+                                b.layout_dirty = false;
+                            }
+                            // Дебаунс-сохранение раскладки доков (docks.json).
+                            if b.dock_dirty {
+                                dock_persist::save_all(&b.dock_states);
+                                b.dock_dirty = false;
+                            }
                             cx.notify();
                         });
                     })
@@ -423,11 +579,19 @@ fn main() -> anyhow::Result<()> {
                 .find(|s| s.active && cfg.group(&s.group).active && s.group == group)
                 .map(|s| (s.id, s.market.clone()));
             let off = i as f32 * 40.0;
-            let opts = WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(Bounds {
+            // Восстановить геометрию окна группы из сохранённой раскладки.
+            let win_bounds = match layout.groups.get(&group) {
+                Some(g) => Bounds {
+                    origin: point(px(g.x as f32), px(g.y as f32)),
+                    size: size(px(g.w as f32), px(g.h as f32)),
+                },
+                None => Bounds {
                     origin: point(px(80.0 + off), px(80.0 + off)),
                     size: size(px(1100.0), px(720.0)),
-                })),
+                },
+            };
+            let opts = WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(win_bounds)),
                 titlebar: Some(TitlebarOptions {
                     title: Some(format!("MoonTerminal — {group}").into()),
                     ..Default::default()
