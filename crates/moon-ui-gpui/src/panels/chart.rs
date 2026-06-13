@@ -3,6 +3,7 @@
 //! рендерит offscreen, не привязан к ОС-окну). Монета — из focus и `Backend.open_request`.
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use gpui::*;
 use gpui_component::dock::{Panel, PanelEvent};
@@ -28,6 +29,10 @@ pub struct ChartPanel {
     /// Сигнатура рыночных данных прошлого кадра — чтобы НЕ гонять дорогой
     /// offscreen-readback на холостом ходу (только при реальном приходе данных).
     data_sig: u64,
+    /// Время последней перерисовки от движения мыши (крестик) — кэп частоты ~60fps,
+    /// как `min_frame_dt` в оригинале. Мышь шлёт до 1000 событий/с; без кэпа активное
+    /// окно молотит и забивает главный поток → фоновое окно другой группы встаёт.
+    last_cursor_notify: Option<Instant>,
     focus: FocusHandle,
 }
 
@@ -52,15 +57,20 @@ impl ChartPanel {
             });
         }
         // open_request (дабл-клик→Main) обрабатывает ChartTabs. Здесь — prune +
-        // пере-рендер ТОЛЬКО при приходе данных (сигнатура) или истечении TTL-панели.
+        // пере-рендер ТОЛЬКО при приходе данных (сигнатура), истечении TTL-панели или
+        // незабранном readback (его надо подобрать). Иначе на холостом ходу не нотифаим
+        // — чтобы окна не молотили зря и не отнимали поток друг у друга.
         cx.observe(&backend, |this, backend, cx| {
             let pruned = this.chart.prune_ttl(now_unix_ms());
             let sig = this.chart.data_signature(&backend.read(cx).session);
-            if pruned || sig != this.data_sig {
+            let changed = pruned || sig != this.data_sig;
+            if changed {
                 this.data_sig = sig;
                 this.chart_dirty = true;
             }
-            cx.notify();
+            if changed || this.chart.is_pending() {
+                cx.notify();
+            }
         })
         .detach();
         Self {
@@ -74,6 +84,7 @@ impl ChartPanel {
             market,
             num: None,
             data_sig: 0,
+            last_cursor_notify: None,
             focus: cx.focus_handle(),
         }
     }
@@ -102,15 +113,18 @@ impl ChartPanel {
         cx: &mut Context<Self>,
     ) -> Self {
         let chart = ChartGpu::new_kind(epoch, theme, ContainerKind::Chart { num, core });
-        // Дренаж → prune истёкших панелей + пере-рендер ТОЛЬКО при приходе данных/TTL.
+        // Дренаж → prune + пере-рендер при данных/TTL/незабранном readback (см. new).
         cx.observe(&backend, |this, backend, cx| {
             let pruned = this.chart.prune_ttl(now_unix_ms());
             let sig = this.chart.data_signature(&backend.read(cx).session);
-            if pruned || sig != this.data_sig {
+            let changed = pruned || sig != this.data_sig;
+            if changed {
                 this.data_sig = sig;
                 this.chart_dirty = true;
             }
-            cx.notify();
+            if changed || this.chart.is_pending() {
+                cx.notify();
+            }
         })
         .detach();
         Self {
@@ -124,6 +138,7 @@ impl ChartPanel {
             market: None,
             num: Some(num),
             data_sig: 0,
+            last_cursor_notify: None,
             focus: cx.focus_handle(),
         }
     }
@@ -217,10 +232,9 @@ impl Render for ChartPanel {
             self.chart.submit(&b.session, ppp);
             self.chart_dirty = false;
         }
-        // Пока readback в полёте — перерисоваться на следующем кадре, чтобы его забрать.
-        if self.chart.is_pending() {
-            cx.notify();
-        }
+        // Незабранный readback подберёт следующий дренаж (observe нотифаит, пока pending) —
+        // БЕЗ self-notify здесь: иначе активное окно крутится на 60fps и забивает поток,
+        // из-за чего фоновое окно другой группы не получает кадров.
         let chart_img = self.chart_img.clone();
         let axis_panes = self.chart.axis_panes(axes::local_offset_sec());
         let cross = self.chart.crosshair_style();
@@ -293,10 +307,21 @@ impl Render for ChartPanel {
                 );
                 this.input.cursor = if within { Some(pos) } else { None };
                 this.input.hovered_pane = if within { this.input.pane_at(pos.0, pos.1) } else { None };
-                if this.input.pointer_drag(pos.0, pos.1, &mut this.chart.container) {
+                let dragging = this.input.pointer_drag(pos.0, pos.1, &mut this.chart.container);
+                if dragging {
                     this.chart_dirty = true;
                 }
-                cx.notify();
+                // Кэп частоты крестика ~60fps (мышь шлёт до 1000 событий/с). Драг —
+                // всегда (плавный пан/масштаб). Позиция курсора обновлена выше; пропуск
+                // notify лишь придержит перерисовку крестика до следующего окна 16мс.
+                let now = Instant::now();
+                let due = this
+                    .last_cursor_notify
+                    .map_or(true, |t| now.duration_since(t) >= Duration::from_millis(16));
+                if dragging || due {
+                    this.last_cursor_notify = Some(now);
+                    cx.notify();
+                }
             }))
             .on_hover(cx.listener(|this, hovered: &bool, _window, cx| {
                 if !*hovered {
