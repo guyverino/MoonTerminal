@@ -34,7 +34,7 @@ pub struct ChartGpu {
 }
 
 impl ChartGpu {
-    pub fn new(epoch: f64) -> Self {
+    pub fn new(epoch: f64, theme: ChartTheme) -> Self {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());
         let adapter =
             pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
@@ -44,8 +44,9 @@ impl ChartGpu {
         )
         .expect("wgpu device");
 
-        // Движок ждёт sRGB-таргет (clear через srgb_to_linear, свопчейн sRGB).
-        let format = wgpu::TextureFormat::Rgba8UnormSrgb;
+        // BGRA sRGB — как surface egui-версии: байты сразу в порядке, который GPUI
+        // ждёт от RenderImage (BGRA), иначе каналы R↔B свопаются. + sRGB-таргет.
+        let format = wgpu::TextureFormat::Bgra8UnormSrgb;
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("gpui-chart-offscreen"),
             size: wgpu::Extent3d { width: W, height: H, depth_or_array_layers: 1 },
@@ -73,7 +74,7 @@ impl ChartGpu {
             staging,
             container: Container::new(ContainerKind::Main),
             epoch,
-            theme: ChartTheme::default(),
+            theme,
             orders: OrdersStyle::default(),
         }
     }

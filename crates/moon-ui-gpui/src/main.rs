@@ -151,11 +151,12 @@ impl Shell {
         group: String,
         focus: Option<(CoreId, String)>,
         epoch: f64,
+        theme: moon_core::config::ChartTheme,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let orders = cx.new(|cx| TableState::new(OrdersDelegate::new(), window, cx));
-        let mut chart = ChartGpu::new(epoch);
+        let mut chart = ChartGpu::new(epoch, theme);
         // Открываем монету сразу (как egui): провайдер уже ретейнит трейды → данные
         // появятся, как только подписка из set_open дойдёт. Добавляем рынок в desired.
         if let Some((core, market)) = focus {
@@ -433,8 +434,9 @@ fn main() -> anyhow::Result<()> {
                 }),
                 ..Default::default()
             };
+            let theme = cfg.theme.clone();
             cx.open_window(opts, |window, cx| {
-                let view = cx.new(|cx| Shell::new(backend, group, focus, epoch, window, cx));
+                let view = cx.new(|cx| Shell::new(backend, group, focus, epoch, theme, window, cx));
                 cx.new(|cx| Root::new(view, window, cx))
             })
             .expect("open_window");
