@@ -14,7 +14,9 @@ use std::time::{Duration, Instant};
 use gpui::*;
 use gpui_component::{
     button::{Button, ButtonVariants},
-    h_flex, v_flex, Root, StyledExt,
+    h_flex,
+    table::{Column, Table, TableDelegate, TableState},
+    v_flex, Root, StyledExt,
 };
 
 use moon_core::config::AppConfig;
@@ -28,52 +30,142 @@ struct Backend {
     snap: MetricsSnapshot,
 }
 
+/// Плоская строка ордера для таблицы (владеющая; собирается из OrderRow + имя ядра).
+#[derive(Clone)]
+struct OrderView {
+    core: String,
+    side: &'static str, // LONG / SHORT
+    market: String,
+    size: f64,
+    buy_price: f64,
+    price: f32,
+    fill_pct: f32,
+    strat: String,
+}
+
+/// Делегат виртуализированной таблицы ордеров группы.
+struct OrdersDelegate {
+    columns: Vec<Column>,
+    rows: Vec<OrderView>,
+}
+
+impl OrdersDelegate {
+    fn new() -> Self {
+        let columns = vec![
+            Column::new("core", "Core").width(px(110.0)),
+            Column::new("side", "Side").width(px(64.0)),
+            Column::new("market", "Market").width(px(120.0)),
+            Column::new("size", "Size").width(px(90.0)).text_right(),
+            Column::new("buy", "Buy").width(px(100.0)).text_right(),
+            Column::new("price", "Price").width(px(100.0)).text_right(),
+            Column::new("fill", "Fill%").width(px(70.0)).text_right(),
+            Column::new("strat", "Strat").width(px(140.0)),
+        ];
+        Self { columns, rows: Vec::new() }
+    }
+}
+
+impl TableDelegate for OrdersDelegate {
+    fn columns_count(&self, _: &App) -> usize {
+        self.columns.len()
+    }
+
+    fn rows_count(&self, _: &App) -> usize {
+        self.rows.len()
+    }
+
+    fn column(&self, col_ix: usize, _: &App) -> &Column {
+        &self.columns[col_ix]
+    }
+
+    fn render_td(
+        &mut self,
+        row_ix: usize,
+        col_ix: usize,
+        _: &mut Window,
+        _: &mut Context<TableState<Self>>,
+    ) -> impl IntoElement {
+        let Some(r) = self.rows.get(row_ix) else {
+            return div();
+        };
+        match col_ix {
+            0 => div().child(r.core.clone()),
+            1 => div()
+                .text_color(if r.side == "LONG" { rgb(0x4ade80) } else { rgb(0xf87171) })
+                .child(r.side),
+            2 => div().child(r.market.clone()),
+            3 => div().w_full().child(format!("{:.4}", r.size)),
+            4 => div().w_full().child(format!("{:.4}", r.buy_price)),
+            5 => div().w_full().child(format!("{:.4}", r.price)),
+            6 => div().w_full().child(format!("{:.0}", r.fill_pct)),
+            _ => div().child(r.strat.clone()),
+        }
+    }
+}
+
+/// Собирает ордера всех ядер группы в плоские строки таблицы (новые сверху по uid).
+fn collect_orders(backend: &Backend, group: &str) -> Vec<OrderView> {
+    let store = backend.session.store();
+    let mut out: Vec<(u64, OrderView)> = Vec::new();
+    for s in backend.session.sessions().iter().filter(|s| s.group == group) {
+        let Some(core) = store.core(s.id) else { continue };
+        for o in &core.orders {
+            out.push((
+                o.uid,
+                OrderView {
+                    core: s.name.clone(),
+                    side: if o.is_short { "SHORT" } else { "LONG" },
+                    market: o.market.clone(),
+                    size: o.size,
+                    buy_price: o.buy_price,
+                    price: o.price,
+                    fill_pct: o.fill_pct,
+                    strat: o.strat.clone(),
+                },
+            ));
+        }
+    }
+    out.sort_by(|a, b| b.0.cmp(&a.0)); // новые ордера (больше uid) сверху
+    out.into_iter().map(|(_, v)| v).collect()
+}
+
 /// Оболочка одной группы (= одно ОС-окно).
 struct Shell {
     backend: Entity<Backend>,
     group: String,
+    orders: Entity<TableState<OrdersDelegate>>,
 }
 
 impl Shell {
-    fn new(backend: Entity<Backend>, group: String, cx: &mut Context<Self>) -> Self {
-        // Перерисовываемся, когда backend дренится (notify).
-        cx.observe(&backend, |_this, _backend, cx| cx.notify()).detach();
-        Self { backend, group }
+    fn new(
+        backend: Entity<Backend>,
+        group: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let orders = cx.new(|cx| TableState::new(OrdersDelegate::new(), window, cx));
+        // Когда backend дренится — пересобираем строки таблицы и перерисовываемся.
+        let g = group.clone();
+        cx.observe(&backend, move |this, backend, cx| {
+            let rows = collect_orders(backend.read(cx), &g);
+            this.orders.update(cx, |st, cx| {
+                st.delegate_mut().rows = rows;
+                cx.notify();
+            });
+            cx.notify();
+        })
+        .detach();
+        Self { backend, group, orders }
     }
-}
-
-/// Снимок одного ядра группы для строки нижнего дока (владеющие данные —
-/// собираются до построения дерева, чтобы не держать заём на backend).
-struct CoreRow {
-    name: String,
-    status: String,
-    ready: bool,
-    orders: usize,
-    detects: usize,
 }
 
 impl Render for Shell {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Собираем все нужные данные во владеющие структуры, затем строим UI.
+        // Данные для header (строки таблицы наполняет observe в Shell::new).
+        let order_count = self.orders.read(cx).delegate().rows.len();
         let b = self.backend.read(cx);
         let conn = b.session.conn_summary_group(&self.group);
         let snap = b.snap;
-        let store = b.session.store();
-        let mut rows: Vec<CoreRow> = Vec::new();
-        let mut total_orders = 0usize;
-        for s in b.session.sessions().iter().filter(|s| s.group == self.group) {
-            let (status, ready, orders, detects) = match store.core(s.id) {
-                Some(c) => (
-                    format!("{:?}", c.status),
-                    c.status == moon_core::feed::ConnStatus::Ready,
-                    c.orders.len(),
-                    c.detects.len(),
-                ),
-                None => ("—".to_string(), false, 0, 0),
-            };
-            total_orders += orders;
-            rows.push(CoreRow { name: s.name.clone(), status, ready, orders, detects });
-        }
 
         // Цвета (палитра проекта — moon_core::palette).
         let bg = rgb(0x0c0c0c);
@@ -111,7 +203,7 @@ impl Render for Shell {
                             .gap_3()
                             .items_center()
                             .child(div().child(format!("{}/{} connected", conn.ready, conn.total)))
-                            .child(div().child(format!("orders {total_orders}")))
+                            .child(div().child(format!("orders {order_count}")))
                             .child(
                                 Button::new("gear")
                                     .ghost()
@@ -151,48 +243,25 @@ impl Render for Shell {
                             .child(Button::new("panic").danger().label("PANIC SELL").on_click(|_, _, _| log::info!("PANIC"))),
                     ),
             )
-            // ── Нижний док: живой список ядер группы (реальные данные) ──
+            // ── Нижний док: открытые ордера группы на виртуализированной Table ──
             .child(
                 v_flex()
                     .w_full()
-                    .h(px(190.0))
+                    .h(px(220.0))
                     .bg(rgb(0x101010))
                     .border_t_1()
                     .border_color(border)
                     .child(
-                        h_flex()
+                        div()
                             .w_full()
                             .px_3()
                             .py_1()
-                            .gap_4()
                             .text_color(muted)
                             .text_xs()
                             .bg(panel)
-                            .child(div().w(px(160.0)).child("CORE"))
-                            .child(div().w(px(120.0)).child("STATUS"))
-                            .child(div().w(px(80.0)).child("ORDERS"))
-                            .child(div().w(px(80.0)).child("DETECTS")),
+                            .child("ORDERS"),
                     )
-                    .child(
-                        v_flex().w_full().children(rows.into_iter().map(move |r| {
-                            h_flex()
-                                .w_full()
-                                .px_3()
-                                .py_1()
-                                .gap_4()
-                                .border_b_1()
-                                .border_color(rgb(0x1c1c1c))
-                                .child(div().w(px(160.0)).child(r.name))
-                                .child(
-                                    div()
-                                        .w(px(120.0))
-                                        .text_color(if r.ready { rgb(0x4ade80) } else { rgb(0xfacc15) })
-                                        .child(r.status),
-                                )
-                                .child(div().w(px(80.0)).child(r.orders.to_string()))
-                                .child(div().w(px(80.0)).text_color(muted).child(r.detects.to_string()))
-                        })),
-                    ),
+                    .child(div().flex_1().w_full().child(Table::new(&self.orders))),
             )
             // ── Status bar ──────────────────────────────────────────
             .child(
@@ -286,7 +355,7 @@ fn main() -> anyhow::Result<()> {
                 ..Default::default()
             };
             cx.open_window(opts, |window, cx| {
-                let view = cx.new(|cx| Shell::new(backend, group, cx));
+                let view = cx.new(|cx| Shell::new(backend, group, window, cx));
                 cx.new(|cx| Root::new(view, window, cx))
             })
             .expect("open_window");
