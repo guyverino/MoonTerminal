@@ -96,20 +96,6 @@ mod tests {
         assert_eq!(Language::from_code("zh"), None);
     }
 
-    #[test]
-    fn locales_resolve() {
-        // Каждый поддерживаемый язык даёт перевод (формат _version: 2 + загрузка).
-        rust_i18n::set_locale("ru");
-        assert_eq!(t!("settings.save"), "Сохранить");
-        rust_i18n::set_locale("en");
-        assert_eq!(t!("settings.save"), "Save");
-        rust_i18n::set_locale("es");
-        assert_eq!(t!("settings.save"), "Guardar");
-        // Интерполяция %{var}.
-        rust_i18n::set_locale("en");
-        assert_eq!(t!("order.size", n = 5), "size 5");
-        // Неизвестный ключ для текущего языка падает на fallback "en".
-        rust_i18n::set_locale("ru");
-        assert_eq!(t!("toolbar.scale_auto"), "Авто");
-    }
+    // Тест переводов (`t!`/rust_i18n) переехал в UI-крейт (moon-terminal):
+    // moon-core не зависит от rust-i18n и не знает про locales/.
 }

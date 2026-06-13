@@ -10,26 +10,21 @@ extern crate rust_i18n;
 i18n!("locales", fallback = "en");
 
 mod app;
-mod applog;
 mod chart;
-mod config;
-mod db;
 mod dock;
-mod feed;
 mod gpu;
 mod icons;
-mod market;
-mod metrics;
-mod palette;
-mod session;
 mod settings;
 mod shell;
 mod strategies;
-mod symbol;
-mod util;
 mod win_taskbar;
 mod window;
 mod workspace;
+
+// Бэкенд переехал в крейт moon-core. Ре-экспортим его модули под прежними путями
+// (`crate::feed`, `crate::config`, `crate::session`, …), чтобы UI-код не править
+// пофайлово. `data` (бывш. `chart::data`) ре-экспортится в `chart/mod.rs`.
+pub use moon_core::{applog, config, db, feed, market, metrics, palette, session, symbol, util};
 
 use winit::event_loop::{ControlFlow, EventLoop};
 

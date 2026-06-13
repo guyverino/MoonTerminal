@@ -10,7 +10,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::chart::data::{OrderBookModel, TickRing};
+use crate::data::{OrderBookModel, TickRing};
 use crate::feed::{OrderBook, Tick};
 use crate::session::CoreId;
 

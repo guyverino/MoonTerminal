@@ -1,0 +1,22 @@
+[package]
+name = "moon-ui-gpui"
+version = "0.1.0"
+edition = "2024"
+description = "MoonTerminal GPUI-оболочка (миграция с egui). Поверх moon-core + gpui-component."
+
+[[bin]]
+name = "moon-gpui"
+path = "src/main.rs"
+
+[dependencies]
+# Общий backend (config/session/market/metrics/...). UI-агностик.
+moon-core = { path = "../moon-core" }
+
+# GPUI (движок Zed) + палитра компонент (Longbridge). Оба с crates.io.
+gpui = "0.2.2"
+gpui-component = "0.5.1"
+gpui-component-assets = "0.5.1"
+
+anyhow = "1"
+log = "0.4"
+env_logger = "0.11"

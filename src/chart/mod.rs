@@ -4,7 +4,9 @@
 pub mod axes;
 pub mod canvas;
 pub mod container;
-pub mod data;
+// `data` (TickRing/OrderBookModel) переехал в moon-core (его тянет market).
+// Ре-экспортим под прежним путём `crate::chart::data`, чтобы рендер не править.
+pub use moon_core::data;
 pub mod input;
 pub mod layers;
 pub mod paint;

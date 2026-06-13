@@ -1,3 +1,9 @@
+# Workspace: бинарь-оболочка (этот пакет, в корне) + UI-агностичное ядро moon-core.
+# vendor/gpui-component (клон для лаб миграции) — собственный workspace, НЕ член.
+[workspace]
+members = [".", "crates/moon-core", "crates/moon-ui-gpui"]
+resolver = "2"
+
 [package]
 name = "moon-terminal"
 version = "0.1.0"
@@ -5,6 +11,9 @@ edition = "2021"
 description = "MoonBot terminal — wgpu chart + orderbook, egui shell, moonproto feed"
 
 [dependencies]
+# Бэкенд-ядро: feed/session/market/config/db/data/util/palette/symbol/metrics.
+moon-core = { path = "crates/moon-core" }
+
 winit = "0.30"
 wgpu = "22"
 egui = "0.29"
@@ -19,20 +28,9 @@ log = "0.4"
 env_logger = "0.11"
 
 # Локализация интерфейса (RU/EN/ES). Строки в locales/app.yml, переключение
-# языка в рантайме через rust_i18n::set_locale. sys-locale — дефолт по системе.
+# языка в рантайме через rust_i18n::set_locale. Дефолт по системе (sys-locale) и
+# метрики/секреты/БД-движок теперь в moon-core.
 rust-i18n = "3"
-sys-locale = "0.3"
-
-# Диагностические метрики CPU/RAM (процесс + система) для статус-бара.
-# Кросс-платформенно; берём только feature "system" (без disk/network/...).
-sysinfo = { version = "0.33", default-features = false, features = ["system"] }
-
-# Зашифрованный конфиг: AES-256-GCM, ключ в OS keyring.
-aes-gcm = "0.10"
-keyring = { version = "3", features = ["windows-native", "apple-native"] }
-getrandom = "0.2"
-base64 = "0.22"
-zeroize = "1"
 
 # Загрузка PNG-иконок (кросс-платформенно), извлечённых из mb_ico.dll в assets/icons.
 image = { version = "0.25", default-features = false, features = ["png"] }
@@ -42,13 +40,9 @@ raw-window-handle = "0.6"
 # default-features=false — без текстовых/шрифтовых фич: лого состоит из путей.
 resvg = { version = "0.44", default-features = false }
 
-# Либа связи с ядром MoonBot.
-# feature "diagnostics" открывает поля ордера (ExchangeOrder.open_time/close_time/…),
-# нужные для buydate/sellsetdate/closedate в отчётах — иначе они pub(crate).
-moonproto = { git = "https://github.com/Moonbot-Tech/MoonProtoBeta", features = ["diagnostics"] }
-
 # Локальная БД отчётов по закрытым ордерам. "bundled" статически линкует sqlite3
-# в exe — без системных зависимостей, кроссплатформенно (Windows/macOS/Linux).
+# в exe — без системных зависимостей. UI читает reports.db напрямую в
+# dock/report_view.rs (writer-путь — в moon-core::db). moonproto переехал в core.
 rusqlite = { version = "0.32", features = ["bundled"] }
 
 # Иконка самого exe (Explorer + таскбар) — вшивается build.rs из assets/icons/0.png,

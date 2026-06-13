@@ -171,11 +171,13 @@ impl AppConfig {
         let mut names = HashSet::new();
         let mut keys = HashSet::new();
         for s in &self.servers {
+            // core i18n-агностичен: сообщения валидации — простым текстом. Раньше
+            // было t!("err.dup_name"/"err.dup_key"); при желании UI перелокализует.
             if !names.insert(s.name.to_lowercase()) {
-                anyhow::bail!("{}", t!("err.dup_name", name = s.name));
+                anyhow::bail!("duplicate server name: {}", s.name);
             }
             if !s.key.is_empty() && !keys.insert(s.key.expose().to_owned()) {
-                anyhow::bail!("{}", t!("err.dup_key", name = s.name));
+                anyhow::bail!("duplicate API key (server: {})", s.name);
             }
         }
         Ok(())
