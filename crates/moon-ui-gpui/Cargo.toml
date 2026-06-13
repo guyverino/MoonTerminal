@@ -11,6 +11,11 @@ path = "src/main.rs"
 [dependencies]
 # Общий backend (config/session/market/metrics/...). UI-агностик.
 moon-core = { path = "../moon-core" }
+# wgpu-движок чарта (общий с egui-версией). Рендерим offscreen → readback → GPUI.
+moon-chart = { path = "../moon-chart" }
+wgpu = "22"
+pollster = "0.3"
+image = "0.25"
 
 # GPUI (движок Zed) + палитра компонент (Longbridge). Оба с crates.io.
 gpui = "0.2.2"

@@ -9,9 +9,14 @@
 //! Цель этапа — доказать сквозную связку config→сессии→окна→живые данные→GPUI.
 //! Чарт/dock/таблицы/настройки — следующие этапы.
 
+mod chart;
+
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::*;
+
+use chart::ChartGpu;
 use gpui_component::{
     button::{Button, ButtonVariants},
     h_flex,
@@ -136,16 +141,31 @@ struct Shell {
     backend: Entity<Backend>,
     group: String,
     orders: Entity<TableState<OrdersDelegate>>,
+    chart: ChartGpu,
+    prev_chart: Option<Arc<RenderImage>>,
 }
 
 impl Shell {
     fn new(
         backend: Entity<Backend>,
         group: String,
+        focus: Option<(CoreId, String)>,
+        epoch: f64,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let orders = cx.new(|cx| TableState::new(OrdersDelegate::new(), window, cx));
+        let mut chart = ChartGpu::new(epoch);
+        // Открываем монету сразу (как egui): провайдер уже ретейнит трейды → данные
+        // появятся, как только подписка из set_open дойдёт. Добавляем рынок в desired.
+        if let Some((core, market)) = focus {
+            chart.open(core, &market);
+            backend.update(cx, |b, _| {
+                if !b.desired.iter().any(|(c, m)| *c == core && m == &market) {
+                    b.desired.push((core, market));
+                }
+            });
+        }
         // Когда backend дренится — пересобираем строки таблицы и перерисовываемся.
         let g = group.clone();
         cx.observe(&backend, move |this, backend, cx| {
@@ -157,45 +177,55 @@ impl Shell {
             cx.notify();
         })
         .detach();
-        Self { backend, group, orders }
+        Self { backend, group, orders, chart, prev_chart: None }
     }
 }
 
 impl Render for Shell {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Данные для header (строки таблицы наполняет observe в Shell::new).
-        let order_count = self.orders.read(cx).delegate().rows.len();
-        let b = self.backend.read(cx);
-        let conn = b.session.conn_summary_group(&self.group);
-        let snap = b.snap;
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Текстуру прошлого кадра чарта — из атласа (иначе течёт, см. Лаба 2).
+        if let Some(p) = self.prev_chart.take() {
+            cx.drop_image(p, Some(window));
+        }
 
-        // Фокус-рынок группы (первое ядро) + цена/тики из market_view — владеющие.
-        let (market_label, price_label, tick_count) = {
-            let focus = b
-                .session
-                .sessions()
-                .iter()
-                .find(|s| s.group == self.group)
-                .map(|s| s.id);
-            match focus.and_then(|core| {
-                b.desired
+        let order_count = self.orders.read(cx).delegate().rows.len();
+
+        // Данные header + рендер чарта движком (backend и chart — разные поля self).
+        let (conn, snap, market_label, price_label, tick_count, chart_img) = {
+            let b = self.backend.read(cx);
+            let conn = b.session.conn_summary_group(&self.group);
+            let snap = b.snap;
+            let (market_label, price_label, tick_count) = {
+                let focus = b
+                    .session
+                    .sessions()
                     .iter()
-                    .find(|(id, _)| *id == core)
-                    .map(|(_, m)| (core, m.clone()))
-            }) {
-                Some((core, m)) => match b.session.market_view(core, &m) {
-                    Some(v) => (
-                        m,
-                        v.last_price
-                            .map(|p| format!("{p:.2}"))
-                            .unwrap_or_else(|| "—".into()),
-                        v.ring.len(),
-                    ),
-                    None => (m, "—".into(), 0),
-                },
-                None => ("—".into(), "—".into(), 0),
-            }
+                    .find(|s| s.group == self.group)
+                    .map(|s| s.id);
+                match focus.and_then(|core| {
+                    b.desired
+                        .iter()
+                        .find(|(id, _)| *id == core)
+                        .map(|(_, m)| (core, m.clone()))
+                }) {
+                    Some((core, m)) => match b.session.market_view(core, &m) {
+                        Some(v) => (
+                            m,
+                            v.last_price
+                                .map(|p| format!("{p:.2}"))
+                                .unwrap_or_else(|| "—".into()),
+                            v.ring.len(),
+                        ),
+                        None => (m, "—".into(), 0),
+                    },
+                    None => ("—".into(), "—".into(), 0),
+                }
+            };
+            // Движок рисует панели в offscreen → readback → RenderImage (вариант A).
+            let chart_img = self.chart.render(&b.session);
+            (conn, snap, market_label, price_label, tick_count, chart_img)
         };
+        self.prev_chart = Some(chart_img.clone());
 
         // Цвета (палитра проекта — moon_core::palette).
         let bg = rgb(0x0c0c0c);
@@ -243,20 +273,17 @@ impl Render for Shell {
                             ),
                     ),
             )
-            // ── Центр: чарт-плейсхолдер | панель ордера ─────────────
+            // ── Центр: wgpu-чарт (движок moon_chart, offscreen→readback) | панель ордера ──
             .child(
                 h_flex()
                     .flex_1()
                     .w_full()
                     .child(
-                        v_flex()
+                        div()
                             .flex_1()
                             .h_full()
-                            .items_center()
-                            .justify_center()
-                            .gap_2()
-                            .child(div().text_color(muted).child("chart — открой монету (этап интеграции)"))
-                            .child(div().text_color(muted).text_xs().child("wgpu-чарт: вариант A/C/D, Лаба 2b")),
+                            .overflow_hidden()
+                            .child(img(chart_img).w_full().h_full()),
                     )
                     .child(
                         v_flex()
@@ -337,12 +364,15 @@ fn main() -> anyhow::Result<()> {
     let group_list = groups(&cfg);
     log::info!("groups: {group_list:?} (servers: {})", cfg.servers.len());
 
+    // Единая точка отсчёта времени для сессий и чарт-вью (как epoch_ms в egui).
+    let epoch = moon_chart::paint::now_unix_ms();
+
     let app = Application::new().with_assets(gpui_component_assets::Assets);
     app.run(move |cx| {
         gpui_component::init(cx);
 
         let backend = cx.new(|_| Backend {
-            session: SessionManager::start(&cfg, 0.0, None),
+            session: SessionManager::start(&cfg, epoch, None),
             metrics: Metrics::new(),
             snap: MetricsSnapshot::default(),
             // open = рынки ОТКРЫТЫХ чарт-панелей (как App::about_to_wait в egui).
@@ -384,6 +414,13 @@ fn main() -> anyhow::Result<()> {
         // По окну на группу.
         for (i, group) in group_list.into_iter().enumerate() {
             let backend = backend.clone();
+            // Фокус-монета группы: первое активное ядро группы + его настроенный рынок
+            // (открываем сразу — провайдер уже ретейнит трейды). 1:1 с egui-открытием.
+            let focus: Option<(CoreId, String)> = cfg
+                .servers
+                .iter()
+                .find(|s| s.active && cfg.group(&s.group).active && s.group == group)
+                .map(|s| (s.id, s.market.clone()));
             let off = i as f32 * 40.0;
             let opts = WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds {
@@ -397,7 +434,7 @@ fn main() -> anyhow::Result<()> {
                 ..Default::default()
             };
             cx.open_window(opts, |window, cx| {
-                let view = cx.new(|cx| Shell::new(backend, group, window, cx));
+                let view = cx.new(|cx| Shell::new(backend, group, focus, epoch, window, cx));
                 cx.new(|cx| Root::new(view, window, cx))
             })
             .expect("open_window");
