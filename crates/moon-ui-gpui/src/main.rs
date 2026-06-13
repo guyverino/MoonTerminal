@@ -13,11 +13,13 @@ mod axes;
 mod chart;
 mod chart_tabs;
 mod controls;
+mod detached;
 mod dock_persist;
 mod icons;
 mod input;
 mod panels;
 mod settings;
+mod strategies;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -128,6 +130,15 @@ struct Backend {
     show_group_request: Vec<String>,
     /// Открытые окна групп (группа → handle) — фокус по 👁, дедуп окон.
     group_windows: HashMap<String, WindowHandle<Root>>,
+    /// Окно «Стратегии» (отдельное ОС-окно, общее на приложение) — дедуп/фокус.
+    strategies_window: Option<WindowHandle<Root>>,
+    /// Откреплённые dock-панели (какая панель, из какой группы, геометрия окна) — load
+    /// на старте, save при изменении. Порт egui `WindowLayout.detached`/`detached.rs`.
+    detached: Vec<detached::DetachedSpec>,
+    detached_dirty: bool,
+    /// Запросы «вернуть панель в док» (закрыли окно открепления) — (группа, panel_name).
+    /// Дренит `Shell` своей группы: добавляет панель в свой `DockArea` + убирает спеку.
+    repin_request: Vec<(String, String)>,
 }
 
 /// Плоская строка ордера для таблицы (владеющая; собирается из OrderRow + имя ядра).
@@ -275,10 +286,29 @@ impl Shell {
             let charts = cx.new(|cx| ChartTabs::new(backend.clone(), group.clone(), focus, epoch, theme.clone(), window, cx));
             let detects = cx.new(|cx| DetectsPanel::new(backend.clone(), group.clone(), cx));
             let order = cx.new(|cx| OrderPanel::new(cx));
-            let orders_panel = cx.new(|cx| OrdersPanel::new(backend.clone(), group.clone(), window, cx));
-            let assets = cx.new(|cx| StubPanel::new("Assets", "Активы", cx));
-            let log = cx.new(|cx| StubPanel::new("Log", "Лог", cx));
-            let report = cx.new(|cx| StubPanel::new("Report", "Отчёт", cx));
+
+            // Нижние вкладки — собираем, ПРОПУСКАЯ откреплённые (их окна откроет старт):
+            // панель убрана из дока при откреплении, dock_persist хранит док без неё.
+            let detached_set: std::collections::HashSet<String> = backend
+                .read(cx)
+                .detached
+                .iter()
+                .filter(|s| s.group == group)
+                .map(|s| s.panel.clone())
+                .collect();
+            let mut bottom_tabs: Vec<Arc<dyn PanelView>> = Vec::new();
+            if !detached_set.contains("Orders") {
+                bottom_tabs.push(Arc::new(cx.new(|cx| {
+                    OrdersPanel::new(backend.clone(), group.clone(), window, cx)
+                })));
+            }
+            for (name, title) in [("Assets", "Активы"), ("Log", "Лог"), ("Report", "Отчёт")] {
+                if !detached_set.contains(name) {
+                    bottom_tabs.push(Arc::new(cx.new(|cx| {
+                        StubPanel::new(name, title, group.clone(), backend.clone(), cx)
+                    })));
+                }
+            }
 
             // ВСЁ — в center-сплите (свободный пересплит drag-to-edge + детач панелей).
             // Чарт-вкладки слева, детекты+ордер стопкой справа (≈220px), нижние вкладки внизу.
@@ -301,12 +331,6 @@ impl Shell {
                 window,
                 cx,
             );
-            let bottom_tabs: Vec<Arc<dyn PanelView>> = vec![
-                Arc::new(orders_panel),
-                Arc::new(assets),
-                Arc::new(log),
-                Arc::new(report),
-            ];
             let bottom = DockItem::tabs(bottom_tabs, &weak, window, cx);
             let center = DockItem::split_with_sizes(
                 Axis::Vertical,
@@ -343,6 +367,36 @@ impl Shell {
 
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Репин: вернуть в док панели, чьи окна открепления закрыли (запрос из Backend).
+        // Закрытие окна открепления → DetachedWindow.on_release → repin_request; здесь
+        // (своя группа) строим свежую панель, добавляем в свой DockArea, убираем спеку.
+        let group = self.group.clone();
+        let repins: Vec<String> = self.backend.update(cx, |b, _| {
+            let mut mine = Vec::new();
+            b.repin_request.retain(|(g, p)| {
+                if *g == group {
+                    mine.push(p.clone());
+                    false
+                } else {
+                    true
+                }
+            });
+            mine
+        });
+        for panel_name in repins {
+            let backend = self.backend.clone();
+            let dock = self.dock.clone();
+            if let Some(panel) = detached::build_panel(&panel_name, &group, &backend, window, cx) {
+                dock.update(cx, |area, cx| {
+                    area.add_panel(panel, gpui_component::dock::DockPlacement::Center, None, window, cx);
+                });
+            }
+            backend.update(cx, |b, _| {
+                b.detached.retain(|s| !(s.group == group && s.panel == panel_name));
+                b.detached_dirty = true;
+            });
+        }
+
         // Снять геометрию окна → раскладка (save дебаунсит дренаж-таймер).
         if let WindowBounds::Windowed(b) = window.window_bounds() {
             let g = GroupLayout {
@@ -448,6 +502,12 @@ impl Render for Shell {
                             .items_center()
                             .child(div().child(format!("{}/{} connected", conn.ready, conn.total)))
                             .child(div().child(format!("orders {order_count}")))
+                            .child(
+                                Button::new("strategies").ghost().label("Стратегии").on_click({
+                                    let backend = self.backend.clone();
+                                    move |_, _, cx| strategies::open(backend.clone(), cx)
+                                }),
+                            )
                             .child(
                                 Button::new("gear").ghost().label("⚙").on_click({
                                     let backend = self.backend.clone();
@@ -569,6 +629,7 @@ fn main() -> anyhow::Result<()> {
 
         let layout = WindowLayout::load();
         let dock_states = dock_persist::load_all();
+        let detached = detached::load_all();
 
         let backend = cx.new(|_| Backend {
             session: SessionManager::start(&cfg, epoch, None),
@@ -591,6 +652,10 @@ fn main() -> anyhow::Result<()> {
             reconnect_request: Vec::new(),
             show_group_request: Vec::new(),
             group_windows: HashMap::new(),
+            strategies_window: None,
+            detached,
+            detached_dirty: false,
+            repin_request: Vec::new(),
         });
 
         // Фабрики панелей для восстановления раскладки доков (PanelRegistry — глобален).
@@ -632,6 +697,11 @@ fn main() -> anyhow::Result<()> {
                                 dock_persist::save_all(&b.dock_states);
                                 b.dock_dirty = false;
                             }
+                            // Дебаунс-сохранение откреплённых окон (detached.json).
+                            if b.detached_dirty {
+                                detached::save_all(&b.detached);
+                                b.detached_dirty = false;
+                            }
                             cx.notify();
                             std::mem::take(&mut b.show_group_request)
                         });
@@ -652,6 +722,14 @@ fn main() -> anyhow::Result<()> {
         // По окну на группу (тем же helper'ом, что и кнопка 👁 «показать группу»).
         for (i, group) in group_list.into_iter().enumerate() {
             spawn_group_window(cx, &backend, &cfg, group, epoch, &layout, i as f32 * 40.0);
+        }
+
+        // Восстановить окна откреплённых панелей (панель уже не в доке — она была убрана
+        // при откреплении, и dock_persist сохранил док без неё). Порт egui-восстановления
+        // detached на старте.
+        let specs = backend.read(cx).detached.clone();
+        for spec in &specs {
+            detached::spawn(cx, &backend, spec);
         }
     });
     Ok(())

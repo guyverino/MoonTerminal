@@ -1,0 +1,220 @@
+//! Откреплённые dock-панели в отдельных ОС-окнах (порт egui `app/detached.rs` +
+//! `WindowLayout.detached`). Панель «уходит» из дока (`TabPanel::remove_panel`) в своё
+//! окно; факт открепления и геометрия окна персистятся в `detached.json` и
+//! восстанавливаются на старте (панель сразу открывается отцепленной). Закрытие окна
+//! открепления → репин: панель возвращается в док окна-владельца (через
+//! `Backend.repin_request`, который дренит `Shell`).
+//!
+//! Контент окна — СВЕЖИЙ экземпляр панели (данные тянет из общего `Backend`, поэтому
+//! живой). Обёртка [`DetachedWindow`] рендерит его, следит за геометрией окна и просит
+//! репин по закрытию. Чарт-вкладки персистятся отдельно (нужна сериализация панелей).
+
+use std::sync::Arc;
+
+use gpui::*;
+use gpui_component::dock::PanelView;
+use gpui_component::Root;
+use serde::{Deserialize, Serialize};
+
+use crate::panels::{OrdersPanel, StubPanel};
+use crate::{hex, Backend};
+use moon_core::config::paths;
+use moon_core::palette;
+
+/// Одно откреплённое окно: какая панель (`panel_name`), из какой группы, геометрия окна.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct DetachedSpec {
+    pub group: String,
+    /// `panel_name` панели: Orders / Assets / Log / Report.
+    pub panel: String,
+    pub x: i32,
+    pub y: i32,
+    pub w: u32,
+    pub h: u32,
+}
+
+impl DetachedSpec {
+    /// Спека с дефолтной геометрией (каскад) — для первого открепления.
+    pub fn new(group: String, panel: String) -> Self {
+        Self { group, panel, x: 200, y: 160, w: 1100, h: 520 }
+    }
+}
+
+/// Загрузить список откреплённых из `detached.json` (нет/битый → пусто).
+pub fn load_all() -> Vec<DetachedSpec> {
+    match std::fs::read_to_string(paths::detached_path()) {
+        Ok(s) => serde_json::from_str(&s).unwrap_or_else(|e| {
+            log::warn!("detached.json битый ({e}) → без откреплённых");
+            Vec::new()
+        }),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// Записать список откреплённых в `detached.json` (не фатально).
+pub fn save_all(list: &[DetachedSpec]) {
+    match serde_json::to_string_pretty(list) {
+        Ok(s) => {
+            if let Err(e) = std::fs::write(paths::detached_path(), s) {
+                log::warn!("не записал detached.json: {e}");
+            }
+        }
+        Err(e) => log::warn!("не сериализовал detached.json: {e}"),
+    }
+}
+
+/// Заголовок (ru) и панель по `panel_name` — единый источник для окна/репина.
+fn panel_title(name: &str) -> &'static str {
+    match name {
+        "Orders" => "Ордера",
+        "Assets" => "Активы",
+        "Log" => "Лог",
+        "Report" => "Отчёт",
+        _ => "Панель",
+    }
+}
+
+/// Заголовки заглушек (Активы/Лог/Отчёт) по `panel_name`.
+fn stub_title(name: &str) -> &'static str {
+    match name {
+        "Assets" => "Активы",
+        "Log" => "Лог",
+        "Report" => "Отчёт",
+        _ => "Панель",
+    }
+}
+
+/// Свежий экземпляр dock-панели по `panel_name` как `Arc<dyn PanelView>` — для репина
+/// (вернуть в док) и как контент окна открепления.
+pub fn build_panel(
+    name: &str,
+    group: &str,
+    backend: &Entity<Backend>,
+    window: &mut Window,
+    cx: &mut App,
+) -> Option<Arc<dyn PanelView>> {
+    let panel: Arc<dyn PanelView> = match name {
+        "Orders" => Arc::new(cx.new(|cx| OrdersPanel::new(backend.clone(), group.to_string(), window, cx))),
+        "Assets" | "Log" | "Report" => Arc::new(cx.new(|cx| {
+            StubPanel::new(
+                // `panel_name` должен совпадать с реестром/спекой — берём статический литерал.
+                match name {
+                    "Assets" => "Assets",
+                    "Log" => "Log",
+                    _ => "Report",
+                },
+                stub_title(name),
+                group.to_string(),
+                backend.clone(),
+                cx,
+            )
+        })),
+        _ => return None,
+    };
+    Some(panel)
+}
+
+/// Обёртка-вид окна открепления: рендерит панель, следит за геометрией окна
+/// (пишет в `Backend.detached`, дебаунс-сейв делает дренаж), по закрытию просит репин.
+pub struct DetachedWindow {
+    backend: Entity<Backend>,
+    group: String,
+    panel: String,
+    content: AnyView,
+}
+
+impl DetachedWindow {
+    fn new(
+        backend: Entity<Backend>,
+        group: String,
+        panel: String,
+        content: AnyView,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        // Перерисовка по дренажу → отслеживание геометрии окна каждые ~100мс (как Shell).
+        cx.observe(&backend, |_this, _b, cx| cx.notify()).detach();
+        // Закрытие окна → репин (вернуть панель в док окна-владельца). На выходе из
+        // приложения дренаж уже не обрабатывает запрос → спека остаётся в detached.json
+        // (панель восстановится отцепленной на следующем запуске).
+        let (g, p) = (group.clone(), panel.clone());
+        cx.on_release(move |this, app| {
+            this.backend.update(app, |b, _| {
+                b.repin_request.push((g.clone(), p.clone()));
+            });
+        })
+        .detach();
+        Self { backend, group, panel, content }
+    }
+}
+
+impl Render for DetachedWindow {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Снять геометрию окна → спека (save дебаунсит дренаж-таймер).
+        if let WindowBounds::Windowed(b) = window.window_bounds() {
+            let geom = (
+                f32::from(b.origin.x) as i32,
+                f32::from(b.origin.y) as i32,
+                f32::from(b.size.width) as u32,
+                f32::from(b.size.height) as u32,
+            );
+            let (group, panel) = (self.group.clone(), self.panel.clone());
+            self.backend.update(cx, |bk, _| {
+                if let Some(s) = bk.detached.iter_mut().find(|s| s.group == group && s.panel == panel) {
+                    if (s.x, s.y, s.w, s.h) != geom {
+                        s.x = geom.0;
+                        s.y = geom.1;
+                        s.w = geom.2;
+                        s.h = geom.3;
+                        bk.detached_dirty = true;
+                    }
+                }
+            });
+        }
+        div()
+            .size_full()
+            .bg(rgb(hex(palette::BG)))
+            .text_color(rgb(hex(palette::TEXT)))
+            .child(self.content.clone())
+    }
+}
+
+/// Открыть окно открепления для спеки (на старте — по каждой сохранённой спеке; при
+/// клике «⧉» — по новой). Контент — свежая панель; геометрия — из спеки.
+pub fn spawn(app: &mut App, backend: &Entity<Backend>, spec: &DetachedSpec) {
+    let bounds = Bounds {
+        origin: point(px(spec.x as f32), px(spec.y as f32)),
+        size: size(px(spec.w as f32), px(spec.h as f32)),
+    };
+    let opts = WindowOptions {
+        window_bounds: Some(WindowBounds::Windowed(bounds)),
+        titlebar: Some(TitlebarOptions {
+            title: Some(format!("{} — MoonTerminal", panel_title(&spec.panel)).into()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let backend = backend.clone();
+    let spec = spec.clone();
+    app.open_window(opts, move |window, cx| {
+        let content: AnyView = match spec.panel.as_str() {
+            "Orders" => cx
+                .new(|cx| OrdersPanel::new(backend.clone(), spec.group.clone(), window, cx))
+                .into(),
+            name @ ("Assets" | "Log" | "Report") => {
+                let n = match name {
+                    "Assets" => "Assets",
+                    "Log" => "Log",
+                    _ => "Report",
+                };
+                cx.new(|cx| StubPanel::new(n, stub_title(name), spec.group.clone(), backend.clone(), cx))
+                    .into()
+            }
+            _ => cx.new(|cx| StubPanel::new("?", "Панель", spec.group.clone(), backend.clone(), cx)).into(),
+        };
+        let dw = cx.new(|cx| {
+            DetachedWindow::new(backend.clone(), spec.group.clone(), spec.panel.clone(), content, cx)
+        });
+        cx.new(|cx| Root::new(dw, window, cx))
+    })
+    .ok();
+}

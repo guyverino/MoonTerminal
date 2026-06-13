@@ -41,6 +41,12 @@ pub fn docks_path() -> PathBuf {
     exe_dir().join("docks.json")
 }
 
+/// Откреплённые dock-панели GPUI-оболочки (какая панель, из какой группы, геометрия
+/// окна) — отдельный JSON рядом с exe. На старте окна открепления восстанавливаются.
+pub fn detached_path() -> PathBuf {
+    exe_dir().join("detached.json")
+}
+
 /// SQLite-БД с отчётами по закрытым ордерам (`ClosedSellOrderReport`).
 pub fn reports_db_path() -> PathBuf {
     exe_dir().join("reports.sqlite")
