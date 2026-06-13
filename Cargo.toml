@@ -69,3 +69,14 @@ windows = { version = "0.58", features = [
 codegen-units = 1
 lto = true
 strip = true
+
+# Dev-сборка для GPUI-оболочки: главный источник рывков (вплоть до курсора) — DX12
+# debug/validation-слой, который GPUI и wgpu включают в debug по `cfg!(debug_assertions)`
+# (он же `HRESULT 0x887A002D` на старте без Graphics Tools). Отключаем его, не уходя в
+# release: debug_assertions=false снимает оба слоя; зависимости (gpui/wgpu/skia) собираем
+# оптимизированно — рантайм близок к release, а инкрементальная сборка своего кода быстра.
+[profile.dev]
+debug-assertions = false
+
+[profile.dev.package."*"]
+opt-level = 3

@@ -10,7 +10,7 @@
 //! разборке отрезаем хвост каждой строки. `ppp` = scale_factor окна → жёлоба осей
 //! (PRICE_AXIS_W·ppp / TIME_AXIS_H·ppp) масштабируются как в egui-версии.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use gpui::RenderImage;
 use image::{Frame, ImageBuffer, Rgba};
@@ -34,9 +34,36 @@ fn align_up(n: u32, a: u32) -> u32 {
     n.div_ceil(a) * a
 }
 
+/// ОДИН общий wgpu device/queue на ВСЕ чарты. Создание адаптера+девайса — сотни мс и
+/// блокирует UI-поток; раньше каждый `ChartGpu` делал свой → фриз при появлении новой
+/// вкладки (Main + каждый AddToChart). Device/Queue в wgpu не `Clone`, поэтому держим
+/// под `Arc` и раздаём клоны Arc (дёшево). Создаётся лениво при первом чарте.
+fn shared_gpu() -> (Arc<wgpu::Device>, Arc<wgpu::Queue>) {
+    static GPU: OnceLock<(Arc<wgpu::Device>, Arc<wgpu::Queue>)> = OnceLock::new();
+    let (d, q) = GPU.get_or_init(|| {
+        // ВАЖНО (перф): пустые флаги — иначе в DEBUG wgpu включает DX12 validation layer
+        // (десятки раз медленнее каждый GPU-вызов, + `HRESULT 0x887A002D` без Graphics Tools).
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            flags: wgpu::InstanceFlags::empty(),
+            ..Default::default()
+        });
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            ..Default::default()
+        }))
+        .expect("wgpu adapter");
+        let info = adapter.get_info();
+        log::info!("chart wgpu backend: {:?} | adapter: {} | driver: {}", info.backend, info.name, info.driver);
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default(), None))
+            .expect("wgpu device");
+        (Arc::new(device), Arc::new(queue))
+    });
+    (d.clone(), q.clone())
+}
+
 pub struct ChartGpu {
-    device: wgpu::Device,
-    queue: wgpu::Queue,
+    device: Arc<wgpu::Device>,
+    queue: Arc<wgpu::Queue>,
     format: wgpu::TextureFormat,
     texture: wgpu::Texture,
     view: wgpu::TextureView,
@@ -61,17 +88,10 @@ impl ChartGpu {
     }
 
     /// ChartGpu с заданным видом контейнера (Main / Chart{num} для AddToChart-вкладок).
+    /// Девайс/очередь — ОБЩИЕ (см. `shared_gpu`): новый чарт не создаёт свой девайс,
+    /// поэтому появление вкладки больше не фризит UI-поток.
     pub fn new_kind(epoch: f64, theme: ChartTheme, kind: ContainerKind) -> Self {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());
-        let adapter =
-            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
-                .expect("wgpu adapter");
-        let info = adapter.get_info();
-        log::info!("chart wgpu backend: {:?} | adapter: {} | driver: {}", info.backend, info.name, info.driver);
-        let (device, queue) = pollster::block_on(
-            adapter.request_device(&wgpu::DeviceDescriptor::default(), None),
-        )
-        .expect("wgpu device");
+        let (device, queue) = shared_gpu();
 
         // BGRA sRGB — как surface egui-версии: байты сразу в порядке, который GPUI
         // ждёт от RenderImage (BGRA), иначе каналы R↔B свопаются. + sRGB-таргет.
