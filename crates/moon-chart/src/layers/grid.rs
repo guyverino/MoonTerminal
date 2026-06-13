@@ -3,8 +3,8 @@
 use super::make_pipeline;
 
 const SHADER: &str = concat!(
-    include_str!("../../../shaders/common.wgsl"),
-    include_str!("../../../shaders/grid.wgsl"),
+    include_str!("../../shaders/common.wgsl"),
+    include_str!("../../shaders/grid.wgsl"),
 );
 
 pub struct GridLayer {

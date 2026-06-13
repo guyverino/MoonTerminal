@@ -1,7 +1,7 @@
 # Workspace: бинарь-оболочка (этот пакет, в корне) + UI-агностичное ядро moon-core.
 # vendor/gpui-component (клон для лаб миграции) — собственный workspace, НЕ член.
 [workspace]
-members = [".", "crates/moon-core", "crates/moon-ui-gpui"]
+members = [".", "crates/moon-core", "crates/moon-chart", "crates/moon-ui-gpui"]
 resolver = "2"
 
 [package]
@@ -13,6 +13,8 @@ description = "MoonBot terminal — wgpu chart + orderbook, egui shell, moonprot
 [dependencies]
 # Бэкенд-ядро: feed/session/market/config/db/data/util/palette/symbol/metrics.
 moon-core = { path = "crates/moon-core" }
+# wgpu-движок чарта (egui-free слои + render_panes). Оси/оверлей — здесь, в UI.
+moon-chart = { path = "crates/moon-chart" }
 
 winit = "0.30"
 wgpu = "22"

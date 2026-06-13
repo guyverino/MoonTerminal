@@ -10,7 +10,7 @@ use winit::event::{MouseButton, MouseScrollDelta};
 use crate::chart::container::Container;
 use crate::chart::paint::now_unix_ms;
 use crate::chart::view::{ChartView, Rect};
-use crate::session::CoreId;
+use moon_core::session::CoreId;
 
 #[derive(Default)]
 pub struct ChartInput {

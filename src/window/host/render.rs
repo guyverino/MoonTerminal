@@ -201,7 +201,7 @@ impl WindowHost {
 
         // Overlay-слой шкал + readout'ов перекрестия — по одному на видимую панель.
         if render_open && area.w > 1.0 && area.h > 1.0 {
-            crate::chart::paint::render_overlay(
+            crate::chart::overlay::render_overlay(
                 &self.containers[ac],
                 &layout,
                 &self.overlay_ctx,

@@ -4,9 +4,9 @@
 //! кликами по детектам (фулскрин-фокус), AddToChart-контейнер — авто-панелями с
 //! TTL (`KeepInChart`). См. docs/CHART_CONTAINERS_PLAN.md.
 
-use crate::chart::view::{ChartView, Rect};
-use crate::chart::Chart;
-use crate::session::CoreId;
+use crate::view::{ChartView, Rect};
+use crate::Chart;
+use moon_core::session::CoreId;
 
 /// Применить масштаб цены к виду: None = Авто, Some(доля) = процент от цены.
 fn apply_scale(view: &mut ChartView, pct: Option<f32>) {

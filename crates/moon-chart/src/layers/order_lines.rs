@@ -55,16 +55,16 @@ const MARKER_ATTRS: [wgpu::VertexAttribute; 6] = wgpu::vertex_attr_array![
 ];
 
 const HLINE_SHADER: &str = concat!(
-    include_str!("../../../shaders/common.wgsl"),
-    include_str!("../../../shaders/order_lines.wgsl"),
+    include_str!("../../shaders/common.wgsl"),
+    include_str!("../../shaders/order_lines.wgsl"),
 );
 const SEG_SHADER: &str = concat!(
-    include_str!("../../../shaders/common.wgsl"),
-    include_str!("../../../shaders/order_seg.wgsl"),
+    include_str!("../../shaders/common.wgsl"),
+    include_str!("../../shaders/order_seg.wgsl"),
 );
 const MARKER_SHADER: &str = concat!(
-    include_str!("../../../shaders/common.wgsl"),
-    include_str!("../../../shaders/order_marker.wgsl"),
+    include_str!("../../shaders/common.wgsl"),
+    include_str!("../../shaders/order_marker.wgsl"),
 );
 
 pub struct OrderLinesLayer {

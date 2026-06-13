@@ -12,7 +12,7 @@ use super::layers::CrossesLayer;
 use super::transform::{ChartGlobals, ChartUniform};
 use super::view::Rect;
 
-const SHADER: &str = include_str!("../../shaders/canvas.wgsl");
+const SHADER: &str = include_str!("../shaders/canvas.wgsl");
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]

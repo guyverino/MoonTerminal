@@ -1,0 +1,16 @@
+[package]
+name = "moon-chart"
+version = "0.1.0"
+edition = "2021"
+description = "MoonTerminal wgpu chart engine — egui-агностичные GPU-слои (grid/crosses/glass/cursor/order-lines), canvas+UV-scroll, render в любой TextureView. Делится между egui- и GPUI-оболочками."
+
+[lib]
+name = "moon_chart"
+path = "src/lib.rs"
+
+[dependencies]
+# Доменные данные/конфиг/сессии (UI-агностик).
+moon-core = { path = "../moon-core" }
+
+wgpu = "22"
+bytemuck = { version = "1", features = ["derive"] }

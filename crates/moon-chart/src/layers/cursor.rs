@@ -4,11 +4,11 @@ use bytemuck::Zeroable;
 use wgpu::util::DeviceExt;
 
 use super::make_pipeline;
-use crate::chart::view::Rect;
+use crate::view::Rect;
 
 const SHADER: &str = concat!(
-    include_str!("../../../shaders/common.wgsl"),
-    include_str!("../../../shaders/cursor.wgsl"),
+    include_str!("../../shaders/common.wgsl"),
+    include_str!("../../shaders/cursor.wgsl"),
 );
 
 #[repr(C)]

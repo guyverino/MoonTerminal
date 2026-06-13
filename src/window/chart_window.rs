@@ -411,7 +411,7 @@ impl ChartWindow {
 
         // 4. Оверлей шкал/перекрестия.
         if !layout.is_empty() {
-            crate::chart::paint::render_overlay(
+            crate::chart::overlay::render_overlay(
                 &self.container,
                 &layout,
                 &self.overlay_ctx,

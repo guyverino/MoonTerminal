@@ -12,10 +12,8 @@ use egui::{Align, Align2, Color32, FontId, Pos2, Rect, Rounding, Stroke};
 
 use crate::shell::theme;
 
-/// Ширина левой шкалы цены (точки egui).
-pub const PRICE_AXIS_W: f32 = 56.0;
-/// Высота нижней шкалы времени (точки egui).
-pub const TIME_AXIS_H: f32 = 16.0;
+// Размеры осей — единый источник в moon_chart (их же использует движок).
+use moon_chart::{PRICE_AXIS_W, TIME_AXIS_H};
 
 /// Срез состояния вида, нужный шкалам. Снимается ПОСЛЕ `chart::render` (значения
 /// текущего кадра).

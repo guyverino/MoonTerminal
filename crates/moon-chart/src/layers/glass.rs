@@ -1,15 +1,15 @@
 //! Слой 4: стакан (glass) — фон зоны + бары глубины/линии уровней.
 
 use super::{make_pipeline, InstanceBuf};
-use crate::chart::data::LevelInstance;
+use moon_core::data::LevelInstance;
 
 const BARS_SHADER: &str = concat!(
-    include_str!("../../../shaders/common.wgsl"),
-    include_str!("../../../shaders/glass.wgsl"),
+    include_str!("../../shaders/common.wgsl"),
+    include_str!("../../shaders/glass.wgsl"),
 );
 const BG_SHADER: &str = concat!(
-    include_str!("../../../shaders/common.wgsl"),
-    include_str!("../../../shaders/glass_bg.wgsl"),
+    include_str!("../../shaders/common.wgsl"),
+    include_str!("../../shaders/glass_bg.wgsl"),
 );
 
 const ATTRS: [wgpu::VertexAttribute; 4] =

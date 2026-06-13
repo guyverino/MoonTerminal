@@ -4,7 +4,7 @@
 use bytemuck::Zeroable;
 use wgpu::util::DeviceExt;
 
-use crate::config::ChartTheme;
+use moon_core::config::ChartTheme;
 
 /// Должен совпадать со `struct Style` в grid.wgsl/cursor.wgsl (std140, vec4-выравн.).
 #[repr(C)]

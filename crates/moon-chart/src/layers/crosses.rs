@@ -1,11 +1,11 @@
 //! Слой 2 (часть): тики-крестики через instanced quads.
 
 use super::{make_pipeline, InstanceBuf};
-use crate::chart::data::TickInstance;
+use moon_core::data::TickInstance;
 
 const SHADER: &str = concat!(
-    include_str!("../../../shaders/common.wgsl"),
-    include_str!("../../../shaders/crosses.wgsl"),
+    include_str!("../../shaders/common.wgsl"),
+    include_str!("../../shaders/crosses.wgsl"),
 );
 
 const ATTRS: [wgpu::VertexAttribute; 3] =
