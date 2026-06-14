@@ -8,15 +8,11 @@
 //! (`ListState` с выравниванием к низу — как chat-лог, новые строки видны снизу).
 
 use gpui::*;
-use gpui_component::{
-    button::Button,
-    checkbox::Checkbox,
-    h_flex,
-    input::{Input, InputEvent, InputState},
-    popover::Popover,
-    v_flex, Sizable, StyledExt,
+use moon_palette::{
+    h_flex, v_flex, DockArea, MoonButton, MoonButtonSize, MoonButtonVariant, MoonCheckbox,
+    MoonCheckboxSize, MoonDropdown, MoonInput, MoonInputEvent, MoonInputState, MoonMenuItem,
+    MoonMenuSize, Panel, PanelEvent, PanelState, StyledExt,
 };
-use moon_palette::{DockArea, MoonButton, MoonButtonSize, Panel, PanelEvent, PanelState};
 
 use crate::detached::DetachedSpec;
 use crate::{hex, Backend};
@@ -57,7 +53,7 @@ pub struct LogPanel {
     source: LogSource,
     file: LogFile,
     errors_only: bool,
-    query: Entity<InputState>,
+    query: Entity<MoonInputState>,
     /// Кэш загруженного файла — чтобы не читать диск каждый кадр.
     loaded_name: Option<String>,
     loaded_lines: Vec<LogLine>,
@@ -73,9 +69,9 @@ pub struct LogPanel {
 
 impl LogPanel {
     pub fn new(backend: Entity<Backend>, group: String, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let query = cx.new(|cx| InputState::new(window, cx).placeholder("Поиск…"));
-        cx.subscribe(&query, |_t, _e, ev: &InputEvent, cx| {
-            if matches!(ev, InputEvent::Change) {
+        let query = cx.new(|cx| MoonInputState::new(window, cx).placeholder("Поиск..."));
+        cx.subscribe(&query, |_t, _e, ev: &MoonInputEvent, cx| {
+            if matches!(ev, MoonInputEvent::Change) {
                 cx.notify();
             }
         })
@@ -175,19 +171,23 @@ impl LogPanel {
         let cur = sources.iter().find(|s| s.source == self.source).map(|s| s.display.clone()).unwrap_or_else(|| "Локальный".into());
         let view = cx.entity();
         let items: Vec<(LogSource, String)> = sources.iter().map(|s| (s.source.clone(), s.display.clone())).collect();
-        Popover::new("log-source")
-            .trigger(Button::new("log-source-btn").outline().xsmall().label(format!("{cur} ▾")))
-            .content(move |_s, _w, _cx| {
-                let mut col = v_flex().gap_0p5().p_1().min_w(px(160.0));
-                for (i, (src, disp)) in items.iter().enumerate() {
-                    let src = src.clone();
-                    let view = view.clone();
-                    col = col.child(combo_item(format!("ls-{i}"), disp.clone(), move |app| {
-                        view.update(app, |t, c| t.set_source(src.clone(), c))
-                    }));
-                }
-                col
-            })
+        MoonDropdown::new("log-source")
+            .label(format!("{cur} ▾"))
+            .trigger_variant(MoonButtonVariant::Soft)
+            .trigger_size(MoonButtonSize::Action)
+            .trigger_width(150.0)
+            .menu_width(180.0)
+            .menu_size(MoonMenuSize::Compact)
+            .items(items.into_iter().enumerate().map(move |(i, (src, disp))| {
+                let selected = src == self.source;
+                let view = view.clone();
+                MoonMenuItem::with_key(format!("ls-{i}"), disp)
+                    .selected(selected)
+                    .on_click(move |_, _, app| {
+                        let src = src.clone();
+                        view.update(app, |t, c| t.set_source(src, c));
+                    })
+            }))
     }
 
     /// Комбобокс файла (Live + прошлые файлы) — только для одиночного источника.
@@ -198,25 +198,35 @@ impl LogPanel {
         };
         let label = self.file_label(sources);
         let view = cx.entity();
-        Popover::new("log-file")
-            .trigger(Button::new("log-file-btn").outline().xsmall().label(format!("{cur} ▾")))
-            .content(move |_s, _w, _cx| {
-                let files = applog::list_files(&label);
-                let mut col = v_flex().id("log-file-list").gap_0p5().p_1().min_w(px(180.0)).max_h(px(360.0)).overflow_y_scroll();
-                col = col.child(combo_item("lf-live", "Live (текущий)", {
-                    let view = view.clone();
-                    move |app| view.update(app, |t, c| t.set_file(LogFile::Live, c))
-                }));
-                for f in files {
-                    let view = view.clone();
-                    let f2 = f.clone();
-                    col = col.child(combo_item(SharedString::from(format!("lf-{f}")), f.clone(), move |app| {
-                        let f3 = f2.clone();
-                        view.update(app, |t, c| t.set_file(LogFile::Named(f3.clone()), c))
-                    }));
+        let mut items = vec![MoonMenuItem::with_key("lf-live", "Live (текущий)")
+            .selected(matches!(self.file, LogFile::Live))
+            .on_click({
+                let view = view.clone();
+                move |_, _, app| {
+                    view.update(app, |t, c| t.set_file(LogFile::Live, c));
                 }
-                col
-            })
+            })];
+        for f in applog::list_files(&label) {
+            let selected = matches!(&self.file, LogFile::Named(name) if name == &f);
+            let view = view.clone();
+            let file = f.clone();
+            items.push(
+                MoonMenuItem::with_key(SharedString::from(format!("lf-{f}")), f)
+                    .selected(selected)
+                    .on_click(move |_, _, app| {
+                        let file = file.clone();
+                        view.update(app, |t, c| t.set_file(LogFile::Named(file), c));
+                    }),
+            );
+        }
+        MoonDropdown::new("log-file")
+            .label(format!("{cur} ▾"))
+            .trigger_variant(MoonButtonVariant::Soft)
+            .trigger_size(MoonButtonSize::Action)
+            .trigger_width(180.0)
+            .menu_width(220.0)
+            .menu_size(MoonMenuSize::Compact)
+            .items(items)
     }
 }
 
@@ -361,12 +371,13 @@ impl Render for LogPanel {
                 .child(self.file_combo(&sources, cx));
         }
         controls = controls
-            .child(div().w(px(180.0)).child(Input::new(&self.query).small().cleanable(true)))
+            .child(div().w(px(180.0)).child(MoonInput::new("log-query").state(&self.query).small().cleanable(true)))
             .child(
-                Checkbox::new("log-errors-only")
+                MoonCheckbox::new("log-errors-only")
                     .label("Только ошибки")
                     .checked(self.errors_only)
-                    .on_click(cx.listener(|t, ch: &bool, _, cx| {
+                    .size(MoonCheckboxSize::Compact)
+                    .on_change(cx.listener(|t, ch: &bool, _, cx| {
                         t.errors_only = *ch;
                         cx.notify();
                     })),
@@ -403,17 +414,3 @@ impl Render for LogPanel {
     }
 }
 
-/// Кликабельный пункт попап-комбобокса.
-fn combo_item(id: impl Into<SharedString>, label: impl Into<SharedString>, on_click: impl Fn(&mut App) + 'static) -> impl IntoElement {
-    div()
-        .id(id.into())
-        .w_full()
-        .px_2()
-        .py_1()
-        .cursor_pointer()
-        .rounded(px(3.0))
-        .text_color(rgb(hex(palette::TEXT)))
-        .hover(|s| s.bg(rgb(hex(palette::LIFT_HOVER))))
-        .child(label.into())
-        .on_click(move |_, _w, app| on_click(app))
-}

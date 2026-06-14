@@ -42,7 +42,7 @@ use panels::{DetectsPanel, LogPanel, OrderPanel, OrdersPanel, ReportPanel, StubP
 use moon_palette::{
     h_flex, v_flex, DockArea, DockAreaState, DockEvent, DockItem, DockPlacement,
     MoonBackgroundPolicy, MoonPalette, MoonStatusBar, MoonStatusIndicator, MoonStatusItem,
-    PanelView, Root,
+    MoonTooltipView, PanelView, Root,
 };
 
 use moon_core::config::{AppConfig, GroupLayout, WindowLayout};
@@ -643,8 +643,9 @@ impl Shell {
                     .render(),
             );
         if !down_text.is_empty() {
-            host = host.tooltip(move |window, cx| {
-                gpui_component::tooltip::Tooltip::new(down_text.clone()).build(window, cx)
+            host = host.tooltip(move |_window, cx| {
+                cx.new(|_| MoonTooltipView::new(down_text.clone()).max_width(420.0))
+                    .into()
             });
         }
         host

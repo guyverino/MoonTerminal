@@ -8,17 +8,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use gpui::*;
-use gpui_component::{
-    button::Button,
-    checkbox::Checkbox,
-    h_flex,
-    input::{Input, InputEvent, InputState},
-    popover::Popover,
-    v_flex, Sizable, StyledExt,
-};
 use moon_palette::{
-    DockArea, MoonButton, MoonButtonSize, MoonScrollbarVisibility, MoonVirtualList, Panel,
-    PanelEvent, PanelState,
+    h_flex, v_flex, DockArea, MoonButton, MoonButtonSize, MoonButtonVariant, MoonDropdown,
+    MoonInput, MoonInputEvent, MoonInputState, MoonMenuItem, MoonMenuSize, MoonScrollbarVisibility,
+    MoonVirtualList, Panel, PanelEvent, PanelState, StyledExt,
 };
 use rusqlite::types::Value;
 use rusqlite::Connection;
@@ -53,9 +46,9 @@ pub struct ReportPanel {
     sort_desc: bool,
 
     sel_core: usize,
-    coin: Entity<InputState>,
-    from: Entity<InputState>,
-    to: Entity<InputState>,
+    coin: Entity<MoonInputState>,
+    from: Entity<MoonInputState>,
+    to: Entity<MoonInputState>,
     side: SideFilter,
     needs_query: bool,
 
@@ -74,12 +67,12 @@ impl ReportPanel {
         let visible = db::DISPLAY_COLUMNS.iter().map(|c| DEFAULT_VISIBLE.contains(c)).collect();
         let (sort_key, sort_desc) = conn.as_ref().and_then(db::load_sort).unwrap_or_else(|| ("buydate".to_string(), true));
 
-        let coin = cx.new(|cx| InputState::new(window, cx).placeholder("все"));
-        let from = cx.new(|cx| InputState::new(window, cx).placeholder("ГГГГ-ММ-ДД"));
-        let to = cx.new(|cx| InputState::new(window, cx).placeholder("ГГГГ-ММ-ДД"));
+        let coin = cx.new(|cx| MoonInputState::new(window, cx).placeholder("все"));
+        let from = cx.new(|cx| MoonInputState::new(window, cx).placeholder("ГГГГ-ММ-ДД"));
+        let to = cx.new(|cx| MoonInputState::new(window, cx).placeholder("ГГГГ-ММ-ДД"));
         for st in [&coin, &from, &to] {
-            cx.subscribe(st, |t, _e, ev: &InputEvent, cx| {
-                if matches!(ev, InputEvent::Change) {
+            cx.subscribe(st, |t, _e, ev: &MoonInputEvent, cx| {
+                if matches!(ev, MoonInputEvent::Change) {
                     t.needs_query = true;
                     cx.notify();
                 }
@@ -189,23 +182,33 @@ impl ReportPanel {
         };
         let view = cx.entity();
         let cores = self.cores.clone();
-        Popover::new("rep-core")
-            .trigger(Button::new("rep-core-btn").outline().xsmall().label(format!("{cur} ▾")))
-            .content(move |_s, _w, _cx| {
-                let view2 = view.clone();
-                let mut col = v_flex().id("rep-core-list").gap_0p5().p_1().min_w(px(150.0)).max_h(px(360.0)).overflow_y_scroll();
-                col = col.child(combo_item("rc-all", "Все", {
-                    let view = view2.clone();
-                    move |app| view.update(app, |t, c| t.set_core(0, c))
-                }));
-                for (i, (_u, name)) in cores.iter().enumerate() {
-                    let view = view2.clone();
-                    col = col.child(combo_item(format!("rc-{i}"), name.clone(), move |app| {
-                        view.update(app, |t, c| t.set_core(i + 1, c))
-                    }));
+        let mut items = vec![MoonMenuItem::with_key("rc-all", "Все")
+            .selected(self.sel_core == 0)
+            .on_click({
+                let view = view.clone();
+                move |_, _, app| {
+                    view.update(app, |t, c| t.set_core(0, c));
                 }
-                col
-            })
+            })];
+        for (i, (_u, name)) in cores.into_iter().enumerate() {
+            let view = view.clone();
+            items.push(
+                MoonMenuItem::with_key(format!("rc-{i}"), name)
+                    .selected(self.sel_core == i + 1)
+                    .on_click(move |_, _, app| {
+                        view.update(app, |t, c| t.set_core(i + 1, c));
+                    }),
+            );
+        }
+        MoonDropdown::new("rep-core")
+            .label(format!("{cur} ▾"))
+            .trigger_variant(MoonButtonVariant::Soft)
+            .trigger_size(MoonButtonSize::Action)
+            .trigger_width(130.0)
+            .menu_width(180.0)
+            .menu_max_height(360.0)
+            .menu_size(MoonMenuSize::Compact)
+            .items(items)
     }
 
     /// Комбобокс стороны (Все/Лонг/Шорт).
@@ -216,50 +219,53 @@ impl ReportPanel {
             SideFilter::Short => "Шорт",
         };
         let view = cx.entity();
-        Popover::new("rep-side")
-            .trigger(Button::new("rep-side-btn").outline().xsmall().label(format!("{cur} ▾")))
-            .content(move |_s, _w, _cx| {
-                let opts = [(SideFilter::All, "Все"), (SideFilter::Long, "Лонг"), (SideFilter::Short, "Шорт")];
-                let mut col = v_flex().gap_0p5().p_1().min_w(px(110.0));
-                for (s, label) in opts {
-                    let view = view.clone();
-                    col = col.child(combo_item(format!("rs-{label}"), label, move |app| {
-                        view.update(app, |t, c| t.set_side(s, c))
-                    }));
-                }
-                col
-            })
+        let opts = [(SideFilter::All, "Все"), (SideFilter::Long, "Лонг"), (SideFilter::Short, "Шорт")];
+        MoonDropdown::new("rep-side")
+            .label(format!("{cur} ▾"))
+            .trigger_variant(MoonButtonVariant::Soft)
+            .trigger_size(MoonButtonSize::Action)
+            .trigger_width(86.0)
+            .menu_width(120.0)
+            .menu_size(MoonMenuSize::Compact)
+            .items(opts.into_iter().map(move |(side, label)| {
+                let view = view.clone();
+                MoonMenuItem::with_key(format!("rs-{label}"), label)
+                    .selected(side == self.side)
+                    .on_click(move |_, _, app| {
+                        view.update(app, |t, c| t.set_side(side, c));
+                    })
+            }))
     }
 
     /// Попап выбора видимых колонок (чекбоксы).
     fn columns_menu(&self, cx: &Context<Self>) -> impl IntoElement {
         let view = cx.entity();
         let visible = self.visible.clone();
-        Popover::new("rep-cols")
-            .trigger(Button::new("rep-cols-btn").outline().xsmall().label("Колонки ▾"))
-            .content(move |_s, _w, _cx| {
-                let view2 = view.clone();
-                let mut col = v_flex().id("rep-cols-list").gap_0p5().p_2().min_w(px(200.0)).max_h(px(420.0)).overflow_y_scroll();
-                for (i, c) in db::DISPLAY_COLUMNS.iter().enumerate() {
-                    let on = visible.get(i).copied().unwrap_or(false);
-                    let view = view2.clone();
-                    col = col.child(
-                        Checkbox::new(SharedString::from(format!("col-{i}")))
-                            .label(header_for(c))
-                            .checked(on)
-                            .on_click(move |v: &bool, _w, app| {
-                                let v = *v;
-                                view.update(app, |t, c| {
-                                    if let Some(slot) = t.visible.get_mut(i) {
-                                        *slot = v;
-                                    }
-                                    c.notify();
-                                });
-                            }),
-                    );
-                }
-                col
-            })
+        let items = db::DISPLAY_COLUMNS.iter().enumerate().map(move |(i, c)| {
+            let on = visible.get(i).copied().unwrap_or(false);
+            let view = view.clone();
+            MoonMenuItem::with_key(format!("col-{i}"), header_for(c))
+                .checked(on)
+                .selected(on)
+                .on_click(move |_, _, app| {
+                    view.update(app, |t, c| {
+                        if let Some(slot) = t.visible.get_mut(i) {
+                            *slot = !*slot;
+                        }
+                        c.notify();
+                    });
+                })
+        });
+        MoonDropdown::new("rep-cols")
+            .label("Колонки ▾")
+            .trigger_variant(MoonButtonVariant::Soft)
+            .trigger_size(MoonButtonSize::Action)
+            .trigger_width(110.0)
+            .menu_width(230.0)
+            .menu_max_height(420.0)
+            .menu_size(MoonMenuSize::Compact)
+            .close_on_select(false)
+            .items(items)
     }
 }
 
@@ -328,13 +334,13 @@ impl Render for ReportPanel {
             .child(div().text_xs().text_color(rgb(hex(palette::TEXT_2))).child("Ядро:"))
             .child(self.core_combo(cx))
             .child(div().text_xs().text_color(rgb(hex(palette::TEXT_2))).child("Монета:"))
-            .child(div().w(px(90.0)).child(Input::new(&self.coin).small().cleanable(true)))
+            .child(div().w(px(90.0)).child(MoonInput::new("rep-coin").state(&self.coin).small().cleanable(true)))
             .child(div().text_xs().text_color(rgb(hex(palette::TEXT_2))).child("Сторона:"))
             .child(self.side_combo(cx))
             .child(div().text_xs().text_color(rgb(hex(palette::TEXT_2))).child("С:"))
-            .child(div().w(px(110.0)).child(Input::new(&self.from).small()))
+            .child(div().w(px(110.0)).child(MoonInput::new("rep-from").state(&self.from).small()))
             .child(div().text_xs().text_color(rgb(hex(palette::TEXT_2))).child("По:"))
-            .child(div().w(px(110.0)).child(Input::new(&self.to).small()))
+            .child(div().w(px(110.0)).child(MoonInput::new("rep-to").state(&self.to).small()))
             .child(self.columns_menu(cx));
 
         // ── Таблица ──
@@ -563,16 +569,3 @@ fn width_for(col: &str) -> f32 {
     }
 }
 
-fn combo_item(id: impl Into<SharedString>, label: impl Into<SharedString>, on_click: impl Fn(&mut App) + 'static) -> impl IntoElement {
-    div()
-        .id(id.into())
-        .w_full()
-        .px_2()
-        .py_1()
-        .cursor_pointer()
-        .rounded(px(3.0))
-        .text_color(rgb(hex(palette::TEXT)))
-        .hover(|s| s.bg(rgb(hex(palette::LIFT_HOVER))))
-        .child(label.into())
-        .on_click(move |_, _w, app| on_click(app))
-}
