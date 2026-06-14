@@ -15,9 +15,10 @@ use std::sync::Arc;
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use moon_palette::{
-    h_flex, v_flex, MoonButton, MoonButtonSize, MoonButtonVariant, MoonCheckbox, MoonCheckboxSize,
-    MoonDropdown, MoonInput, MoonInputEvent, MoonInputState, MoonMenuItem, MoonMenuSize,
-    MoonTextArea, MoonTextAreaEvent, MoonTextAreaState, MoonTone, Root, StyledExt,
+    h_flex, rgba_from, v_flex, MoonBackgroundPolicy, MoonButton, MoonButtonSize,
+    MoonButtonVariant, MoonCheckbox, MoonCheckboxSize, MoonDropdown, MoonInput, MoonInputEvent,
+    MoonInputState, MoonMenuItem, MoonMenuSize, MoonPalette, MoonTextArea, MoonTextAreaEvent,
+    MoonTextAreaState, MoonTone, Root,
 };
 
 use crate::{hex, Backend};
@@ -44,9 +45,12 @@ enum ParamsPanelModel {
     },
 }
 
-/// Цвет палитры с альфой → `Rgba` (0xRRGGBBAA). Для подсветки выбора/затемнения.
-fn hexa(c: [u8; 3], a: u8) -> Rgba {
-    rgba((c[0] as u32) << 24 | (c[1] as u32) << 16 | (c[2] as u32) << 8 | a as u32)
+fn moon(hex: u32) -> Hsla {
+    rgba_from(hex, 1.0)
+}
+
+fn moon_alpha(hex: u32, alpha: f32) -> Hsla {
+    rgba_from(hex, alpha)
 }
 
 /// Состояние окна «Стратегии» (порт egui `StrategiesState` + рендер 4 панелей).
@@ -374,8 +378,9 @@ impl StrategiesView {
         built: &mut Vec<Key>,
         cx: &Context<Self>,
     ) -> AnyElement {
-        let accent = rgb(hex(palette::ACCENT));
-        let border = rgb(hex(palette::LIFT_HOVER));
+        let p = MoonPalette::TERMINAL;
+        let accent = moon(p.blue);
+        let border = moon(p.border);
 
         // Поиск временно раскрывает всё; своё состояние раскрытия не трогаем.
         let force_open = self.filter.searching();
@@ -412,11 +417,15 @@ impl StrategiesView {
                 div()
                     .id(SharedString::from(format!("core-{cid}")))
                     .w_full()
-                    .py_0p5()
+                    .h(px(24.0))
+                    .px(px(6.0))
+                    .rounded(px(3.0))
+                    .flex()
+                    .items_center()
                     .cursor_pointer()
-                    .font_bold()
+                    .font_weight(FontWeight::SEMIBOLD)
                     .text_color(accent)
-                    .hover(|s| s.bg(rgb(hex(palette::LIFT_HOVER))))
+                    .hover(|s| s.bg(moon_alpha(MoonPalette::TERMINAL.panel, 0.78)))
                     .child(label)
                     .on_click(cx.listener(move |this, _, _, cx| {
                         toggle(&mut this.expanded_cores, cid);
@@ -468,14 +477,19 @@ impl StrategiesView {
         v_flex()
             .w(px(220.0))
             .h_full()
+            .bg(moon(p.shell_high))
+            .font_family("Geist Mono")
+            .text_size(px(11.0))
+            .line_height(px(14.0))
             .border_r_1()
             .border_color(border)
             // ── Фильтры сверху ──
             .child(
                 v_flex()
                     .w_full()
-                    .p_2()
-                    .gap_1()
+                    .px(px(10.0))
+                    .py(px(10.0))
+                    .gap(px(7.0))
                     .child(
                         div().w_full().child(
                             MoonInput::new("strat-search")
@@ -487,7 +501,7 @@ impl StrategiesView {
                     .child(
                         h_flex()
                             .w_full()
-                            .gap_1()
+                            .gap(px(7.0))
                             .items_center()
                             .child(self.combo_kind(kind_text, kinds, cx))
                             .child(self.combo_dir(dir_text, cx)),
@@ -536,7 +550,7 @@ impl StrategiesView {
                     .flex_1()
                     .w_full()
                     .overflow_y_scroll()
-                    .p_2()
+                    .p(px(8.0))
                     .child(list),
             )
             // ── Нижняя панель действий ──
@@ -702,10 +716,14 @@ impl StrategiesView {
                 div()
                     .id(SharedString::from(format!("folder-{core_id}-{path_key}")))
                     .w_full()
-                    .py_0p5()
+                    .h(px(23.0))
+                    .px(px(6.0))
+                    .rounded(px(3.0))
+                    .flex()
+                    .items_center()
                     .cursor_pointer()
-                    .text_color(rgb(hex(palette::TEXT)))
-                    .hover(|s| s.bg(rgb(hex(palette::LIFT_HOVER))))
+                    .text_color(moon(MoonPalette::TERMINAL.text_soft))
+                    .hover(|s| s.bg(moon_alpha(MoonPalette::TERMINAL.panel, 0.70)))
                     .child(flabel)
                     .on_click(cx.listener(move |this, _, _, cx| {
                         toggle(&mut this.expanded_folders, fkey_click.clone());
@@ -746,29 +764,25 @@ impl StrategiesView {
         let val = self.staged.get(&key).copied().unwrap_or(server);
 
         // Подсветка — для всех выбранных (мультивыбор), иначе для первичной.
+        let p = MoonPalette::TERMINAL;
         let highlighted = if self.sel.is_empty() {
             self.selected == Some(key)
         } else {
             self.sel.contains(&key)
         };
-        let dot = if server {
-            palette::GREEN
-        } else {
-            palette::TEXT_3
-        };
-        let type_col = if r.is_short {
-            palette::RED
-        } else {
-            palette::TEXT_3
-        };
+        let dot = if server { p.green } else { p.text_muted };
+        let type_col = if r.is_short { p.orange } else { p.text_muted };
 
         let order_c = order.clone();
         let mut name_row = div()
             .id(SharedString::from(format!("strat-{core}-{}", r.id)))
             .flex_1()
             .min_w_0()
-            .px_1()
-            .rounded(px(2.0))
+            .h(px(23.0))
+            .px(px(6.0))
+            .rounded(px(3.0))
+            .border_1()
+            .border_color(moon_alpha(p.border, 0.0))
             .cursor_pointer()
             .child(
                 h_flex()
@@ -781,13 +795,13 @@ impl StrategiesView {
                             .flex_1()
                             .min_w_0()
                             .truncate()
-                            .text_color(rgb(hex(palette::TEXT)))
+                            .text_color(moon(p.text))
                             .child(r.name.clone()),
                     )
                     .child(
                         div()
                             .text_xs()
-                            .text_color(rgb(hex(type_col)))
+                            .text_color(moon(type_col))
                             .child(r.kind.clone()),
                     ),
             )
@@ -797,16 +811,18 @@ impl StrategiesView {
                 cx.notify();
             }));
         if highlighted {
-            name_row = name_row.bg(hexa(palette::ACCENT, 0x33));
+            name_row = name_row
+                .bg(moon_alpha(p.amber, 0.16))
+                .border_color(moon_alpha(p.amber, 0.55));
         } else {
-            name_row = name_row.hover(|s| s.bg(rgb(hex(palette::LIFT_HOVER))));
+            name_row = name_row.hover(|s| s.bg(moon_alpha(MoonPalette::TERMINAL.panel, 0.74)));
         }
 
         h_flex()
             .w_full()
             .items_center()
-            .gap_1()
-            .py_0p5()
+            .gap(px(6.0))
+            .py(px(1.0))
             .child(
                 MoonCheckbox::new(SharedString::from(format!("chk-{core}-{}", r.id)))
                     .checked(val)
@@ -821,7 +837,7 @@ impl StrategiesView {
                         cx.notify();
                     })),
             )
-            .child(div().text_color(rgb(hex(dot))).child("●"))
+            .child(div().text_color(moon(dot)).child("●"))
             .child(name_row)
             .into_any_element()
     }
@@ -829,15 +845,21 @@ impl StrategiesView {
     // ── Панель 2: разделы (секции) ────────────────────────────────────────────
 
     fn sections_panel(&self, store: &CoreStore, cx: &Context<Self>) -> AnyElement {
-        let border = rgb(hex(palette::LIFT_HOVER));
+        let p = MoonPalette::TERMINAL;
+        let border = moon(p.border);
         let mut col = v_flex()
             .w(px(220.0))
             .h_full()
+            .bg(moon(p.shell_high))
+            .font_family("Geist Mono")
+            .text_size(px(11.0))
+            .line_height(px(14.0))
             .border_r_1()
             .border_color(border)
-            .p_2()
-            .gap_1()
-            .child(div().font_bold().child("Разделы"))
+            .px(px(10.0))
+            .py(px(12.0))
+            .gap(px(7.0))
+            .child(div().font_weight(FontWeight::SEMIBOLD).child("Разделы"))
             .child(div().w_full().h(px(1.0)).bg(border));
 
         let Some(sections) = selected_sections(self, store) else {
@@ -845,7 +867,7 @@ impl StrategiesView {
                 .child(
                     div()
                         .mt_2()
-                        .text_color(rgb(hex(palette::TEXT_2)))
+                        .text_color(moon(p.text_muted))
                         .child("выберите стратегию в дереве"),
                 )
                 .into_any_element();
@@ -855,7 +877,7 @@ impl StrategiesView {
                 .child(
                     div()
                         .mt_2()
-                        .text_color(rgb(hex(palette::TEXT_2)))
+                        .text_color(moon(p.text_muted))
                         .child("схема не получена"),
                 )
                 .into_any_element();
@@ -874,28 +896,30 @@ impl StrategiesView {
         for (i, active) in order {
             let sec = &sections[i];
             let on = self.selected_section == i;
-            let tcol = if !active {
-                palette::TEXT_3
-            } else {
-                palette::TEXT
-            };
+            let tcol = if !active { p.text_muted } else { p.text };
             let mut row = div()
                 .id(SharedString::from(format!("sec-{i}")))
                 .w_full()
-                .px_1()
-                .py_0p5()
-                .rounded(px(2.0))
+                .h(px(24.0))
+                .px(px(6.0))
+                .rounded(px(3.0))
+                .border_1()
+                .border_color(moon_alpha(p.border, 0.0))
+                .flex()
+                .items_center()
                 .cursor_pointer()
-                .text_color(rgb(hex(tcol)))
+                .text_color(moon(tcol))
                 .child(sec.title.clone())
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.selected_section = i;
                     cx.notify();
                 }));
             if on {
-                row = row.bg(hexa(palette::ACCENT, 0x33));
+                row = row
+                    .bg(moon_alpha(p.amber, 0.16))
+                    .border_color(moon_alpha(p.amber, 0.55));
             } else {
-                row = row.hover(|s| s.bg(rgb(hex(palette::LIFT_HOVER))));
+                row = row.hover(|s| s.bg(moon_alpha(MoonPalette::TERMINAL.panel, 0.74)));
             }
             list = list.child(row);
         }
@@ -946,7 +970,17 @@ impl StrategiesView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let mut col = v_flex().flex_1().h_full().p_2().gap_1();
+        let p = MoonPalette::TERMINAL;
+        let mut col = v_flex()
+            .flex_1()
+            .h_full()
+            .min_w(px(420.0))
+            .px(px(24.0))
+            .py(px(18.0))
+            .gap(px(10.0))
+            .font_family("Geist Mono")
+            .text_size(px(11.0))
+            .line_height(px(14.0));
 
         let ParamsPanelModel::Content {
             section,
@@ -963,7 +997,7 @@ impl StrategiesView {
                 ParamsPanelModel::Content { .. } => unreachable!(),
             };
             return col
-                .child(div().mt_2().text_color(rgb(hex(palette::TEXT_2))).child(text))
+                .child(div().mt_2().text_color(moon(p.text_muted)).child(text))
                 .into_any_element();
         };
         let keys: Vec<Key> = row_pairs.iter().map(|(key, _)| *key).collect();
@@ -977,9 +1011,15 @@ impl StrategiesView {
         let dirty = self.field_edits.len();
         let mut header = h_flex()
             .w_full()
+            .h(px(28.0))
             .items_center()
             .justify_between()
-            .child(div().font_bold().child(section.title.clone()))
+            .child(
+                div()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(moon(p.text))
+                    .child(section.title.clone()),
+            )
             .child(
                 h_flex()
                     .items_center()
@@ -987,7 +1027,7 @@ impl StrategiesView {
                     .child(
                         div()
                             .text_xs()
-                            .text_color(rgb(hex(palette::TEXT_2)))
+                            .text_color(moon(p.text_muted))
                             .child(count),
                     )
                     .when(dirty > 0, |row| {
@@ -1010,7 +1050,10 @@ impl StrategiesView {
                     }),
             );
         if dirty > 0 {
-            header = header.border_l_2().border_color(hexa(palette::ORANGE, 0x99)).pl_2();
+            header = header
+                .border_l_2()
+                .border_color(moon_alpha(p.amber, 0.72))
+                .pl_2();
         }
         col = col
             .child(header)
@@ -1024,10 +1067,10 @@ impl StrategiesView {
                         cx.notify();
                     })),
             )
-            .child(div().w_full().h(px(1.0)).bg(rgb(hex(palette::LIFT_HOVER))));
+            .child(div().w_full().h(px(1.0)).bg(moon(p.border)));
 
         // Порядок полей — как в схеме. Значения берём из снимка по имени.
-        let mut list = v_flex().w_full().gap_0();
+        let mut list = v_flex().w_full().gap(px(2.0));
         for f in &section.fields {
             let lname = f.name.to_lowercase();
             if multi && lname == "strategyname" {
@@ -1080,16 +1123,9 @@ impl StrategiesView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let name_col = if active {
-            palette::TEXT_2
-        } else {
-            palette::TEXT_3
-        };
-        let val_col = if active {
-            palette::TEXT
-        } else {
-            palette::TEXT_3
-        };
+        let p = MoonPalette::TERMINAL;
+        let name_col = if active { p.text_soft } else { p.text_muted };
+        let val_col = if active { p.text } else { p.text_muted };
 
         let dirty = keys
             .iter()
@@ -1100,8 +1136,8 @@ impl StrategiesView {
 
         let value_el: AnyElement = match merged {
             None => div()
-                .font_bold()
-                .text_color(rgb(hex(palette::ACCENT)))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(moon(p.blue))
                 .child("≠")
                 .into_any_element(),
             Some(value) => match f.ui {
@@ -1212,23 +1248,26 @@ impl StrategiesView {
             .id(SharedString::from(format!("field-row-{row_id}")))
             .w_full()
             .items_start()
-            .gap_3()
+            .gap(px(14.0))
+            .min_h(px(30.0))
             .py(px(4.0))
-            .border_l(px(if dirty { 2.0 } else { 0.0 }))
-            .border_color(hexa(palette::ORANGE, if dirty { 0x99 } else { 0x00 }))
-            .pl(px(if dirty { 8.0 } else { 10.0 }))
+            .border_l(px(2.0))
+            .border_color(moon_alpha(p.amber, if dirty { 0.72 } else { 0.0 }))
+            .pl(px(8.0))
             .pr_2()
-            .hover(|s| s.bg(hexa(palette::LIFT_HOVER, 0x70)))
+            .rounded(px(3.0))
+            .when(dirty, |s| s.bg(moon_alpha(p.amber, 0.06)))
+            .hover(|s| s.bg(moon_alpha(MoonPalette::TERMINAL.panel, 0.46)))
             .child(
                 div()
                     .w(px(180.0))
                     .flex_none()
                     .pt(px(5.0))
                     .truncate()
-                    .text_color(rgb(hex(name_col)))
+                    .text_color(moon(name_col))
                     .child(f.name.clone()),
             )
-            .child(div().flex_1().min_w_0().text_color(rgb(hex(val_col))).child(value_el))
+            .child(div().flex_1().min_w_0().text_color(moon(val_col)).child(value_el))
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.focused_field = Some(field_for_focus.clone());
                 cx.notify();
@@ -1241,6 +1280,7 @@ impl StrategiesView {
         if !is_formula_field(&field) {
             return None;
         }
+        let p = MoonPalette::TERMINAL;
         let snippets = formula_snippets();
         let mut list = v_flex().w_full().gap_1();
         for (label, detail, insert) in snippets {
@@ -1249,20 +1289,26 @@ impl StrategiesView {
                 v_flex()
                     .id(SharedString::from(format!("helper-{label}")))
                     .w_full()
-                    .rounded(px(2.0))
+                    .rounded(px(4.0))
                     .border_1()
-                    .border_color(rgb(hex(palette::LIFT_HOVER)))
-                    .bg(rgb(hex(palette::LIFT)))
-                    .px_2()
-                    .py_1()
+                    .border_color(moon(p.border))
+                    .bg(moon(p.panel))
+                    .px(px(8.0))
+                    .py(px(6.0))
                     .cursor_pointer()
-                    .hover(|s| s.border_color(hexa(palette::ORANGE, 0xBB)))
-                    .child(div().font_family("Geist Mono").text_size(px(11.0)).child(label))
+                    .hover(|s| s.border_color(moon_alpha(MoonPalette::TERMINAL.amber, 0.72)))
+                    .child(
+                        div()
+                            .font_family("Geist Mono")
+                            .text_size(px(11.0))
+                            .text_color(moon(p.text))
+                            .child(label),
+                    )
                     .child(
                         div()
                             .font_family("Geist Mono")
                             .text_size(px(10.0))
-                            .text_color(rgb(hex(palette::TEXT_2)))
+                            .text_color(moon(p.text_muted))
                             .child(detail),
                     )
                     .on_click(cx.listener(move |this, _, _, cx| {
@@ -1272,18 +1318,19 @@ impl StrategiesView {
         }
         Some(
             v_flex()
-                .w(px(260.0))
+                .w(px(280.0))
                 .h_full()
                 .flex_none()
-                .gap_2()
-                .p_3()
-                .bg(rgb(hex(palette::SURFACE_1)))
+                .gap(px(10.0))
+                .px(px(16.0))
+                .py(px(14.0))
+                .bg(moon(p.shell_high))
                 .border_l_1()
-                .border_color(rgb(hex(palette::LIFT_HOVER)))
+                .border_color(moon(p.border))
                 .child(
                     div()
                         .text_xs()
-                        .text_color(rgb(hex(palette::TEXT_2)))
+                        .text_color(moon(p.text_muted))
                         .child(format!("{field} · formula helper")),
                 )
                 .child(list)
@@ -1294,6 +1341,7 @@ impl StrategiesView {
     /// Окошко просмотра длинного значения (read-only) — оверлей поверх окна.
     fn popup_overlay(&self, cx: &Context<Self>) -> Option<AnyElement> {
         let (name, val) = self.popup.clone()?;
+        let p = MoonPalette::TERMINAL;
         Some(
             div()
                 .absolute()
@@ -1306,9 +1354,9 @@ impl StrategiesView {
                     v_flex()
                         .w(px(460.0))
                         .max_h(px(360.0))
-                        .bg(rgb(hex(palette::SURFACE_1)))
+                        .bg(moon(p.shell_high))
                         .border_1()
-                        .border_color(rgb(hex(palette::LIFT_HOVER)))
+                        .border_color(moon(p.border))
                         .rounded(px(6.0))
                         .child(
                             h_flex()
@@ -1318,8 +1366,8 @@ impl StrategiesView {
                                 .px_3()
                                 .py_2()
                                 .border_b_1()
-                                .border_color(rgb(hex(palette::LIFT_HOVER)))
-                                .child(div().font_bold().child(name))
+                                .border_color(moon(p.border))
+                                .child(div().font_weight(FontWeight::SEMIBOLD).child(name))
                                 .child(
                                     MoonButton::new("popup-close")
                                         .ghost()
@@ -1339,7 +1387,7 @@ impl StrategiesView {
                                 .w_full()
                                 .overflow_y_scroll()
                                 .p_3()
-                                .text_color(rgb(hex(palette::TEXT)))
+                                .text_color(moon(p.text))
                                 .child(val),
                         ),
                 )
@@ -1398,12 +1446,15 @@ impl Render for StrategiesView {
         // Сохранить порядок текущего кадра (store-borrow держит cx, не self).
         self.flat_order = built;
 
+        let p = MoonPalette::TERMINAL;
         let mut root = v_flex()
             .size_full()
             .relative()
-            .bg(rgb(hex(palette::BG)))
-            .text_color(rgb(hex(palette::TEXT)))
-            .text_sm()
+            .bg(moon(p.shell))
+            .text_color(moon(p.text))
+            .font_family("Geist Mono")
+            .text_size(px(11.0))
+            .line_height(px(14.0))
             .track_focus(&self.focus)
             .child(
                 h_flex()
@@ -1742,7 +1793,7 @@ pub fn open(backend: Entity<Backend>, cx: &mut App) {
     let b = backend.clone();
     if let Ok(handle) = cx.open_window(opts, move |window, cx| {
         let view = cx.new(|cx| StrategiesView::new(b, window, cx));
-        cx.new(|cx| Root::new(view, window, cx))
+        cx.new(|cx| Root::new(view, window, cx).background_policy(MoonBackgroundPolicy::Opaque))
     }) {
         backend.update(cx, |bk, _| bk.strategies_window = Some(handle));
     }
