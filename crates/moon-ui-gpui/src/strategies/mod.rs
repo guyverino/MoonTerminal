@@ -19,8 +19,9 @@ use gpui_component::{
     h_flex,
     input::{Input, InputEvent, InputState},
     popover::Popover,
-    v_flex, Root, Sizable, StyledExt,
+    v_flex, Sizable, StyledExt,
 };
+use moon_palette::Root;
 
 use crate::{hex, Backend};
 use moon_core::feed::{SchemaField, SchemaFieldUi, SchemaSection, StrategyRow};

@@ -23,8 +23,9 @@ use gpui_component::{
     h_flex,
     select::{SelectEvent, SelectState},
     slider::{Slider, SliderState},
-    v_flex, IndexPath, Root, StyledExt,
+    v_flex, IndexPath, StyledExt,
 };
+use moon_palette::Root;
 
 use crate::icons::IconSet;
 use crate::{hex, Backend};

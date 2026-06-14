@@ -6,10 +6,7 @@
 use std::collections::{HashMap, VecDeque};
 
 use gpui::*;
-use gpui_component::{
-    dock::{Panel, PanelEvent, PanelState},
-    h_flex, v_flex,
-};
+use moon_palette::{h_flex, v_flex, Panel, PanelEvent, PanelState};
 
 use crate::{hex, Backend};
 use moon_chart::paint::now_unix_ms;

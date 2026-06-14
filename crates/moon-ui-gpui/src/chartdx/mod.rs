@@ -111,7 +111,7 @@ pub struct ChartEngine {
     /// Левый-верхний угол слота чарта В ОКНЕ (девайс-px). own-pass рисует в backbuffer ОКНА,
     /// поэтому координаты слоёв = origin слота + локальные, а cv_resolution = размер backbuffer.
     origin: (f32, f32),
-    /// Курсор (px окна) + панель под мышью — для own-pass крестика (OverScene-период).
+    /// Курсор (px окна) + панель под мышью — для own-pass крестика в backbuffer окна.
     cursor_win: Option<(f32, f32)>,
     hovered: Option<usize>,
     registered: bool,
@@ -152,21 +152,18 @@ impl ChartEngine {
         self.hovered = hovered;
     }
 
-    /// Регистрирует own-pass ОДИН раз (фаза UnderScene): callback рисует все активные панели
+    /// Регистрирует own-pass ОДИН раз: callback рисует все активные панели
     /// (combo + слои) их own-pass в backbuffer GPUI ПОД сценой. Зовётся из `Render` (есть окно).
     pub fn register_pass(&mut self, window: &mut Window) {
         if self.registered {
             return;
         }
         let state = self.state.clone();
-        // OverScene (НЕ UnderScene) — осознанный выбор под dock-фреймворк: панель «Чарты»
-        // (gpui_component TabPanel) красит свой непрозрачный фон `theme.background` в сцене
-        // (`tab_panel.rs:650/1210`), перекрывая UnderScene. gpui-component НЕ форкаем → рисуем
-        // чарт ПОВЕРХ сцены, но СТРОГО в плот-области (chart_area, без желобов): подписи цены/
-        // времени в желобах рисует GPUI и выживают. Крестик/оверлеи плота — нашим own-pass (та же
-        // фаза), не GPUI. См. TERMINAL_RENDER_ARCHITECTURE §9.
+        // UnderScene — правильный финальный слой: GPUI-хром, попапы, меню и тултипы должны
+        // быть поверх графика. Chart host/content в MoonPalette держатся на NoFill, обычные
+        // панели — Opaque, поэтому фоновые quads не перекрывают plot area.
         window.add_gpu_pass(
-            GpuPhase::OverScene,
+            GpuPhase::UnderScene,
             Box::new(move |gpu: &RawGpuAccess| {
                 let mut st = state.borrow_mut();
                 let Some((device, context, rtv)) = gpu::borrow_d3d(gpu) else {

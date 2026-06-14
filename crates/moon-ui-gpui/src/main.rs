@@ -18,6 +18,7 @@ mod axes;
 mod chartdx;
 mod chart_tabs;
 mod controls;
+mod design;
 mod detached;
 mod dock_persist;
 mod icons;
@@ -27,22 +28,22 @@ mod settings;
 mod strategies;
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use gpui::*;
 
-use gpui_component::{
-    button::{Button, ButtonVariants},
-    dock::{DockArea, DockAreaState, DockEvent, DockItem, PanelView},
-    h_flex,
-    theme::{Theme, ThemeMode},
-    v_flex, Root, StyledExt,
-};
+use gpui_component::theme::{Theme, ThemeMode};
 
 use chart_tabs::ChartTabs;
 use dock_persist::DOCK_VERSION;
 use panels::{DetectsPanel, LogPanel, OrderPanel, OrdersPanel, ReportPanel, StubPanel};
+
+use moon_palette::{
+    h_flex, v_flex, DockArea, DockAreaState, DockEvent, DockItem, DockPlacement,
+    MoonBackgroundPolicy, MoonPalette, MoonStatusBar, MoonStatusIndicator, MoonStatusItem,
+    PanelView, Root,
+};
 
 use moon_core::config::{AppConfig, GroupLayout, WindowLayout};
 use moon_core::feed::ConnStatus;
@@ -165,8 +166,6 @@ struct Shell {
     /// Время прошлого кадра и сглаженный fps рендера — для статус-бара (как egui host).
     last_frame: Option<Instant>,
     fps: f32,
-    /// ДЕМО (временно): показать попап в зоне чарта — наглядная проверка перекрытия OverScene.
-    show_popup: bool,
 }
 
 impl Shell {
@@ -179,9 +178,14 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        // Единый DockArea на окно. Панели: чарт=center, детекты+ордер=right (split),
-        // нижние вкладки=bottom. Все перетаскиваемые/отцепляемые (gpui-component Dock).
-        let dock = cx.new(|cx| DockArea::new("group-dock", Some(DOCK_VERSION), window, cx));
+            // Единый DockArea на окно. Панели: чарт=center, детекты+ордер=right (split),
+            // нижние вкладки=bottom. Dock/TabPanel — MoonPalette, чтобы фоны управлялись
+            // MoonBackgroundPolicy и не перекрывали chart UnderScene.
+        let dock = cx.new(|cx| {
+            DockArea::new("group-dock", Some(DOCK_VERSION), window, cx)
+                .background_policy(MoonBackgroundPolicy::NoFill)
+                .tab_background_policy(MoonBackgroundPolicy::NoFill)
+        });
         let weak = dock.downgrade();
 
         // Сохранённая раскладка этой группы (совместимой версии) → восстановить через
@@ -216,22 +220,22 @@ impl Shell {
                 .filter(|s| s.group == group)
                 .map(|s| s.panel.clone())
                 .collect();
-            let mut bottom_tabs: Vec<Arc<dyn PanelView>> = Vec::new();
+            let mut bottom_tabs: Vec<Rc<dyn PanelView>> = Vec::new();
             if !detached_set.contains("Orders") {
-                bottom_tabs.push(Arc::new(cx.new(|cx| {
+                bottom_tabs.push(Rc::new(cx.new(|cx| {
                     OrdersPanel::new(backend.clone(), group.clone(), window, cx)
                 })));
             }
             if !detached_set.contains("Assets") {
-                bottom_tabs.push(Arc::new(cx.new(|cx| {
+                bottom_tabs.push(Rc::new(cx.new(|cx| {
                     StubPanel::new("Assets", "Активы", group.clone(), backend.clone(), cx)
                 })));
             }
             if !detached_set.contains("Log") {
-                bottom_tabs.push(Arc::new(cx.new(|cx| LogPanel::new(backend.clone(), group.clone(), window, cx))));
+                bottom_tabs.push(Rc::new(cx.new(|cx| LogPanel::new(backend.clone(), group.clone(), window, cx))));
             }
             if !detached_set.contains("Report") {
-                bottom_tabs.push(Arc::new(cx.new(|cx| ReportPanel::new(backend.clone(), group.clone(), window, cx))));
+                bottom_tabs.push(Rc::new(cx.new(|cx| ReportPanel::new(backend.clone(), group.clone(), window, cx))));
             }
 
             // ВСЁ — в center-сплите (свободный пересплит drag-to-edge + детач панелей).
@@ -273,19 +277,17 @@ impl Shell {
 
         // Любое изменение раскладки доков (drag/split/resize/detach) → дамп в backend,
         // сохранение дебаунсит дренаж-таймер (docks.json). Порт персиста раскладки.
-        cx.subscribe(&dock, |this, dock, event: &DockEvent, cx| {
-            if let DockEvent::LayoutChanged = event {
-                let state = dock.read(cx).dump(cx);
-                let group = this.group.clone();
-                this.backend.update(cx, |b, _| {
-                    b.dock_states.insert(group, state);
-                    b.dock_dirty = true;
-                });
-            }
+        cx.subscribe(&dock, |this, dock, _event: &DockEvent, cx| {
+            let state = dock.read(cx).dump(cx);
+            let group = this.group.clone();
+            this.backend.update(cx, |b, _| {
+                b.dock_states.insert(group, state);
+                b.dock_dirty = true;
+            });
         })
         .detach();
 
-        Self { backend, group, dock, last_frame: None, fps: 0.0, show_popup: true }
+        Self { backend, group, dock, last_frame: None, fps: 0.0 }
     }
 }
 
@@ -312,7 +314,7 @@ impl Render for Shell {
             let dock = self.dock.clone();
             if let Some(panel) = detached::build_panel(&panel_name, &group, &backend, window, cx) {
                 dock.update(cx, |area, cx| {
-                    area.add_panel(panel, gpui_component::dock::DockPlacement::Center, None, window, cx);
+                    area.add_panel(panel, DockPlacement::Center, None, window, cx);
                 });
             }
             backend.update(cx, |b, _| {
@@ -352,7 +354,7 @@ impl Render for Shell {
             });
         }
 
-        let order_count = panels::count_orders(self.backend.read(cx), &self.group);
+        let _order_count = panels::count_orders(self.backend.read(cx), &self.group);
 
         // Header-данные (рынок/цена/тики/conn). Чарт/ввод/оси — в ChartPanel.
         // FPS рендера (сглаженный) — диагностика статус-бара (порт host.fps).
@@ -364,7 +366,7 @@ impl Render for Shell {
         self.last_frame = Some(now_inst);
         let fps = self.fps;
 
-        let (conn, snap, market_label, price_label, tick_count, book_levels) = {
+        let (conn, snap, market_label, _price_label, tick_count, book_levels) = {
             let b = self.backend.read(cx);
             let conn = b.session.conn_summary_group(&self.group);
             let snap = b.snap;
@@ -398,77 +400,55 @@ impl Render for Shell {
             (conn, snap, market_label, price_label, tick_count, book_levels)
         };
 
-        // Цвета — ТОЛЬКО из moon_core::palette (единый источник, как egui-хром).
-        let _bg = rgb(hex(palette::BG));
-        let panel = rgb(hex(palette::SURFACE_1));
-        let border = rgb(hex(palette::LIFT_HOVER));
-        let muted = rgb(hex(palette::TEXT_2));
-        let accent = rgb(hex(palette::ACCENT));
-
         v_flex()
             .size_full()
             .relative() // для absolute-позиционирования демо-попапа поверх дока
             // НЕТ корневого .bg(): чарт-регион (центр дока) держим прозрачным «окном» под
             // own-pass (UnderScene). Хром (хедер/тулбар/панели/статус) красит свой фон сам.
-            .text_color(rgb(hex(palette::TEXT)))
-            .text_sm()
+            .font_family(design::mono())
+            .text_color(design::solid(design::TEXT))
+            .text_size(px(11.0))
             // ── Header ──────────────────────────────────────────────
             .child(
                 h_flex()
                     .w_full()
-                    .px_4()
-                    .py_2()
-                    .gap_4()
+                    .h(px(design::HEADER_TOP_H))
+                    .px(px(12.0))
+                    .gap(px(12.0))
                     .justify_between()
-                    .bg(panel)
-                    .border_b_1()
-                    .border_color(border)
+                    .bg(design::solid(design::HEADER))
                     .child(
                         h_flex()
-                            .gap_3()
+                            .gap(px(12.0))
                             .items_center()
-                            .child(div().text_color(accent).font_bold().child(self.group.clone()))
-                            .child(div().child(market_label))
-                            .child(div().text_color(accent).child(price_label))
-                            .child(div().text_color(muted).text_xs().child(format!("{tick_count} ticks"))),
+                            .child(design::logo())
+                            .child(design::vline(16.0))
+                            .child(design::top_pill("strat-pill", format!("{} · {}", self.group, market_label)))
+                            .child(metric("Session", "+$24.30", design::GREEN))
+                            .child(metric("Real", "+$104.20", design::GREEN))
+                            .child(metric("Unreal", "−$8.10", design::ORANGE))
+                            .child(risk_meter()),
                     )
                     .child(
                         h_flex()
-                            .gap_3()
+                            .gap(px(12.0))
                             .items_center()
-                            .child(div().child(format!("{}/{} connected", conn.ready, conn.total)))
-                            .child(div().child(format!("orders {order_count}")))
+                            .child(exchange_pill())
+                            .child(balance_label())
+                            .child(design::vline(16.0))
+                            .child(window_controls())
                             .child(
-                                Button::new("strategies").ghost().label("Стратегии").on_click({
+                                header_action("strategies", "Стратегии", {
                                     let backend = self.backend.clone();
                                     move |_, _, cx| strategies::open(backend.clone(), cx)
                                 }),
                             )
                             .child(
-                                Button::new("gear").ghost().label("⚙").on_click({
+                                header_action("gear", "⚙", {
                                     let backend = self.backend.clone();
                                     move |_, _, cx| settings::open(backend.clone(), cx)
                                 }),
                             )
-                            // ДЕМО (временно): кнопка открывает попап В ЗОНЕ ЧАРТА.
-                            .child(
-                                div()
-                                    .id("popup-test-btn")
-                                    .px_3()
-                                    .py_1()
-                                    .bg(rgb(0xE08010))
-                                    .text_color(rgb(0x101010))
-                                    .rounded_md()
-                                    .cursor_pointer()
-                                    .child("Попап-тест")
-                                    .on_mouse_down(
-                                        MouseButton::Left,
-                                        cx.listener(|this, _e: &MouseDownEvent, _w, cx| {
-                                            this.show_popup = !this.show_popup;
-                                            cx.notify();
-                                        }),
-                                    ),
-                            ),
                     ),
             )
             // ── Тулбар: тонкая фикс. полоса (Размеры/Продажа/Масштаб+Live), порт верхней
@@ -477,52 +457,112 @@ impl Render for Shell {
             // ── Центр: единый DockArea (чарт=center, детекты+ордер=right, вкладки=bottom) ──
             .child(div().flex_1().w_full().child(self.dock.clone()))
             // ── Status bar (полный порт egui `shell::ui` нижней панели) ──
-            .child(self.status_bar(conn, snap, tick_count, book_levels, fps, panel, border, muted))
-            // ДЕМО (временно): попап в ЗОНЕ ЧАРТА — наглядно показать перекрытие OverScene.
-            // Если график (own-pass OverScene) перекрыл попап — вот она, суть вопроса.
-            .children(self.show_popup.then(|| {
-                div()
-                        .absolute()
-                        .left(px(400.0))
-                        .top(px(250.0))
-                        .w(px(460.0))
-                        .h(px(200.0))
-                        .bg(rgb(0xF2C14E))
-                        .border_2()
-                        .border_color(rgb(0xFFFFFF))
-                        .rounded_lg()
-                        .p_4()
-                        .flex()
-                        .flex_col()
-                        .gap_2()
-                        .child(div().text_color(rgb(0x101010)).font_bold().child("ПОПАП в зоне чарта"))
-                        .child(
-                            div()
-                                .text_color(rgb(0x101010))
-                                .text_xs()
-                                .child("Если меня перекрыл график — это и есть суть OverScene."),
-                        )
-                        .child(
-                            div()
-                                .id("popup-close")
-                                .mt_2()
-                                .px_3()
-                                .py_1()
-                                .bg(rgb(0x202733))
-                                .text_color(rgb(0xFFFFFF))
-                                .rounded_md()
-                                .cursor_pointer()
-                                .child("Закрыть")
-                                .on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(|this, _e: &MouseDownEvent, _w, cx| {
-                                        this.show_popup = false;
-                                        cx.notify();
-                                    }),
-                                ),
-                        )
-            }))
+            .child(self.status_bar(conn, snap, tick_count, book_levels, fps))
     }
+}
+
+fn metric(label: &'static str, value: &'static str, color: u32) -> impl IntoElement {
+    h_flex()
+        .h(px(22.0))
+        .gap(px(5.0))
+        .font_family(design::mono())
+        .text_size(px(11.0))
+        .child(div().text_size(px(9.0)).font_family(design::ui_font()).text_color(design::solid(design::TEXT_MUTED)).child(label))
+        .child(div().text_color(design::solid(color)).font_weight(FontWeight::SEMIBOLD).child(value))
+}
+
+fn risk_meter() -> impl IntoElement {
+    h_flex()
+        .h(px(22.0))
+        .gap(px(8.0))
+        .font_family(design::mono())
+        .text_size(px(11.0))
+        .child(div().text_size(px(9.0)).font_family(design::ui_font()).text_color(design::solid(design::TEXT_MUTED)).child("Risk"))
+        .child(
+            div()
+                .w(px(64.0))
+                .h(px(4.0))
+                .rounded(px(2.0))
+                .bg(design::solid(design::PANEL))
+                .child(div().w(px(12.0)).h(px(4.0)).bg(design::solid(design::GREEN))),
+        )
+        .child(div().text_color(design::solid(design::GREEN)).child("18%"))
+}
+
+fn exchange_pill() -> impl IntoElement {
+    h_flex()
+        .h(px(24.0))
+        .gap(px(7.0))
+        .px(px(10.0))
+        .rounded(px(999.0))
+        .border_1()
+        .border_color(design::solid(design::BORDER))
+        .bg(design::solid(design::PANEL))
+        .font_family(design::mono())
+        .text_size(px(11.0))
+        .text_color(design::solid(design::TEXT_SOFT))
+        .child(design::status_dot(design::GREEN))
+        .child("Binance Futures")
+        .child(div().text_color(design::solid(design::TEXT_MUTED)).child("▾"))
+}
+
+fn balance_label() -> impl IntoElement {
+    h_flex()
+        .gap(px(0.0))
+        .font_family(design::mono())
+        .text_size(px(11.5))
+        .text_color(design::solid(design::TEXT_SOFT))
+        .child("Balance: ")
+        .child(div().text_color(design::solid(design::TEXT)).font_weight(FontWeight::SEMIBOLD).child("50.00"))
+        .child(div().text_color(design::solid(design::TEXT_MUTED)).child(" /50 USDT"))
+}
+
+fn window_controls() -> impl IntoElement {
+    h_flex()
+        .h(px(22.0))
+        .gap(px(2.0))
+        .font_family(design::mono())
+        .text_size(px(11.0))
+        .child(win_btn("—", design::TEXT_SOFT))
+        .child(win_btn("□", design::TEXT_SOFT))
+        .child(win_btn("×", design::ORANGE))
+}
+
+fn win_btn(label: &'static str, color: u32) -> impl IntoElement {
+    div()
+        .w(px(26.0))
+        .h(px(22.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(4.0))
+        .text_color(design::solid(color))
+        .hover(|s| s.bg(design::alpha(0xFFFFFF, 0x08)))
+        .child(label)
+}
+
+fn header_action(
+    id: impl Into<SharedString>,
+    label: impl Into<SharedString>,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    div()
+        .id(id.into())
+        .h(px(24.0))
+        .flex()
+        .items_center()
+        .px(px(10.0))
+        .rounded(px(4.0))
+        .border_1()
+        .border_color(design::solid(design::BORDER))
+        .bg(design::solid(design::LIFT))
+        .font_family(design::mono())
+        .text_size(px(11.0))
+        .text_color(design::solid(design::TEXT_SOFT))
+        .cursor_pointer()
+        .hover(|s| s.bg(design::solid(design::LIFT_HOVER)).text_color(design::solid(design::TEXT)))
+        .child(label.into())
+        .on_click(on_click)
 }
 
 impl Shell {
@@ -537,22 +577,14 @@ impl Shell {
         tick_count: usize,
         book_levels: usize,
         fps: f32,
-        panel: Rgba,
-        border: Rgba,
-        muted: Rgba,
     ) -> impl IntoElement {
         let all_ok = conn.total > 0 && conn.ready == conn.total;
         let any_failed = conn
             .down
             .iter()
             .any(|(_, s)| matches!(s, ConnStatus::Failed(_) | ConnStatus::Disconnected));
-        let badge_col = if all_ok {
-            palette::GREEN
-        } else if any_failed {
-            palette::RED
-        } else {
-            palette::ACCENT
-        };
+        let p = MoonPalette::TERMINAL;
+        let badge_col = if all_ok { p.green } else if any_failed { p.red } else { p.amber };
         // Текст тултипа — только про НЕ подключённых (имя: причина).
         let down_text: String = conn
             .down
@@ -570,41 +602,52 @@ impl Shell {
             .collect::<Vec<_>>()
             .join("\n");
 
-        let mut badge = div()
-            .id("conn-badge")
-            .text_color(rgb(hex(badge_col)))
-            .child(format!("● {}/{} подключено", conn.ready, conn.total));
+        let status_text = if all_ok {
+            "Connection: OK".to_string()
+        } else {
+            format!("Connection: {}/{}", conn.ready, conn.total)
+        };
+
+        let mut host = div()
+            .id("status-bar-host")
+            .w_full()
+            .h(px(design::STATUS_H))
+            .child(
+                MoonStatusBar::new("status-bar")
+                    .indicator(MoonStatusIndicator::new(badge_col).alpha(0.685).size(6.0).glow(8.0, 0.30))
+                    .items([
+                        MoonStatusItem::new(status_text).color(badge_col).weight(600.0).gap_after(10.0),
+                        MoonStatusItem::new("Binance Futures").color(p.text_soft).gap_after(10.0),
+                        MoonStatusItem::separator().gap_after(10.0),
+                        MoonStatusItem::new("ping").color(p.text_muted).gap_after(6.0),
+                        MoonStatusItem::new("32ms").color(p.text_soft).gap_after(10.0),
+                        MoonStatusItem::separator().gap_after(10.0),
+                        MoonStatusItem::new("Mode:").color(p.text_muted).gap_after(6.0),
+                        MoonStatusItem::new("Demo").color(p.text_soft).gap_after(10.0),
+                        MoonStatusItem::separator().gap_after(10.0),
+                        MoonStatusItem::new("ticks").color(p.text_muted).gap_after(6.0),
+                        MoonStatusItem::new(format!("{tick_count}")).color(p.text_soft).gap_after(10.0),
+                        MoonStatusItem::new("book").color(p.text_muted).gap_after(6.0),
+                        MoonStatusItem::new(format!("{book_levels}")).color(p.text_soft).gap_after(10.0),
+                        MoonStatusItem::new(format!("{fps:.0} fps")).color(p.text_soft).gap_after(10.0),
+                        MoonStatusItem::separator().gap_after(10.0),
+                        MoonStatusItem::new("CPU").color(p.text_muted).gap_after(6.0),
+                        MoonStatusItem::new(format!("{:.0}%/{:.0}%", snap.cpu_process, snap.cpu_system))
+                            .color(p.text_soft)
+                            .gap_after(10.0),
+                        MoonStatusItem::new("RAM").color(p.text_muted).gap_after(6.0),
+                        MoonStatusItem::new(format!("{:.0} MB ({:+.1})", snap.mem_mb, snap.mem_delta_mb))
+                            .color(p.text_soft),
+                    ])
+                    .right_item(MoonStatusItem::new("moonbot.pro").color(p.blue))
+                    .render(),
+            );
         if !down_text.is_empty() {
-            badge = badge.tooltip(move |window, cx| {
+            host = host.tooltip(move |window, cx| {
                 gpui_component::tooltip::Tooltip::new(down_text.clone()).build(window, cx)
             });
         }
-
-        h_flex()
-            .w_full()
-            .px_4()
-            .py_1()
-            .gap_4()
-            .items_center()
-            .bg(panel)
-            .border_t_1()
-            .border_color(border)
-            .text_xs()
-            .child(badge)
-            .child(
-                div().text_color(muted).child(format!(
-                    "ticks {}  ·  book {}  ·  {:.0} fps  ·  present {:.0}/s  ·  \
-                     CPU {:.0}% proc / {:.0}% sys  ·  RAM {:.0} MB ({:+.1})",
-                    tick_count,
-                    book_levels,
-                    fps,
-                    fps,
-                    snap.cpu_process,
-                    snap.cpu_system,
-                    snap.mem_mb,
-                    snap.mem_delta_mb,
-                )),
-            )
+        host
     }
 }
 
@@ -669,7 +712,7 @@ pub(crate) fn spawn_group_window(
     let g = group.clone();
     if let Ok(handle) = cx.open_window(opts, move |window, cx| {
         let view = cx.new(|cx| Shell::new(b, g, focus, epoch, theme, window, cx));
-        cx.new(|cx| Root::new(view, window, cx))
+        cx.new(|cx| Root::new(view, window, cx).background_policy(MoonBackgroundPolicy::NoFill))
     }) {
         backend.update(cx, |bk, _| {
             bk.group_windows.insert(group, handle);

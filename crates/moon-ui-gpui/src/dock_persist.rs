@@ -1,6 +1,6 @@
 //! Персист раскладки доков («сохранение всего», часть 2: сами доки, не только окна).
 //!
-//! gpui-component сериализует `DockArea` в `DockAreaState` (serde) и восстанавливает
+//! MoonPalette сериализует `DockArea` в `DockAreaState` (serde) и восстанавливает
 //! его через `DockArea::load` + глобальный `PanelRegistry`: по `panel_name` из
 //! состояния фабрика заново строит панель. Реестр ОДИН на приложение, а группа —
 //! у каждого окна своя, поэтому группу (и прочие параметры реконструкции) каждая
@@ -9,9 +9,10 @@
 //! exe (как layout.toml для геометрии окон).
 
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use gpui::*;
-use gpui_component::dock::{register_panel, DockAreaState, PanelInfo, PanelState};
+use moon_palette::{register_panel, DockAreaState, PanelInfo, PanelState};
 
 use moon_core::config::paths;
 use moon_core::session::CoreId;
@@ -88,62 +89,62 @@ pub fn register_panels(cx: &mut App, backend: Entity<Backend>, epoch: f64) {
     // Чарт-вкладки: группа из state, тема/фокус — из backend по группе.
     {
         let backend = backend.clone();
-        register_panel(cx, "ChartTabs", move |_dock, _state, info, window, cx| {
+        register_panel(cx, "ChartTabs", move |_state, info, window, cx| {
             let group = group_of(info);
             let theme = backend.read(cx).config.theme.clone();
             let focus = focus_for(&backend, &group, cx);
             let backend = backend.clone();
-            Box::new(cx.new(|cx| ChartTabs::new(backend, group, focus, epoch, theme, window, cx)))
+            Rc::new(cx.new(|cx| ChartTabs::new(backend, group, focus, epoch, theme, window, cx)))
         });
     }
     // Лента детектов: группа из state.
     {
         let backend = backend.clone();
-        register_panel(cx, "Detects", move |_dock, _state, info, _window, cx| {
+        register_panel(cx, "Detects", move |_state, info, _window, cx| {
             let group = group_of(info);
             let backend = backend.clone();
-            Box::new(cx.new(|cx| DetectsPanel::new(backend, group, cx)))
+            Rc::new(cx.new(|cx| DetectsPanel::new(backend, group, cx)))
         });
     }
     // Таблица ордеров: группа из state.
     {
         let backend = backend.clone();
-        register_panel(cx, "Orders", move |_dock, _state, info, window, cx| {
+        register_panel(cx, "Orders", move |_state, info, window, cx| {
             let group = group_of(info);
             let backend = backend.clone();
-            Box::new(cx.new(|cx| OrdersPanel::new(backend, group, window, cx)))
+            Rc::new(cx.new(|cx| OrdersPanel::new(backend, group, window, cx)))
         });
     }
     // Ордер: без состояния.
-    register_panel(cx, "Order", move |_dock, _state, _info, _window, cx| {
-        Box::new(cx.new(OrderPanel::new))
+    register_panel(cx, "Order", move |_state, _info, _window, cx| {
+        Rc::new(cx.new(OrderPanel::new))
     });
     // Заглушка Активы: panel_name = имя, заголовок известен по имени; группа из state,
     // backend — для открепления панели (кнопка «⧉»).
     {
         let backend = backend.clone();
-        register_panel(cx, "Assets", move |_d, _s, info, _w, cx| {
+        register_panel(cx, "Assets", move |_s, info, _w, cx| {
             let group = group_of(info);
             let backend = backend.clone();
-            Box::new(cx.new(|cx| StubPanel::new("Assets", "Активы", group, backend, cx)))
+            Rc::new(cx.new(|cx| StubPanel::new("Assets", "Активы", group, backend, cx)))
         });
     }
     // Лог: группа из state; нужен `window` (поле поиска — InputState).
     {
         let backend = backend.clone();
-        register_panel(cx, "Log", move |_d, _s, info, window, cx| {
+        register_panel(cx, "Log", move |_s, info, window, cx| {
             let group = group_of(info);
             let backend = backend.clone();
-            Box::new(cx.new(|cx| LogPanel::new(backend, group, window, cx)))
+            Rc::new(cx.new(|cx| LogPanel::new(backend, group, window, cx)))
         });
     }
     // Отчёт: группа из state; нужен `window` (поля фильтров — InputState).
     {
         let backend = backend.clone();
-        register_panel(cx, "Report", move |_d, _s, info, window, cx| {
+        register_panel(cx, "Report", move |_s, info, window, cx| {
             let group = group_of(info);
             let backend = backend.clone();
-            Box::new(cx.new(|cx| ReportPanel::new(backend, group, window, cx)))
+            Rc::new(cx.new(|cx| ReportPanel::new(backend, group, window, cx)))
         });
     }
 }

@@ -150,6 +150,18 @@ pub fn draw(
     let font = window.text_style().font();
     let ink = rgb3(palette::TEXT_2);
 
+    // Chart own-pass intentionally occupies the data/glass area, not the GPUI axis gutters.
+    // With MoonPalette NoFill hosts those gutters would otherwise expose the raw backbuffer.
+    let gutter = rgb3(palette::BG);
+    window.paint_quad(fill(
+        Bounds::new(point(px(left), px(top)), gpui::size(px(PRICE_AXIS_W), px(height))),
+        gutter,
+    ));
+    window.paint_quad(fill(
+        Bounds::new(point(px(plot_left), px(plot_bottom)), gpui::size(px(right - plot_left), px(TIME_AXIS_H))),
+        gutter,
+    ));
+
     // Сепараторы (белый ~6% альфа): вертикаль у plot_left, горизонталь у plot_bottom.
     let sep = rgba3([255, 255, 255], 16.0 / 255.0);
     window.paint_quad(fill(

@@ -1,101 +1,92 @@
-//! Торговый тулбар — порт верхней полосы стенда (egui `dock/toolbar.rs`): ОДНА тонкая
-//! полоса на высоту кнопки с группами `SIZE` (F1..F6) / `SELL` (S1..S6) / `МАСШТАБ`
-//! (пресеты Y) + `Live`. Кнопки — ТОЧНЫЙ порт `shell::widgets::seg_btn` (lift-фон,
-//! hairline-рамка, акцент при active, светлее+акцент на ховере), а не дефолтный
-//! gpui-component Button (у него своя геометрия/цвета — расходится со стендом).
+//! Торговый тулбар: прикладная сборка терминала поверх MoonPalette.
 //!
-//! Размеры/Продажа — действия-заглушки (лог, 1:1 с egui). Масштаб + Live правят вид чарта
-//! через состояние в `Backend` (`price_scale`/`follow`), которое применяет `ChartPanel`.
+//! Логика остаётся терминальной: size/sell пока логируют todo, scale/live пишут в
+//! `Backend`. Визуальные контролы берём из палитры, выведенной из HTML-эталона.
 
-use gpui::prelude::FluentBuilder;
 use gpui::*;
 
-use gpui_component::h_flex;
+use moon_palette::{
+    h_flex, MoonAccent, MoonButton, MoonButtonSegment, MoonButtonSize, MoonButtonVariant,
+    MoonPalette, MoonSegmentItem, MoonSegmentedControl,
+};
 
-use crate::{hex, Backend};
-use moon_core::palette;
+use crate::{design, Backend};
 
-/// Высота полосы тулбара (лог. px) — под кнопку 28px + вертикальные отступы. Тонкая.
-pub const TOOLBAR_H: f32 = 36.0;
-
-/// Высота кнопки-сегмента (стендовый `seg_btn`: 28px).
-const BTN_H: f32 = 28.0;
-/// Фикс. ширина кнопок-ключей F1../S1.. (стендовый `key_strip`: 34px).
-const KEY_W: f32 = 34.0;
+/// Высота полосы тулбара: 2-я строка header из HTML-эталона.
+pub const TOOLBAR_H: f32 = design::TOOLBAR_H;
 
 /// Пресеты масштаба цены (Y) — 1:1 с egui `dock/controls.rs::SCALES`. `None` = «Авто».
-const SCALES: [(&str, Option<f32>); 6] = [
-    ("Авто", None),
-    ("50%", Some(0.50)),
-    ("20%", Some(0.20)),
-    ("10%", Some(0.10)),
-    ("5%", Some(0.05)),
-    ("2%", Some(0.02)),
+const SCALES: [(&str, Option<f32>, f32); 6] = [
+    ("Авто", None, 48.0),
+    ("50%", Some(0.50), 44.0),
+    ("20%", Some(0.20), 44.0),
+    ("10%", Some(0.10), 44.0),
+    ("5%", Some(0.05), 38.0),
+    ("2%", Some(0.02), 38.0),
 ];
 
 /// Подписи полосок `size` / `sell` (как на стенде).
 const SIZE_KEYS: [&str; 6] = ["F1", "F2", "F3", "F4", "F5", "F6"];
 const SELL_KEYS: [&str; 6] = ["S1", "S2", "S3", "S4", "S5", "S6"];
 
-/// Сплошной цвет палитры → gpui.
-fn solid(c: [u8; 3]) -> Rgba {
-    rgb(hex(c))
+fn toolbar_metric(id: &'static str, label: &'static str, value: &'static str, color: u32, width: f32) -> impl IntoElement {
+    let p = MoonPalette::TERMINAL;
+    MoonButton::new(id)
+        .width(width)
+        .variant(MoonButtonVariant::Neutral)
+        .size(MoonButtonSize::Toolbar)
+        .segment(MoonButtonSegment::new(label).color(p.text_muted).weight(400.0))
+        .text_segment(value, color, 500.0)
+        .render()
 }
 
-/// Акцент с альфой (0..=255) — для подсветки active/hover, как `gamma_multiply` egui.
-fn accent_a(a: u32) -> Rgba {
-    rgba((hex(palette::ACCENT) << 8) | (a & 0xff))
-}
-
-/// Рамка в покое — еле видимая «hairline» (белый ~9%), стендовый `theme::BORDER`.
-fn hairline() -> Rgba {
-    rgba(0xffff_ff18)
-}
-
-/// Кнопка-сегмент — ТОЧНЫЙ порт `shell::widgets::seg_btn`: высота 28, радиус 4,
-/// `active` → заливка accent@16% + рамка accent@70% + яркий текст; покой → lift-фон,
-/// hairline-рамка, приглушённый текст; ховер → lift-hover + accent@55% рамка + яркий
-/// текст. `fixed_w` — фикс. ширина (ключи 34px), иначе по тексту (паддинг 8px).
-fn seg(id: impl Into<SharedString>, label: &str, active: bool, fixed_w: Option<f32>) -> Stateful<Div> {
-    let base = div()
-        .id(id.into())
-        .h(px(BTN_H))
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded(px(4.0))
-        .border_1()
-        .text_size(px(11.5))
-        .cursor_pointer()
-        .map(|d| match fixed_w {
-            Some(w) => d.w(px(w)),
-            None => d.px(px(8.0)),
-        })
-        .child(label.to_string());
-    if active {
-        base.bg(accent_a(0x29)) // accent @ ~16%
-            .border_color(accent_a(0xb3)) // accent @ ~70%
-            .text_color(solid(palette::TEXT))
-    } else {
-        base.bg(solid(palette::LIFT))
-            .border_color(hairline())
-            .text_color(solid(palette::TEXT_2))
-            .hover(|s| {
-                s.bg(solid(palette::LIFT_HOVER))
-                    .border_color(accent_a(0x8c)) // accent @ ~55%
-                    .text_color(solid(palette::TEXT))
-            })
-    }
-}
-
-/// Мелкая тусклая подпись группы (`SIZE`/`SELL`/`МАСШТАБ`) — стендовый `.strip-label`.
+/// Мелкая тусклая подпись группы (`size`/`sell`/`МАСШТАБ`) — стендовый `.strip-label`.
 fn strip_label(text: &'static str) -> impl IntoElement {
-    div().text_size(px(9.5)).text_color(solid(palette::TEXT_3)).child(text)
+    div().text_size(px(9.5)).font_family(design::ui_font()).text_color(design::solid(design::TEXT_MUTED)).child(text)
 }
 
 /// Вертикальный разделитель групп (стендовый `.divider`): тонкая линия высотой 16px.
 fn divider() -> impl IntoElement {
-    div().w(px(1.0)).h(px(16.0)).bg(rgba(0xffff_ff12))
+    design::vline(16.0)
+}
+
+fn size_strip() -> impl IntoElement {
+    MoonSegmentedControl::new("toolbar-size-presets")
+        .accent(MoonAccent::Amber)
+        .items([
+            MoonSegmentItem::new("F1", "0.01").width(65.6),
+            MoonSegmentItem::new("F2", "0.025").width(72.5),
+            MoonSegmentItem::new("F3", "0.05").width(65.6).selected(true),
+            MoonSegmentItem::new("F4", "0.10").width(65.6),
+            MoonSegmentItem::new("F5", "0.25").width(65.6),
+            MoonSegmentItem::new("F6", "0.50").width(65.6),
+        ])
+        .on_click(|ix, _, _, _| log::info!("[ui] size {} (todo)", SIZE_KEYS[ix]))
+        .render()
+}
+
+fn sell_strip() -> impl IntoElement {
+    MoonSegmentedControl::new("toolbar-sell-presets")
+        .accent(MoonAccent::Blue)
+        .items([
+            MoonSegmentItem::new("S1", "+1.0%").width(72.5),
+            MoonSegmentItem::new("S2", "+2.0%").width(72.5),
+            MoonSegmentItem::new("S3", "+3.0%").width(72.5).selected(true),
+            MoonSegmentItem::new("S4", "+5.0%").width(72.5),
+            MoonSegmentItem::new("S5", "+10%").width(65.6),
+            MoonSegmentItem::new("S6", "mk%").width(58.7),
+        ])
+        .on_click(|ix, _, _, _| log::info!("[ui] sell {} (todo)", SELL_KEYS[ix]))
+        .render()
+}
+
+fn scale_button(label: &'static str, selected: bool, width: f32) -> MoonButton {
+    MoonButton::new(format!("scale-{label}"))
+        .width(width)
+        .variant(if selected { MoonButtonVariant::Amber } else { MoonButtonVariant::Soft })
+        .size(MoonButtonSize::Toolbar)
+        .selected(selected)
+        .label(label)
 }
 
 /// Полоса тулбара: рисуется как обычный child `Shell` (между шапкой и доком), не dock-панель.
@@ -105,61 +96,61 @@ pub fn toolbar(backend: &Entity<Backend>, cx: &App) -> impl IntoElement {
         let b = backend.read(cx);
         (b.price_scale, b.follow)
     };
+    let p = MoonPalette::TERMINAL;
 
     let mut row = h_flex()
         .id("toolbar")
         .w_full()
         .h(px(TOOLBAR_H))
         .items_center()
-        .gap(px(5.0))
-        .px_3()
-        .bg(solid(palette::SURFACE_1))
+        .gap(px(8.0))
+        .px(px(12.0))
+        .bg(design::solid(design::HEADER))
         .border_b_1()
-        .border_color(solid(palette::LIFT_HOVER));
+        .border_color(design::solid(design::BORDER));
 
-    // --- SIZE: F1..F6 (действия-заглушки, как egui) ---
-    row = row.child(strip_label("SIZE"));
-    for k in SIZE_KEYS {
-        row = row.child(
-            seg(format!("size-{k}"), k, false, Some(KEY_W))
-                .on_click(move |_, _, _| log::info!("[ui] size {k} (todo)")),
-        );
-    }
-    row = row.child(divider());
+    row = row
+        .child(toolbar_metric("toolbar-tp", "TP", "+3.0%", p.blue, 74.6))
+        .child(toolbar_metric("toolbar-sl", "SL", "-2.0%", p.red, 74.6))
+        .child(toolbar_metric("toolbar-lev", "Lev", "×1", p.text, 61.6))
+        .child(divider())
+        .child(strip_label("size"))
+        .child(size_strip())
+        .child(divider())
+        .child(strip_label("sell"))
+        .child(sell_strip())
+        .child(divider())
+        .child(strip_label("МАСШТАБ"));
 
-    // --- SELL: S1..S6 ---
-    row = row.child(strip_label("SELL"));
-    for k in SELL_KEYS {
-        row = row.child(
-            seg(format!("sell-{k}"), k, false, Some(KEY_W))
-                .on_click(move |_, _, _| log::info!("[ui] sell {k} (todo)")),
-        );
-    }
-    row = row.child(divider());
-
-    // --- МАСШТАБ: пресеты цены (Y). Активный — accent. Пишем в Backend.price_scale ---
-    row = row.child(strip_label("МАСШТАБ"));
-    for (label, pct) in SCALES {
+    for (label, pct, width) in SCALES {
         let backend = backend.clone();
-        row = row.child(seg(format!("scale-{label}"), label, scale == pct, None).on_click(
-            move |_, _, cx| {
-                backend.update(cx, |b, bcx| {
-                    b.price_scale = pct;
-                    bcx.notify();
-                });
-            },
-        ));
+        row = row.child(
+            scale_button(label, scale == pct, width)
+                .on_click(move |_, _, cx| {
+                    backend.update(cx, |b, bcx| {
+                        b.price_scale = pct;
+                        bcx.notify();
+                    });
+                })
+                .render(),
+        );
     }
     row = row.child(divider());
 
-    // --- Live/Пауза: вид бежит за «сейчас» / заморожен. Пишем в Backend.follow ---
     let backend = backend.clone();
     row.child(
-        seg("live", if follow { "Live" } else { "Пауза" }, follow, None).on_click(move |_, _, cx| {
-            backend.update(cx, |b, bcx| {
-                b.follow = !b.follow;
-                bcx.notify();
-            });
-        }),
+        MoonButton::new("live")
+            .width(58.0)
+            .variant(if follow { MoonButtonVariant::Green } else { MoonButtonVariant::Soft })
+            .size(MoonButtonSize::Toolbar)
+            .selected(follow)
+            .label(if follow { "Live" } else { "Пауза" })
+            .on_click(move |_, _, cx| {
+                backend.update(cx, |b, bcx| {
+                    b.follow = !b.follow;
+                    bcx.notify();
+                });
+            })
+            .render(),
     )
 }

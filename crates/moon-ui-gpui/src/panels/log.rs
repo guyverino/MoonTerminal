@@ -7,18 +7,16 @@
 //! (`logs/<дата>_<источник>.log`); агрегат — только Live. Список виртуализирован
 //! (`ListState` с выравниванием к низу — как chat-лог, новые строки видны снизу).
 
-use std::sync::Arc;
-
 use gpui::*;
 use gpui_component::{
-    button::{Button, ButtonVariants},
+    button::Button,
     checkbox::Checkbox,
-    dock::{Panel, PanelEvent, PanelState, PanelView, TabPanel},
     h_flex,
     input::{Input, InputEvent, InputState},
     popover::Popover,
     v_flex, Sizable, StyledExt,
 };
+use moon_palette::{DockArea, MoonButton, MoonButtonSize, Panel, PanelEvent, PanelState};
 
 use crate::detached::DetachedSpec;
 use crate::{hex, Backend};
@@ -69,7 +67,7 @@ pub struct LogPanel {
     /// Сигнатура лога прошлого кадра — чтобы НЕ пересобирать лог каждые 100мс
     /// (gather клонирует до 5000 строк; на холостом ходу это лишняя нагрузка).
     last_sig: u64,
-    tab: Option<WeakEntity<TabPanel>>,
+    dock: Option<WeakEntity<DockArea>>,
     focus: FocusHandle,
 }
 
@@ -103,7 +101,7 @@ impl LogPanel {
             lines: Vec::new(),
             list: ListState::new(0, ListAlignment::Bottom, px(200.0)),
             last_sig: 0,
-            tab: None,
+            dock: None,
             focus: cx.focus_handle(),
         }
     }
@@ -298,22 +296,22 @@ impl Panel for LogPanel {
     fn dump(&self, _cx: &App) -> PanelState {
         crate::dock_persist::panel_state_with_group("Log", &self.group)
     }
-    fn on_added_to(&mut self, tab_panel: WeakEntity<TabPanel>, _window: &mut Window, _cx: &mut Context<Self>) {
-        self.tab = Some(tab_panel);
+    fn on_added_to(&mut self, dock_area: WeakEntity<DockArea>, _window: &mut Window, _cx: &mut Context<Self>) {
+        self.dock = Some(dock_area);
     }
-    fn toolbar_buttons(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<Vec<Button>> {
+    fn toolbar_buttons(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> Option<Vec<AnyElement>> {
         let backend = self.backend.clone();
         let group = self.group.clone();
-        let tab = self.tab.clone();
-        let me = cx.entity().downgrade();
-        Some(vec![Button::new("detach-log")
+        let dock = self.dock.clone();
+        Some(vec![MoonButton::new("detach-log")
             .ghost()
+            .size(MoonButtonSize::Action)
             .label("⧉")
-            .tooltip("В отдельное окно")
             .on_click(move |_, window, app| {
-                if let (Some(tab), Some(me)) = (tab.as_ref().and_then(|t| t.upgrade()), me.upgrade()) {
-                    let arc: Arc<dyn PanelView> = Arc::new(me);
-                    tab.update(app, |tp, cx| tp.remove_panel(arc, window, cx));
+                if let Some(dock) = dock.as_ref().and_then(|d| d.upgrade()) {
+                    dock.update(app, |area, cx| {
+                        area.remove_panel_by_name("Log", window, cx);
+                    });
                 }
                 let spec = DetachedSpec::new(group.clone(), "Log".to_string());
                 crate::detached::spawn(app, &backend, &spec);
@@ -321,7 +319,9 @@ impl Panel for LogPanel {
                     b.detached.push(spec);
                     b.detached_dirty = true;
                 });
-            })])
+            })
+            .render()
+            .into_any_element()])
     }
 }
 

@@ -9,11 +9,10 @@
 //! живой). Обёртка [`DetachedWindow`] рендерит его, следит за геометрией окна и просит
 //! репин по закрытию. Чарт-вкладки персистятся отдельно (нужна сериализация панелей).
 
-use std::sync::Arc;
+use std::rc::Rc;
 
 use gpui::*;
-use gpui_component::dock::PanelView;
-use gpui_component::Root;
+use moon_palette::{PanelView, Root};
 use serde::{Deserialize, Serialize};
 
 use crate::panels::{LogPanel, OrdersPanel, ReportPanel, StubPanel};
@@ -74,7 +73,7 @@ fn panel_title(name: &str) -> &'static str {
     }
 }
 
-/// Свежий экземпляр dock-панели по `panel_name` как `Arc<dyn PanelView>` — для репина
+/// Свежий экземпляр dock-панели по `panel_name` как `Rc<dyn PanelView>` — для репина
 /// (вернуть в док) и как контент окна открепления.
 pub fn build_panel(
     name: &str,
@@ -82,12 +81,12 @@ pub fn build_panel(
     backend: &Entity<Backend>,
     window: &mut Window,
     cx: &mut App,
-) -> Option<Arc<dyn PanelView>> {
-    let panel: Arc<dyn PanelView> = match name {
-        "Orders" => Arc::new(cx.new(|cx| OrdersPanel::new(backend.clone(), group.to_string(), window, cx))),
-        "Log" => Arc::new(cx.new(|cx| LogPanel::new(backend.clone(), group.to_string(), window, cx))),
-        "Report" => Arc::new(cx.new(|cx| ReportPanel::new(backend.clone(), group.to_string(), window, cx))),
-        "Assets" => Arc::new(cx.new(|cx| StubPanel::new("Assets", "Активы", group.to_string(), backend.clone(), cx))),
+) -> Option<Rc<dyn PanelView>> {
+    let panel: Rc<dyn PanelView> = match name {
+        "Orders" => Rc::new(cx.new(|cx| OrdersPanel::new(backend.clone(), group.to_string(), window, cx))),
+        "Log" => Rc::new(cx.new(|cx| LogPanel::new(backend.clone(), group.to_string(), window, cx))),
+        "Report" => Rc::new(cx.new(|cx| ReportPanel::new(backend.clone(), group.to_string(), window, cx))),
+        "Assets" => Rc::new(cx.new(|cx| StubPanel::new("Assets", "Активы", group.to_string(), backend.clone(), cx))),
         _ => return None,
     };
     Some(panel)

@@ -2,11 +2,7 @@
 //! Действия пока заглушки-лог; форму ввода/реальные ордера прикрутим позже.
 
 use gpui::*;
-use gpui_component::{
-    button::{Button, ButtonVariants},
-    dock::{Panel, PanelEvent},
-    v_flex,
-};
+use moon_palette::{v_flex, MoonButton, MoonButtonSize, MoonButtonVariant, Panel, PanelEvent};
 
 pub struct OrderPanel {
     focus: FocusHandle,
@@ -38,9 +34,26 @@ impl Render for OrderPanel {
             .p_3()
             .gap_2()
             .track_focus(&self.focus)
-            .child(Button::new("buy").success().label("BUY").on_click(|_, _, _| log::info!("BUY")))
-            .child(Button::new("sell").danger().label("SELL").on_click(|_, _, _| log::info!("SELL")))
-            .child(Button::new("cancel").warning().label("Cancel Buy").on_click(|_, _, _| log::info!("Cancel")))
-            .child(Button::new("panic").danger().label("PANIC SELL").on_click(|_, _, _| log::info!("PANIC")))
+            .child(action("buy", "BUY", MoonButtonVariant::Green, false, || log::info!("BUY")))
+            .child(action("sell", "SELL", MoonButtonVariant::OutlineRed, false, || log::info!("SELL")))
+            .child(action("cancel", "Cancel Buy", MoonButtonVariant::Amber, false, || log::info!("Cancel")))
+            .child(action("panic", "PANIC SELL", MoonButtonVariant::Danger, true, || log::info!("PANIC")))
     }
+}
+
+fn action(
+    id: &'static str,
+    label: &'static str,
+    variant: MoonButtonVariant,
+    strong: bool,
+    f: impl Fn() + 'static,
+) -> impl IntoElement {
+    MoonButton::new(id)
+        .full_width()
+        .variant(variant)
+        .size(MoonButtonSize::Pill)
+        .selected(strong)
+        .label(label)
+        .on_click(move |_, _, _| f())
+        .render()
 }

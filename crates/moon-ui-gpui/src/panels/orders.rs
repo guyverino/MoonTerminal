@@ -1,6 +1,6 @@
 //! Панель «Ордера» — таблица открытых ордеров группы (все ядра), на всю ширину.
-//! Порт egui `src/dock/orders_panel.rs`. Колонки: Ядро · Сторона · Токен · Size ·
-//! SL · TS · Vstop · Bprice · CurPrice · Fill · Strat.
+//! Визуальная геометрия выведена из HTML-эталона MoonBot Terminal Design:
+//! MARKET · SIDE · STATUS · QTY · PRICE · FILLED · PNL · TP · SL · AGE · STRATEGY.
 //!
 //! Сторона: BUY (лонг, ждёт) — зелёным, SHORT (шорт, ждёт) — красным, SELL
 //! (исполнился — позиция открыта/продаётся) — синим. Эмуляторный — «(E)».
@@ -8,26 +8,24 @@
 //! Клик по колонке токена открывает чарт монеты на Main НА ЯДРЕ ордера (через
 //! `Backend.open_request`). Поля-списки источника/типа + меню сортировки/фильтра.
 
-use std::sync::Arc;
+use std::rc::Rc;
 
+use gpui::prelude::FluentBuilder;
 use gpui::*;
-use gpui_component::{
-    button::{Button, ButtonVariants},
-    dock::{Panel, PanelEvent, PanelState, PanelView, TabPanel},
-    h_flex,
-    popover::Popover,
-    v_flex, Sizable,
+use moon_palette::{
+    h_flex, v_flex, DockArea, MoonBadge, MoonBadgeSize, MoonBadgeVariant, MoonButton,
+    MoonButtonSize, MoonButtonVariant, MoonDropdown, MoonMenuItem, MoonMenuSize, MoonPalette,
+    MoonScrollbarVisibility, MoonTableCell, MoonTableColumn, MoonTableRow, MoonText, MoonTone,
+    MoonVirtualTable, Panel, PanelEvent, PanelState,
 };
 
 use crate::detached::DetachedSpec;
+use crate::design;
 use crate::{hex, Backend};
 use moon_core::feed::OrderRow;
 use moon_core::palette;
 use moon_core::session::CoreId;
 use moon_core::symbol;
-
-/// SELL (исполненный лонг) — синий (egui `theme::BLUE`, нет в палитре).
-const BLUE: u32 = 0x4a90ff;
 
 /// Одна строка таблицы ордеров с привязкой к ядру-источнику (порт `OrderEntry`).
 #[derive(Clone)]
@@ -105,7 +103,7 @@ pub struct OrdersPanel {
     /// перестраивать таблицу каждые 100мс на холостом ходу (иначе вместе с readback
     /// чарта это перегружает UI-поток → рывки графика, когда вкладка «Ордера» активна).
     last_sig: u64,
-    tab: Option<WeakEntity<TabPanel>>,
+    dock: Option<WeakEntity<DockArea>>,
     focus: FocusHandle,
 }
 
@@ -120,7 +118,7 @@ impl OrdersPanel {
             }
         })
         .detach();
-        Self { backend, group, view: OrdersViewState::default(), last_sig: 0, tab: None, focus: cx.focus_handle() }
+        Self { backend, group, view: OrdersViewState::default(), last_sig: 0, dock: None, focus: cx.focus_handle() }
     }
 
     /// Открытые ордера ядер группы (с именем ядра и quote) — порт `collect_orders`.
@@ -171,25 +169,28 @@ impl OrdersPanel {
             OrdersSource::Core(id) => cores.iter().find(|(c, _)| *c == id).map(|(_, n)| n.clone()).unwrap_or_else(|| "Все ядра".into()),
         };
         let view = cx.entity();
-        let cores = cores.to_vec();
-        Popover::new("orders-source")
-            .trigger(Button::new("orders-source-btn").outline().xsmall().label(format!("{cur} ▾")))
-            .content(move |_s, _w, _cx| {
+        let mut menu = MoonDropdown::new("orders-source")
+            .label(format!("{cur} ▾"))
+            .trigger_variant(MoonButtonVariant::Soft)
+            .trigger_size(MoonButtonSize::Action)
+            .trigger_width(118.0)
+            .menu_width(160.0)
+            .menu_size(MoonMenuSize::Compact)
+            .item(MoonMenuItem::with_key("all", "Все ядра").checked(matches!(self.view.source, OrdersSource::All)).on_click({
                 let view = view.clone();
-                let mut col = v_flex().gap_0p5().p_1().min_w(px(150.0));
-                col = col.child(combo_item("os-all", "Все ядра", {
-                    let view = view.clone();
-                    move |app| view.update(app, |t, c| t.set_source(OrdersSource::All, c))
-                }));
-                for (id, name) in &cores {
-                    let id = *id;
-                    let view = view.clone();
-                    col = col.child(combo_item(format!("os-{id}"), name.clone(), move |app| {
-                        view.update(app, |t, c| t.set_source(OrdersSource::Core(id), c))
-                    }));
-                }
-                col
-            })
+                move |_, _, app| view.update(app, |t, c| t.set_source(OrdersSource::All, c))
+            }));
+        for (id, name) in cores {
+            let id = *id;
+            let selected = matches!(self.view.source, OrdersSource::Core(cur) if cur == id);
+            let view = view.clone();
+            menu = menu.item(
+                MoonMenuItem::with_key(format!("core-{id}"), name.clone())
+                    .checked(selected)
+                    .on_click(move |_, _, app| view.update(app, |t, c| t.set_source(OrdersSource::Core(id), c))),
+            );
+        }
+        menu
     }
 
     /// Поле-список типа ордеров (Все / Реальные / Эмуляторные).
@@ -200,19 +201,22 @@ impl OrdersPanel {
             OrderKind::Emu => "Эмуляторные",
         };
         let view = cx.entity();
-        Popover::new("orders-kind")
-            .trigger(Button::new("orders-kind-btn").outline().xsmall().label(format!("{cur} ▾")))
-            .content(move |_s, _w, _cx| {
-                let opts = [(OrderKind::All, "Все"), (OrderKind::Real, "Реальные"), (OrderKind::Emu, "Эмуляторные")];
-                let mut col = v_flex().gap_0p5().p_1().min_w(px(130.0));
-                for (k, label) in opts {
-                    let view = view.clone();
-                    col = col.child(combo_item(format!("ok-{label}"), label, move |app| {
-                        view.update(app, |t, c| t.set_kind(k, c))
-                    }));
-                }
-                col
-            })
+        let mut menu = MoonDropdown::new("orders-kind")
+            .label(format!("{cur} ▾"))
+            .trigger_variant(MoonButtonVariant::Soft)
+            .trigger_size(MoonButtonSize::Action)
+            .trigger_width(102.0)
+            .menu_width(138.0)
+            .menu_size(MoonMenuSize::Compact);
+        for (k, label) in [(OrderKind::All, "Все"), (OrderKind::Real, "Реальные"), (OrderKind::Emu, "Эмуляторные")] {
+            let view = view.clone();
+            menu = menu.item(
+                MoonMenuItem::with_key(format!("kind-{label}"), label)
+                    .checked(self.view.kind == k)
+                    .on_click(move |_, _, app| view.update(app, |t, c| t.set_kind(k, c))),
+            );
+        }
+        menu
     }
 
     /// Меню сортировки/фильтра (порт ПКМ-меню egui): фильтр текущего маркета + две
@@ -220,41 +224,78 @@ impl OrdersPanel {
     fn sort_menu(&self, cx: &Context<Self>) -> impl IntoElement {
         let view = cx.entity();
         let cur = self.view;
-        Popover::new("orders-sort")
-            .trigger(Button::new("orders-sort-btn").ghost().xsmall().label("⚙ ▾").tooltip("Сортировка и фильтр"))
-            .content(move |_s, _w, _cx| {
-                let v = view.clone();
-                let mut col = v_flex().gap_0p5().p_1().min_w(px(200.0));
-                col = col.child(menu_check("m-onlycur", "Только ордера текущего маркета", cur.only_current_market, {
-                    let v = v.clone();
-                    move |app| v.update(app, |t, c| { t.view.only_current_market = true; c.notify(); })
-                }));
-                col = col.child(menu_check("m-showall", "Показать все", !cur.only_current_market, {
-                    let v = v.clone();
-                    move |app| v.update(app, |t, c| { t.view.only_current_market = false; c.notify(); })
-                }));
-                col = col.child(menu_sep());
-                for (variant, label, id) in [
-                    (PrimarySort::SellFirst, "Sell первые", "m-sell"),
-                    (PrimarySort::BuyFirst, "Buy первые", "m-buy"),
-                    (PrimarySort::Creation, "По созданию ордера", "m-creation"),
-                ] {
-                    let v = v.clone();
-                    col = col.child(menu_check(id, label, cur.primary == variant, move |app| {
-                        v.update(app, |t, c| { t.view.primary = variant; c.notify(); })
-                    }));
-                }
-                col = col.child(menu_sep());
-                col = col.child(menu_check("m-new", "Новые первые", cur.newest_first, {
-                    let v = v.clone();
-                    move |app| v.update(app, |t, c| { t.view.newest_first = true; c.notify(); })
-                }));
-                col = col.child(menu_check("m-old", "Старые первые", !cur.newest_first, {
-                    let v = v.clone();
-                    move |app| v.update(app, |t, c| { t.view.newest_first = false; c.notify(); })
-                }));
-                col
-            })
+        let v = view.clone();
+        let mut menu = MoonDropdown::new("orders-sort")
+            .label("⚙")
+            .trigger_variant(MoonButtonVariant::Ghost)
+            .trigger_size(MoonButtonSize::Action)
+            .trigger_width(34.0)
+            .menu_width(220.0)
+            .menu_size(MoonMenuSize::Normal)
+            .item(
+                MoonMenuItem::with_key("m-onlycur", "Только ордера текущего маркета")
+                    .checked(cur.only_current_market)
+                    .on_click(move |_, _, app| {
+                        v.update(app, |t, c| {
+                            t.view.only_current_market = true;
+                            c.notify();
+                        })
+                    }),
+            );
+        let v = view.clone();
+        menu = menu
+            .item(
+                MoonMenuItem::with_key("m-showall", "Показать все")
+                    .checked(!cur.only_current_market)
+                    .on_click(move |_, _, app| {
+                        v.update(app, |t, c| {
+                            t.view.only_current_market = false;
+                            c.notify();
+                        })
+                    }),
+            )
+            .item(MoonMenuItem::separator());
+        for (variant, label, id) in [
+            (PrimarySort::SellFirst, "Sell первые", "m-sell"),
+            (PrimarySort::BuyFirst, "Buy первые", "m-buy"),
+            (PrimarySort::Creation, "По созданию ордера", "m-creation"),
+        ] {
+            let v = view.clone();
+            menu = menu.item(
+                MoonMenuItem::with_key(id, label)
+                    .checked(cur.primary == variant)
+                    .on_click(move |_, _, app| {
+                        v.update(app, |t, c| {
+                            t.view.primary = variant;
+                            c.notify();
+                        })
+                    }),
+            );
+        }
+        let v = view.clone();
+        menu = menu
+            .item(MoonMenuItem::separator())
+            .item(
+                MoonMenuItem::with_key("m-new", "Новые первые")
+                    .checked(cur.newest_first)
+                    .on_click(move |_, _, app| {
+                        v.update(app, |t, c| {
+                            t.view.newest_first = true;
+                            c.notify();
+                        })
+                    }),
+            );
+        let v = view;
+        menu.item(
+            MoonMenuItem::with_key("m-old", "Старые первые")
+                .checked(!cur.newest_first)
+                .on_click(move |_, _, app| {
+                    v.update(app, |t, c| {
+                        t.view.newest_first = false;
+                        c.notify();
+                    })
+                }),
+        )
     }
 }
 
@@ -298,22 +339,22 @@ impl Panel for OrdersPanel {
     fn dump(&self, _cx: &App) -> PanelState {
         crate::dock_persist::panel_state_with_group("Orders", &self.group)
     }
-    fn on_added_to(&mut self, tab_panel: WeakEntity<TabPanel>, _window: &mut Window, _cx: &mut Context<Self>) {
-        self.tab = Some(tab_panel);
+    fn on_added_to(&mut self, dock_area: WeakEntity<DockArea>, _window: &mut Window, _cx: &mut Context<Self>) {
+        self.dock = Some(dock_area);
     }
-    fn toolbar_buttons(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<Vec<Button>> {
+    fn toolbar_buttons(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> Option<Vec<AnyElement>> {
         let backend = self.backend.clone();
         let group = self.group.clone();
-        let tab = self.tab.clone();
-        let me = cx.entity().downgrade();
-        Some(vec![Button::new("detach-orders")
+        let dock = self.dock.clone();
+        Some(vec![MoonButton::new("detach-orders")
             .ghost()
+            .size(MoonButtonSize::Action)
             .label("⧉")
-            .tooltip("В отдельное окно")
             .on_click(move |_, window, app| {
-                if let (Some(tab), Some(me)) = (tab.as_ref().and_then(|t| t.upgrade()), me.upgrade()) {
-                    let arc: Arc<dyn PanelView> = Arc::new(me);
-                    tab.update(app, |tp, cx| tp.remove_panel(arc, window, cx));
+                if let Some(dock) = dock.as_ref().and_then(|d| d.upgrade()) {
+                    dock.update(app, |area, cx| {
+                        area.remove_panel_by_name("Orders", window, cx);
+                    });
                 }
                 let spec = DetachedSpec::new(group.clone(), "Orders".to_string());
                 crate::detached::spawn(app, &backend, &spec);
@@ -321,7 +362,9 @@ impl Panel for OrdersPanel {
                     b.detached.push(spec);
                     b.detached_dirty = true;
                 });
-            })])
+            })
+            .render()
+            .into_any_element()])
     }
 }
 
@@ -371,167 +414,205 @@ impl Render for OrdersPanel {
                 .child(div().text_xs().text_color(rgb(hex(palette::TEXT_3))).child("· Только ордера текущего маркета"));
         }
 
-        // ── Заголовок строк (тело) ──
-        let mut list = v_flex().w_full();
-        if entries.is_empty() {
-            list = list.child(div().p_2().text_color(rgb(hex(palette::TEXT_2))).child("нет открытых ордеров"));
-        } else {
-            for (i, e) in entries.iter().enumerate() {
-                list = list.child(data_row(e, i, cx));
-            }
-        }
+        // ── Виртуальная таблица в геометрии HTML-эталона ──
+        let table = orders_table(entries, cx);
 
         v_flex()
             .id("orders-panel")
             .size_full()
             .track_focus(&self.focus)
-            .text_sm()
+            .font_family(design::mono())
+            .text_size(px(10.5))
+            .bg(design::solid(design::PANEL_DARK))
             .child(controls)
-            .child(div().w_full().h(px(1.0)).bg(rgb(hex(palette::LIFT_HOVER))))
-            .child(div().id("orders-scroll").flex_1().w_full().overflow_y_scroll().child(list))
+            .child(div().w_full().h(px(1.0)).bg(design::solid(design::BORDER)))
+            .child(table)
     }
 }
 
-/// Ширины колонок (px). Strat растягивается (flex), остальные фиксированы.
-struct W;
-impl W {
-    const CORE: f32 = 80.0;
-    const SIDE: f32 = 74.0;
-    const TOKEN: f32 = 70.0;
-    const SIZE: f32 = 92.0;
-    const SL: f32 = 64.0;
-    const TS: f32 = 64.0;
-    const VSTOP: f32 = 80.0;
-    const BUY: f32 = 104.0;
-    const PRICE: f32 = 110.0;
-    const FILL: f32 = 72.0;
+fn orders_table(entries: Vec<OrderEntry>, cx: &Context<OrdersPanel>) -> impl IntoElement {
+    let empty = entries.is_empty();
+    let rows = Rc::new(entries);
+    let row_count = rows.len();
+    let view = cx.entity();
+    let table_rows = rows.clone();
+
+    div()
+        .id("orders-table-host")
+        .relative()
+        .flex_1()
+        .w_full()
+        .overflow_hidden()
+        .child(
+            MoonVirtualTable::new("orders-table", row_count, move |ix, _window, _app| {
+                order_table_row(&table_rows[ix], &view)
+            })
+            .columns(order_columns())
+            .header_height(design::TABLE_HEAD_H)
+            .row_height(design::TABLE_ROW_H)
+            .scrollbar_visibility(MoonScrollbarVisibility::Hover),
+        )
+        .when(empty, |this| {
+            this.child(
+                div()
+                    .absolute()
+                    .left(px(10.0))
+                    .top(px(design::TABLE_HEAD_H))
+                    .h(px(design::TABLE_ROW_H))
+                    .flex()
+                    .items_center()
+                    .font_family(design::mono())
+                    .text_size(px(10.5))
+                    .text_color(design::solid(design::TEXT_MUTED))
+                    .child("нет открытых ордеров"),
+            )
+        })
 }
 
-/// Одна строка ордера (полоски через чётность). Токен — кликабелен (открыть чарт).
-fn data_row(e: &OrderEntry, idx: usize, cx: &Context<OrdersPanel>) -> AnyElement {
+fn order_columns() -> Vec<MoonTableColumn> {
+    vec![
+        MoonTableColumn::new("Market", 100.0),
+        MoonTableColumn::new("Side", 50.0),
+        MoonTableColumn::new("Status", 80.0),
+        numeric_column("Qty", 60.0),
+        numeric_column("Price", 90.0),
+        numeric_column("Filled", 60.0),
+        numeric_column("PnL", 60.0),
+        numeric_column("TP", 80.0),
+        numeric_column("SL", 80.0),
+        numeric_column("Age", 50.0),
+        MoonTableColumn::new("Strategy", 130.0)
+            .header_padding(0.0, 8.0)
+            .cell_padding(0.0, 8.0),
+    ]
+}
+
+fn numeric_column(title: impl Into<SharedString>, width: f32) -> MoonTableColumn {
+    MoonTableColumn::new(title, width)
+        .right()
+        .header_padding(10.0, 0.0)
+        .cell_padding(12.0, 0.0)
+}
+
+fn order_table_row(e: &OrderEntry, view: &Entity<OrdersPanel>) -> MoonTableRow {
     let r = &e.row;
-    // Сторона + цвет.
-    let (side, col) = if is_sell(r) {
-        ("SELL", rgb(BLUE))
+    let (side, side_tone) = if is_sell(r) {
+        ("SELL", MoonTone::Info)
     } else if r.is_short {
-        ("SHORT", rgb(hex(palette::RED)))
+        ("SHORT", MoonTone::Danger)
     } else {
-        ("BUY", rgb(hex(palette::GREEN)))
+        ("BUY", MoonTone::Accent)
     };
     let side = if r.emulator { format!("{side}(E)") } else { side.to_string() };
-    let token = symbol::base_symbol(&r.market, &e.quote).to_string();
-    let (core, market) = (e.core, r.market.clone());
+    let pnl = pnl_value(r);
+    let pnl_tone = if pnl >= 0.0 { MoonTone::Positive } else { MoonTone::Danger };
+    let price = if r.sell_price > 0.0 { r.sell_price } else { r.buy_price };
+    let strategy = if r.strat.is_empty() { e.core_name.clone() } else { r.strat.clone() };
 
-    let token_cell = div()
-        .id(SharedString::from(format!("ord-tok-{}-{}", e.core, r.uid)))
-        .w(px(W::TOKEN))
-        .flex_none()
-        .cursor_pointer()
-        .truncate()
-        .text_right()
-        .text_color(rgb(hex(palette::ACCENT)))
-        .child(token)
-        .on_click(cx.listener(move |this, _, _, cx| {
-            this.backend.update(cx, |b, bcx| {
-                b.open_request = Some((core, market.clone()));
-                bcx.notify();
-            });
-        }));
-
-    let bg = if idx % 2 == 1 { Some(rgb(hex(palette::LIFT))) } else { None };
-    let mut row = h_flex().w_full().items_center().gap_2().px_2().py(px(1.0));
-    if let Some(bg) = bg {
-        row = row.bg(bg);
-    }
-    row.child(cell_text(W::CORE, Align::Start, &e.core_name, rgb(hex(palette::TEXT_2))))
-        .child(cell_text(W::SIDE, Align::Start, &side, col))
-        .child(token_cell)
-        .child(cell_lv(W::SIZE, Align::End, "Sz:", &num(r.size), rgb(hex(palette::TEXT_2))))
-        .child(cell_onoff(W::SL, "SL:", r.sl_on))
-        .child(cell_onoff(W::TS, "TS:", r.ts_on))
-        .child(cell_onoff(W::VSTOP, "Vstop:", r.vstop_on))
-        .child(cell_lv(W::BUY, Align::End, "Buy:", &num(r.buy_price), rgb(hex(palette::TEXT_2))))
-        .child(cell_lv(W::PRICE, Align::End, "Cur.P:", &num(r.price as f64), rgb(hex(palette::TEXT_2))))
-        .child(cell_lv(W::FILL, Align::End, "Fill:", &format!("{:.0}%", r.fill_pct), rgb(hex(palette::TEXT_2))))
-        // Strat растягивается на остаток ширины (право, одна строка).
-        .child(div().flex_1().min_w(px(80.0)).truncate().text_right().text_color(rgb(hex(palette::TEXT_2))).child(r.strat.clone()))
-        .into_any_element()
+    MoonTableRow::new().cells([
+        MoonTableCell::element(market_cell(e, view)),
+        MoonTableCell::text(side, side_tone, 500.0),
+        status_cell(r),
+        MoonTableCell::text(num(r.size), MoonTone::Default, 400.0),
+        MoonTableCell::text(num(price), MoonTone::Default, 400.0),
+        MoonTableCell::text(format!("{:.0}%", r.fill_pct), MoonTone::Muted, 400.0),
+        MoonTableCell::text(format!("{pnl:+.2}"), pnl_tone, 400.0),
+        MoonTableCell::text(opt_price(r.take_profit), MoonTone::Info, 400.0),
+        MoonTableCell::text(opt_price(r.stop_loss), MoonTone::Danger, 400.0),
+        MoonTableCell::text(age(r.create_time_ms), MoonTone::Muted, 400.0),
+        MoonTableCell::text(strategy, MoonTone::Muted, 400.0)
+            .font_size(10.0)
+            .line_height(13.0)
+            .text_color(MoonPalette::TERMINAL.text_muted),
+    ])
 }
 
-#[derive(Clone, Copy)]
-enum Align {
-    Start,
-    Center,
-    End,
-}
-
-fn justify(d: Div, al: Align) -> Div {
-    match al {
-        Align::Start => d.justify_start(),
-        Align::Center => d.justify_center(),
-        Align::End => d.justify_end(),
-    }
-}
-
-/// Ячейка с одноцветным текстом фикс. ширины (одна строка, обрезка «…»).
-fn cell_text(w: f32, al: Align, text: &str, color: Rgba) -> impl IntoElement {
-    let d = match al {
-        Align::Start => div().text_left(),
-        Align::Center => div().text_center(),
-        Align::End => div().text_right(),
+fn market_cell(e: &OrderEntry, view: &Entity<OrdersPanel>) -> impl IntoElement + 'static {
+    let base = symbol::base_symbol(&e.row.market, &e.quote);
+    let market_label = if e.quote.is_empty() {
+        e.row.market.clone()
+    } else {
+        format!("{base}/{}", e.quote)
     };
-    d.w(px(w)).flex_none().truncate().text_color(color).child(text.to_string())
-}
+    let core = e.core;
+    let market = e.row.market.clone();
+    let uid = e.row.uid;
+    let view = view.clone();
 
-/// Ячейка «подпись:значение» (подпись тусклая, значение своим цветом).
-fn cell_lv(w: f32, al: Align, label: &str, value: &str, vcolor: Rgba) -> impl IntoElement {
-    let inner = h_flex()
-        .gap_0()
-        .child(div().text_color(rgb(hex(palette::TEXT_3))).child(label.to_string()))
-        .child(div().text_color(vcolor).child(value.to_string()));
-    justify(div().w(px(w)).flex_none().flex().overflow_hidden(), al).child(inner)
-}
-
-/// Ячейка флага по центру: «SL:ON» (зелёным) / «SL:OFF» (тускло).
-fn cell_onoff(w: f32, label: &str, on: bool) -> impl IntoElement {
-    let (v, c) = if on { ("ON", rgb(hex(palette::GREEN))) } else { ("OFF", rgb(hex(palette::TEXT_2))) };
-    cell_lv(w, Align::Center, label, v, c)
-}
-
-/// Кликабельный пункт попап-комбобокса.
-fn combo_item(id: impl Into<SharedString>, label: impl Into<SharedString>, on_click: impl Fn(&mut App) + 'static) -> impl IntoElement {
     div()
-        .id(id.into())
+        .id(SharedString::from(format!("ord-tok-{core}-{uid}")))
         .w_full()
-        .px_2()
-        .py_1()
+        .h_full()
+        .flex()
+        .items_center()
         .cursor_pointer()
-        .rounded(px(3.0))
-        .text_color(rgb(hex(palette::TEXT)))
-        .hover(|s| s.bg(rgb(hex(palette::LIFT_HOVER))))
-        .child(label.into())
-        .on_click(move |_, _w, app| on_click(app))
+        .child(
+            MoonText::new(market_label)
+                .color(MoonPalette::TERMINAL.text)
+                .font_size(10.5)
+                .line_height(14.0)
+                .weight(500.0)
+                .mono(true)
+                .uppercase(false)
+                .render(),
+        )
+        .on_click(move |_, _window, app| {
+            view.update(app, |this, cx| {
+                this.backend.update(cx, |b, bcx| {
+                    b.open_request = Some((core, market.clone()));
+                    bcx.notify();
+                });
+            });
+        })
 }
 
-/// Пункт меню с галкой-маркером слева (selectable_label в egui).
-fn menu_check(id: impl Into<SharedString>, label: impl Into<SharedString>, checked: bool, on_click: impl Fn(&mut App) + 'static) -> impl IntoElement {
-    let mark = if checked { "✓ " } else { "   " };
-    let col = if checked { palette::ACCENT } else { palette::TEXT };
-    div()
-        .id(id.into())
-        .w_full()
-        .px_2()
-        .py_1()
-        .cursor_pointer()
-        .rounded(px(3.0))
-        .text_color(rgb(hex(col)))
-        .hover(|s| s.bg(rgb(hex(palette::LIFT_HOVER))))
-        .child(format!("{mark}{}", label.into()))
-        .on_click(move |_, _w, app| on_click(app))
+fn status_cell(r: &OrderRow) -> MoonTableCell {
+    let (label, tone) = if r.pending {
+        ("pending", MoonTone::Notice)
+    } else if r.filled || executed(r) {
+        ("live", MoonTone::Positive)
+    } else if r.emulator {
+        ("emu", MoonTone::Muted)
+    } else {
+        ("open", MoonTone::Muted)
+    };
+    MoonTableCell::element(
+        MoonBadge::new(label)
+            .size(MoonBadgeSize::Status)
+            .variant(MoonBadgeVariant::Outline)
+            .tone(tone)
+            .bg_alpha(0.08)
+            .border_alpha(0.27)
+            .weight(400.0)
+            .render(),
+    )
 }
 
-fn menu_sep() -> impl IntoElement {
-    div().my_0p5().w_full().h(px(1.0)).bg(rgb(hex(palette::LIFT_HOVER)))
+fn pnl_value(r: &OrderRow) -> f64 {
+    if r.buy_price <= 0.0 || r.price <= 0.0 || r.size <= 0.0 {
+        return 0.0;
+    }
+    let cur = r.price as f64;
+    let delta = if r.is_short { r.buy_price - cur } else { cur - r.buy_price };
+    delta * r.size
+}
+
+fn opt_price(v: Option<f64>) -> String {
+    v.filter(|x| *x > 0.0).map(num).unwrap_or_else(|| "—".into())
+}
+
+fn age(create_time_ms: f64) -> String {
+    if create_time_ms <= 0.0 {
+        return "—".into();
+    }
+    let secs = ((moon_chart::paint::now_unix_ms() - create_time_ms) * 0.001).max(0.0);
+    if secs < 60.0 {
+        format!("{secs:.0}s")
+    } else if secs < 3600.0 {
+        format!("{:.0}m", secs / 60.0)
+    } else {
+        format!("{:.0}h", secs / 3600.0)
+    }
 }
 
 /// Сигнатура ордеров группы (сумма orders_rev ядер) — растёт при любом изменении

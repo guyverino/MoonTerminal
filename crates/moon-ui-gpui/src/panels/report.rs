@@ -3,18 +3,22 @@
 //! сверху, ИТОГО за период снизу, generic-таблица по всем колонкам БД с сортировкой
 //! по клику на заголовок. Автообновление по счётчику-генерации writer'а (Backend.reports).
 
+use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use gpui::*;
 use gpui_component::{
-    button::{Button, ButtonVariants},
+    button::Button,
     checkbox::Checkbox,
-    dock::{Panel, PanelEvent, PanelState, PanelView, TabPanel},
     h_flex,
     input::{Input, InputEvent, InputState},
     popover::Popover,
     v_flex, Sizable, StyledExt,
+};
+use moon_palette::{
+    DockArea, MoonButton, MoonButtonSize, MoonScrollbarVisibility, MoonVirtualList, Panel,
+    PanelEvent, PanelState,
 };
 use rusqlite::types::Value;
 use rusqlite::Connection;
@@ -24,8 +28,9 @@ use crate::{hex, Backend};
 use moon_core::db::{self, ReportFilter, ReportTable, SideFilter};
 use moon_core::palette;
 
-/// Грузим только топ-N по сортировке (строк в БД может быть очень много).
-const ROW_LIMIT: usize = 100;
+/// Data cap для отчёта. UI ниже виртуализирован, так что 100k строк не превращаются
+/// в 100k GPUI-элементов; отдельная серверная пагинация здесь пока не нужна.
+const MAX_REPORT_ROWS: usize = 100_000;
 
 /// Колонки, видимые по умолчанию (имена = колонки БД).
 const DEFAULT_VISIBLE: &[&str] = &[
@@ -41,7 +46,7 @@ pub struct ReportPanel {
 
     conn: Option<Connection>,
     cores: Vec<(u64, String)>,
-    table: ReportTable,
+    table: Rc<ReportTable>,
     totals: (f64, i64),
 
     sort_key: String,
@@ -56,7 +61,7 @@ pub struct ReportPanel {
 
     /// Видимость колонок (параллельно db::DISPLAY_COLUMNS).
     visible: Vec<bool>,
-    tab: Option<WeakEntity<TabPanel>>,
+    dock: Option<WeakEntity<DockArea>>,
     focus: FocusHandle,
 }
 
@@ -102,7 +107,7 @@ impl ReportPanel {
             last_gen,
             conn,
             cores,
-            table: ReportTable { cols: db::DISPLAY_COLUMNS, rows: Vec::new() },
+            table: Rc::new(ReportTable { cols: db::DISPLAY_COLUMNS, rows: Vec::new() }),
             totals: (0.0, 0),
             sort_key,
             sort_desc,
@@ -113,7 +118,7 @@ impl ReportPanel {
             side: SideFilter::All,
             needs_query: true,
             visible,
-            tab: None,
+            dock: None,
             focus: cx.focus_handle(),
         }
     }
@@ -145,7 +150,7 @@ impl ReportPanel {
         let f = self.filter(cx);
         if let Some(conn) = &self.conn {
             self.cores = db::distinct_cores(conn);
-            self.table = db::query_reports(conn, &f, &self.sort_key, self.sort_desc, ROW_LIMIT);
+            self.table = Rc::new(db::query_reports(conn, &f, &self.sort_key, self.sort_desc, MAX_REPORT_ROWS));
             self.totals = db::query_totals(conn, &f);
         }
         self.needs_query = false;
@@ -274,22 +279,22 @@ impl Panel for ReportPanel {
     fn dump(&self, _cx: &App) -> PanelState {
         crate::dock_persist::panel_state_with_group("Report", &self.group)
     }
-    fn on_added_to(&mut self, tab_panel: WeakEntity<TabPanel>, _window: &mut Window, _cx: &mut Context<Self>) {
-        self.tab = Some(tab_panel);
+    fn on_added_to(&mut self, dock_area: WeakEntity<DockArea>, _window: &mut Window, _cx: &mut Context<Self>) {
+        self.dock = Some(dock_area);
     }
-    fn toolbar_buttons(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<Vec<Button>> {
+    fn toolbar_buttons(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> Option<Vec<AnyElement>> {
         let backend = self.backend.clone();
         let group = self.group.clone();
-        let tab = self.tab.clone();
-        let me = cx.entity().downgrade();
-        Some(vec![Button::new("detach-report")
+        let dock = self.dock.clone();
+        Some(vec![MoonButton::new("detach-report")
             .ghost()
+            .size(MoonButtonSize::Action)
             .label("⧉")
-            .tooltip("В отдельное окно")
             .on_click(move |_, window, app| {
-                if let (Some(tab), Some(me)) = (tab.as_ref().and_then(|t| t.upgrade()), me.upgrade()) {
-                    let arc: Arc<dyn PanelView> = Arc::new(me);
-                    tab.update(app, |tp, cx| tp.remove_panel(arc, window, cx));
+                if let Some(dock) = dock.as_ref().and_then(|d| d.upgrade()) {
+                    dock.update(app, |area, cx| {
+                        area.remove_panel_by_name("Report", window, cx);
+                    });
                 }
                 let spec = DetachedSpec::new(group.clone(), "Report".to_string());
                 crate::detached::spawn(app, &backend, &spec);
@@ -297,7 +302,9 @@ impl Panel for ReportPanel {
                     b.detached.push(spec);
                     b.detached_dirty = true;
                 });
-            })])
+            })
+            .render()
+            .into_any_element()])
     }
 }
 
@@ -365,31 +372,23 @@ impl Render for ReportPanel {
             let rows_el: AnyElement = if self.table.rows.is_empty() {
                 div().p_3().text_color(rgb(hex(palette::TEXT_2))).child("Нет отчётов под фильтр (или БД пуста).").into_any_element()
             } else {
-                let mut col = v_flex().gap_0();
-                for (ri, r) in self.table.rows.iter().enumerate() {
-                    let mut row = h_flex().gap_0().items_center().py(px(1.0));
-                    if ri % 2 == 1 {
-                        row = row.bg(rgb(hex(palette::LIFT)));
-                    }
-                    for &i in &vis {
-                        let cname = self.table.cols[i];
-                        let val = r.get(i).unwrap_or(&Value::Null);
-                        let (text, color) = cell(cname, val);
-                        let c = color.unwrap_or(hex(palette::TEXT));
-                        row = row.child(
-                            div()
-                                .w(px(width_for(cname)))
-                                .flex_none()
-                                .px_1()
-                                .text_xs()
-                                .truncate()
-                                .text_color(rgb(c))
-                                .child(text),
-                        );
-                    }
-                    col = col.child(row);
-                }
-                div().id("rep-rows").flex_1().w_full().overflow_y_scroll().child(col).into_any_element()
+                let table = self.table.clone();
+                let visible = Rc::new(vis.clone());
+                let row_count = table.rows.len();
+                div()
+                    .id("rep-rows")
+                    .flex_1()
+                    .w_full()
+                    .child(
+                        MoonVirtualList::new("rep-virtual-rows", row_count, 24.0, move |ri, _window, _app| {
+                            report_row(ri, &table, &visible)
+                        })
+                        .surface(false)
+                        .border(false)
+                        .radius(0.0)
+                        .scrollbar_visibility(MoonScrollbarVisibility::Hover),
+                    )
+                    .into_any_element()
             };
 
             // Горизонтальный скролл оборачивает заголовок + строки.
@@ -438,6 +437,32 @@ impl Render for ReportPanel {
 
 fn width_total(vis: &[usize]) -> f32 {
     vis.iter().map(|&i| width_for(db::DISPLAY_COLUMNS[i])).sum()
+}
+
+fn report_row(ri: usize, table: &ReportTable, vis: &[usize]) -> AnyElement {
+    let mut row = h_flex().gap_0().items_center().h(px(24.0));
+    if ri % 2 == 1 {
+        row = row.bg(rgb(hex(palette::LIFT)));
+    }
+    if let Some(r) = table.rows.get(ri) {
+        for &i in vis {
+            let cname = table.cols[i];
+            let val = r.get(i).unwrap_or(&Value::Null);
+            let (text, color) = cell(cname, val);
+            let c = color.unwrap_or(hex(palette::TEXT));
+            row = row.child(
+                div()
+                    .w(px(width_for(cname)))
+                    .flex_none()
+                    .px_1()
+                    .text_xs()
+                    .truncate()
+                    .text_color(rgb(c))
+                    .child(text),
+            );
+        }
+    }
+    row.into_any_element()
 }
 
 /// Текст + цвет ячейки по имени колонки и значению (порт `cell`).

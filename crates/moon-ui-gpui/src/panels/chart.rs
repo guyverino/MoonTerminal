@@ -7,7 +7,7 @@
 //! Текст осей и перекрестие — GPUI-оверлей ПОВЕРХ (нативный текст, см. §7/§9 арх-дока).
 
 use gpui::*;
-use gpui_component::dock::{Panel, PanelEvent};
+use moon_palette::{MoonBackgroundPolicy, Panel, PanelEvent};
 
 use crate::chartdx::ChartEngine;
 use crate::{axes, input, Backend};
@@ -172,6 +172,9 @@ impl Panel for ChartPanel {
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         SharedString::from(self.title_text())
     }
+    fn background_policy(&self, _cx: &App) -> MoonBackgroundPolicy {
+        MoonBackgroundPolicy::NoFill
+    }
 }
 impl Render for ChartPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -192,7 +195,7 @@ impl Render for ChartPanel {
             .map(|b| (f32::from(b.origin.x) * ppp, f32::from(b.origin.y) * ppp))
             .unwrap_or((0.0, 0.0));
         self.chart.set_origin(ox, oy);
-        // Курсор для own-pass крестика (OverScene-период): window-px = origin слота + slot-local.
+        // Курсор для own-pass крестика: window-px = origin слота + slot-local.
         let cursor_win = self.input.cursor.map(|(cx, cy)| (ox + cx, oy + cy));
         self.chart.set_cursor(cursor_win, self.input.hovered_pane);
 

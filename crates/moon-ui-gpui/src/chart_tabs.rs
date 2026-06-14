@@ -1,16 +1,13 @@
 //! Свой таб-стрип чартов (порт egui-полоски чарт-вкладок): Main + AddToChart-N.
-//! Полный контроль (gpui-component TabPanel не даёт): активная вкладка, БЕЗ авто-
+//! Полный контроль: активная вкладка, БЕЗ авто-
 //! перехода при детекте, дабл-клик по чарту→Main, отцепление вкладки в ОС-окно.
 //! Является Dock-панелью (center DockArea), внутри — своя полоска + активная
-//! `ChartPanel`. Детекты/ордер/нижние вкладки — отдельные gpui-Dock-панели.
+//! `ChartPanel`. Детекты/ордер/нижние вкладки — отдельные MoonPalette Dock-панели.
 
 use std::collections::HashMap;
 
 use gpui::*;
-use gpui_component::{
-    dock::{Panel, PanelEvent, PanelState},
-    h_flex, v_flex, Root,
-};
+use moon_palette::{h_flex, v_flex, MoonBackgroundPolicy, Panel, PanelEvent, PanelState, Root};
 
 use crate::panels::ChartPanel;
 use crate::{hex, Backend};
@@ -159,7 +156,9 @@ impl ChartTabs {
             }),
             ..Default::default()
         };
-        cx.open_window(opts, |window, cx| cx.new(|cx| Root::new(panel.clone(), window, cx)))
+        cx.open_window(opts, |window, cx| {
+            cx.new(|cx| Root::new(panel.clone(), window, cx).background_policy(MoonBackgroundPolicy::NoFill))
+        })
             .ok();
         cx.notify();
     }
@@ -213,6 +212,9 @@ impl Panel for ChartTabs {
     fn dump(&self, _cx: &App) -> PanelState {
         // AddToChart-вкладки не сохраняем: они пересоздаются из детектов при работе.
         crate::dock_persist::panel_state_with_group("ChartTabs", &self.group)
+    }
+    fn background_policy(&self, _cx: &App) -> MoonBackgroundPolicy {
+        MoonBackgroundPolicy::NoFill
     }
 }
 

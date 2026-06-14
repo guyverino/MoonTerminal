@@ -21,6 +21,7 @@ image = "0.25"
 # Longbridge dependencies. Local path overrides live in the workspace .cargo/config.toml.
 gpui = { git = "https://github.com/Moonbot-Tech/ZedFork", rev = "9b7bbde6833d3178b7116f1774ee1b55c584950a" }
 gpui_platform = { git = "https://github.com/Moonbot-Tech/ZedFork", rev = "9b7bbde6833d3178b7116f1774ee1b55c584950a", features = ["font-kit", "wayland", "x11"] }
+moon-palette = { path = "../../../MoonPalette" }
 
 # Temporary migration debt: these go away as panels move to MoonPalette.
 gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "cda0fc7fd4e4809dd2a8bae0337ac43b49e9f675" }
