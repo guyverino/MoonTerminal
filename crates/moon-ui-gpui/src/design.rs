@@ -6,6 +6,7 @@
 
 use gpui::*;
 use moon_palette::{MoonMetrics, MoonPalette};
+use std::path::PathBuf;
 
 const P: MoonPalette = MoonPalette::TERMINAL;
 const M: MoonMetrics = MoonMetrics::TERMINAL;
@@ -49,8 +50,8 @@ pub fn ui_font() -> SharedString {
     SharedString::from("Inter")
 }
 
-pub fn logo() -> Svg {
-    svg().external_path(LOGO_SVG).w(px(83.0)).h(px(18.0))
+pub fn logo() -> impl IntoElement {
+    img(PathBuf::from(LOGO_SVG)).w(px(83.3)).h(px(18.0))
 }
 
 pub fn vline(height: f32) -> impl IntoElement {
@@ -76,5 +77,9 @@ pub fn top_pill(id: impl Into<SharedString>, label: impl Into<SharedString>) -> 
 }
 
 pub fn status_dot(color: u32) -> impl IntoElement {
-    div().w(px(5.0)).h(px(5.0)).rounded(px(999.0)).bg(solid(color))
+    div()
+        .w(px(5.0))
+        .h(px(5.0))
+        .rounded(px(999.0))
+        .bg(solid(color))
 }

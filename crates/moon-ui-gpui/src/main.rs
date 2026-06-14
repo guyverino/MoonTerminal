@@ -27,6 +27,7 @@ mod panels;
 mod settings;
 mod strategies;
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -40,8 +41,9 @@ use panels::{DetectsPanel, LogPanel, OrderPanel, OrdersPanel, ReportPanel, StubP
 use moon_palette::{
     h_flex, init as init_moon_palette, v_flex, DockArea, DockAreaState, DockEvent, DockItem,
     DockPlacement, MoonBackgroundPolicy, MoonPalette, MoonStatusBar, MoonStatusIndicator,
-    MoonStatusItem, MoonTooltipView, PanelView, Root,
+    MoonStatusItem, MoonTooltipView, MoonWindowChrome, MoonWindowChromeButton, PanelView, Root,
 };
+use moon_palette::MoonRect;
 
 use moon_core::config::{AppConfig, GroupLayout, WindowLayout};
 use moon_core::feed::ConnStatus;
@@ -52,6 +54,17 @@ use moon_core::session::{ConnSummary, CoreId, SessionManager};
 /// `moon_core::palette` (тот же, что у egui-хрома); никаких литералов в UI.
 fn hex(c: [u8; 3]) -> u32 {
     (c[0] as u32) << 16 | (c[1] as u32) << 8 | c[2] as u32
+}
+
+fn embedded_fonts() -> Vec<Cow<'static, [u8]>> {
+    vec![
+        include_bytes!("../../../assets/fonts/Inter-400.ttf").as_slice().into(),
+        include_bytes!("../../../assets/fonts/Inter-500.ttf").as_slice().into(),
+        include_bytes!("../../../assets/fonts/Inter-600.ttf").as_slice().into(),
+        include_bytes!("../../../assets/fonts/GeistMono-400.ttf").as_slice().into(),
+        include_bytes!("../../../assets/fonts/GeistMono-500.ttf").as_slice().into(),
+        include_bytes!("../../../assets/fonts/GeistMono-600.ttf").as_slice().into(),
+    ]
 }
 
 /// Общий backend: живёт в одном `Entity`, дренится таймером, будит окна по notify.
@@ -355,6 +368,7 @@ impl Render for Shell {
             };
             (conn, snap, market_label, price_label, tick_count, book_levels)
         };
+        let chrome_width = f32::from(window.viewport_size().width);
 
         v_flex()
             .size_full()
@@ -392,7 +406,6 @@ impl Render for Shell {
                             .child(exchange_pill())
                             .child(balance_label())
                             .child(design::vline(16.0))
-                            .child(window_controls())
                             .child(
                                 header_action("strategies", "Стратегии", {
                                     let backend = self.backend.clone();
@@ -405,6 +418,7 @@ impl Render for Shell {
                                     move |_, _, cx| settings::open(backend.clone(), cx)
                                 }),
                             )
+                            .child(window_controls())
                     ),
             )
             // ── Тулбар: тонкая фикс. полоса (Размеры/Продажа/Масштаб+Live), порт верхней
@@ -430,7 +444,22 @@ impl Render for Shell {
             )
             // ── Status bar (полный порт egui `shell::ui` нижней панели) ──
             .child(self.status_bar(conn, snap, tick_count, book_levels, fps))
+            .child(window_chrome(chrome_width))
     }
+}
+
+fn window_chrome(width: f32) -> impl IntoElement {
+    let controls_x = (width - 108.0).max(0.0);
+
+    MoonWindowChrome::new("moon-window-chrome", MoonRect::new(0.0, 0.0, width, design::HEADER_TOP_H))
+        .drag_bounds(MoonRect::new(0.0, 0.0, 116.0_f32.min(width), design::HEADER_TOP_H))
+        .controls_bounds(MoonRect::new(controls_x, 0.0, 96.0, design::HEADER_TOP_H))
+        .buttons([
+            MoonWindowChromeButton::Minimize,
+            MoonWindowChromeButton::Maximize,
+            MoonWindowChromeButton::Close,
+        ])
+        .render()
 }
 
 fn metric(label: &'static str, value: &'static str, color: u32) -> impl IntoElement {
@@ -669,21 +698,20 @@ pub(crate) fn spawn_group_window(
         },
         None => Bounds {
             origin: point(px(80.0 + offset), px(80.0 + offset)),
-            size: size(px(1100.0), px(720.0)),
+            size: size(px(1280.0), px(720.0)),
         },
     };
     let opts = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(win_bounds)),
-        titlebar: Some(TitlebarOptions {
-            title: Some(format!("MoonTerminal — {group}").into()),
-            ..Default::default()
-        }),
+        titlebar: None,
+        window_min_size: Some(size(px(1280.0), px(720.0))),
         ..Default::default()
     };
     let theme = cfg.theme.clone();
     let b = backend.clone();
     let g = group.clone();
     if let Ok(handle) = cx.open_window(opts, move |window, cx| {
+        configure_dwm_window(window);
         let view = cx.new(|cx| Shell::new(b, g, focus, epoch, theme, window, cx));
         cx.new(|cx| Root::new(view, window, cx).background_policy(MoonBackgroundPolicy::NoFill))
     }) {
@@ -692,6 +720,52 @@ pub(crate) fn spawn_group_window(
         });
     }
 }
+
+#[cfg(target_os = "windows")]
+fn configure_dwm_window(window: &Window) {
+    use raw_window_handle::RawWindowHandle;
+    use windows::Win32::{
+        Foundation::HWND,
+        Graphics::Dwm::{
+            DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_CAPTION_COLOR,
+            DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND,
+        },
+    };
+
+    let Ok(handle) = raw_window_handle::HasWindowHandle::window_handle(window) else {
+        return;
+    };
+    let RawWindowHandle::Win32(handle) = handle.as_raw() else {
+        return;
+    };
+
+    let hwnd = HWND(handle.hwnd.get() as *mut _);
+    let corner = DWMWCP_DONOTROUND;
+    let colorref_header = 0x001F1C1A_u32;
+    unsafe {
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_WINDOW_CORNER_PREFERENCE,
+            &corner as *const _ as *const _,
+            std::mem::size_of_val(&corner) as u32,
+        );
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_BORDER_COLOR,
+            &colorref_header as *const _ as *const _,
+            std::mem::size_of_val(&colorref_header) as u32,
+        );
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_CAPTION_COLOR,
+            &colorref_header as *const _ as *const _,
+            std::mem::size_of_val(&colorref_header) as u32,
+        );
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn configure_dwm_window(_: &Window) {}
 
 fn main() -> anyhow::Result<()> {
     // Строим env_logger как Logger (не .init()) и оборачиваем в TeeLogger — он
@@ -718,6 +792,9 @@ fn main() -> anyhow::Result<()> {
     let app = gpui_platform::application();
     app.run(move |cx| {
         init_moon_palette(cx);
+        cx.text_system()
+            .add_fonts(embedded_fonts())
+            .expect("failed to add embedded MoonBot fonts");
 
         let layout = WindowLayout::load();
         let dock_states = dock_persist::load_all();

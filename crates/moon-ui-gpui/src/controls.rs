@@ -6,8 +6,8 @@
 use gpui::*;
 
 use moon_palette::{
-    h_flex, MoonAccent, MoonButton, MoonButtonSegment, MoonButtonSize, MoonButtonVariant,
-    MoonPalette, MoonSegmentItem, MoonSegmentedControl,
+    h_flex, v_flex, MoonAccent, MoonButton, MoonButtonSegment, MoonButtonSize, MoonButtonVariant,
+    MoonPalette, MoonPopover, MoonPopoverPlacement, MoonSegmentItem, MoonSegmentedControl,
 };
 
 use crate::{design, Backend};
@@ -29,20 +29,34 @@ const SCALES: [(&str, Option<f32>, f32); 6] = [
 const SIZE_KEYS: [&str; 6] = ["F1", "F2", "F3", "F4", "F5", "F6"];
 const SELL_KEYS: [&str; 6] = ["S1", "S2", "S3", "S4", "S5", "S6"];
 
-fn toolbar_metric(id: &'static str, label: &'static str, value: &'static str, color: u32, width: f32) -> impl IntoElement {
+fn toolbar_metric(
+    id: &'static str,
+    label: &'static str,
+    value: &'static str,
+    color: u32,
+    width: f32,
+) -> impl IntoElement {
     let p = MoonPalette::TERMINAL;
     MoonButton::new(id)
         .width(width)
         .variant(MoonButtonVariant::Neutral)
         .size(MoonButtonSize::Toolbar)
-        .segment(MoonButtonSegment::new(label).color(p.text_muted).weight(400.0))
+        .segment(
+            MoonButtonSegment::new(label)
+                .color(p.text_muted)
+                .weight(400.0),
+        )
         .text_segment(value, color, 500.0)
         .render()
 }
 
 /// Мелкая тусклая подпись группы (`size`/`sell`/`МАСШТАБ`) — стендовый `.strip-label`.
 fn strip_label(text: &'static str) -> impl IntoElement {
-    div().text_size(px(9.5)).font_family(design::ui_font()).text_color(design::solid(design::TEXT_MUTED)).child(text)
+    div()
+        .text_size(px(9.5))
+        .font_family(design::ui_font())
+        .text_color(design::solid(design::TEXT_MUTED))
+        .child(text)
 }
 
 /// Вертикальный разделитель групп (стендовый `.divider`): тонкая линия высотой 16px.
@@ -54,12 +68,14 @@ fn size_strip() -> impl IntoElement {
     MoonSegmentedControl::new("toolbar-size-presets")
         .accent(MoonAccent::Amber)
         .items([
-            MoonSegmentItem::new("F1", "0.01").width(65.6),
-            MoonSegmentItem::new("F2", "0.025").width(72.5),
-            MoonSegmentItem::new("F3", "0.05").width(65.6).selected(true),
-            MoonSegmentItem::new("F4", "0.10").width(65.6),
-            MoonSegmentItem::new("F5", "0.25").width(65.6),
-            MoonSegmentItem::new("F6", "0.50").width(65.6),
+            MoonSegmentItem::new("F1", "0.01").width(54.0),
+            MoonSegmentItem::new("F2", "0.025").width(61.0),
+            MoonSegmentItem::new("F3", "0.05")
+                .width(56.0)
+                .selected(true),
+            MoonSegmentItem::new("F4", "0.10").width(56.0),
+            MoonSegmentItem::new("F5", "0.25").width(56.0),
+            MoonSegmentItem::new("F6", "0.50").width(56.0),
         ])
         .on_click(|ix, _, _, _| log::info!("[ui] size {} (todo)", SIZE_KEYS[ix]))
         .render()
@@ -69,12 +85,14 @@ fn sell_strip() -> impl IntoElement {
     MoonSegmentedControl::new("toolbar-sell-presets")
         .accent(MoonAccent::Blue)
         .items([
-            MoonSegmentItem::new("S1", "+1.0%").width(72.5),
-            MoonSegmentItem::new("S2", "+2.0%").width(72.5),
-            MoonSegmentItem::new("S3", "+3.0%").width(72.5).selected(true),
-            MoonSegmentItem::new("S4", "+5.0%").width(72.5),
-            MoonSegmentItem::new("S5", "+10%").width(65.6),
-            MoonSegmentItem::new("S6", "mk%").width(58.7),
+            MoonSegmentItem::new("S1", "+1.0%").width(62.0),
+            MoonSegmentItem::new("S2", "+2.0%").width(62.0),
+            MoonSegmentItem::new("S3", "+3.0%")
+                .width(62.0)
+                .selected(true),
+            MoonSegmentItem::new("S4", "+5.0%").width(62.0),
+            MoonSegmentItem::new("S5", "+10%").width(56.0),
+            MoonSegmentItem::new("S6", "mk%").width(52.0),
         ])
         .on_click(|ix, _, _, _| log::info!("[ui] sell {} (todo)", SELL_KEYS[ix]))
         .render()
@@ -83,10 +101,59 @@ fn sell_strip() -> impl IntoElement {
 fn scale_button(label: &'static str, selected: bool, width: f32) -> MoonButton {
     MoonButton::new(format!("scale-{label}"))
         .width(width)
-        .variant(if selected { MoonButtonVariant::Amber } else { MoonButtonVariant::Soft })
+        .variant(if selected {
+            MoonButtonVariant::Amber
+        } else {
+            MoonButtonVariant::Soft
+        })
         .size(MoonButtonSize::Toolbar)
         .selected(selected)
         .label(label)
+}
+
+fn scale_label(scale: Option<f32>) -> &'static str {
+    SCALES
+        .iter()
+        .find(|(_, value, _)| *value == scale)
+        .map(|(label, _, _)| *label)
+        .unwrap_or("Авто")
+}
+
+fn scale_popover(scale: Option<f32>, backend: Entity<Backend>) -> impl IntoElement {
+    let p = MoonPalette::TERMINAL;
+    let selected_label = scale_label(scale);
+    let trigger = MoonButton::new("toolbar-scale-trigger")
+        .width(112.0)
+        .variant(MoonButtonVariant::Neutral)
+        .size(MoonButtonSize::Toolbar)
+        .segment(
+            MoonButtonSegment::new("МАСШТАБ")
+                .color(p.text_muted)
+                .weight(400.0),
+        )
+        .text_segment(selected_label, p.text, 500.0)
+        .render();
+
+    let mut menu = v_flex().gap(px(4.0));
+    for (label, pct, _) in SCALES {
+        let backend = backend.clone();
+        menu = menu.child(
+            scale_button(label, scale == pct, 104.0)
+                .on_click(move |_, _, cx| {
+                    backend.update(cx, |b, bcx| {
+                        b.price_scale = pct;
+                        bcx.notify();
+                    });
+                })
+                .render(),
+        );
+    }
+
+    MoonPopover::new("toolbar-scale-popover")
+        .placement(MoonPopoverPlacement::BottomEnd)
+        .width(116.0)
+        .trigger(trigger)
+        .content(menu)
 }
 
 /// Полоса тулбара: рисуется как обычный child `Shell` (между шапкой и доком), не dock-панель.
@@ -103,7 +170,7 @@ pub fn toolbar(backend: &Entity<Backend>, cx: &App) -> impl IntoElement {
         .w_full()
         .h(px(TOOLBAR_H))
         .items_center()
-        .gap(px(8.0))
+        .gap(px(6.0))
         .px(px(12.0))
         .bg(design::solid(design::HEADER))
         .border_b_1()
@@ -120,28 +187,17 @@ pub fn toolbar(backend: &Entity<Backend>, cx: &App) -> impl IntoElement {
         .child(strip_label("sell"))
         .child(sell_strip())
         .child(divider())
-        .child(strip_label("МАСШТАБ"));
-
-    for (label, pct, width) in SCALES {
-        let backend = backend.clone();
-        row = row.child(
-            scale_button(label, scale == pct, width)
-                .on_click(move |_, _, cx| {
-                    backend.update(cx, |b, bcx| {
-                        b.price_scale = pct;
-                        bcx.notify();
-                    });
-                })
-                .render(),
-        );
-    }
-    row = row.child(divider());
+        .child(scale_popover(scale, backend.clone()));
 
     let backend = backend.clone();
     row.child(
         MoonButton::new("live")
-            .width(58.0)
-            .variant(if follow { MoonButtonVariant::Green } else { MoonButtonVariant::Soft })
+            .width(54.0)
+            .variant(if follow {
+                MoonButtonVariant::Green
+            } else {
+                MoonButtonVariant::Soft
+            })
             .size(MoonButtonSize::Toolbar)
             .selected(follow)
             .label(if follow { "Live" } else { "Пауза" })
