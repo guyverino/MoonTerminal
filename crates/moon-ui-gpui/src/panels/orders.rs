@@ -401,6 +401,7 @@ impl Render for OrdersPanel {
         // ── Панель управления ──
         let mut controls = h_flex()
             .w_full()
+            .flex_none()
             .gap_2()
             .items_center()
             .px_2()
@@ -420,12 +421,14 @@ impl Render for OrdersPanel {
         v_flex()
             .id("orders-panel")
             .size_full()
+            .min_h(px(0.0))
+            .overflow_hidden()
             .track_focus(&self.focus)
             .font_family(design::mono())
             .text_size(px(10.5))
             .bg(design::solid(design::PANEL_DARK))
             .child(controls)
-            .child(div().w_full().h(px(1.0)).bg(design::solid(design::BORDER)))
+            .child(div().w_full().h(px(1.0)).flex_none().bg(design::solid(design::BORDER)))
             .child(table)
     }
 }
@@ -442,7 +445,9 @@ fn orders_table(entries: Vec<OrderEntry>, cx: &Context<OrdersPanel>) -> impl Int
         .relative()
         .flex_1()
         .w_full()
+        .min_h(px(0.0))
         .overflow_hidden()
+        .bg(design::solid(design::PANEL_DARK))
         .child(
             MoonVirtualTable::new("orders-table", row_count, move |ix, _window, _app| {
                 order_table_row(&table_rows[ix], &view)

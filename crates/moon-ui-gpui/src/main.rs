@@ -411,7 +411,23 @@ impl Render for Shell {
             //    полосы стенда. Не dock-панель — единый ряд на высоту кнопки. ──
             .child(controls::toolbar(&self.backend, cx))
             // ── Центр: единый DockArea (чарт=center, детекты+ордер=right, вкладки=bottom) ──
-            .child(div().flex_1().w_full().child(self.dock.clone()))
+            .child(
+                div()
+                    .relative()
+                    .flex_1()
+                    .w_full()
+                    .min_h(px(0.0))
+                    .overflow_hidden()
+                    .child(
+                        div()
+                            .absolute()
+                            .top_0()
+                            .right_0()
+                            .bottom_0()
+                            .left_0()
+                            .child(self.dock.clone()),
+                    ),
+            )
             // ── Status bar (полный порт egui `shell::ui` нижней панели) ──
             .child(self.status_bar(conn, snap, tick_count, book_levels, fps))
     }
