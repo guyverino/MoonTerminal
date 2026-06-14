@@ -13,15 +13,11 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use gpui::*;
-use gpui_component::{
-    button::{Button, ButtonVariants},
-    checkbox::Checkbox,
-    h_flex,
-    input::{Input, InputEvent, InputState},
-    popover::Popover,
-    v_flex, Sizable, StyledExt,
+use moon_palette::{
+    h_flex, v_flex, MoonButton, MoonButtonSize, MoonButtonVariant, MoonCheckbox, MoonCheckboxSize,
+    MoonDropdown, MoonInput, MoonInputEvent, MoonInputState, MoonMenuItem, MoonMenuSize, Root,
+    StyledExt,
 };
-use moon_palette::Root;
 
 use crate::{hex, Backend};
 use moon_core::feed::{SchemaField, SchemaFieldUi, SchemaSection, StrategyRow};
@@ -44,8 +40,8 @@ fn hexa(c: [u8; 3], a: u8) -> Rgba {
 /// Состояние окна «Стратегии» (порт egui `StrategiesState` + рендер 4 панелей).
 pub struct StrategiesView {
     backend: Entity<Backend>,
-    /// Текстовое поле поиска (gpui-component Input) — значение читаем в фильтр.
-    search: Entity<InputState>,
+    /// Текстовое поле поиска — значение читаем в фильтр.
+    search: Entity<MoonInputState>,
     /// Фильтры дерева (вид/направление/только активные); `search` синхр. из инпута.
     filter: StrategyFilter,
     /// Текущая (первичная) стратегия — источник схемы/секций (ядро, id).
@@ -77,10 +73,10 @@ pub struct StrategiesView {
 
 impl StrategiesView {
     fn new(backend: Entity<Backend>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let search = cx.new(|cx| InputState::new(window, cx).placeholder("поиск"));
+        let search = cx.new(|cx| MoonInputState::new(window, cx).placeholder("поиск"));
         // Печать в поиске → перерисовать (значение читаем из инпута в render).
-        cx.subscribe(&search, |_this, _e, ev: &InputEvent, cx| {
-            if matches!(ev, InputEvent::Change) {
+        cx.subscribe(&search, |_this, _e, ev: &MoonInputEvent, cx| {
+            if matches!(ev, MoonInputEvent::Change) {
                 cx.notify();
             }
         })
@@ -152,18 +148,29 @@ impl StrategiesView {
     /// «Старт/стоп отмеченных»: на ядро — изменённые галки (diff стейджинга против
     /// серверного checked) + команда старт/стоп, если у ядра есть отмеченная стратегия
     /// или есть правки галок. Шлёт через `session.apply_strategies`, чистит стейджинг.
-    fn apply_start_stop(&mut self, cores: &[(CoreId, String)], start: bool, cx: &mut Context<Self>) {
+    fn apply_start_stop(
+        &mut self,
+        cores: &[(CoreId, String)],
+        start: bool,
+        cx: &mut Context<Self>,
+    ) {
         // Собрать действия (читаем store), затем применить (повторный borrow backend).
         let mut actions: Vec<(CoreId, Vec<(u64, bool)>, bool)> = Vec::new();
         {
             let b = self.backend.read(cx);
             let store = b.session.store();
             for (core, _) in cores {
-                let Some(cd) = store.core(*core) else { continue };
+                let Some(cd) = store.core(*core) else {
+                    continue;
+                };
                 let mut checks = Vec::new();
                 let mut has_checked = false;
                 for r in &cd.strategies {
-                    let eff = self.staged.get(&(*core, r.id)).copied().unwrap_or(r.checked);
+                    let eff = self
+                        .staged
+                        .get(&(*core, r.id))
+                        .copied()
+                        .unwrap_or(r.checked);
                     if eff != r.checked {
                         checks.push((r.id, eff));
                     }
@@ -188,7 +195,12 @@ impl StrategiesView {
     }
 
     /// Развернуть все узлы (если `collapsed`) или свернуть все (иначе).
-    fn expand_collapse_toggle(&mut self, cores: &[(CoreId, String)], store: &CoreStore, collapsed: bool) {
+    fn expand_collapse_toggle(
+        &mut self,
+        cores: &[(CoreId, String)],
+        store: &CoreStore,
+        collapsed: bool,
+    ) {
         if collapsed {
             for (c, _) in cores {
                 self.expanded_cores.insert(*c);
@@ -231,14 +243,30 @@ impl StrategiesView {
         // Узлы ядер → дерево.
         let mut list = v_flex().w_full().gap_0();
         for (core_id, core_name) in cores {
-            let Some(cd) = store.core(*core_id) else { continue };
+            let Some(cd) = store.core(*core_id) else {
+                continue;
+            };
             if cd.strategies.is_empty() || !cd.strategies.iter().any(|r| self.filter.matches(r)) {
                 continue;
             }
             let open = force_open || self.expanded_cores.contains(core_id);
-            let total = cd.strategies.iter().filter(|r| self.filter.counts(r)).count();
-            let active = cd.strategies.iter().filter(|r| self.filter.counts(r) && r.checked).count();
-            let label = format!("{}  {}  {}/{}", if open { "▼" } else { "▶" }, core_name, active, total);
+            let total = cd
+                .strategies
+                .iter()
+                .filter(|r| self.filter.counts(r))
+                .count();
+            let active = cd
+                .strategies
+                .iter()
+                .filter(|r| self.filter.counts(r) && r.checked)
+                .count();
+            let label = format!(
+                "{}  {}  {}/{}",
+                if open { "▼" } else { "▶" },
+                core_name,
+                active,
+                total
+            );
             let cid = *core_id;
             list = list.child(
                 div()
@@ -262,7 +290,17 @@ impl StrategiesView {
             let root = build_node(cd.strategies.iter().filter(|r| self.filter.matches(r)));
             let mut prefix: Vec<String> = Vec::new();
             let mut kids: Vec<AnyElement> = Vec::new();
-            self.render_node(&root, &cd.strategies, *core_id, &mut prefix, force_open, order, built, &mut kids, cx);
+            self.render_node(
+                &root,
+                &cd.strategies,
+                *core_id,
+                &mut prefix,
+                force_open,
+                order,
+                built,
+                &mut kids,
+                cx,
+            );
             let mut body = v_flex().w_full().pl_3().gap_0();
             for k in kids {
                 body = body.child(k);
@@ -303,7 +341,14 @@ impl StrategiesView {
                             .w_full()
                             .gap_1()
                             .items_center()
-                            .child(div().flex_1().min_w_0().child(Input::new(&self.search).small().cleanable(true)))
+                            .child(
+                                div().flex_1().min_w_0().child(
+                                    MoonInput::new("strat-search")
+                                        .state(&self.search)
+                                        .small()
+                                        .cleanable(true),
+                                ),
+                            )
                             .child(self.combo_kind(kind_text, kinds, cx))
                             .child(self.combo_dir(dir_text, cx)),
                     )
@@ -313,37 +358,47 @@ impl StrategiesView {
                             .items_center()
                             .justify_between()
                             .child(
-                                Checkbox::new("flt-active")
+                                MoonCheckbox::new("flt-active")
                                     .label("только активные")
                                     .checked(self.filter.only_active)
-                                    .on_click(cx.listener(|this, ch: &bool, _, cx| {
+                                    .size(MoonCheckboxSize::Compact)
+                                    .on_change(cx.listener(|this, ch: &bool, _, cx| {
                                         this.filter.only_active = *ch;
                                         cx.notify();
                                     })),
                             )
                             .child(
-                                Button::new("expand-all")
+                                MoonButton::new("expand-all")
                                     .ghost()
-                                    .xsmall()
+                                    .size(MoonButtonSize::Micro)
                                     .label(if collapsed { "▼" } else { "▲" })
-                                    .tooltip(if collapsed { "Развернуть всё" } else { "Свернуть всё" })
                                     .on_click({
                                         let cores = cores_owned.clone();
                                         cx.listener(move |this, _, _, cx| {
                                             let store = this.backend.read(cx).session.store();
-                                            let coll = this.expanded_cores.is_empty() && this.expanded_folders.is_empty();
+                                            let coll = this.expanded_cores.is_empty()
+                                                && this.expanded_folders.is_empty();
                                             // store borrow tied to cx; clone cores for &-call.
                                             let cores_v = cores.as_ref().clone();
                                             this.expand_collapse_toggle(&cores_v, store, coll);
                                             cx.notify();
                                         })
-                                    }),
+                                    })
+                                    .render(),
                             ),
                     ),
             )
             .child(div().w_full().h(px(1.0)).bg(border))
             // ── Прокручиваемый список ──
-            .child(div().id("strat-tree-scroll").flex_1().w_full().overflow_y_scroll().p_2().child(list))
+            .child(
+                div()
+                    .id("strat-tree-scroll")
+                    .flex_1()
+                    .w_full()
+                    .overflow_y_scroll()
+                    .p_2()
+                    .child(list),
+            )
             // ── Нижняя панель действий ──
             .child(div().w_full().h(px(1.0)).bg(border))
             .child(self.action_bar(cores_owned, store, cx))
@@ -351,81 +406,120 @@ impl StrategiesView {
     }
 
     /// Комбобокс фильтра вида (попап-список: «все типы» + присутствующие виды).
-    fn combo_kind(&self, current: String, kinds: Vec<(u8, String)>, cx: &Context<Self>) -> AnyElement {
+    fn combo_kind(
+        &self,
+        current: String,
+        kinds: Vec<(u8, String)>,
+        cx: &Context<Self>,
+    ) -> AnyElement {
         let view = cx.entity();
-        Popover::new("strat-kind-filter")
-            .trigger(Button::new("kind-btn").outline().xsmall().label(format!("{current} ▾")))
-            .content(move |_state, _window, _cx| {
+        let selected_kind = self.filter.kind;
+        let mut items = vec![MoonMenuItem::with_key("kind-all", "все типы")
+            .selected(selected_kind.is_none())
+            .on_click({
                 let view = view.clone();
-                let mut col = v_flex().gap_0p5().p_1().min_w(px(150.0));
-                col = col.child(combo_item("kind-all", "все типы", {
-                    let view = view.clone();
-                    move |app| {
-                        view.update(app, |this, c| {
-                            this.filter.kind = None;
-                            c.notify();
-                        });
-                    }
-                }));
-                for (ord, name) in &kinds {
-                    let ord = *ord;
-                    let view = view.clone();
-                    col = col.child(combo_item(format!("kind-{ord}"), name, move |app| {
-                        view.update(app, |this, c| {
-                            this.filter.kind = Some(ord);
-                            c.notify();
-                        });
-                    }));
+                move |_, _, app| {
+                    view.update(app, |this, c| {
+                        this.filter.kind = None;
+                        c.notify();
+                    });
                 }
-                col
-            })
+            })];
+        for (ord, name) in kinds {
+            let view = view.clone();
+            items.push(
+                MoonMenuItem::with_key(format!("kind-{ord}"), name.clone())
+                    .selected(selected_kind == Some(ord))
+                    .on_click({
+                        let name_ord = ord;
+                        move |_, _, app| {
+                            view.update(app, |this, c| {
+                                this.filter.kind = Some(name_ord);
+                                c.notify();
+                            });
+                        }
+                    }),
+            );
+        }
+        MoonDropdown::new("strat-kind-filter")
+            .label(format!("{current} ▾"))
+            .trigger_variant(MoonButtonVariant::Soft)
+            .trigger_size(MoonButtonSize::Action)
+            .trigger_width(132.0)
+            .menu_width(190.0)
+            .menu_size(MoonMenuSize::Compact)
+            .menu_max_height(240.0)
+            .items(items)
             .into_any_element()
     }
 
     /// Комбобокс фильтра направления (все/LONG/SHORT).
     fn combo_dir(&self, current: String, cx: &Context<Self>) -> AnyElement {
         let view = cx.entity();
-        Popover::new("strat-dir-filter")
-            .trigger(Button::new("dir-btn").outline().xsmall().label(format!("{current} ▾")))
-            .content(move |_state, _window, _cx| {
-                let opts: [(&str, Option<bool>); 3] = [("все", None), ("LONG", Some(false)), ("SHORT", Some(true))];
-                let mut col = v_flex().gap_0p5().p_1().min_w(px(110.0));
-                for (label, val) in opts {
-                    let view = view.clone();
-                    col = col.child(combo_item(format!("dir-{label}"), label, move |app| {
+        let opts: [(&str, Option<bool>); 3] =
+            [("все", None), ("LONG", Some(false)), ("SHORT", Some(true))];
+        let mut items = Vec::with_capacity(opts.len());
+        for (label, val) in opts {
+            let view = view.clone();
+            items.push(
+                MoonMenuItem::with_key(format!("dir-{label}"), label)
+                    .selected(self.filter.dir == val)
+                    .on_click(move |_, _, app| {
                         view.update(app, |this, c| {
                             this.filter.dir = val;
                             c.notify();
                         });
-                    }));
-                }
-                col
-            })
+                    }),
+            );
+        }
+        MoonDropdown::new("strat-dir-filter")
+            .label(format!("{current} ▾"))
+            .trigger_variant(MoonButtonVariant::Soft)
+            .trigger_size(MoonButtonSize::Action)
+            .trigger_width(96.0)
+            .menu_width(120.0)
+            .menu_size(MoonMenuSize::Compact)
+            .items(items)
             .into_any_element()
     }
 
     /// Нижняя панель действий: старт/стоп отмеченных + счётчик стейджинга.
-    fn action_bar(&self, cores: Arc<Vec<(CoreId, String)>>, _store: &CoreStore, cx: &Context<Self>) -> AnyElement {
+    fn action_bar(
+        &self,
+        cores: Arc<Vec<(CoreId, String)>>,
+        _store: &CoreStore,
+        cx: &Context<Self>,
+    ) -> AnyElement {
         // Кнопки видимы всегда (как egui); пустое действие — no-op в apply_start_stop.
         let cs = cores.clone();
         let mut row = h_flex().w_full().p_2().gap_2().items_center();
         row = row.child(
-            Button::new("start-checked").primary().xsmall().label("▶ отмеченных").on_click({
-                let cs = cs.clone();
-                cx.listener(move |this, _, _, cx| {
-                    let cores_v = cs.as_ref().clone();
-                    this.apply_start_stop(&cores_v, true, cx);
+            MoonButton::new("start-checked")
+                .primary()
+                .size(MoonButtonSize::Micro)
+                .label("▶ отмеченных")
+                .on_click({
+                    let cs = cs.clone();
+                    cx.listener(move |this, _, _, cx| {
+                        let cores_v = cs.as_ref().clone();
+                        this.apply_start_stop(&cores_v, true, cx);
+                    })
                 })
-            }),
+                .render(),
         );
         row = row.child(
-            Button::new("stop-checked").outline().xsmall().label("■ отмеченных").on_click({
-                let cs = cs.clone();
-                cx.listener(move |this, _, _, cx| {
-                    let cores_v = cs.as_ref().clone();
-                    this.apply_start_stop(&cores_v, false, cx);
+            MoonButton::new("stop-checked")
+                .outline()
+                .size(MoonButtonSize::Micro)
+                .label("■ отмеченных")
+                .on_click({
+                    let cs = cs.clone();
+                    cx.listener(move |this, _, _, cx| {
+                        let cores_v = cs.as_ref().clone();
+                        this.apply_start_stop(&cores_v, false, cx);
+                    })
                 })
-            }),
+                .render(),
         );
         if !self.staged.is_empty() {
             row = row.child(
@@ -459,7 +553,10 @@ impl StrategiesView {
             let fkey = (core_id, path_key.clone());
             let fopen = force_open || self.expanded_folders.contains(&fkey);
             let (active, total) = folder_counts(strategies, &self.filter, prefix);
-            let flabel = format!("{}  {name}  {active}/{total}", if fopen { "▼" } else { "▶" });
+            let flabel = format!(
+                "{}  {name}  {active}/{total}",
+                if fopen { "▼" } else { "▶" }
+            );
             let fkey_click = fkey.clone();
             out.push(
                 div()
@@ -478,7 +575,9 @@ impl StrategiesView {
             );
             if fopen {
                 let mut kids: Vec<AnyElement> = Vec::new();
-                self.render_node(child, strategies, core_id, prefix, force_open, order, built, &mut kids, cx);
+                self.render_node(
+                    child, strategies, core_id, prefix, force_open, order, built, &mut kids, cx,
+                );
                 let mut body = v_flex().w_full().pl_3().gap_0();
                 for k in kids {
                     body = body.child(k);
@@ -512,8 +611,16 @@ impl StrategiesView {
         } else {
             self.sel.contains(&key)
         };
-        let dot = if server { palette::GREEN } else { palette::TEXT_3 };
-        let type_col = if r.is_short { palette::RED } else { palette::TEXT_3 };
+        let dot = if server {
+            palette::GREEN
+        } else {
+            palette::TEXT_3
+        };
+        let type_col = if r.is_short {
+            palette::RED
+        } else {
+            palette::TEXT_3
+        };
 
         let order_c = order.clone();
         let mut name_row = div()
@@ -529,8 +636,20 @@ impl StrategiesView {
                     .items_center()
                     .justify_between()
                     .gap_2()
-                    .child(div().flex_1().min_w_0().truncate().text_color(rgb(hex(palette::TEXT))).child(r.name.clone()))
-                    .child(div().text_xs().text_color(rgb(hex(type_col))).child(r.kind.clone())),
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_color(rgb(hex(palette::TEXT)))
+                            .child(r.name.clone()),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(hex(type_col)))
+                            .child(r.kind.clone()),
+                    ),
             )
             .on_click(cx.listener(move |this, e: &ClickEvent, _, cx| {
                 let m = e.modifiers();
@@ -549,9 +668,10 @@ impl StrategiesView {
             .gap_1()
             .py_0p5()
             .child(
-                Checkbox::new(SharedString::from(format!("chk-{core}-{}", r.id)))
+                MoonCheckbox::new(SharedString::from(format!("chk-{core}-{}", r.id)))
                     .checked(val)
-                    .on_click(cx.listener(move |this, ch: &bool, _, cx| {
+                    .size(MoonCheckboxSize::Compact)
+                    .on_change(cx.listener(move |this, ch: &bool, _, cx| {
                         let v = *ch;
                         if v == server {
                             this.staged.remove(&key);
@@ -582,12 +702,22 @@ impl StrategiesView {
 
         let Some(sections) = selected_sections(self, store) else {
             return col
-                .child(div().mt_2().text_color(rgb(hex(palette::TEXT_2))).child("выберите стратегию в дереве"))
+                .child(
+                    div()
+                        .mt_2()
+                        .text_color(rgb(hex(palette::TEXT_2)))
+                        .child("выберите стратегию в дереве"),
+                )
                 .into_any_element();
         };
         if sections.is_empty() {
             return col
-                .child(div().mt_2().text_color(rgb(hex(palette::TEXT_2))).child("схема не получена"))
+                .child(
+                    div()
+                        .mt_2()
+                        .text_color(rgb(hex(palette::TEXT_2)))
+                        .child("схема не получена"),
+                )
                 .into_any_element();
         }
         let values = selected_values(self, store);
@@ -604,7 +734,11 @@ impl StrategiesView {
         for (i, active) in order {
             let sec = &sections[i];
             let on = self.selected_section == i;
-            let tcol = if !active { palette::TEXT_3 } else { palette::TEXT };
+            let tcol = if !active {
+                palette::TEXT_3
+            } else {
+                palette::TEXT
+            };
             let mut row = div()
                 .id(SharedString::from(format!("sec-{i}")))
                 .w_full()
@@ -625,7 +759,14 @@ impl StrategiesView {
             }
             list = list.child(row);
         }
-        col = col.child(div().id("strat-sections-scroll").flex_1().w_full().overflow_y_scroll().child(list));
+        col = col.child(
+            div()
+                .id("strat-sections-scroll")
+                .flex_1()
+                .w_full()
+                .overflow_y_scroll()
+                .child(list),
+        );
         col.into_any_element()
     }
 
@@ -636,7 +777,12 @@ impl StrategiesView {
 
         if selected_row(self, store).is_none() {
             return col
-                .child(div().mt_2().text_color(rgb(hex(palette::TEXT_2))).child("выберите стратегию в дереве"))
+                .child(
+                    div()
+                        .mt_2()
+                        .text_color(rgb(hex(palette::TEXT_2)))
+                        .child("выберите стратегию в дереве"),
+                )
                 .into_any_element();
         }
         let Some(sections) = selected_sections(self, store) else {
@@ -665,13 +811,19 @@ impl StrategiesView {
                     .items_center()
                     .justify_between()
                     .child(div().font_bold().child(sec.title.clone()))
-                    .child(div().text_xs().text_color(rgb(hex(palette::TEXT_2))).child(count)),
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(hex(palette::TEXT_2)))
+                            .child(count),
+                    ),
             )
             .child(
-                Checkbox::new("params-only-active")
+                MoonCheckbox::new("params-only-active")
                     .label("только активные")
                     .checked(self.only_active_params)
-                    .on_click(cx.listener(|this, ch: &bool, _, cx| {
+                    .size(MoonCheckboxSize::Compact)
+                    .on_change(cx.listener(|this, ch: &bool, _, cx| {
                         this.only_active_params = *ch;
                         cx.notify();
                     })),
@@ -700,15 +852,36 @@ impl StrategiesView {
             let merged = merged_value(&rows, f);
             list = list.child(self.field_row(f, merged, active, cx));
         }
-        col = col.child(div().id("strat-params-scroll").flex_1().w_full().overflow_y_scroll().child(list));
+        col = col.child(
+            div()
+                .id("strat-params-scroll")
+                .flex_1()
+                .w_full()
+                .overflow_y_scroll()
+                .child(list),
+        );
         col.into_any_element()
     }
 
     /// Строка поля: имя слева, значение справа. `active=false` — приглушаем тёмным.
     /// `merged=None` — значения у выбранных различаются (помечаем «≠», без значения).
-    fn field_row(&self, f: &SchemaField, merged: Option<String>, active: bool, cx: &Context<Self>) -> AnyElement {
-        let name_col = if active { palette::TEXT_2 } else { palette::TEXT_3 };
-        let val_col = if active { palette::TEXT } else { palette::TEXT_3 };
+    fn field_row(
+        &self,
+        f: &SchemaField,
+        merged: Option<String>,
+        active: bool,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let name_col = if active {
+            palette::TEXT_2
+        } else {
+            palette::TEXT_3
+        };
+        let val_col = if active {
+            palette::TEXT
+        } else {
+            palette::TEXT_3
+        };
 
         let value_el: AnyElement = match merged {
             None => div()
@@ -719,8 +892,16 @@ impl StrategiesView {
             Some(value) => match f.ui {
                 SchemaFieldUi::Checkbox => {
                     let on = is_on(&value);
-                    let col = if active && on { palette::GREEN } else { palette::TEXT_3 };
-                    div().font_bold().text_color(rgb(hex(col))).child(if on { "YES" } else { "NO" }).into_any_element()
+                    let col = if active && on {
+                        palette::GREEN
+                    } else {
+                        palette::TEXT_3
+                    };
+                    div()
+                        .font_bold()
+                        .text_color(rgb(hex(col)))
+                        .child(if on { "YES" } else { "NO" })
+                        .into_any_element()
                 }
                 _ => {
                     let long = value.chars().count() > LONG_VALUE;
@@ -732,19 +913,27 @@ impl StrategiesView {
                             .items_center()
                             .gap_1()
                             .child(
-                                Button::new(SharedString::from(format!("more-{}", f.name)))
+                                MoonButton::new(SharedString::from(format!("more-{}", f.name)))
                                     .ghost()
-                                    .xsmall()
+                                    .size(MoonButtonSize::Micro)
                                     .label("…")
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         this.popup = Some((name.clone(), full.clone()));
                                         cx.notify();
-                                    })),
+                                    }))
+                                    .render(),
                             )
-                            .child(div().text_color(rgb(hex(val_col))).child(format!("{short}…")))
+                            .child(
+                                div()
+                                    .text_color(rgb(hex(val_col)))
+                                    .child(format!("{short}…")),
+                            )
                             .into_any_element()
                     } else {
-                        div().text_color(rgb(hex(val_col))).child(value).into_any_element()
+                        div()
+                            .text_color(rgb(hex(val_col)))
+                            .child(value)
+                            .into_any_element()
                     }
                 }
             },
@@ -791,12 +980,15 @@ impl StrategiesView {
                                 .border_color(rgb(hex(palette::LIFT_HOVER)))
                                 .child(div().font_bold().child(name))
                                 .child(
-                                    Button::new("popup-close").ghost().xsmall().label("×").on_click(
-                                        cx.listener(|this, _, _, cx| {
+                                    MoonButton::new("popup-close")
+                                        .ghost()
+                                        .size(MoonButtonSize::Micro)
+                                        .label("×")
+                                        .on_click(cx.listener(|this, _, _, cx| {
                                             this.popup = None;
                                             cx.notify();
-                                        }),
-                                    ),
+                                        }))
+                                        .render(),
                                 ),
                         )
                         .child(
@@ -830,7 +1022,11 @@ impl Render for StrategiesView {
         // Список ядер (id, имя) — все подключённые, как egui (session.sessions()).
         let cores: Vec<(CoreId, String)> = {
             let b = self.backend.read(cx);
-            b.session.sessions().iter().map(|s| (s.id, s.name.clone())).collect()
+            b.session
+                .sessions()
+                .iter()
+                .map(|s| (s.id, s.name.clone()))
+                .collect()
         };
 
         // Клампим выбранный раздел в диапазон (как sections::show).
@@ -863,7 +1059,15 @@ impl Render for StrategiesView {
             .text_color(rgb(hex(palette::TEXT)))
             .text_sm()
             .track_focus(&self.focus)
-            .child(h_flex().flex_1().w_full().min_h_0().child(tree).child(sections).child(params));
+            .child(
+                h_flex()
+                    .flex_1()
+                    .w_full()
+                    .min_h_0()
+                    .child(tree)
+                    .child(sections)
+                    .child(params),
+            );
         if let Some(overlay) = overlay {
             root = root.child(overlay);
         }
@@ -895,7 +1099,10 @@ fn selected_keys(st: &StrategiesView) -> Vec<Key> {
 
 /// Строки ВСЕХ выбранных стратегий (любых видов) — для объединённого показа.
 fn multi_rows<'a>(st: &StrategiesView, store: &'a CoreStore) -> Vec<&'a StrategyRow> {
-    selected_keys(st).iter().filter_map(|(c, id)| row(store, *c, *id)).collect()
+    selected_keys(st)
+        .iter()
+        .filter_map(|(c, id)| row(store, *c, *id))
+        .collect()
 }
 
 /// У выбранных РАЗНЫЕ виды стратегий? (тогда SignalType менять нельзя — скрываем).
@@ -919,7 +1126,13 @@ fn kind_field_set(store: &CoreStore, core: CoreId, ord: u8) -> HashSet<String> {
         .core(core)
         .and_then(|cd| cd.schema.as_ref())
         .and_then(|sch| sch.kinds.iter().find(|k| k.ordinal == ord))
-        .map(|k| k.sections.iter().flat_map(|s| &s.fields).map(|f| f.name.to_lowercase()).collect())
+        .map(|k| {
+            k.sections
+                .iter()
+                .flat_map(|s| &s.fields)
+                .map(|f| f.name.to_lowercase())
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -953,7 +1166,8 @@ fn selected_values(st: &StrategiesView, store: &CoreStore) -> Values {
         if let Some(sections) = selected_sections(st, store) {
             for sec in sections {
                 for f in &sec.fields {
-                    v.entry(f.name.to_lowercase()).or_insert_with(|| f.default.clone().unwrap_or_default());
+                    v.entry(f.name.to_lowercase())
+                        .or_insert_with(|| f.default.clone().unwrap_or_default());
                 }
             }
         }
@@ -963,7 +1177,11 @@ fn selected_values(st: &StrategiesView, store: &CoreStore) -> Values {
 
 /// Раздел АКТИВЕН (не затемнён), если в нём осталось БОЛЬШЕ ОДНОГО активного поля.
 fn section_active(rules: &Rules, values: &Values, sec: &SchemaSection) -> bool {
-    sec.fields.iter().filter(|f| rules.field_active(&f.name, values)).count() > 1
+    sec.fields
+        .iter()
+        .filter(|f| rules.field_active(&f.name, values))
+        .count()
+        > 1
 }
 
 /// Секции схемы для выбранной стратегии (по её виду). None — нет выбора/схемы.
@@ -972,7 +1190,10 @@ fn selected_sections<'a>(st: &StrategiesView, store: &'a CoreStore) -> Option<&'
     let cd = store.core(core)?;
     let row = cd.strategies.iter().find(|s| s.id == id)?;
     let schema = cd.schema.as_ref()?;
-    let kind = schema.kinds.iter().find(|k| k.ordinal == row.kind_ordinal)?;
+    let kind = schema
+        .kinds
+        .iter()
+        .find(|k| k.ordinal == row.kind_ordinal)?;
     Some(&kind.sections)
 }
 
@@ -1044,15 +1265,28 @@ fn build_node<'a>(it: impl Iterator<Item = &'a StrategyRow>) -> FolderNode<'a> {
 }
 
 /// Активных/всего (по фильтру типа/L/S) во всех стратегиях под путём `prefix`.
-fn folder_counts(strategies: &[StrategyRow], filter: &StrategyFilter, prefix: &[String]) -> (usize, usize) {
+fn folder_counts(
+    strategies: &[StrategyRow],
+    filter: &StrategyFilter,
+    prefix: &[String],
+) -> (usize, usize) {
     let mut active = 0;
     let mut total = 0;
     for r in strategies {
         if !filter.counts(r) {
             continue;
         }
-        let parts: Vec<&str> = r.folder_path.split(['/', '\\']).filter(|s| !s.is_empty()).collect();
-        if parts.len() >= prefix.len() && prefix.iter().zip(parts.iter()).all(|(a, b)| a.as_str() == *b) {
+        let parts: Vec<&str> = r
+            .folder_path
+            .split(['/', '\\'])
+            .filter(|s| !s.is_empty())
+            .collect();
+        if parts.len() >= prefix.len()
+            && prefix
+                .iter()
+                .zip(parts.iter())
+                .all(|(a, b)| a.as_str() == *b)
+        {
             total += 1;
             if r.checked {
                 active += 1;
@@ -1062,30 +1296,14 @@ fn folder_counts(strategies: &[StrategyRow], filter: &StrategyFilter, prefix: &[
     (active, total)
 }
 
-/// Один пункт попап-комбобокса (кликабельная строка).
-fn combo_item(
-    id: impl Into<SharedString>,
-    label: impl Into<SharedString>,
-    on_click: impl Fn(&mut App) + 'static,
-) -> impl IntoElement {
-    div()
-        .id(id.into())
-        .w_full()
-        .px_2()
-        .py_1()
-        .cursor_pointer()
-        .rounded(px(3.0))
-        .text_color(rgb(hex(palette::TEXT)))
-        .hover(|s| s.bg(rgb(hex(palette::LIFT_HOVER))))
-        .child(label.into())
-        .on_click(move |_, _window, app| on_click(app))
-}
-
 /// Открыть окно «Стратегии» (отдельное ОС-окно). Дедуп окон — в `Backend`.
 pub fn open(backend: Entity<Backend>, cx: &mut App) {
     // Уже открыто → сфокусировать.
     if let Some(handle) = backend.read(cx).strategies_window {
-        if handle.update(cx, |_, window, _| window.activate_window()).is_ok() {
+        if handle
+            .update(cx, |_, window, _| window.activate_window())
+            .is_ok()
+        {
             return;
         }
     }
