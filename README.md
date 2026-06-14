@@ -1,8 +1,11 @@
 # MoonTerminal
 
-Кросс-десктопный трейдинговый терминал для ядер **MoonBot**: **график тиков +
-стакан на `wgpu`**, оболочка на **`egui`/`winit`**, поток данных через
-**MoonProtoBeta**.
+Кросс-десктопный трейдинговый терминал для ядер **MoonBot**.
+
+Текущая рабочая оболочка разработки — `crates/moon-ui-gpui`: **GPUI +
+MoonPalette + chartdx own-pass renderer**. Корневой пакет `moon-terminal` со
+старой `egui`/`winit` оболочкой остаётся в workspace как legacy-ветка кода, но
+не является тем бинарём, который сейчас приводится к MoonBot-дизайну.
 
 Один терминал обслуживает **несколько ядер сразу**. Ядра группируются, и каждая
 группа — это **отдельное ОС-окно** со своей раскладкой. Маркет-данные (трейды +
@@ -11,21 +14,53 @@
 
 Режим один — **live** (синтетики нет).
 
-## Запуск
+## Запуск текущей GPUI-оболочки
 
-**Toolchain (Windows): MSVC, не GNU.** Собираем стандартным таргетом
-`x86_64-pc-windows-msvc` — это официальный дефолт Rust на Windows, и его же ожидают
-`wgpu` / `gpui` / DirectX. GNU-таргет (`*-windows-gnu`) **не используем**: он спотыкается
-на линковке и build-скриптах части Windows-крейтов.
+**Windows toolchain: MSVC, не GNU.** Собираем таргетом
+`x86_64-pc-windows-msvc`: его ожидают GPUI, DirectX/DWrite/DComp и наш
+`chartdx` GPU-pass. GNU-таргет (`*-windows-gnu`) для текущей GPUI-оболочки не
+используем.
 
 Требования:
-- **Rust** (rustup) с msvc-тулчейном: `rustup default stable-x86_64-pc-windows-msvc`
-  (на Windows rustup ставит его по умолчанию).
+- **Rust** с MSVC standard library для `x86_64-pc-windows-msvc`.
 - **Visual Studio Build Tools 2022**, компонент *«Разработка на C++ для настольных систем»*
-  — даёт линкер `link.exe` + Windows SDK. Полная Visual Studio не нужна, хватает Build Tools.
+  — даёт `link.exe`, `lib.exe`, `ml64.exe` и Windows SDK. Полная Visual Studio
+  не нужна, хватает Build Tools.
 
 ```powershell
-cargo run
+cd R:\test\MoonTerminal
+
+$vcvars = 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat'
+cmd.exe /d /s /c "`"$vcvars`" && `"C:\files\utils\rust\cargo\bin\cargo.exe`" build -p moon-ui-gpui --bin moon-gpui --target x86_64-pc-windows-msvc"
+
+.\target\x86_64-pc-windows-msvc\debug\moon-gpui.exe
+```
+
+Можно запускать одной командой:
+
+```powershell
+$vcvars = 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat'
+cmd.exe /d /s /c "`"$vcvars`" && `"C:\files\utils\rust\cargo\bin\cargo.exe`" run -p moon-ui-gpui --bin moon-gpui --target x86_64-pc-windows-msvc"
+```
+
+Важно: `target\debug\moon-gpui.exe` и
+`target\x86_64-pc-windows-msvc\debug\moon-gpui.exe` — разные output-директории.
+Если собирали с явным `--target x86_64-pc-windows-msvc`, запускать нужно именно
+`target\x86_64-pc-windows-msvc\debug\moon-gpui.exe`; другой exe может быть
+старым.
+
+### Runtime на чистой Windows
+
+MSVC-сборка не вшивает системные DLL в exe. На Windows 10/11 обычно уже есть
+UCRT и графический стек (`d3d11.dll`, `dxgi.dll`, `dwrite.dll`, `dcomp.dll`), но
+`dumpbin /dependents` для текущего `moon-gpui.exe` также показывает
+`VCRUNTIME140.dll`. Для чистой машины ставим или кладём рядом с инсталлятором
+**Microsoft Visual C++ Redistributable 2015-2022 x64**.
+
+Корневой legacy-бинарь собирается отдельно:
+
+```powershell
+cargo run -p moon-terminal
 ```
 
 Сервера (ядра) добавляются прямо в приложении: **⚙ Настройки → Подключения**

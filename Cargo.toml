@@ -1,5 +1,5 @@
-# Workspace: бинарь-оболочка (этот пакет, в корне) + UI-агностичное ядро moon-core.
-# vendor/gpui-component (клон для лаб миграции) — собственный workspace, НЕ член.
+# Workspace: legacy egui-бинарь в корне + текущая GPUI-оболочка moon-ui-gpui +
+# UI-агностичное ядро moon-core.
 [workspace]
 members = [".", "crates/moon-core", "crates/moon-chart", "crates/moon-ui-gpui"]
 resolver = "2"
@@ -83,11 +83,10 @@ opt-level = 3
 
 # MoonKernel: единая GPUI база для public-сборки.
 #
-# Пока raw GPU-pass hook не принят upstream Zed, канонический источник GPUI для всего
-# Moon-стека — Moonbot-Tech/ZedFork@9b7bbde. Прямые зависимости терминала/палитры
-# смотрят туда же, а временный Longbridge gpui-component всё ещё тянет upstream
-# zed-industries/zed транзитивно. Этот patch перенаправляет его gpui* на тот же
-# fork commit, чтобы Cargo не собирал две несовместимые копии GPUI.
+# Пока raw GPU-pass hook не принят upstream Zed, канонический источник GPUI для
+# всего Moon-стека — Moonbot-Tech/ZedFork@9b7bbde. Терминал, MoonPalette и
+# связанные GPUI-крейты должны смотреть на один fork commit, чтобы Cargo не
+# собирал две несовместимые копии GPUI.
 #
 # Локальные path overrides живут только в ignored .cargo/config.toml.
 [patch."https://github.com/zed-industries/zed"]
