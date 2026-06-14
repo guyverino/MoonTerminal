@@ -12,11 +12,12 @@ mod rules;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use gpui::prelude::FluentBuilder;
 use gpui::*;
 use moon_palette::{
     h_flex, v_flex, MoonButton, MoonButtonSize, MoonButtonVariant, MoonCheckbox, MoonCheckboxSize,
-    MoonDropdown, MoonInput, MoonInputEvent, MoonInputState, MoonMenuItem, MoonMenuSize, Root,
-    StyledExt,
+    MoonDropdown, MoonInput, MoonInputEvent, MoonInputState, MoonMenuItem, MoonMenuSize,
+    MoonTextArea, MoonTextAreaEvent, MoonTextAreaState, MoonTone, Root, StyledExt,
 };
 
 use crate::{hex, Backend};
@@ -27,10 +28,21 @@ use moon_core::session::{CoreId, CoreStore};
 use filter::StrategyFilter;
 use rules::{Rules, Values};
 
-/// Длиннее этого (символов) — значение считаем «длинным»: обрезаем и даём «…».
-const LONG_VALUE: usize = 28;
-
 pub type Key = (CoreId, u64);
+type FieldEditKey = (CoreId, u64, String);
+
+enum ParamsPanelModel {
+    NoSelection,
+    NoSchema,
+    Content {
+        section: SchemaSection,
+        values: Values,
+        row_pairs: Vec<(Key, StrategyRow)>,
+        multi: bool,
+        common: Option<HashSet<String>>,
+        differ: bool,
+    },
+}
 
 /// Цвет палитры с альфой → `Rgba` (0xRRGGBBAA). Для подсветки выбора/затемнения.
 fn hexa(c: [u8; 3], a: u8) -> Rgba {
@@ -58,6 +70,14 @@ pub struct StrategiesView {
     /// Стейджинг чекбоксов: (ядро, id) → желаемый checked. Уходит на сервер по
     /// старт/стоп отмеченных, затем очищается.
     staged: HashMap<Key, bool>,
+    /// Draft редактирования полей: (ядро, id, field) → новая строка UI.
+    field_edits: HashMap<FieldEditKey, String>,
+    /// Живые состояния single-line редакторов видимых/посещённых полей.
+    field_inputs: HashMap<String, Entity<MoonInputState>>,
+    /// Живые состояния memo/formula редакторов видимых/посещённых полей.
+    field_memos: HashMap<String, Entity<MoonTextAreaState>>,
+    /// Поле, для которого открыт контекстный helper/autocomplete.
+    focused_field: Option<String>,
     /// Открытое окошко просмотра длинного значения поля: (имя поля, значение).
     popup: Option<(String, String)>,
     /// Раскрытые ядра в дереве.
@@ -100,6 +120,10 @@ impl StrategiesView {
             flat_order: Vec::new(),
             selected_section: 0,
             staged: HashMap::new(),
+            field_edits: HashMap::new(),
+            field_inputs: HashMap::new(),
+            field_memos: HashMap::new(),
+            focused_field: None,
             popup: None,
             expanded_cores: HashSet::new(),
             expanded_folders: HashSet::new(),
@@ -192,6 +216,122 @@ impl StrategiesView {
         }
         self.staged.clear();
         cx.notify();
+    }
+
+    fn stage_field_value(
+        &mut self,
+        keys: &[Key],
+        field: &str,
+        value: String,
+        cx: &mut Context<Self>,
+    ) {
+        if keys.is_empty() {
+            return;
+        }
+        self.focused_field = Some(field.to_string());
+        for (core, id) in keys {
+            self.field_edits
+                .insert((*core, *id, field.to_string()), value.clone());
+        }
+        cx.notify();
+    }
+
+    fn apply_field_edits(&mut self, cx: &mut Context<Self>) {
+        if self.field_edits.is_empty() {
+            return;
+        }
+        let mut per_strategy: HashMap<(CoreId, u64), Vec<(String, String)>> = HashMap::new();
+        for ((core, id, field), value) in &self.field_edits {
+            per_strategy
+                .entry((*core, *id))
+                .or_default()
+                .push((field.clone(), value.clone()));
+        }
+        let b = self.backend.read(cx);
+        for ((core, id), changes) in per_strategy {
+            b.session.edit_strategies(core, vec![id], changes);
+        }
+        self.clear_field_draft();
+        cx.notify();
+    }
+
+    fn discard_field_edits(&mut self, cx: &mut Context<Self>) {
+        if self.field_edits.is_empty() {
+            return;
+        }
+        self.clear_field_draft();
+        cx.notify();
+    }
+
+    fn clear_field_draft(&mut self) {
+        self.field_edits.clear();
+        self.field_inputs.clear();
+        self.field_memos.clear();
+        self.focused_field = None;
+    }
+
+    fn field_input_state(
+        &mut self,
+        id: String,
+        value: String,
+        keys: Arc<Vec<Key>>,
+        field: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<MoonInputState> {
+        if let Some(state) = self.field_inputs.get(&id) {
+            return state.clone();
+        }
+        let state = cx.new(|cx| MoonInputState::new(window, cx).default_value(value));
+        cx.subscribe(&state, move |this, state, ev: &MoonInputEvent, cx| {
+            if matches!(ev, MoonInputEvent::Change) {
+                let value = state.read(cx).value().to_string();
+                this.stage_field_value(keys.as_ref(), &field, value, cx);
+            }
+        })
+        .detach();
+        self.field_inputs.insert(id, state.clone());
+        state
+    }
+
+    fn field_memo_state(
+        &mut self,
+        id: String,
+        value: String,
+        keys: Arc<Vec<Key>>,
+        field: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<MoonTextAreaState> {
+        if let Some(state) = self.field_memos.get(&id) {
+            return state.clone();
+        }
+        let state = cx.new(|cx| MoonTextAreaState::new(window, cx).default_value(value));
+        cx.subscribe(&state, move |this, state, ev: &MoonTextAreaEvent, cx| {
+            if matches!(ev, MoonTextAreaEvent::Change) {
+                let value = state.read(cx).value().to_string();
+                this.stage_field_value(keys.as_ref(), &field, value, cx);
+            }
+        })
+        .detach();
+        self.field_memos.insert(id, state.clone());
+        state
+    }
+
+    fn append_formula_snippet(&mut self, field: &str, snippet: &str, cx: &mut Context<Self>) {
+        let needle = field_id(field);
+        let state = self
+            .field_memos
+            .iter()
+            .find_map(|(id, state)| id.contains(&needle).then_some(state.clone()));
+        let current = state
+            .as_ref()
+            .map(|state| state.read(cx).value().to_string())
+            .unwrap_or_default();
+        let next = append_snippet(&current, snippet);
+        if let Some(state) = state {
+            state.update(cx, |state, cx| state.set_value(next, cx));
+        }
     }
 
     /// Развернуть все узлы (если `collapsed`) или свернуть все (иначе).
@@ -326,7 +466,7 @@ impl StrategiesView {
         let cores_owned: Arc<Vec<(CoreId, String)>> = Arc::new(cores.to_vec());
 
         v_flex()
-            .w(px(300.0))
+            .w(px(220.0))
             .h_full()
             .border_r_1()
             .border_color(border)
@@ -337,18 +477,18 @@ impl StrategiesView {
                     .p_2()
                     .gap_1()
                     .child(
+                        div().w_full().child(
+                            MoonInput::new("strat-search")
+                                .state(&self.search)
+                                .small()
+                                .cleanable(true),
+                        ),
+                    )
+                    .child(
                         h_flex()
                             .w_full()
                             .gap_1()
                             .items_center()
-                            .child(
-                                div().flex_1().min_w_0().child(
-                                    MoonInput::new("strat-search")
-                                        .state(&self.search)
-                                        .small()
-                                        .cleanable(true),
-                                ),
-                            )
                             .child(self.combo_kind(kind_text, kinds, cx))
                             .child(self.combo_dir(dir_text, cx)),
                     )
@@ -445,8 +585,8 @@ impl StrategiesView {
             .label(format!("{current} ▾"))
             .trigger_variant(MoonButtonVariant::Soft)
             .trigger_size(MoonButtonSize::Action)
-            .trigger_width(132.0)
-            .menu_width(190.0)
+            .trigger_width(116.0)
+            .menu_width(180.0)
             .menu_size(MoonMenuSize::Compact)
             .menu_max_height(240.0)
             .items(items)
@@ -476,7 +616,7 @@ impl StrategiesView {
             .label(format!("{current} ▾"))
             .trigger_variant(MoonButtonVariant::Soft)
             .trigger_size(MoonButtonSize::Action)
-            .trigger_width(96.0)
+            .trigger_width(80.0)
             .menu_width(120.0)
             .menu_size(MoonMenuSize::Compact)
             .items(items)
@@ -691,7 +831,7 @@ impl StrategiesView {
     fn sections_panel(&self, store: &CoreStore, cx: &Context<Self>) -> AnyElement {
         let border = rgb(hex(palette::LIFT_HOVER));
         let mut col = v_flex()
-            .w(px(285.0))
+            .w(px(220.0))
             .h_full()
             .border_r_1()
             .border_color(border)
@@ -772,52 +912,108 @@ impl StrategiesView {
 
     // ── Панель 3: параметры выбранной секции ────────────────────────────────
 
-    fn params_panel(&self, store: &CoreStore, cx: &Context<Self>) -> AnyElement {
-        let mut col = v_flex().flex_1().h_full().p_2().gap_1();
-
+    fn params_model(&self, store: &CoreStore) -> ParamsPanelModel {
         if selected_row(self, store).is_none() {
-            return col
-                .child(
-                    div()
-                        .mt_2()
-                        .text_color(rgb(hex(palette::TEXT_2)))
-                        .child("выберите стратегию в дереве"),
-                )
-                .into_any_element();
+            return ParamsPanelModel::NoSelection;
         }
         let Some(sections) = selected_sections(self, store) else {
-            return col.into_any_element();
+            return ParamsPanelModel::NoSchema;
         };
-        let Some(sec) = sections.get(self.selected_section) else {
-            return col.into_any_element();
+        let Some(section) = sections.get(self.selected_section).cloned() else {
+            return ParamsPanelModel::NoSchema;
         };
         let values = selected_values(self, store);
-        // Объединённый показ по всем выбранным (любых видов).
-        let rows = multi_rows(self, store);
-        let multi = rows.len() > 1;
+        let row_pairs: Vec<(Key, StrategyRow)> = multi_row_pairs(self, store)
+            .into_iter()
+            .map(|(key, row)| (key, row.clone()))
+            .collect();
+        let multi = row_pairs.len() > 1;
         let common = common_fields(self, store);
         let differ = kinds_differ(self, store);
+        ParamsPanelModel::Content {
+            section,
+            values,
+            row_pairs,
+            multi,
+            common,
+            differ,
+        }
+    }
+
+    fn params_panel(
+        &mut self,
+        model: ParamsPanelModel,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let mut col = v_flex().flex_1().h_full().p_2().gap_1();
+
+        let ParamsPanelModel::Content {
+            section,
+            values,
+            row_pairs,
+            multi,
+            common,
+            differ,
+        } = model
+        else {
+            let text = match model {
+                ParamsPanelModel::NoSelection => "выберите стратегию в дереве",
+                ParamsPanelModel::NoSchema => "схема не получена",
+                ParamsPanelModel::Content { .. } => unreachable!(),
+            };
+            return col
+                .child(div().mt_2().text_color(rgb(hex(palette::TEXT_2))).child(text))
+                .into_any_element();
+        };
+        let keys: Vec<Key> = row_pairs.iter().map(|(key, _)| *key).collect();
 
         // Заголовок раздела + счётчик (полей / выбрано) справа.
         let count = if multi {
-            format!("выбрано: {}", rows.len())
+            format!("выбрано: {}", row_pairs.len())
         } else {
-            format!("полей: {}", sec.fields.len())
+            format!("полей: {}", section.fields.len())
         };
-        col = col
+        let dirty = self.field_edits.len();
+        let mut header = h_flex()
+            .w_full()
+            .items_center()
+            .justify_between()
+            .child(div().font_bold().child(section.title.clone()))
             .child(
                 h_flex()
-                    .w_full()
                     .items_center()
-                    .justify_between()
-                    .child(div().font_bold().child(sec.title.clone()))
+                    .gap_2()
                     .child(
                         div()
                             .text_xs()
                             .text_color(rgb(hex(palette::TEXT_2)))
                             .child(count),
-                    ),
-            )
+                    )
+                    .when(dirty > 0, |row| {
+                        row.child(
+                            MoonButton::new("strat-fields-apply")
+                                .success()
+                                .size(MoonButtonSize::Micro)
+                                .label(format!("apply {dirty}"))
+                                .on_click(cx.listener(|this, _, _, cx| this.apply_field_edits(cx)))
+                                .render(),
+                        )
+                        .child(
+                            MoonButton::new("strat-fields-revert")
+                                .ghost()
+                                .size(MoonButtonSize::Micro)
+                                .label("revert")
+                                .on_click(cx.listener(|this, _, _, cx| this.discard_field_edits(cx)))
+                                .render(),
+                        )
+                    }),
+            );
+        if dirty > 0 {
+            header = header.border_l_2().border_color(hexa(palette::ORANGE, 0x99)).pl_2();
+        }
+        col = col
+            .child(header)
             .child(
                 MoonCheckbox::new("params-only-active")
                     .label("только активные")
@@ -832,7 +1028,7 @@ impl StrategiesView {
 
         // Порядок полей — как в схеме. Значения берём из снимка по имени.
         let mut list = v_flex().w_full().gap_0();
-        for f in &sec.fields {
+        for f in &section.fields {
             let lname = f.name.to_lowercase();
             if multi && lname == "strategyname" {
                 continue;
@@ -849,28 +1045,40 @@ impl StrategiesView {
             if self.only_active_params && !active {
                 continue;
             }
-            let merged = merged_value(&rows, f);
-            list = list.child(self.field_row(f, merged, active, cx));
+            let merged = merged_value_for_owned(self, &row_pairs, f);
+            list = list.child(self.field_row(f, &keys, merged, active, window, cx));
         }
-        col = col.child(
-            div()
-                .id("strat-params-scroll")
-                .flex_1()
-                .w_full()
-                .overflow_y_scroll()
-                .child(list),
-        );
+        let scroll = div()
+            .id("strat-params-scroll")
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .overflow_y_scroll()
+            .child(list);
+        let mut body = h_flex()
+            .flex_1()
+            .w_full()
+            .min_h_0()
+            .items_start()
+            .gap_2()
+            .child(scroll);
+        if let Some(helper) = self.formula_helper(cx) {
+            body = body.child(helper);
+        }
+        col = col.child(body);
         col.into_any_element()
     }
 
     /// Строка поля: имя слева, значение справа. `active=false` — приглушаем тёмным.
     /// `merged=None` — значения у выбранных различаются (помечаем «≠», без значения).
     fn field_row(
-        &self,
+        &mut self,
         f: &SchemaField,
+        keys: &[Key],
         merged: Option<String>,
         active: bool,
-        cx: &Context<Self>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
     ) -> AnyElement {
         let name_col = if active {
             palette::TEXT_2
@@ -883,6 +1091,13 @@ impl StrategiesView {
             palette::TEXT_3
         };
 
+        let dirty = keys
+            .iter()
+            .any(|(core, id)| self.field_edits.contains_key(&(*core, *id, f.name.clone())));
+        let field_name = f.name.clone();
+        let row_id = editor_state_id(keys, &field_name);
+        let view = cx.entity();
+
         let value_el: AnyElement = match merged {
             None => div()
                 .font_bold()
@@ -892,62 +1107,188 @@ impl StrategiesView {
             Some(value) => match f.ui {
                 SchemaFieldUi::Checkbox => {
                     let on = is_on(&value);
-                    let col = if active && on {
-                        palette::GREEN
-                    } else {
-                        palette::TEXT_3
-                    };
-                    div()
-                        .font_bold()
-                        .text_color(rgb(hex(col)))
-                        .child(if on { "YES" } else { "NO" })
+                    let keys = keys.to_vec();
+                    let field = field_name.clone();
+                    MoonCheckbox::new(SharedString::from(format!("field-check-{row_id}")))
+                        .checked(on)
+                        .disabled(!active)
+                        .size(MoonCheckboxSize::Compact)
+                        .on_change(cx.listener(move |this, ch: &bool, _, cx| {
+                            this.stage_field_value(
+                                &keys,
+                                &field,
+                                if *ch { "Yes" } else { "No" }.to_string(),
+                                cx,
+                            );
+                        }))
+                        .into_any_element()
+                }
+                SchemaFieldUi::Combo if !f.picklist.is_empty() => {
+                    let mut items = Vec::with_capacity(f.picklist.len());
+                    for option in &f.picklist {
+                        let option_value = option.clone();
+                        let label = if option.is_empty() { "—".to_string() } else { option.clone() };
+                        let keys = keys.to_vec();
+                        let field = field_name.clone();
+                        let view = view.clone();
+                        items.push(
+                            MoonMenuItem::with_key(format!("field-{row_id}-{option}"), label)
+                                .selected(option_value == value)
+                                .on_click(move |_, _, app| {
+                                    view.update(app, |this, cx| {
+                                        this.stage_field_value(&keys, &field, option_value.clone(), cx);
+                                    });
+                                }),
+                        );
+                    }
+                    MoonDropdown::new(SharedString::from(format!("field-combo-{row_id}")))
+                        .label(format!(
+                            "{} ▾",
+                            if value.is_empty() {
+                                "—".to_string()
+                            } else {
+                                value.clone()
+                            }
+                        ))
+                        .trigger_variant(if dirty {
+                            MoonButtonVariant::Amber
+                        } else {
+                            MoonButtonVariant::Soft
+                        })
+                        .trigger_size(MoonButtonSize::Action)
+                        .trigger_width(180.0)
+                        .menu_width(220.0)
+                        .menu_size(MoonMenuSize::Compact)
+                        .menu_max_height(220.0)
+                        .disabled(!active)
+                        .items(items)
                         .into_any_element()
                 }
                 _ => {
-                    let long = value.chars().count() > LONG_VALUE;
-                    if long {
-                        let short: String = value.chars().take(LONG_VALUE).collect();
-                        let name = f.name.clone();
-                        let full = value.clone();
-                        h_flex()
-                            .items_center()
-                            .gap_1()
-                            .child(
-                                MoonButton::new(SharedString::from(format!("more-{}", f.name)))
-                                    .ghost()
-                                    .size(MoonButtonSize::Micro)
-                                    .label("…")
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.popup = Some((name.clone(), full.clone()));
-                                        cx.notify();
-                                    }))
-                                    .render(),
-                            )
-                            .child(
-                                div()
-                                    .text_color(rgb(hex(val_col)))
-                                    .child(format!("{short}…")),
-                            )
+                    let keys_arc = Arc::new(keys.to_vec());
+                    if is_memo_field(f, &value) {
+                        let state = self.field_memo_state(
+                            row_id.clone(),
+                            value,
+                            keys_arc,
+                            field_name.clone(),
+                            window,
+                            cx,
+                        );
+                        MoonTextArea::new(SharedString::from(format!("field-memo-{row_id}")))
+                            .state(&state)
+                            .formula()
+                            .tone(MoonTone::Warning)
+                            .selected(dirty)
+                            .disabled(!active)
                             .into_any_element()
                     } else {
-                        div()
-                            .text_color(rgb(hex(val_col)))
-                            .child(value)
+                        let state = self.field_input_state(
+                            row_id.clone(),
+                            value,
+                            keys_arc,
+                            field_name.clone(),
+                            window,
+                            cx,
+                        );
+                        MoonInput::new(SharedString::from(format!("field-input-{row_id}")))
+                            .state(&state)
+                            .small()
+                            .tone(if matches!(f.ui, SchemaFieldUi::Color) {
+                                MoonTone::Warning
+                            } else {
+                                MoonTone::Info
+                            })
+                            .selected(dirty)
+                            .disabled(!active)
                             .into_any_element()
                     }
                 }
             },
         };
 
+        let field_for_focus = field_name.clone();
         h_flex()
+            .id(SharedString::from(format!("field-row-{row_id}")))
             .w_full()
-            .items_center()
-            .justify_between()
-            .py_0p5()
-            .gap_2()
-            .child(div().text_color(rgb(hex(name_col))).child(f.name.clone()))
-            .child(value_el)
+            .items_start()
+            .gap_3()
+            .py(px(4.0))
+            .border_l(px(if dirty { 2.0 } else { 0.0 }))
+            .border_color(hexa(palette::ORANGE, if dirty { 0x99 } else { 0x00 }))
+            .pl(px(if dirty { 8.0 } else { 10.0 }))
+            .pr_2()
+            .hover(|s| s.bg(hexa(palette::LIFT_HOVER, 0x70)))
+            .child(
+                div()
+                    .w(px(180.0))
+                    .flex_none()
+                    .pt(px(5.0))
+                    .truncate()
+                    .text_color(rgb(hex(name_col)))
+                    .child(f.name.clone()),
+            )
+            .child(div().flex_1().min_w_0().text_color(rgb(hex(val_col))).child(value_el))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.focused_field = Some(field_for_focus.clone());
+                cx.notify();
+            }))
             .into_any_element()
+    }
+
+    fn formula_helper(&self, cx: &Context<Self>) -> Option<AnyElement> {
+        let field = self.focused_field.clone()?;
+        if !is_formula_field(&field) {
+            return None;
+        }
+        let snippets = formula_snippets();
+        let mut list = v_flex().w_full().gap_1();
+        for (label, detail, insert) in snippets {
+            let field = field.clone();
+            list = list.child(
+                v_flex()
+                    .id(SharedString::from(format!("helper-{label}")))
+                    .w_full()
+                    .rounded(px(2.0))
+                    .border_1()
+                    .border_color(rgb(hex(palette::LIFT_HOVER)))
+                    .bg(rgb(hex(palette::LIFT)))
+                    .px_2()
+                    .py_1()
+                    .cursor_pointer()
+                    .hover(|s| s.border_color(hexa(palette::ORANGE, 0xBB)))
+                    .child(div().font_family("Geist Mono").text_size(px(11.0)).child(label))
+                    .child(
+                        div()
+                            .font_family("Geist Mono")
+                            .text_size(px(10.0))
+                            .text_color(rgb(hex(palette::TEXT_2)))
+                            .child(detail),
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.append_formula_snippet(&field, insert, cx);
+                    })),
+            );
+        }
+        Some(
+            v_flex()
+                .w(px(260.0))
+                .h_full()
+                .flex_none()
+                .gap_2()
+                .p_3()
+                .bg(rgb(hex(palette::SURFACE_1)))
+                .border_l_1()
+                .border_color(rgb(hex(palette::LIFT_HOVER)))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(rgb(hex(palette::TEXT_2)))
+                        .child(format!("{field} · formula helper")),
+                )
+                .child(list)
+                .into_any_element(),
+        )
     }
 
     /// Окошко просмотра длинного значения (read-only) — оверлей поверх окна.
@@ -1015,7 +1356,7 @@ impl Focusable for StrategiesView {
 }
 
 impl Render for StrategiesView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Поиск читаем из инпута в фильтр (единый источник).
         self.filter.search = self.search.read(cx).value().to_string();
 
@@ -1043,10 +1384,15 @@ impl Render for StrategiesView {
         let order = Arc::new(self.flat_order.clone());
         let mut built: Vec<Key> = Vec::new();
 
-        let store = self.backend.read(cx).session.store();
-        let tree = self.tree_panel(store, &cores, &order, &mut built, cx);
-        let sections = self.sections_panel(store, cx);
-        let params = self.params_panel(store, cx);
+        let (tree, sections, params_model) = {
+            let store = self.backend.read(cx).session.store();
+            (
+                self.tree_panel(store, &cores, &order, &mut built, cx),
+                self.sections_panel(store, cx),
+                self.params_model(store),
+            )
+        };
+        let params = self.params_panel(params_model, window, cx);
         let overlay = self.popup_overlay(cx);
 
         // Сохранить порядок текущего кадра (store-borrow держит cx, не self).
@@ -1097,11 +1443,10 @@ fn selected_keys(st: &StrategiesView) -> Vec<Key> {
     }
 }
 
-/// Строки ВСЕХ выбранных стратегий (любых видов) — для объединённого показа.
-fn multi_rows<'a>(st: &StrategiesView, store: &'a CoreStore) -> Vec<&'a StrategyRow> {
+fn multi_row_pairs<'a>(st: &StrategiesView, store: &'a CoreStore) -> Vec<(Key, &'a StrategyRow)> {
     selected_keys(st)
         .iter()
-        .filter_map(|(c, id)| row(store, *c, *id))
+        .filter_map(|(c, id)| row(store, *c, *id).map(|row| ((*c, *id), row)))
         .collect()
 }
 
@@ -1163,6 +1508,13 @@ fn selected_values(st: &StrategiesView, store: &CoreStore) -> Values {
         for (name, val) in &row.fields {
             v.insert(name.to_lowercase(), val.clone());
         }
+        if let Some((core, id)) = st.selected {
+            for ((c, sid, name), value) in &st.field_edits {
+                if *c == core && *sid == id {
+                    v.insert(name.to_lowercase(), value.clone());
+                }
+            }
+        }
         if let Some(sections) = selected_sections(st, store) {
             for sec in sections {
                 for f in &sec.fields {
@@ -1197,15 +1549,25 @@ fn selected_sections<'a>(st: &StrategiesView, store: &'a CoreStore) -> Option<&'
     Some(&kind.sections)
 }
 
-/// Общее значение поля по всем строкам или None, если различаются.
-fn merged_value(rows: &[&StrategyRow], f: &SchemaField) -> Option<String> {
-    let mut it = rows.iter().map(|r| field_value(r, f));
+fn merged_value_for_owned(
+    st: &StrategiesView,
+    rows: &[(Key, StrategyRow)],
+    f: &SchemaField,
+) -> Option<String> {
+    let mut it = rows.iter().map(|(key, row)| edited_field_value(st, *key, row, f));
     let first = it.next()?;
     if it.all(|v| v == first) {
         Some(first)
     } else {
         None
     }
+}
+
+fn edited_field_value(st: &StrategiesView, key: Key, row: &StrategyRow, f: &SchemaField) -> String {
+    st.field_edits
+        .get(&(key.0, key.1, f.name.clone()))
+        .cloned()
+        .unwrap_or_else(|| field_value(row, f))
 }
 
 /// Значение поля стратегии (по имени) или дефолт схемы.
@@ -1220,6 +1582,65 @@ fn field_value(row: &StrategyRow, f: &SchemaField) -> String {
 
 fn is_on(v: &str) -> bool {
     matches!(v.to_ascii_lowercase().as_str(), "yes" | "true" | "1" | "on")
+}
+
+fn is_memo_field(f: &SchemaField, value: &str) -> bool {
+    if value.contains('\n') || value.chars().count() > 44 {
+        return true;
+    }
+    is_formula_field(&f.name)
+        || matches!(f.ui, SchemaFieldUi::Edit)
+            && value
+                .chars()
+                .any(|ch| matches!(ch, '<' | '>' | '(' | ')' | '&' | '|'))
+}
+
+fn is_formula_field(field: &str) -> bool {
+    let name = field.to_ascii_lowercase();
+    name.contains("custom")
+        || name.contains("formula")
+        || name.contains("ema")
+        || name.contains("condition")
+        || name.contains("filter")
+}
+
+fn formula_snippets() -> [(&'static str, &'static str, &'static str); 10] {
+    [
+        ("EMA(t,i)", "token EMA", "EMA(60s, 1)"),
+        ("BTC(t,i)", "BTC market EMA", "BTC(60s, 1)"),
+        ("MIN(t,i)", "min price change", "MIN(15m, 1)"),
+        ("MAX(t,i)", "max price change", "MAX(15m, 1)"),
+        ("MAvg(t,i)", "avg of all EMAs", "MAvg(5m, 1)"),
+        ("Avg(t,i)", "price average", "Avg(5m, 1)"),
+        ("Vol(t,i)", "volume indicator", "Vol(5m, 1)"),
+        ("Arb(ex)", "arb spread", "Arb(GateS)"),
+        ("EMA short", "EMA(60s,1)<{v}", "EMA(60s, 1) < "),
+        ("Multi-TF", "MIN(15m,1)<{v} AND MIN(5m,1)<{v}", "MIN(15m, 1) <  AND MIN(5m, 1) < "),
+    ]
+}
+
+fn field_id(field: &str) -> String {
+    field
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
+        .collect::<String>()
+        .to_ascii_lowercase()
+}
+
+fn editor_state_id(keys: &[Key], field: &str) -> String {
+    let mut key_parts: Vec<String> = keys.iter().map(|(core, id)| format!("{core}-{id}")).collect();
+    key_parts.sort();
+    format!("{}:{}", field_id(field), key_parts.join(","))
+}
+
+fn append_snippet(current: &str, snippet: &str) -> String {
+    if current.trim().is_empty() {
+        snippet.to_string()
+    } else if current.ends_with(' ') || current.ends_with('\n') {
+        format!("{current}{snippet}")
+    } else {
+        format!("{current} {snippet}")
+    }
 }
 
 /// Переключает наличие ключа в множестве (раскрыт/свёрнут).
