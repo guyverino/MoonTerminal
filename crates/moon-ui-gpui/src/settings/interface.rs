@@ -3,32 +3,30 @@
 //! draft (живое превью), «Сохранить» пишет theme.toml. Состояние редактора — [`Iface`].
 
 use gpui::*;
-use gpui_component::{
-    color_picker::{ColorPickerEvent, ColorPickerState},
-    slider::{SliderEvent, SliderState},
-    v_flex,
+use moon_palette::{
+    MoonColorPickerEvent, MoonColorPickerState, MoonSliderEvent, MoonSliderState, v_flex,
 };
 
-use super::{color_row, hsla_u8, section, separator, slider_row, SettingsView};
-use crate::{hex, Backend};
+use super::{SettingsView, color_row, hsla_u8, section, separator, slider_row};
+use crate::{Backend, hex};
 use moon_core::config::ChartTheme;
 use moon_core::palette;
 
 /// Состояние редактора темы: по entity на каждое поле.
 pub(super) struct Iface {
-    bg: Entity<ColorPickerState>,
-    grid: Entity<ColorPickerState>,
-    grid_alpha: Entity<SliderState>,
-    cross: Entity<ColorPickerState>,
-    cross_alpha: Entity<SliderState>,
-    cross_thickness: Entity<SliderState>,
-    halo_radius: Entity<SliderState>,
-    halo_intensity: Entity<SliderState>,
-    book_bg: Entity<ColorPickerState>,
-    book_bid: Entity<ColorPickerState>,
-    book_ask: Entity<ColorPickerState>,
-    panel_bg: Entity<ColorPickerState>,
-    closed_bg: Entity<ColorPickerState>,
+    bg: Entity<MoonColorPickerState>,
+    grid: Entity<MoonColorPickerState>,
+    grid_alpha: Entity<MoonSliderState>,
+    cross: Entity<MoonColorPickerState>,
+    cross_alpha: Entity<MoonSliderState>,
+    cross_thickness: Entity<MoonSliderState>,
+    halo_radius: Entity<MoonSliderState>,
+    halo_intensity: Entity<MoonSliderState>,
+    book_bg: Entity<MoonColorPickerState>,
+    book_bid: Entity<MoonColorPickerState>,
+    book_ask: Entity<MoonColorPickerState>,
+    panel_bg: Entity<MoonColorPickerState>,
+    closed_bg: Entity<MoonColorPickerState>,
 }
 
 /// Color-picker, привязанный к полю темы: init из текущего config, на изменение —
@@ -39,20 +37,18 @@ fn color_field(
     cx: &mut Context<SettingsView>,
     get: fn(&ChartTheme) -> [u8; 3],
     set: fn(&mut ChartTheme, [u8; 3]),
-) -> Entity<ColorPickerState> {
+) -> Entity<MoonColorPickerState> {
     let cur = get(&backend.read(cx).config.theme);
-    let st = cx.new(|cx| ColorPickerState::new(window, cx).default_value(rgb(hex(cur))));
-    cx.subscribe(&st, move |this, _emitter, ev: &ColorPickerEvent, cx| {
-        let ColorPickerEvent::Change(v) = ev;
-        if let Some(h) = v {
-            let c = hsla_u8(*h);
-            this.backend.update(cx, |b, cx| {
-                if let Some(p) = b.preview.as_mut() {
-                    set(&mut p.theme, c);
-                    cx.notify();
-                }
-            });
-        }
+    let st = cx.new(|cx| MoonColorPickerState::new(window, cx).default_value(rgb(hex(cur)).into()));
+    cx.subscribe(&st, move |this, _emitter, ev: &MoonColorPickerEvent, cx| {
+        let MoonColorPickerEvent::Change(h) = ev;
+        let c = hsla_u8(*h);
+        this.backend.update(cx, |b, cx| {
+            if let Some(p) = b.preview.as_mut() {
+                set(&mut p.theme, c);
+                cx.notify();
+            }
+        });
     })
     .detach();
     st
@@ -68,14 +64,20 @@ fn num_field(
     min: f32,
     max: f32,
     step: f32,
-) -> Entity<SliderState> {
+) -> Entity<MoonSliderState> {
     let cur = get(&backend.read(cx).config.theme);
-    let st = cx.new(|_| SliderState::new().min(min).max(max).step(step).default_value(cur));
-    cx.subscribe(&st, move |this, _emitter, ev: &SliderEvent, cx| {
-        let SliderEvent::Change(v) = ev else {
+    let st = cx.new(|_| {
+        MoonSliderState::new()
+            .min(min)
+            .max(max)
+            .step(step)
+            .default_value(cur)
+    });
+    cx.subscribe(&st, move |this, _emitter, ev: &MoonSliderEvent, cx| {
+        let MoonSliderEvent::Change(f) = ev else {
             return;
         };
-        let f = v.start();
+        let f = *f;
         this.backend.update(cx, |b, cx| {
             if let Some(p) = b.preview.as_mut() {
                 set(&mut p.theme, f);
@@ -96,12 +98,52 @@ pub(super) fn build(
     Iface {
         bg: color_field(backend, window, cx, |t| t.bg, |t, v| t.bg = v),
         grid: color_field(backend, window, cx, |t| t.grid, |t, v| t.grid = v),
-        grid_alpha: num_field(backend, cx, |t| t.grid_alpha, |t, v| t.grid_alpha = v, 0.0, 1.0, 0.01),
+        grid_alpha: num_field(
+            backend,
+            cx,
+            |t| t.grid_alpha,
+            |t, v| t.grid_alpha = v,
+            0.0,
+            1.0,
+            0.01,
+        ),
         cross: color_field(backend, window, cx, |t| t.cross, |t, v| t.cross = v),
-        cross_alpha: num_field(backend, cx, |t| t.cross_alpha, |t, v| t.cross_alpha = v, 0.0, 1.0, 0.01),
-        cross_thickness: num_field(backend, cx, |t| t.cross_thickness, |t, v| t.cross_thickness = v, 0.5, 4.0, 0.1),
-        halo_radius: num_field(backend, cx, |t| t.halo_radius, |t, v| t.halo_radius = v, 0.0, 120.0, 1.0),
-        halo_intensity: num_field(backend, cx, |t| t.halo_intensity, |t, v| t.halo_intensity = v, 0.0, 0.6, 0.01),
+        cross_alpha: num_field(
+            backend,
+            cx,
+            |t| t.cross_alpha,
+            |t, v| t.cross_alpha = v,
+            0.0,
+            1.0,
+            0.01,
+        ),
+        cross_thickness: num_field(
+            backend,
+            cx,
+            |t| t.cross_thickness,
+            |t, v| t.cross_thickness = v,
+            0.5,
+            4.0,
+            0.1,
+        ),
+        halo_radius: num_field(
+            backend,
+            cx,
+            |t| t.halo_radius,
+            |t, v| t.halo_radius = v,
+            0.0,
+            120.0,
+            1.0,
+        ),
+        halo_intensity: num_field(
+            backend,
+            cx,
+            |t| t.halo_intensity,
+            |t, v| t.halo_intensity = v,
+            0.0,
+            0.6,
+            0.01,
+        ),
         book_bg: color_field(backend, window, cx, |t| t.book_bg, |t, v| t.book_bg = v),
         book_bid: color_field(backend, window, cx, |t| t.book_bid, |t, v| t.book_bid = v),
         book_ask: color_field(backend, window, cx, |t| t.book_ask, |t, v| t.book_ask = v),

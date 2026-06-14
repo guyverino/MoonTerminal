@@ -33,69 +33,25 @@ use std::time::{Duration, Instant};
 
 use gpui::*;
 
-use gpui_component::theme::{Theme, ThemeMode};
-
 use chart_tabs::ChartTabs;
 use dock_persist::DOCK_VERSION;
 use panels::{DetectsPanel, LogPanel, OrderPanel, OrdersPanel, ReportPanel, StubPanel};
 
 use moon_palette::{
-    h_flex, v_flex, DockArea, DockAreaState, DockEvent, DockItem, DockPlacement,
-    MoonBackgroundPolicy, MoonPalette, MoonStatusBar, MoonStatusIndicator, MoonStatusItem,
-    MoonTooltipView, PanelView, Root,
+    h_flex, init as init_moon_palette, v_flex, DockArea, DockAreaState, DockEvent, DockItem,
+    DockPlacement, MoonBackgroundPolicy, MoonPalette, MoonStatusBar, MoonStatusIndicator,
+    MoonStatusItem, MoonTooltipView, PanelView, Root,
 };
 
 use moon_core::config::{AppConfig, GroupLayout, WindowLayout};
 use moon_core::feed::ConnStatus;
 use moon_core::metrics::{Metrics, MetricsSnapshot};
-use moon_core::palette;
 use moon_core::session::{ConnSummary, CoreId, SessionManager};
 
 /// Палитра проекта [u8;3] → 0xRRGGBB для gpui `rgb()`. Единый источник цветов —
 /// `moon_core::palette` (тот же, что у egui-хрома); никаких литералов в UI.
 fn hex(c: [u8; 3]) -> u32 {
     (c[0] as u32) << 16 | (c[1] as u32) << 8 | c[2] as u32
-}
-
-/// Брендируем глобальную тему gpui-component из `moon_core::palette` → ВСЕ компоненты
-/// (кнопки/инпуты/таблицы/док/вкладки/тулбар) сразу в наших цветах. Форсируем Dark,
-/// затем перекрываем ключевые поля. `ChartTheme` (движок чарта) — отдельно.
-fn apply_brand_theme(cx: &mut App) {
-    Theme::change(ThemeMode::Dark, None, cx);
-    let h = |c: [u8; 3]| -> Hsla { rgb(hex(c)).into() };
-    let c = &mut Theme::global_mut(cx).colors;
-    c.background = h(palette::BG);
-    c.foreground = h(palette::TEXT);
-    c.border = h(palette::LIFT_HOVER);
-    c.muted = h(palette::SURFACE_1);
-    c.muted_foreground = h(palette::TEXT_2);
-    c.accent = h(palette::ACCENT);
-    c.accent_foreground = h(palette::BG);
-    c.primary = h(palette::ACCENT);
-    c.primary_foreground = h(palette::BG);
-    c.secondary = h(palette::LIFT);
-    c.secondary_foreground = h(palette::TEXT);
-    c.input = h(palette::LIFT);
-    c.popover = h(palette::SURFACE_1);
-    c.popover_foreground = h(palette::TEXT);
-    c.list = h(palette::BG);
-    c.list_head = h(palette::SURFACE_1);
-    c.list_hover = h(palette::LIFT_HOVER);
-    c.table = h(palette::BG);
-    c.table_head = h(palette::SURFACE_1);
-    c.table_hover = h(palette::LIFT_HOVER);
-    c.table_row_border = h(palette::LIFT);
-    c.tab_bar = h(palette::SURFACE_1);
-    c.tab = h(palette::SURFACE_1);
-    c.tab_active = h(palette::BG);
-    c.tab_active_foreground = h(palette::ACCENT);
-    c.tab_foreground = h(palette::TEXT_2);
-    c.title_bar = h(palette::SURFACE_1);
-    c.title_bar_border = h(palette::LIFT_HOVER);
-    c.danger = h(palette::RED);
-    c.success = h(palette::GREEN);
-    c.ring = h(palette::ACCENT);
-    c.selection = h(palette::ACCENT);
 }
 
 /// Общий backend: живёт в одном `Entity`, дренится таймером, будит окна по notify.
@@ -743,10 +699,9 @@ fn main() -> anyhow::Result<()> {
     // Единая точка отсчёта времени для сессий и чарт-вью (как epoch_ms в egui).
     let epoch = moon_chart::paint::now_unix_ms();
 
-    let app = gpui_platform::application().with_assets(gpui_component_assets::Assets);
+    let app = gpui_platform::application();
     app.run(move |cx| {
-        gpui_component::init(cx);
-        apply_brand_theme(cx);
+        init_moon_palette(cx);
 
         let layout = WindowLayout::load();
         let dock_states = dock_persist::load_all();

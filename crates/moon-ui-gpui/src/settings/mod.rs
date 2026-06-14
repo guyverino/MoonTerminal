@@ -17,21 +17,16 @@ mod lines;
 use std::collections::HashSet;
 
 use gpui::*;
-use gpui_component::{
-    button::{Button, ButtonVariants},
-    color_picker::{ColorPicker, ColorPickerState},
-    h_flex,
-    select::{SelectEvent, SelectState},
-    slider::{Slider, SliderState},
-    v_flex, IndexPath, StyledExt,
+use moon_palette::{
+    IndexPath, MoonBackgroundPolicy, MoonButton, MoonButtonSize, MoonButtonVariant,
+    MoonColorPicker, MoonColorPickerState, MoonPalette, MoonSelectEvent, MoonSelectItem,
+    MoonSelectState, MoonSlider, MoonSliderState, Root, h_flex, rgba_from, v_flex,
 };
-use moon_palette::Root;
 
+use crate::Backend;
 use crate::icons::IconSet;
-use crate::{hex, Backend};
 use moon_core::config::{AppConfig, Language};
 use moon_core::market::MarketDataMode;
-use moon_core::palette;
 use moon_core::session::SessionManager;
 
 use connections::ConnRow;
@@ -70,35 +65,62 @@ pub(super) fn hsla_u8(h: Hsla) -> [u8; 3] {
 
 /// Строка слайдера (порт egui `Slider::new(..).text(label)`): сам слайдер, справа —
 /// подпись и текущее значение. Инлайн, на высоту одного ряда (как на стенде).
-pub(super) fn slider_row(label: &str, st: &Entity<SliderState>, cx: &App) -> impl IntoElement {
-    let val = st.read(cx).value().start();
+pub(super) fn slider_row(label: &str, st: &Entity<MoonSliderState>, cx: &App) -> impl IntoElement {
+    let p = MoonPalette::TERMINAL;
+    let val = st.read(cx).value();
     h_flex()
         .w_full()
-        .gap_2()
+        .min_h(px(28.0))
+        .gap(px(10.0))
         .items_center()
-        .child(div().w(px(220.0)).child(Slider::new(st)))
-        .child(div().text_color(rgb(hex(palette::TEXT))).child(label.to_string()))
-        .child(div().text_color(rgb(hex(palette::TEXT_2))).child(format!("{val:.2}")))
+        .child(div().w(px(180.0)).child(MoonSlider::new(st).height(22.0)))
+        .child(
+            div()
+                .w(px(210.0))
+                .min_w_0()
+                .truncate()
+                .text_color(rgba_from(p.text_soft, 1.0))
+                .child(label.to_string()),
+        )
+        .child(
+            div()
+                .w(px(58.0))
+                .text_right()
+                .text_color(rgba_from(p.text_muted, 1.0))
+                .child(format!("{val:.2}")),
+        )
 }
 
 /// Разделитель секций (порт egui `ui.separator()`).
 pub(super) fn separator() -> impl IntoElement {
-    // gpui-component 0.5.2 убрала Divider — тонкая горизонтальная линия своим div'ом.
-    div().my_1().h(px(1.0)).bg(rgb(0x2A2D31))
+    div()
+        .my(px(8.0))
+        .h(px(1.0))
+        .bg(rgba_from(MoonPalette::TERMINAL.border, 1.0))
 }
 
 /// Секционный заголовок (порт egui `section()`): жирная подпись с отступом сверху.
 pub(super) fn section(title: &str) -> impl IntoElement {
-    div().mt_2().mb_1().font_bold().child(title.to_string())
+    div()
+        .mt(px(10.0))
+        .mb(px(4.0))
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(rgba_from(MoonPalette::TERMINAL.text, 1.0))
+        .child(title.to_string())
 }
 
 /// Строка цвета (порт egui `color_row`): свотч-пикер, затем подпись справа.
-pub(super) fn color_row(label: &str, st: &Entity<ColorPickerState>) -> impl IntoElement {
+pub(super) fn color_row(label: &str, st: &Entity<MoonColorPickerState>) -> impl IntoElement {
     h_flex()
-        .gap_2()
+        .min_h(px(28.0))
+        .gap(px(10.0))
         .items_center()
-        .child(ColorPicker::new(st))
-        .child(div().child(label.to_string()))
+        .child(MoonColorPicker::new(st))
+        .child(
+            div()
+                .text_color(rgba_from(MoonPalette::TERMINAL.text_soft, 1.0))
+                .child(label.to_string()),
+        )
 }
 
 /// Метки режима источника данных (вкладка «Подключения») — точные строки локали.
@@ -117,9 +139,9 @@ pub struct SettingsView {
     /// Per-server editor-стейты (вкладка «Подключения»); пересоздаётся при add/del.
     conn: Vec<ConnRow>,
     /// Выпадающий выбор языка (вкладка «Общие»).
-    lang: Entity<SelectState<Vec<SharedString>>>,
+    lang: Entity<MoonSelectState<Language>>,
     /// Выпадающий выбор источника данных (вкладка «Подключения»).
-    mode: Entity<SelectState<Vec<SharedString>>>,
+    mode: Entity<MoonSelectState<MarketDataMode>>,
     /// Какие блоки-линии раскрыты (вкладка «Линии», порт CollapsingHeader).
     open_lines: HashSet<&'static str>,
     /// Кэш иконок групп (вкладка «Подключения»).
@@ -140,47 +162,54 @@ impl SettingsView {
             let d = b.preview.as_ref().unwrap_or(&b.config);
             (d.language, d.market_mode)
         };
-        let lang_items: Vec<SharedString> = Language::ALL.iter().map(|l| l.label().into()).collect();
-        let lang_idx = Language::ALL.iter().position(|l| *l == cur_lang).unwrap_or(0);
-        let lang = cx.new(|cx| {
-            SelectState::new(lang_items, Some(IndexPath::default().row(lang_idx)), window, cx)
-        });
-        cx.subscribe(&lang, |this, _e, ev: &SelectEvent<Vec<SharedString>>, cx| {
-            let SelectEvent::Confirm(v) = ev;
-            if let Some(val) = v {
-                if let Some(l) = Language::ALL.iter().find(|l| l.label() == val.as_ref()) {
-                    let l = *l;
-                    this.backend.update(cx, |b, bcx| {
-                        if let Some(p) = b.preview.as_mut() {
-                            p.language = l;
-                            bcx.notify();
-                        }
-                    });
-                }
+        let lang_items = Language::ALL
+            .iter()
+            .map(|l| MoonSelectItem::new(*l, l.label()))
+            .collect::<Vec<_>>();
+        let lang_idx = Language::ALL
+            .iter()
+            .position(|l| *l == cur_lang)
+            .unwrap_or(0);
+        let lang = cx
+            .new(|cx| MoonSelectState::new(lang_items, Some(IndexPath::new(lang_idx)), window, cx));
+        cx.subscribe(&lang, |this, _e, ev: &MoonSelectEvent<Language>, cx| {
+            if let MoonSelectEvent::Confirm(Some(language)) = ev {
+                let language = *language;
+                this.backend.update(cx, |b, bcx| {
+                    if let Some(p) = b.preview.as_mut() {
+                        p.language = language;
+                        bcx.notify();
+                    }
+                });
             }
         })
         .detach();
 
         // Источник данных — выпадающий список (порт egui ComboBox).
-        let mode_items: Vec<SharedString> = MODE_LABELS.iter().map(|(l, _)| (*l).into()).collect();
-        let mode_idx = MODE_LABELS.iter().position(|(_, m)| *m == cur_mode).unwrap_or(0);
-        let mode = cx.new(|cx| {
-            SelectState::new(mode_items, Some(IndexPath::default().row(mode_idx)), window, cx)
-        });
-        cx.subscribe(&mode, |this, _e, ev: &SelectEvent<Vec<SharedString>>, cx| {
-            let SelectEvent::Confirm(v) = ev;
-            if let Some(val) = v {
-                if let Some((_, m)) = MODE_LABELS.iter().find(|(l, _)| *l == val.as_ref()) {
-                    let m = *m;
+        let mode_items = MODE_LABELS
+            .iter()
+            .map(|(label, mode)| MoonSelectItem::new(*mode, *label))
+            .collect::<Vec<_>>();
+        let mode_idx = MODE_LABELS
+            .iter()
+            .position(|(_, m)| *m == cur_mode)
+            .unwrap_or(0);
+        let mode = cx
+            .new(|cx| MoonSelectState::new(mode_items, Some(IndexPath::new(mode_idx)), window, cx));
+        cx.subscribe(
+            &mode,
+            |this, _e, ev: &MoonSelectEvent<MarketDataMode>, cx| {
+                if let MoonSelectEvent::Confirm(Some(mode)) = ev {
+                    let mode = *mode;
                     this.backend.update(cx, |b, bcx| {
                         if let Some(p) = b.preview.as_mut() {
-                            p.market_mode = m;
+                            p.market_mode = mode;
                             bcx.notify();
                         }
                     });
                 }
-            }
-        })
+            },
+        )
         .detach();
 
         // Живой статус ядер (точки в «Подключениях») + n/8 фид-кнопки → перерисовка
@@ -270,7 +299,8 @@ impl SettingsView {
         } else if mode_changed {
             // Режим рынка — живо: ядра остаются на связи, координатор пере-выберет
             // провайдеров на следующем тике.
-            self.backend.update(cx, |b, _| b.session.set_market_mode(b.config.market_mode));
+            self.backend
+                .update(cx, |b, _| b.session.set_market_mode(b.config.market_mode));
         }
 
         // Сменили «отдельная чарт-вкладка на ядро» (без структурного ребилда, который и
@@ -300,31 +330,41 @@ impl SettingsView {
 
 impl Render for SettingsView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let bg = rgb(hex(palette::SURFACE_1));
-        let panel = rgb(hex(palette::BG));
-        let border = rgb(hex(palette::LIFT_HOVER));
-        let accent = rgb(hex(palette::ACCENT));
-        let muted = rgb(hex(palette::TEXT_2));
+        let p = MoonPalette::TERMINAL;
 
         // ── Полоска вкладок ─────────────────────────────────────────────────
-        let mut tabs = h_flex().w_full().gap_1().px_2().bg(panel).border_b_1().border_color(border);
+        let mut tabs = h_flex()
+            .w_full()
+            .h(px(34.0))
+            .gap(px(6.0))
+            .px(px(8.0))
+            .bg(rgba_from(p.shell_high, 1.0))
+            .border_b_1()
+            .border_color(rgba_from(p.border, 1.0));
         for t in Tab::ALL {
             let on = self.active == t;
-            let (tc, bb) = if on { (accent, accent) } else { (muted, panel) };
             tabs = tabs.child(
-                div()
-                    .id(t.title())
-                    .px_3()
-                    .py_2()
-                    .cursor_pointer()
-                    .text_color(tc)
-                    .border_b_2()
-                    .border_color(bb)
-                    .child(t.title())
+                MoonButton::new(t.title())
+                    .variant(if on {
+                        MoonButtonVariant::Blue
+                    } else {
+                        MoonButtonVariant::Ghost
+                    })
+                    .size(MoonButtonSize::Custom {
+                        height: 24.0,
+                        radius: 4.0,
+                        font_size: 10.5,
+                        line_height: 13.0,
+                        gap: 5.0,
+                    })
+                    .width(118.0)
+                    .selected(on)
+                    .label(t.title())
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.active = t;
                         cx.notify();
-                    })),
+                    }))
+                    .render(),
             );
         }
 
@@ -341,37 +381,43 @@ impl Render for SettingsView {
             .flex_1()
             .w_full()
             .overflow_y_scroll()
-            .child(v_flex().w_full().p_4().gap_2().child(content));
+            .bg(rgba_from(p.shell, 1.0))
+            .child(v_flex().w_full().p(px(18.0)).gap(px(10.0)).child(content));
 
         // ── Подвал: Сохранить + статус ──────────────────────────────────────
         let status_el = match &self.status {
             Some((msg, err)) => div()
-                .text_color(if *err { rgb(hex(palette::RED)) } else { rgb(hex(palette::GREEN)) })
+                .text_color(rgba_from(if *err { p.red } else { p.green }, 1.0))
                 .child(msg.clone()),
             None => div(),
         };
         let footer = h_flex()
             .w_full()
-            .gap_3()
-            .px_3()
-            .py_2()
+            .h(px(42.0))
+            .gap(px(10.0))
+            .px(px(10.0))
             .items_center()
-            .bg(panel)
+            .bg(rgba_from(p.shell_high, 1.0))
             .border_t_1()
-            .border_color(border)
+            .border_color(rgba_from(p.border, 1.0))
             .child(
-                Button::new("save")
+                MoonButton::new("save")
                     .primary()
+                    .small()
+                    .width(110.0)
                     .label("Сохранить")
-                    .on_click(cx.listener(|this, _, _, cx| this.save(cx))),
+                    .on_click(cx.listener(|this, _, _, cx| this.save(cx)))
+                    .render(),
             )
             .child(status_el);
 
         v_flex()
             .size_full()
-            .bg(bg)
-            .text_color(rgb(hex(palette::TEXT)))
-            .text_sm()
+            .bg(rgba_from(p.shell, 1.0))
+            .font_family("Geist Mono")
+            .text_size(px(11.0))
+            .line_height(px(14.0))
+            .text_color(rgba_from(p.text, 1.0))
             .child(tabs)
             .child(body)
             .child(footer)
@@ -399,7 +445,7 @@ pub fn open(backend: Entity<Backend>, cx: &mut App) {
     };
     cx.open_window(opts, |window, cx| {
         let view = cx.new(|cx| SettingsView::new(backend, window, cx));
-        cx.new(|cx| Root::new(view, window, cx))
+        cx.new(|cx| Root::new(view, window, cx).background_policy(MoonBackgroundPolicy::Opaque))
     })
     .ok();
 }

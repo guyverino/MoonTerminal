@@ -3,17 +3,12 @@
 //! в draft, применяются после «Сохранить» (язык/чарты — на перезапуске/пересборке окон).
 
 use gpui::*;
-use gpui_component::{
-    button::{Button, ButtonVariants},
-    checkbox::Checkbox,
-    h_flex,
-    select::Select,
-    v_flex, Disableable, StyledExt,
+use moon_palette::{
+    MoonButton, MoonButtonSize, MoonCheckbox, MoonCheckboxSize, MoonMenuSize, MoonPalette,
+    MoonSelect, StyledExt, h_flex, rgba_from, v_flex,
 };
 
 use super::SettingsView;
-use crate::hex;
-use moon_core::palette;
 
 impl SettingsView {
     /// Изменить срок хранения логов (клампим 0..=365), правит draft.
@@ -32,7 +27,8 @@ impl SettingsView {
     /// список) + хинт; разделитель; чекбокс «чарт-вкладка на ядро» + хинт; разделитель;
     /// чекбокс «писать лог в файлы» + хинт; срок хранения (число) + хинт.
     pub(super) fn general_tab(&self, cx: &Context<Self>) -> impl IntoElement {
-        let muted = rgb(hex(palette::TEXT_2));
+        let p = MoonPalette::TERMINAL;
+        let muted = rgba_from(p.text_muted, 1.0);
         let (split, logf, ret) = {
             let b = self.backend.read(cx);
             let d = b.preview.as_ref().unwrap_or(&b.config);
@@ -46,19 +42,27 @@ impl SettingsView {
             // Язык интерфейса — выпадающий список.
             .child(
                 h_flex()
-                    .gap_2()
+                    .gap(px(10.0))
                     .items_center()
                     .child(div().font_bold().child("Язык интерфейса"))
-                    .child(div().w(px(220.0)).child(Select::new(&self.lang))),
+                    .child(
+                        div().w(px(220.0)).child(
+                            MoonSelect::new(&self.lang)
+                                .trigger_size(MoonButtonSize::Action)
+                                .menu_width(220.0)
+                                .menu_size(MoonMenuSize::Compact),
+                        ),
+                    ),
             )
             .child(hint("Применяется после сохранения."))
             .child(super::separator())
             // Отдельная чарт-вкладка на каждое ядро.
             .child(
-                Checkbox::new("split")
+                MoonCheckbox::new("split")
                     .label("Отдельная чарт-вкладка на каждое ядро")
                     .checked(split)
-                    .on_click(cx.listener(|this, ch: &bool, _w, cx| {
+                    .size(MoonCheckboxSize::Normal)
+                    .on_change(cx.listener(|this, ch: &bool, _w, cx| {
                         let v = *ch;
                         this.backend.update(cx, |b, bcx| {
                             if let Some(p) = b.preview.as_mut() {
@@ -73,10 +77,11 @@ impl SettingsView {
             .child(super::separator())
             // Логи в файлы + срок хранения.
             .child(
-                Checkbox::new("logf")
+                MoonCheckbox::new("logf")
                     .label("Писать лог в файлы")
                     .checked(logf)
-                    .on_click(cx.listener(|this, ch: &bool, _w, cx| {
+                    .size(MoonCheckboxSize::Normal)
+                    .on_change(cx.listener(|this, ch: &bool, _w, cx| {
                         let v = *ch;
                         this.backend.update(cx, |b, bcx| {
                             if let Some(p) = b.preview.as_mut() {
@@ -93,29 +98,35 @@ impl SettingsView {
             // значение/подписи тусклые, пока «Писать лог в файлы» выключено.
             .child(
                 h_flex()
-                    .gap_2()
+                    .gap(px(8.0))
                     .items_center()
-                    .child(div().text_color(if logf { rgb(hex(palette::TEXT)) } else { muted }).child("Хранить лог, дней"))
+                    .child(div().text_color(if logf { rgba_from(p.text, 1.0) } else { muted }).child("Хранить лог, дней"))
                     .child(
-                        Button::new("ret-")
+                        MoonButton::new("ret-")
                             .ghost()
-                            .label("−")
+                            .size(MoonButtonSize::Micro)
+                            .width(24.0)
+                            .label("-")
                             .disabled(!logf)
-                            .on_click(cx.listener(|this, _, _, cx| this.adjust_ret(-1, cx))),
+                            .on_click(cx.listener(|this, _, _, cx| this.adjust_ret(-1, cx)))
+                            .render(),
                     )
                     .child(
                         div()
                             .w(px(56.0))
                             .text_center()
-                            .text_color(if logf { rgb(hex(palette::TEXT)) } else { muted })
+                            .text_color(if logf { rgba_from(p.text, 1.0) } else { muted })
                             .child(format!("{ret} дн.")),
                     )
                     .child(
-                        Button::new("ret+")
+                        MoonButton::new("ret+")
                             .ghost()
+                            .size(MoonButtonSize::Micro)
+                            .width(24.0)
                             .label("+")
                             .disabled(!logf)
-                            .on_click(cx.listener(|this, _, _, cx| this.adjust_ret(1, cx))),
+                            .on_click(cx.listener(|this, _, _, cx| this.adjust_ret(1, cx)))
+                            .render(),
                     ),
             )
             .child(hint("Файлы старше указанного срока удаляются при запуске и раз в сутки. 0 — хранить всё."))
