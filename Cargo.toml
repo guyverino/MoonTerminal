@@ -80,3 +80,24 @@ debug-assertions = false
 
 [profile.dev.package."*"]
 opt-level = 3
+
+# MoonKernel: единая GPUI база для public-сборки.
+#
+# Пока raw GPU-pass hook не принят upstream Zed, канонический источник GPUI для всего
+# Moon-стека — Moonbot-Tech/ZedFork@9b7bbde. Прямые зависимости терминала/палитры
+# смотрят туда же, а временный Longbridge gpui-component всё ещё тянет upstream
+# zed-industries/zed транзитивно. Этот patch перенаправляет его gpui* на тот же
+# fork commit, чтобы Cargo не собирал две несовместимые копии GPUI.
+#
+# Локальные path overrides живут только в ignored .cargo/config.toml.
+[patch."https://github.com/zed-industries/zed"]
+gpui = { git = "https://github.com/Moonbot-Tech/ZedFork", rev = "9b7bbde6833d3178b7116f1774ee1b55c584950a" }
+gpui_platform = { git = "https://github.com/Moonbot-Tech/ZedFork", rev = "9b7bbde6833d3178b7116f1774ee1b55c584950a" }
+gpui_windows = { git = "https://github.com/Moonbot-Tech/ZedFork", rev = "9b7bbde6833d3178b7116f1774ee1b55c584950a" }
+gpui_macos = { git = "https://github.com/Moonbot-Tech/ZedFork", rev = "9b7bbde6833d3178b7116f1774ee1b55c584950a" }
+gpui_linux = { git = "https://github.com/Moonbot-Tech/ZedFork", rev = "9b7bbde6833d3178b7116f1774ee1b55c584950a" }
+gpui_web = { git = "https://github.com/Moonbot-Tech/ZedFork", rev = "9b7bbde6833d3178b7116f1774ee1b55c584950a" }
+gpui_wgpu = { git = "https://github.com/Moonbot-Tech/ZedFork", rev = "9b7bbde6833d3178b7116f1774ee1b55c584950a" }
+gpui_macros = { git = "https://github.com/Moonbot-Tech/ZedFork", rev = "9b7bbde6833d3178b7116f1774ee1b55c584950a" }
+gpui_shared_string = { git = "https://github.com/Moonbot-Tech/ZedFork", rev = "9b7bbde6833d3178b7116f1774ee1b55c584950a" }
+gpui_util = { git = "https://github.com/Moonbot-Tech/ZedFork", rev = "9b7bbde6833d3178b7116f1774ee1b55c584950a" }

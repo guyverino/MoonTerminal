@@ -416,7 +416,7 @@ fn traced_kinds(s: &OrdersStyle) -> [(&LineStyle, usize); 7] {
 /// на ступенях + вертикальные стыки), кресты начала/конца, узелки перестановок и
 /// непрерывную линию ликвидации. Куллит ордера вне видимого окна по времени.
 #[allow(clippy::too_many_arguments)]
-fn build_order_geometry(
+pub fn build_order_geometry(
     store: &OrderLineStore,
     market: &str,
     style: &OrdersStyle,

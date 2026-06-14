@@ -8,7 +8,7 @@ use gpui::{
     fill, point, px, App, Bounds, Hsla, Pixels, Point, SharedString, TextRun, Window,
 };
 
-use moon_chart::axes::{fmt_clock, nice_interval, nice_time_step, price_decimals, AxisSnapshot};
+use moon_chart::axes::{fmt_clock, nice_interval, price_decimals, AxisSnapshot};
 use moon_chart::{GLASS_ZONE_PX, PRICE_AXIS_W, TIME_AXIS_H};
 use moon_core::palette;
 
@@ -75,7 +75,7 @@ fn label(
     let w = line.width;
     let lh = line_h();
     let origin = point(anchor.x - w * ax, anchor.y - lh * ay);
-    let _ = line.paint(origin, lh, window, cx);
+    let _ = line.paint(origin, lh, gpui::TextAlign::Left, None, window, cx);
 }
 
 /// Плашка readout перекрестия: заливка + рамка + текст поверх (как egui `chip`).
@@ -112,7 +112,7 @@ fn chip(
     );
     window.paint_quad(fill(bg, rgb3(palette::LIFT)));
     window.paint_quad(gpui::outline(bg, rgba3(palette::ACCENT, 0.55), gpui::BorderStyle::Solid));
-    let _ = line.paint(origin, lh, window, cx);
+    let _ = line.paint(origin, lh, gpui::TextAlign::Left, None, window, cx);
 }
 
 /// Рисует обе шкалы (+ readout'ы перекрестия при наличии курсора). `bounds` —
@@ -190,26 +190,22 @@ pub fn draw(
         guard += 1;
     }
 
-    // ── Шкала времени (снизу), привязана к ДАННЫМ → едет за паном/скроллом ───
+    // ── Шкала времени (снизу): СЕТКА СТАТИЧНА — позиции подписей ФИКСИРОВАНЫ по X, едут
+    //    только ЗНАЧЕНИЯ времени (модель MoonBot §3.1: линии не привязаны к круглым меткам,
+    //    время считается НА фиксированном пикселе). НЕ скроллим подписи за данными.
     let window_ms = plot_w as f64 * ppp as f64 / snap.px_per_ms.max(1e-6) as f64;
-    let window_sec = window_ms / 1000.0;
     let right_rel = (snap.right_time_ms - snap.epoch_ms) + window_ms * snap.right_margin_frac as f64;
     let left_unix = snap.epoch_ms + right_rel - window_ms;
-    let right_unix = left_unix + window_ms;
     let px_per_ms_log = plot_w as f64 / window_ms.max(1e-6);
-    let step_sec = nice_time_step(window_sec, 8.0);
-    let step_ms = step_sec * 1000.0;
-    let with_sec = step_sec < 60.0;
-    let tz_ms = snap.tz_offset_sec as f64 * 1000.0;
+    // ~6 подписей на фиксированных долях ширины плота. Секунды — если деление < 60 c.
+    let n_div = 6usize;
+    let div_sec = window_ms / 1000.0 / n_div as f64;
+    let with_sec = div_sec < 60.0;
     let label_y = bottom - 2.0;
-    let mut t_local = ((left_unix + tz_ms) / step_ms).ceil() * step_ms;
-    let mut guard = 0;
-    while guard < 256 {
-        let unix = t_local - tz_ms;
-        if unix > right_unix {
-            break;
-        }
-        let x = plot_left as f64 + (unix - left_unix) * px_per_ms_log;
+    for k in 0..=n_div {
+        let frac = k as f64 / n_div as f64;
+        let x = plot_left as f64 + frac * plot_w as f64;
+        let unix = left_unix + frac * window_ms;
         label(
             window,
             cx,
@@ -220,8 +216,6 @@ pub fn draw(
             ink,
             &font,
         );
-        t_local += step_ms;
-        guard += 1;
     }
 
     // ── Перекрестие + readout'ы (едут за курсором) ──────────────────────────

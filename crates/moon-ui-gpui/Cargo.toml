@@ -2,7 +2,7 @@
 name = "moon-ui-gpui"
 version = "0.1.0"
 edition = "2024"
-description = "MoonTerminal GPUI-оболочка (миграция с egui). Поверх moon-core + gpui-component."
+description = "MoonTerminal GPUI shell over moon-core; UI migration target is MoonPalette."
 
 [[bin]]
 name = "moon-gpui"
@@ -17,10 +17,14 @@ wgpu = "22"
 pollster = "0.3"
 image = "0.25"
 
-# GPUI (движок Zed) + палитра компонент (Longbridge). Оба с crates.io.
-gpui = "0.2.2"
-gpui-component = "0.5.1"
-gpui-component-assets = "0.5.1"
+# GPUI source identity must stay single across terminal, palette, and temporary
+# Longbridge dependencies. Local path overrides live in the workspace .cargo/config.toml.
+gpui = { git = "https://github.com/Moonbot-Tech/ZedFork", rev = "9b7bbde6833d3178b7116f1774ee1b55c584950a" }
+gpui_platform = { git = "https://github.com/Moonbot-Tech/ZedFork", rev = "9b7bbde6833d3178b7116f1774ee1b55c584950a", features = ["font-kit", "wayland", "x11"] }
+
+# Temporary migration debt: these go away as panels move to MoonPalette.
+gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "cda0fc7fd4e4809dd2a8bae0337ac43b49e9f675" }
+gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", rev = "cda0fc7fd4e4809dd2a8bae0337ac43b49e9f675" }
 
 anyhow = "1"
 log = "0.4"
@@ -32,7 +36,16 @@ rusqlite = "0.32"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-# Локальное смещение времени (подписи часов на шкале) — как в egui-оболочке.
-# Только Windows; иначе UTC. moon-chart намеренно windows-free, поэтому tz здесь.
+# Локальное смещение времени (подписи часов) + НАШ DX11 own-pass рендер чарта (chartdx).
+# Только Windows; иначе UTC. moon-chart намеренно windows-free, поэтому tz/DX11 здесь.
+# Версия 0.61 = как стенд chart_bench (проверено с RawGpuAccess-кастом форка; COM ABI
+# стабилен между версиями windows-rs, поэтому несовпадение с версией форка безопасно).
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.58", features = ["Win32_System_SystemInformation"] }
+windows = { version = "0.61", features = [
+    "Win32_System_SystemInformation",
+    "Win32_Foundation",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D_Fxc",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi_Common",
+] }

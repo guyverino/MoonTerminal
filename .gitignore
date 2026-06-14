@@ -1,4 +1,5 @@
 /target
+/.cargo/
 # Локальные конфиги с ключами — НИКОГДА не коммитим.
 /config.toml
 /config.enc

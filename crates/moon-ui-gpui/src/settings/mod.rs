@@ -20,7 +20,6 @@ use gpui::*;
 use gpui_component::{
     button::{Button, ButtonVariants},
     color_picker::{ColorPicker, ColorPickerState},
-    divider::Divider,
     h_flex,
     select::{SelectEvent, SelectState},
     slider::{Slider, SliderState},
@@ -83,7 +82,8 @@ pub(super) fn slider_row(label: &str, st: &Entity<SliderState>, cx: &App) -> imp
 
 /// Разделитель секций (порт egui `ui.separator()`).
 pub(super) fn separator() -> impl IntoElement {
-    div().my_1().child(Divider::horizontal())
+    // gpui-component 0.5.2 убрала Divider — тонкая горизонтальная линия своим div'ом.
+    div().my_1().h(px(1.0)).bg(rgb(0x2A2D31))
 }
 
 /// Секционный заголовок (порт egui `section()`): жирная подпись с отступом сверху.

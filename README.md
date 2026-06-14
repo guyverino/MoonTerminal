@@ -13,6 +13,17 @@
 
 ## Запуск
 
+**Toolchain (Windows): MSVC, не GNU.** Собираем стандартным таргетом
+`x86_64-pc-windows-msvc` — это официальный дефолт Rust на Windows, и его же ожидают
+`wgpu` / `gpui` / DirectX. GNU-таргет (`*-windows-gnu`) **не используем**: он спотыкается
+на линковке и build-скриптах части Windows-крейтов.
+
+Требования:
+- **Rust** (rustup) с msvc-тулчейном: `rustup default stable-x86_64-pc-windows-msvc`
+  (на Windows rustup ставит его по умолчанию).
+- **Visual Studio Build Tools 2022**, компонент *«Разработка на C++ для настольных систем»*
+  — даёт линкер `link.exe` + Windows SDK. Полная Visual Studio не нужна, хватает Build Tools.
+
 ```powershell
 cargo run
 ```

@@ -1,3 +1,8 @@
+// GUI-приложение: не открывать окно консоли при запуске (без мелькания чёрного окна).
+// В честной debug-сборке (debug_assertions=true) консоль остаётся — видны логи env_logger;
+// в обычной/release сборке консоли нет, логи идут в файл (см. applog::set_file_logging).
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 //! MoonTerminal — GPUI-оболочка (миграция с egui), этап 1: каркас.
 //!
 //! Поднимает реальный backend из `moon-core` (конфиг → SessionManager по ядру на
@@ -10,7 +15,7 @@
 //! Чарт/dock/таблицы/настройки — следующие этапы.
 
 mod axes;
-mod chart;
+mod chartdx;
 mod chart_tabs;
 mod controls;
 mod detached;
@@ -160,6 +165,8 @@ struct Shell {
     /// Время прошлого кадра и сглаженный fps рендера — для статус-бара (как egui host).
     last_frame: Option<Instant>,
     fps: f32,
+    /// ДЕМО (временно): показать попап в зоне чарта — наглядная проверка перекрытия OverScene.
+    show_popup: bool,
 }
 
 impl Shell {
@@ -278,7 +285,7 @@ impl Shell {
         })
         .detach();
 
-        Self { backend, group, dock, last_frame: None, fps: 0.0 }
+        Self { backend, group, dock, last_frame: None, fps: 0.0, show_popup: true }
     }
 }
 
@@ -392,7 +399,7 @@ impl Render for Shell {
         };
 
         // Цвета — ТОЛЬКО из moon_core::palette (единый источник, как egui-хром).
-        let bg = rgb(hex(palette::BG));
+        let _bg = rgb(hex(palette::BG));
         let panel = rgb(hex(palette::SURFACE_1));
         let border = rgb(hex(palette::LIFT_HOVER));
         let muted = rgb(hex(palette::TEXT_2));
@@ -400,7 +407,9 @@ impl Render for Shell {
 
         v_flex()
             .size_full()
-            .bg(bg)
+            .relative() // для absolute-позиционирования демо-попапа поверх дока
+            // НЕТ корневого .bg(): чарт-регион (центр дока) держим прозрачным «окном» под
+            // own-pass (UnderScene). Хром (хедер/тулбар/панели/статус) красит свой фон сам.
             .text_color(rgb(hex(palette::TEXT)))
             .text_sm()
             // ── Header ──────────────────────────────────────────────
@@ -440,6 +449,25 @@ impl Render for Shell {
                                     let backend = self.backend.clone();
                                     move |_, _, cx| settings::open(backend.clone(), cx)
                                 }),
+                            )
+                            // ДЕМО (временно): кнопка открывает попап В ЗОНЕ ЧАРТА.
+                            .child(
+                                div()
+                                    .id("popup-test-btn")
+                                    .px_3()
+                                    .py_1()
+                                    .bg(rgb(0xE08010))
+                                    .text_color(rgb(0x101010))
+                                    .rounded_md()
+                                    .cursor_pointer()
+                                    .child("Попап-тест")
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(|this, _e: &MouseDownEvent, _w, cx| {
+                                            this.show_popup = !this.show_popup;
+                                            cx.notify();
+                                        }),
+                                    ),
                             ),
                     ),
             )
@@ -450,6 +478,50 @@ impl Render for Shell {
             .child(div().flex_1().w_full().child(self.dock.clone()))
             // ── Status bar (полный порт egui `shell::ui` нижней панели) ──
             .child(self.status_bar(conn, snap, tick_count, book_levels, fps, panel, border, muted))
+            // ДЕМО (временно): попап в ЗОНЕ ЧАРТА — наглядно показать перекрытие OverScene.
+            // Если график (own-pass OverScene) перекрыл попап — вот она, суть вопроса.
+            .children(self.show_popup.then(|| {
+                div()
+                        .absolute()
+                        .left(px(400.0))
+                        .top(px(250.0))
+                        .w(px(460.0))
+                        .h(px(200.0))
+                        .bg(rgb(0xF2C14E))
+                        .border_2()
+                        .border_color(rgb(0xFFFFFF))
+                        .rounded_lg()
+                        .p_4()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .child(div().text_color(rgb(0x101010)).font_bold().child("ПОПАП в зоне чарта"))
+                        .child(
+                            div()
+                                .text_color(rgb(0x101010))
+                                .text_xs()
+                                .child("Если меня перекрыл график — это и есть суть OverScene."),
+                        )
+                        .child(
+                            div()
+                                .id("popup-close")
+                                .mt_2()
+                                .px_3()
+                                .py_1()
+                                .bg(rgb(0x202733))
+                                .text_color(rgb(0xFFFFFF))
+                                .rounded_md()
+                                .cursor_pointer()
+                                .child("Закрыть")
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|this, _e: &MouseDownEvent, _w, cx| {
+                                        this.show_popup = false;
+                                        cx.notify();
+                                    }),
+                                ),
+                        )
+            }))
     }
 }
 
@@ -627,7 +699,7 @@ fn main() -> anyhow::Result<()> {
     // Единая точка отсчёта времени для сессий и чарт-вью (как epoch_ms в egui).
     let epoch = moon_chart::paint::now_unix_ms();
 
-    let app = Application::new().with_assets(gpui_component_assets::Assets);
+    let app = gpui_platform::application().with_assets(gpui_component_assets::Assets);
     app.run(move |cx| {
         gpui_component::init(cx);
         apply_brand_theme(cx);
@@ -678,40 +750,13 @@ fn main() -> anyhow::Result<()> {
         let drain_cfg = cfg.clone();
         let drain_layout = layout.clone();
         cx.spawn(async move |cx| {
-            let executor = cx.update(|cx| cx.background_executor().clone())?;
-            // ВРЕМЕННО: диагностика мультиокон — реальный интервал дренажа (если >>100мс,
-            // главный поток забит) + частота рендеров/readback'ов чартов раз в ~1с.
-            let mut dbg_last = Instant::now();
-            let mut dbg_ticks = 0u32;
-            let (mut dbg_r0, mut dbg_b0, mut dbg_bytes0) = (0u64, 0u64, 0u64);
+            // gpui (свежий): AsyncApp::update инфэллибл (возвращает R, не Result) — без `?`.
+            let executor = cx.update(|cx| cx.background_executor().clone());
             loop {
                 executor.timer(Duration::from_millis(100)).await;
-                {
-                    use std::sync::atomic::Ordering::Relaxed;
-                    dbg_ticks += 1;
-                    let now = Instant::now();
-                    let dt = now.duration_since(dbg_last);
-                    if dt >= Duration::from_secs(1) {
-                        let r = chart::DBG_RENDERS.load(Relaxed);
-                        let b = chart::DBG_READBACKS.load(Relaxed);
-                        let by = chart::DBG_READBACK_BYTES.load(Relaxed);
-                        let pmax = chart::DBG_POLL_MAX_US.swap(0, Relaxed);
-                        log::info!(
-                            "DBG dt={:?} ticks={} (ожид ~10) | renders {}/с | readbacks {}/с | {:.1} МБ/с | poll_max {:.1}мс",
-                            dt / dbg_ticks.max(1),
-                            dbg_ticks,
-                            r - dbg_r0,
-                            b - dbg_b0,
-                            (by - dbg_bytes0) as f64 / 1.0e6,
-                            pmax as f64 / 1000.0,
-                        );
-                        dbg_last = now;
-                        dbg_ticks = 0;
-                        (dbg_r0, dbg_b0, dbg_bytes0) = (r, b, by);
-                    }
-                }
-                let ok = cx
-                    .update(|cx| {
+                // gpui (свежий): AsyncApp::update инфэллибл; при закрытии приложения
+                // спавн-задача отменяется самим gpui (future дропается на await ниже).
+                cx.update(|cx| {
                         // Сессия/метрики/реконнект — внутри backend.update; запросы
                         // «показать группу» забираем наружу (нужен &mut App для окон).
                         let show_reqs = drain_backend.update(cx, |b, cx| {
@@ -750,13 +795,8 @@ fn main() -> anyhow::Result<()> {
                         for g in show_reqs {
                             spawn_group_window(cx, &drain_backend, &drain_cfg, g, epoch, &drain_layout, 0.0);
                         }
-                    })
-                    .is_ok();
-                if !ok {
-                    break; // приложение закрылось
-                }
+                    });
             }
-            Ok::<_, anyhow::Error>(())
         })
         .detach();
 

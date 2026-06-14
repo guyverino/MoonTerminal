@@ -4,7 +4,7 @@
 //! и в которой живёт `ChartView`). Конвертацию из лог. px окна делает вызывающий
 //! (Shell): `(pos − slot_origin) × scale_factor`.
 
-use moon_chart::container::Container;
+use crate::chartdx::pane::Container;
 use moon_chart::paint::now_unix_ms;
 use moon_chart::view::{ChartView, Rect};
 use moon_chart::GLASS_ZONE_PX;
@@ -57,7 +57,7 @@ impl ChartInput {
     /// `view` панели под курсором (для пан/зум). None — курсор не над панелью.
     pub fn hovered_view_mut<'c>(&self, container: &'c mut Container) -> Option<&'c mut ChartView> {
         let idx = self.hovered_pane?;
-        container.panes.get_mut(idx).map(|p| &mut p.chart.view)
+        container.panes.get_mut(idx).map(|p| &mut p.view)
     }
 
     /// Двойной ЛКМ по чарту (не стакану) панели под курсором → запомнить монету.

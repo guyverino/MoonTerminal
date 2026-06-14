@@ -1,14 +1,15 @@
-//! Панель чарта (center DockArea): движок offscreen+readback + ввод + оверлей осей.
-//! Перенос всей чарт-логики из Shell. Как Dock-панель — отцепляется в окно (ChartGpu
-//! рендерит offscreen, не привязан к ОС-окну). Монета — из focus и `Backend.open_request`.
-
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+//! Панель чарта (center DockArea): НАШ own-pass DX11 рендер (через generic-хук gpui) +
+//! ввод + GPUI-оверлей осей/курсора. Как Dock-панель — отцепляется в окно. Монета — из
+//! focus и `Backend.open_request`.
+//!
+//! Рендер: `ChartEngine.register_pass` ставит own-pass ПОД сценой (рисует combo/слои в
+//! backbuffer GPUI без readback), `prepare` каждый кадр обновляет вид и заливает новые тики.
+//! Текст осей и перекрестие — GPUI-оверлей ПОВЕРХ (нативный текст, см. §7/§9 арх-дока).
 
 use gpui::*;
 use gpui_component::dock::{Panel, PanelEvent};
 
-use crate::chart::ChartGpu;
+use crate::chartdx::ChartEngine;
 use crate::{axes, input, Backend};
 use moon_chart::container::ContainerKind;
 use moon_chart::paint::now_unix_ms;
@@ -17,22 +18,20 @@ use moon_core::session::CoreId;
 
 pub struct ChartPanel {
     backend: Entity<Backend>,
-    chart: ChartGpu,
-    chart_img: Option<Arc<RenderImage>>,
-    chart_dirty: bool,
+    chart: ChartEngine,
+    /// Размер слота чарта (девайс-px) — меряет canvas-оверлей окна.
     chart_dev: (u32, u32),
+    /// Bounds слота (лог. px окна) — для hit-теста ввода.
     chart_bounds: Option<Bounds<Pixels>>,
     input: input::ChartInput,
     market: Option<String>,
     /// Номер AddToChart-вкладки (None = Main).
     num: Option<u32>,
-    /// Сигнатура рыночных данных прошлого кадра — чтобы НЕ гонять дорогой
-    /// offscreen-readback на холостом ходу (только при реальном приходе данных).
+    /// Сигнатура рыночных данных прошлого кадра — нотифаим только при реальном приходе данных.
     data_sig: u64,
-    /// Время прошлого submit (offscreen-рендер+readback) — для кэпа частоты readback'а:
-    /// активное окно ~10fps, фоновое ~3fps (аналог 60/20fps оригинала). readback дорог
-    /// (десятки МБ/с копий+заливок на главном потоке), поэтому фоновое окно гоним реже.
-    last_submit: Option<Instant>,
+    /// FastChart: true → плавный кадр по vsync (фокусный чарт); false → адаптивно (по приходу
+    /// данных через observe, фон/мультичарт). Main=true, AddToChart=false (правится из тулбара позже).
+    fast: bool,
     focus: FocusHandle,
 }
 
@@ -45,7 +44,7 @@ impl ChartPanel {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let mut chart = ChartGpu::new(epoch, theme);
+        let mut chart = ChartEngine::new(epoch, theme);
         let mut market = None;
         if let Some((core, m)) = focus_open {
             chart.open(core, &m);
@@ -56,19 +55,13 @@ impl ChartPanel {
                 }
             });
         }
-        // open_request (дабл-клик→Main) обрабатывает ChartTabs. Здесь — prune +
-        // пере-рендер ТОЛЬКО при приходе данных (сигнатура), истечении TTL-панели или
-        // незабранном readback (его надо подобрать). Иначе на холостом ходу не нотифаим
-        // — чтобы окна не молотили зря и не отнимали поток друг у друга.
+        // Пере-рендер ТОЛЬКО при приходе данных (сигнатура) или истечении TTL-панели — иначе
+        // окна не молотят зря. Own-pass рисует на каждом нашем кадре, поэтому достаточно notify.
         cx.observe(&backend, |this, backend, cx| {
             let pruned = this.chart.prune_ttl(now_unix_ms());
             let sig = this.chart.data_signature(&backend.read(cx).session);
-            let changed = pruned || sig != this.data_sig;
-            if changed {
+            if pruned || sig != this.data_sig {
                 this.data_sig = sig;
-                this.chart_dirty = true;
-            }
-            if changed || this.chart.is_pending() {
                 cx.notify();
             }
         })
@@ -76,15 +69,13 @@ impl ChartPanel {
         Self {
             backend,
             chart,
-            chart_img: None,
-            chart_dirty: true,
             chart_dev: (1024, 576),
             chart_bounds: None,
             input: input::ChartInput::default(),
             market,
             num: None,
             data_sig: 0,
-            last_submit: None,
+            fast: true,
             focus: cx.focus_handle(),
         }
     }
@@ -98,11 +89,10 @@ impl ChartPanel {
                 b.desired.push((core, market));
             }
         });
-        self.chart_dirty = true;
+        cx.notify();
     }
 
-    /// AddToChart-вкладка №`num` (без focus-монеты; наполняется детектами через add_coin).
-    /// `core` — ядро-владелец при `charts_split_by_core` (вкладка «номер-ядро»), иначе None.
+    /// AddToChart-вкладка №`num` (наполняется детектами через add_coin).
     pub fn new_addto(
         backend: Entity<Backend>,
         num: u32,
@@ -112,17 +102,12 @@ impl ChartPanel {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let chart = ChartGpu::new_kind(epoch, theme, ContainerKind::Chart { num, core });
-        // Дренаж → prune + пере-рендер при данных/TTL/незабранном readback (см. new).
+        let chart = ChartEngine::new_kind(epoch, theme, ContainerKind::Chart { num, core });
         cx.observe(&backend, |this, backend, cx| {
             let pruned = this.chart.prune_ttl(now_unix_ms());
             let sig = this.chart.data_signature(&backend.read(cx).session);
-            let changed = pruned || sig != this.data_sig;
-            if changed {
+            if pruned || sig != this.data_sig {
                 this.data_sig = sig;
-                this.chart_dirty = true;
-            }
-            if changed || this.chart.is_pending() {
                 cx.notify();
             }
         })
@@ -130,28 +115,25 @@ impl ChartPanel {
         Self {
             backend,
             chart,
-            chart_img: None,
-            chart_dirty: true,
             chart_dev: (1024, 576),
             chart_bounds: None,
             input: input::ChartInput::default(),
             market: None,
             num: Some(num),
             data_sig: 0,
-            last_submit: None,
+            fast: false,
             focus: cx.focus_handle(),
         }
     }
 
-    /// Число открытых панелей чарта (для бейджа-счётчика на вкладке, как в egui).
+    /// Число открытых панелей чарта (для бейджа-счётчика на вкладке).
     pub fn pane_count(&self) -> usize {
-        self.chart.container.panes.len()
+        self.chart.pane_count()
     }
 
     /// AddToChart: добавить монету авто-панелью (Tiled-мультичарт) с TTL.
     pub fn add_coin(&mut self, core: CoreId, market: &str, ttl_ms: f64) {
         self.chart.push_auto(core, market, ttl_ms, now_unix_ms());
-        self.chart_dirty = true;
     }
 
     fn chart_local(&self, pos: Point<Pixels>, sf: f32) -> Option<((f32, f32), bool)> {
@@ -164,8 +146,7 @@ impl ChartPanel {
         Some(((lx * sf, ly * sf), within))
     }
 
-    /// Подпись вкладки: «Чарт N» для AddToChart, иначе рынок открытой монеты
-    /// (из контейнера — авторитетно), затем self.market, затем «Main».
+    /// Подпись вкладки: «Чарт N» для AddToChart, иначе рынок открытой монеты, затем «Main».
     pub fn title_text(&self) -> String {
         if let Some(n) = self.num {
             return format!("Чарт {n}");
@@ -194,59 +175,49 @@ impl Panel for ChartPanel {
 }
 impl Render for ChartPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        crate::chart::DBG_RENDERS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let ppp = window.scale_factor();
+        // Own-pass регистрируется один раз (внутри гейт по `registered`).
+        self.chart.register_pass(window);
+        // FastChart: vsync на окно (tear-free, ≤монитора) + плавный кадр фокусного чарта по
+        // vsync; адаптивные (AddToChart) перерисовываются по приходу данных (observe). 60-cap на
+        // мониторах >60Гц — рефайнмент (нужен frame-gate prepare), TODO.
+        window.set_present_sync_interval(1);
+        if self.fast {
+            window.request_animation_frame();
+        }
         self.chart.resize(self.chart_dev.0, self.chart_dev.1);
+        // Origin слота В ОКНЕ (девайс-px): own-pass рисует в backbuffer окна, не в слот-текстуру.
+        let (ox, oy) = self
+            .chart_bounds
+            .map(|b| (f32::from(b.origin.x) * ppp, f32::from(b.origin.y) * ppp))
+            .unwrap_or((0.0, 0.0));
+        self.chart.set_origin(ox, oy);
+        // Курсор для own-pass крестика (OverScene-период): window-px = origin слота + slot-local.
+        let cursor_win = self.input.cursor.map(|(cx, cy)| (ox + cx, oy + cy));
+        self.chart.set_cursor(cursor_win, self.input.hovered_pane);
 
         let (theme, orders_style, scale, follow) = {
             let b = self.backend.read(cx);
             let eff = b.preview.as_ref().unwrap_or(&b.config);
             (eff.theme.clone(), eff.orders.clone(), b.price_scale, b.follow)
         };
-        if self.chart.set_theme(theme) {
-            self.chart_dirty = true;
-        }
-        if self.chart.set_orders(orders_style) {
-            self.chart_dirty = true;
-        }
-        // Масштаб цены и Live/Пауза — из ScalePanel тулбара (живут в Backend).
-        if self.chart.set_scale(scale) {
-            self.chart_dirty = true;
-        }
-        if self.chart.set_follow(follow, now_unix_ms()) {
-            self.chart_dirty = true;
+        self.chart.set_theme(theme);
+        self.chart.set_orders(orders_style);
+        self.chart.set_scale(scale);
+        self.chart.set_follow(follow, now_unix_ms());
+
+        // Подготовка кадра (дёшево): вид + заливка новых тиков в слои. Рисование — own-pass.
+        {
+            let b = self.backend.read(cx);
+            self.chart.prepare(&b.session, ppp);
+            self.input.pane_rects = self
+                .chart
+                .axis_panes(0)
+                .into_iter()
+                .map(|(idx, rect, _)| (idx, rect))
+                .collect();
         }
 
-        // Неблокирующий конвейер кадра: (1) забрать готовый readback, если поспел;
-        // (2) если есть что рисовать и нет незабранного кадра — отправить новый (НЕ
-        // блокирует UI-поток, в отличие от прежнего poll(Wait) — иначе фоновое окно
-        // другой группы фризилось, пока активное окно занимает поток).
-        if let Some((img_arc, layout)) = self.chart.poll_image() {
-            if let Some(old) = self.chart_img.take() {
-                cx.drop_image(old, Some(window));
-            }
-            self.input.pane_rects = layout;
-            self.chart_img = Some(img_arc);
-        }
-        // Кэп частоты readback по активности окна (аналог 60/20fps оригинала): фокусное
-        // окно ~10fps, фоновое ~3fps. readback дорог (десятки МБ/с копий+заливок текстур
-        // на главном потоке) — без кэпа 2 окна забивают поток и фоновое дёргается/встаёт.
-        let min_dt = if window.is_window_active() {
-            Duration::from_millis(90)
-        } else {
-            Duration::from_millis(320)
-        };
-        let due = self.last_submit.map_or(true, |t| Instant::now().duration_since(t) >= min_dt);
-        if (self.chart_dirty || self.chart_img.is_none()) && !self.chart.is_pending() && due {
-            let b = self.backend.read(cx);
-            self.chart.submit(&b.session, ppp);
-            self.chart_dirty = false;
-            self.last_submit = Some(Instant::now());
-        }
-        // Незабранный readback подберёт следующий дренаж (observe нотифаит, пока pending) —
-        // БЕЗ self-notify здесь: иначе активное окно крутится на 60fps и забивает поток,
-        // из-за чего фоновое окно другой группы не получает кадров.
-        let chart_img = self.chart_img.clone();
         let axis_panes = self.chart.axis_panes(axes::local_offset_sec());
         let cross = self.chart.crosshair_style();
         let cursor_dev = self.input.cursor;
@@ -270,7 +241,6 @@ impl Render for ChartPanel {
                 this.input.hovered_pane = this.input.pane_at(pos.0, pos.1);
                 let fb = this.chart_dev.0 as f32;
                 if this.input.wheel(dy, e.modifiers.shift, within, &mut this.chart.container, fb) {
-                    this.chart_dirty = true;
                     cx.notify();
                 }
             }))
@@ -279,8 +249,7 @@ impl Render for ChartPanel {
                 let sf = window.scale_factor();
                 let Some((pos, within)) = this.chart_local(e.position, sf) else { return };
                 this.input.last_ptr = pos;
-                // На AddToChart-вкладках дабл-клик по ЧАРТУ (не стакану) → открыть ту
-                // монету/ядро на Main (fullscreen). Main себе это не делает.
+                // На AddToChart-вкладках дабл-клик по ЧАРТУ → открыть монету на Main (fullscreen).
                 let allow_to_main = this.num.is_some();
                 this.input.mouse_button(input::Btn::Left, true, within, allow_to_main, &mut this.chart.container);
                 if let Some((core, market)) = this.input.pending_to_main.take() {
@@ -305,7 +274,6 @@ impl Render for ChartPanel {
             }))
             .on_mouse_up(MouseButton::Right, cx.listener(|this, _e: &MouseUpEvent, _window, cx| {
                 this.input.mouse_button(input::Btn::Right, false, false, false, &mut this.chart.container);
-                this.chart_dirty = true;
                 cx.notify();
             }))
             .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, window, cx| {
@@ -318,14 +286,9 @@ impl Render for ChartPanel {
                 );
                 this.input.cursor = if within { Some(pos) } else { None };
                 this.input.hovered_pane = if within { this.input.pane_at(pos.0, pos.1) } else { None };
-                let dragging = this.input.pointer_drag(pos.0, pos.1, &mut this.chart.container);
-                // Крестик тикового графика должен ездить плавно → перерисовываемся на
-                // движение мыши. Это ДЁШЕВО: меняется только GPUI-оверлей (canvas с осями/
-                // крестиком), а дорогой offscreen-readback графика НЕ запускается (он
-                // гейтится chart_dirty+last_submit ниже). Драг — ещё и помечает данные.
-                if dragging {
-                    this.chart_dirty = true;
-                }
+                let _dragging = this.input.pointer_drag(pos.0, pos.1, &mut this.chart.container);
+                // Крестик и пан/зум — перерисовываемся на движение мыши (own-pass дёшев: combo
+                // блитит готовый битмап, оверлей крестика — нативный GPUI).
                 cx.notify();
             }))
             .on_hover(cx.listener(|this, hovered: &bool, _window, cx| {
@@ -335,8 +298,7 @@ impl Render for ChartPanel {
                     cx.notify();
                 }
             }))
-            // Картинка появляется, когда первый readback поспел (None — первые кадры).
-            .children(chart_img.map(|i| img(i).absolute().size_full()))
+            // Оверлей: оси/числа/перекрестие — GPUI поверх own-pass графика (прозрачный регион).
             .child({
                 let entity = cx.entity();
                 let measured = self.chart_dev;
@@ -353,13 +315,11 @@ impl Render for ChartPanel {
                             entity.update(cx, |this, cx| {
                                 this.chart_bounds = Some(bounds);
                                 this.chart_dev = dev;
-                                this.chart_dirty = true;
                                 cx.notify();
                             });
                         }
                         // Оси/перекрестие — ПО КАЖДОЙ панели (Tiled-мультичарт): свой
-                        // прямоугольник (девайс-px → лог.px окна) и снимок. Курсор —
-                        // только для панели под мышью.
+                        // прямоугольник (девайс-px → лог.px окна) и снимок. Курсор — под мышью.
                         for (idx, rect, snap) in &axis_panes {
                             let sub = Bounds::new(
                                 point(

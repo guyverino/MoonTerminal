@@ -72,7 +72,9 @@ fn num_field(
     let cur = get(&backend.read(cx).config.theme);
     let st = cx.new(|_| SliderState::new().min(min).max(max).step(step).default_value(cur));
     cx.subscribe(&st, move |this, _emitter, ev: &SliderEvent, cx| {
-        let SliderEvent::Change(v) = ev;
+        let SliderEvent::Change(v) = ev else {
+            return;
+        };
         let f = v.start();
         this.backend.update(cx, |b, cx| {
             if let Some(p) = b.preview.as_mut() {
