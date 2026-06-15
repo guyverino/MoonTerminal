@@ -324,6 +324,35 @@ impl OrderLineStore {
         self.orders.values().filter(move |o| o.market == market)
     }
 
+    /// Ордера рынка ДЛЯ ОТРИСОВКИ: все открытые + новейшие `max_closed` закрытых, в
+    /// порядке кольца (новые-первые), БЕЗ сортировки. Кап на закрытые задаёт сам стор
+    /// кольцом — отдельного сорта/отбора в рендере больше нет.
+    pub fn market_draw_orders(&self, market: &str, max_closed: usize) -> Vec<&RetainedOrder> {
+        let mut out: Vec<&RetainedOrder> = self
+            .orders
+            .values()
+            .filter(|o| o.market == market && o.closed_ms.is_none())
+            .collect();
+        let mut taken = 0usize;
+        let mut seen: HashSet<u64> = HashSet::new();
+        for uid in self.closed_ring.iter().rev() {
+            if taken >= max_closed {
+                break;
+            }
+            // Воскресший→переоткрытый uid может лежать в кольце дважды — дедупим.
+            if !seen.insert(*uid) {
+                continue;
+            }
+            if let Some(o) = self.orders.get(uid) {
+                if o.closed_ms.is_some() && o.market == market {
+                    out.push(o);
+                    taken += 1;
+                }
+            }
+        }
+        out
+    }
+
     /// Диапазон цен (min,max) текущих линий BUY и SELL открытых (не закрытых)
     /// ордеров рынка — для авто-масштаба Y. ТОЛЬКО buy/sell (не стопы/liq/прочее).
     pub fn buy_sell_range(&self, market: &str) -> Option<(f32, f32)> {

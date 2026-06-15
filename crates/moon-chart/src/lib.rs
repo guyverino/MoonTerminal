@@ -73,20 +73,12 @@ pub fn build_order_geometry(
     let to_rel = |t_ms: f64| (t_ms - epoch_ms) as f32;
     let kinds = traced_kinds(style);
 
-    // Отбор видимых: по cap закрытых (новые-первые) и окну времени. Активные всегда
-    // тянутся к правому краю → видимы; закрытые культим по [create, closed].
-    let mut visible: Vec<&RetainedOrder> = store.iter_market(market).collect();
-    // Новые-первые для cap по закрытым.
-    visible.sort_unstable_by(|a, b| b.seq.cmp(&a.seq));
-    let mut closed_drawn = 0u32;
+    // Видимые: открытые + новейшие max_closed_orders закрытых, в порядке кольца стора
+    // (без сорта — кап на закрытые делает сам стор). Дальше культим по окну времени.
+    let visible: Vec<&RetainedOrder> =
+        store.market_draw_orders(market, style.max_closed_orders as usize);
     for ord in visible {
         let closed = ord.closed_ms.is_some();
-        if closed {
-            if closed_drawn >= style.max_closed_orders {
-                continue;
-            }
-            closed_drawn += 1;
-        }
         let order_end = ord.closed_ms.unwrap_or(now_ms);
         // Куллинг по окну времени (rel ms).
         let start_rel = to_rel(ord.create_ms);
