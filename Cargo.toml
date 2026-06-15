@@ -28,22 +28,22 @@ opt-level = 3
 # MoonKernel: единая GPUI база для public-сборки.
 #
 # Пока raw GPU-pass hook не принят upstream Zed, канонический источник GPUI для
-# всего Moon-стека — Moonbot-Tech/ZedFork@f2f07f30692dcc1d3791acc454f4822ac81eaf9c. Терминал, MoonPalette и
+# всего Moon-стека — Moonbot-Tech/ZedFork@ffa53b323ce6294ea13395cabeb1abe59c0baece. Терминал, moon-ui и
 # связанные GPUI-крейты должны смотреть на один fork commit, чтобы Cargo не
 # собирал две несовместимые копии GPUI.
 #
 # Локальные path overrides живут только в ignored .cargo/config.toml.
 [patch."https://github.com/zed-industries/zed"]
-gpui = { git = "https://github.com/Moonbot-Tech/ZedFork", rev = "f2f07f30692dcc1d3791acc454f4822ac81eaf9c" }
-gpui_platform = { git = "https://github.com/Moonbot-Tech/ZedFork", rev = "f2f07f30692dcc1d3791acc454f4822ac81eaf9c" }
-gpui_windows = { git = "https://github.com/Moonbot-Tech/ZedFork", rev = "f2f07f30692dcc1d3791acc454f4822ac81eaf9c" }
-gpui_macos = { git = "https://github.com/Moonbot-Tech/ZedFork", rev = "f2f07f30692dcc1d3791acc454f4822ac81eaf9c" }
-gpui_linux = { git = "https://github.com/Moonbot-Tech/ZedFork", rev = "f2f07f30692dcc1d3791acc454f4822ac81eaf9c" }
-gpui_web = { git = "https://github.com/Moonbot-Tech/ZedFork", rev = "f2f07f30692dcc1d3791acc454f4822ac81eaf9c" }
-gpui_wgpu = { git = "https://github.com/Moonbot-Tech/ZedFork", rev = "f2f07f30692dcc1d3791acc454f4822ac81eaf9c" }
-gpui_macros = { git = "https://github.com/Moonbot-Tech/ZedFork", rev = "f2f07f30692dcc1d3791acc454f4822ac81eaf9c" }
-gpui_shared_string = { git = "https://github.com/Moonbot-Tech/ZedFork", rev = "f2f07f30692dcc1d3791acc454f4822ac81eaf9c" }
-gpui_util = { git = "https://github.com/Moonbot-Tech/ZedFork", rev = "f2f07f30692dcc1d3791acc454f4822ac81eaf9c" }
+gpui = { git = "https://github.com/Moonbot-Tech/ZedFork", rev = "ffa53b323ce6294ea13395cabeb1abe59c0baece" }
+gpui_platform = { git = "https://github.com/Moonbot-Tech/ZedFork", rev = "ffa53b323ce6294ea13395cabeb1abe59c0baece" }
+gpui_windows = { git = "https://github.com/Moonbot-Tech/ZedFork", rev = "ffa53b323ce6294ea13395cabeb1abe59c0baece" }
+gpui_macos = { git = "https://github.com/Moonbot-Tech/ZedFork", rev = "ffa53b323ce6294ea13395cabeb1abe59c0baece" }
+gpui_linux = { git = "https://github.com/Moonbot-Tech/ZedFork", rev = "ffa53b323ce6294ea13395cabeb1abe59c0baece" }
+gpui_web = { git = "https://github.com/Moonbot-Tech/ZedFork", rev = "ffa53b323ce6294ea13395cabeb1abe59c0baece" }
+gpui_wgpu = { git = "https://github.com/Moonbot-Tech/ZedFork", rev = "ffa53b323ce6294ea13395cabeb1abe59c0baece" }
+gpui_macros = { git = "https://github.com/Moonbot-Tech/ZedFork", rev = "ffa53b323ce6294ea13395cabeb1abe59c0baece" }
+gpui_shared_string = { git = "https://github.com/Moonbot-Tech/ZedFork", rev = "ffa53b323ce6294ea13395cabeb1abe59c0baece" }
+gpui_util = { git = "https://github.com/Moonbot-Tech/ZedFork", rev = "ffa53b323ce6294ea13395cabeb1abe59c0baece" }
 
 # Zed's crates.io patches are not inherited transitively when GPUI is consumed as a dependency.
 # Keep the GPUI process stack on the same patched crates the fork itself uses.

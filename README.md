@@ -1,8 +1,14 @@
+<p align="center">
+  <a href="https://moonbot.pro">
+    <img src="assets/moonbot-logo-full.svg" alt="Moonbot" height="43">
+  </a>
+</p>
+
 # MoonTerminal
 
 Кросс-десктопный трейдинговый терминал для ядер **MoonBot**: график тиков + стакан,
 рисуемые **own-pass DX11** прямо в backbuffer **GPUI** (без wgpu-readback), оболочка на
-**GPUI / MoonPalette**, поток данных через **MoonProtoBeta**.
+**GPUI / moon-ui**, поток данных через **MoonProtoBeta**.
 
 Единственный бинарь — `moon-gpui` (`crates/moon-ui-gpui`). Старый egui/winit-бинарь
 `moon-terminal` и wgpu-движок удалены (рисование переведено на own-pass DX11); историю
@@ -22,13 +28,13 @@ crates/
   moon-core      backend: feed/session/market/coordinator/config/db/data/metrics (UI-агностик)
   moon-chart     чарт-математика/геометрия (wgpu-free): view (зум/пан/Y), axes, transform,
                  build_order_geometry, типы инстансов, константы. Данные рисует own-pass.
-  moon-ui-gpui   бинарь `moon-gpui`: GPUI-оболочка (MoonPalette) + own-pass DX11 рендер
+  moon-ui-gpui   бинарь `moon-gpui`: GPUI-оболочка (moon-ui) + own-pass DX11 рендер
                  чарта (src/chartdx/) поверх moon-core.
 ```
 
-Внешние path-зависимости (соседние репозитории, пути — в `.cargo/config.toml`):
+Внешние GitHub-зависимости:
 **GPUI** (форк `Moonbot-Tech/ZedFork` — raw GPU-pass hook ещё не в upstream) и
-**MoonPalette** (`../../../MoonPalette`, форк gpui-component с `MoonBackgroundPolicy::NoFill`).
+**moon-ui** (`Moonbot-Tech/moon-ui`, библиотека компонентов с `MoonBackgroundPolicy::NoFill`).
 
 ## Запуск
 
@@ -39,13 +45,13 @@ GPUI, DirectX/DWrite/DComp и наш `chartdx` GPU-pass. GNU-таргет (`*-wi
 - **Rust** с MSVC standard library для `x86_64-pc-windows-msvc`.
 - **Visual Studio Build Tools 2022**, компонент *«Разработка на C++ для настольных систем»*
   — даёт `link.exe`, `lib.exe`, `ml64.exe` и Windows SDK. Полная Visual Studio не нужна.
-- Доступные на диске форки GPUI и MoonPalette (см. выше).
+- Доступ к GitHub-зависимостям `Moonbot-Tech/ZedFork` и `Moonbot-Tech/moon-ui`.
 
 ```powershell
-cd R:\test\MoonTerminal
+cd MoonTerminal
 
 $vcvars = 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat'
-cmd.exe /d /s /c "`"$vcvars`" && `"C:\files\utils\rust\cargo\bin\cargo.exe`" run -p moon-ui-gpui --bin moon-gpui --target x86_64-pc-windows-msvc"
+cmd.exe /d /s /c "`"$vcvars`" && cargo run -p moon-ui-gpui --bin moon-gpui --target x86_64-pc-windows-msvc"
 ```
 
 Сборка без запуска — заменить `run` на `build`; exe тогда в
@@ -81,7 +87,7 @@ SessionManager ──FeedMsg──▶ CoreStore (аккаунт) + MarketStore (
         ▲                                    │
         └─────── CoreCmd::SetMarket ◀────────┤  (coordinator: выбор провайдера)
                                              ▼
-GPUI App ── окно-группа = own-pass чарт (chartdx DX11, UnderScene) + панели/доки (MoonPalette)
+GPUI App ── окно-группа = own-pass чарт (chartdx DX11, UnderScene) + панели/доки (moon-ui)
 ```
 
 UI **никогда** не зовёт moonproto напрямую — только читает `FeedMsg` из канала и шлёт `CoreCmd`.
@@ -90,9 +96,14 @@ UI **никогда** не зовёт moonproto напрямую — тольк�
 
 ## Статус
 
-Сделано: мультиядро/мультиокно, дедуп маркет-данных, шифр-конфиг, локальная БД отчётов;
-own-pass DX11 рендер чарта (combo/стакан/ордера/сетка) под GPUI через generic-хук, без readback.
+Сделано: мультиядро/мультиокно, дедуп маркет-данных, шифр-конфиг, локальная БД отчётов,
+GPUI-оболочка на `moon-ui`, own-pass DX11 рендер чарта под generic GPUI GPU-pass hook,
+без wgpu-readback.
 
-Не сделано (рендер): версий-гейты, авто-Y по ордерам, зум-к-курсору и аккумуляция колеса,
-серверная трасса ордеров, PriceLines/Volume/Background/ChartObj, удаление избыточного own-pass
-крестика. Полный план и баги — [docs/RENDER_PLAN.md](docs/RENDER_PLAN.md).
+Текущий render/fork статус ведётся в [docs/RENDER_PLAN.md](docs/RENDER_PLAN.md).
+
+---
+
+<p align="center">
+  Moonbot / Advanced terminal for cryptocurrency trading / <a href="https://moonbot.pro">moonbot.pro</a>
+</p>
