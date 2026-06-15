@@ -199,9 +199,9 @@ vertex PriceOut price_line_vertex(uint vid [[vertex_id]], uint iid [[instance_id
     float len = max(length(dir), 1e-4);
     dir /= len;
     float2 nrm = float2(-dir.y, dir.x) * 0.85;
-    constant float along[6] = {0, 1, 1, 0, 1, 0};
-    constant float side[6] = {-1, -1, 1, -1, 1, 1};
-    float2 px = mix(a, b, along[vid]) + nrm * side[vid];
+    float along = (vid == 1 || vid == 2 || vid == 4) ? 1.0 : 0.0;
+    float side = (vid == 2 || vid == 4 || vid == 5) ? 1.0 : -1.0;
+    float2 px = mix(a, b, along) + nrm * side;
     return { to_clip(px, cv.resolution) };
 }
 
@@ -299,10 +299,10 @@ vertex SOut seg_vertex(uint vid [[vertex_id]], uint iid [[instance_id]],
     float len = max(length(dir), 1e-4);
     dir /= len;
     float2 nrm = float2(-dir.y, dir.x) * max(s.m.x, 1.0) * 0.5;
-    constant float along[6] = {0, 1, 1, 0, 1, 0};
-    constant float side[6] = {-1, -1, 1, -1, 1, 1};
-    float2 px = mix(a, b, along[vid]) + nrm * side[vid];
-    return { to_clip(px, cv.resolution), s.color, s.m.y, len * along[vid] };
+    float along = (vid == 1 || vid == 2 || vid == 4) ? 1.0 : 0.0;
+    float side = (vid == 2 || vid == 4 || vid == 5) ? 1.0 : -1.0;
+    float2 px = mix(a, b, along) + nrm * side;
+    return { to_clip(px, cv.resolution), s.color, s.m.y, len * along };
 }
 
 fragment float4 seg_fragment(SOut in [[stage_in]]) {
