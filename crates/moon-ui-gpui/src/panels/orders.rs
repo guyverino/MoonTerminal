@@ -105,6 +105,9 @@ pub struct OrdersPanel {
     /// Секундное ведро для ~1 Гц обновления свежести цен/P&L (они живут от рынка, а
     /// orders_sig на тик цены не реагирует). Перерисовка: эпоха/статус ордера ИЛИ раз в сек.
     last_sec: u64,
+    /// Время последней перерисовки (unix мс) — пол 250мс: ордерные ивенты летят часто,
+    /// глаз всё равно не успеет, поэтому таблицу обновляем НЕ ЧАЩЕ 4 Гц. Исключение-гейт.
+    last_notify_ms: f64,
     dock: Option<WeakEntity<DockArea>>,
     focus: FocusHandle,
 }
@@ -118,12 +121,19 @@ impl OrdersPanel {
     ) -> Self {
         // Перерисовка по дренажу backend — ТОЛЬКО когда реально изменились ордера.
         cx.observe(&backend, |this, backend, cx| {
+            crate::diag::bump(&crate::diag::ORDERS_OBS_FIRE);
+            let now = moon_chart::paint::now_unix_ms();
             let sig = orders_sig(backend.read(cx), &this.group);
             // ~1 Гц тик: цены/P&L в таблице живут от рынка, orders_sig их не ловит.
-            let sec = (moon_chart::paint::now_unix_ms() as u64) / 1000;
-            if sig != this.last_sig || sec != this.last_sec {
+            let sec = (now as u64) / 1000;
+            // Перерисовка: смена эпохи/статуса ордера ИЛИ раз в сек (цены), НО НЕ ЧАЩЕ
+            // 250мс — коалесцируем частые ордерные ивенты (глаз их всё равно не различит).
+            let changed = sig != this.last_sig || sec != this.last_sec;
+            if changed && now - this.last_notify_ms >= 250.0 {
                 this.last_sig = sig;
                 this.last_sec = sec;
+                this.last_notify_ms = now;
+                crate::diag::bump(&crate::diag::ORDERS_OBS_NOTIFY);
                 cx.notify();
             }
         })
@@ -134,6 +144,7 @@ impl OrdersPanel {
             view: OrdersViewState::default(),
             last_sig: 0,
             last_sec: 0,
+            last_notify_ms: 0.0,
             dock: None,
             focus: cx.focus_handle(),
         }
@@ -434,6 +445,7 @@ impl Panel for OrdersPanel {
 
 impl Render for OrdersPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::diag::bump(&crate::diag::ORDERS_RENDER);
         let b = self.backend.read(cx);
         let cores = self.group_cores(b);
         let current = self.current_market(b);
@@ -549,9 +561,10 @@ fn orders_table(entries: Vec<OrderEntry>, cx: &Context<OrdersPanel>) -> impl Int
 }
 
 fn order_columns() -> Vec<MoonDataTableColumn> {
-    // Widths are logical design pixels and act as minimums. Keep numeric
-    // trading columns fixed; mark the descriptive tail column as fill so the
-    // table consumes the whole panel width without deforming numbers.
+    // Widths are logical design pixels: they are minimums when the table is
+    // narrow and proportional weights when the table has extra width. Example:
+    // 100 grows twice as much as 50, so the table stays full-width without
+    // losing the designer's column ratios.
     vec![
         MoonDataTableColumn::new("market", "Market", 100.0),
         MoonDataTableColumn::new("side", "Side", 50.0),
@@ -563,7 +576,7 @@ fn order_columns() -> Vec<MoonDataTableColumn> {
         numeric_column("TP", 80.0),
         numeric_column("SL", 80.0),
         numeric_column("Age", 50.0),
-        MoonDataTableColumn::new("strategy", "Strategy", 130.0).fill(),
+        MoonDataTableColumn::new("strategy", "Strategy", 130.0),
     ]
 }
 

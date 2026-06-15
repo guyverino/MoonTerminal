@@ -20,6 +20,7 @@ mod chartdx;
 mod controls;
 mod design;
 mod detached;
+mod diag;
 mod dock_persist;
 mod icons;
 mod input;
@@ -151,6 +152,9 @@ struct Shell {
     /// Время прошлого кадра и сглаженный fps рендера — для статус-бара (как egui host).
     last_frame: Option<Instant>,
     fps: f32,
+    /// Троттл observe-notify бэкенда: Shell-рендер обновляет лишь статус-бар (tick/book/cpu/
+    /// fps), его дёргать чаще ~4 Гц человеку незачем, а он тащит top-down тяжёлый Orders.
+    last_notify: Option<Instant>,
 }
 
 impl Shell {
@@ -272,9 +276,23 @@ impl Shell {
             dock.update(cx, |area, cx| area.set_center(center, window, cx));
         }
 
-        // Header читает backend каждый кадр → перерисовка по дренажу.
-        cx.observe(&backend, |_this, _backend, cx| cx.notify())
-            .detach();
+        // Header/статус-бар читают backend; но это GPUI-перерисовка top-down → тащит тяжёлый
+        // Orders. Данные статуса (tick/book/cpu/fps) меняются ≤10 Гц, человеку хватает ≤4 Гц.
+        // Троттлим notify до ≥250мс (Пример 5: не будить всю сцену общим молотком на каждый тик).
+        cx.observe(&backend, |this, _backend, cx| {
+            crate::diag::bump(&crate::diag::SHELL_OBS_FIRE);
+            let now = Instant::now();
+            let due = this
+                .last_notify
+                .map(|t| now.duration_since(t).as_millis() >= 250)
+                .unwrap_or(true);
+            if due {
+                this.last_notify = Some(now);
+                crate::diag::bump(&crate::diag::SHELL_OBS_NOTIFY);
+                cx.notify();
+            }
+        })
+        .detach();
 
         // Любое изменение раскладки доков (drag/split/resize/detach) → дамп в backend,
         // сохранение дебаунсит дренаж-таймер (docks.json). Порт персиста раскладки.
@@ -294,12 +312,14 @@ impl Shell {
             dock,
             last_frame: None,
             fps: 0.0,
+            last_notify: None,
         }
     }
 }
 
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::diag::bump(&crate::diag::SHELL_RENDER);
         // Репин: вернуть в док панели, чьи окна открепления закрыли (запрос из Backend).
         // Закрытие окна открепления → DetachedWindow.on_release → repin_request; здесь
         // (своя группа) строим свежую панель, добавляем в свой DockArea, убираем спеку.
@@ -819,22 +839,33 @@ fn main() -> anyhow::Result<()> {
             // координация (reconcile_providers, метрики, сохранения) остаётся на ~100мс
             // (каждый 6-й тик) — её незачем гонять 60 раз/сек.
             let mut tick: u32 = 0;
+            let mut last_report = Instant::now();
+            // Causal-гейт пульса: копим, текли ли данные с фида (drain()->bool) с прошлого
+            // notify. Рынок молчит → ничего не нотифаем (нет холостых top-down перерисовок).
+            let mut dirty_since_notify = false;
             loop {
                 executor.timer(Duration::from_millis(16)).await;
                 tick = tick.wrapping_add(1);
                 let coord = tick % 6 == 0;
+                // UI-пульс ≤4 Гц (256мс) И ТОЛЬКО когда данные реально менялись (causal). backend-
+                // notify будит ВСЕХ обзёрверов, а GPUI-рендер идёт top-down → один notify
+                // перерисовывает ВСЮ сцену (Shell+тяжёлый Orders+все панели), сколько бы гейтов на
+                // отдельных вьюхах ни стояло. Поэтому: редкий пульс у ИСТОЧНИКА (синхронизирует все
+                // пробуждения хрома, ≤4 Гц — юзер: ордера ≥250мс) + гейт по факту прихода данных.
+                // Гладкость чарта — от 60-Гц prepare-задачи + own-pass (vsync), НЕ от этого notify.
+                // (Полная развязка = view-caching панелей в moon-palette — отдельная задача; до неё
+                // 4-Гц пульс это пожарный кап top-down сцепки, см. ЕБАНИНА Пример 5 / RENDER_INVALIDATION §7.)
+                let notify_due = tick % 16 == 0;
                 // gpui (свежий): AsyncApp::update инфэллибл; при закрытии приложения
                 // спавн-задача отменяется самим gpui (future дропается на await ниже).
                 cx.update(|cx| {
                     // Сессия/метрики/реконнект — внутри backend.update; запросы
                     // «показать группу» забираем наружу (нужен &mut App для окон).
                     let show_reqs = drain_backend.update(cx, |b, cx| {
-                        // Данные дренятся ~60 Гц (чарт читает store в prepare по raf, НЕ по
-                        // этому notify). А backend-notify будит ВСЕХ обзёрверов (Shell/Orders/
-                        // детачи) — гнать его 60 Гц = перерисовывать тяжёлый Shell/таблицы на
-                        // каждый рыночный тик (диско окна ордеров). Будим только на coord (~10 Гц):
-                        // гладкость чарта от raf+prepare не страдает, UI-хрому 10 Гц хватает.
-                        b.session.drain();
+                        // Данные дренятся ~60 Гц (чарт читает store в 60-Гц prepare-задаче, НЕ по
+                        // этому notify). drain()->bool = «пришли ли сообщения с фида»; копим до
+                        // следующего notify (causal-гейт пульса, см. коммент у notify_due).
+                        dirty_since_notify |= b.session.drain();
                         let mut reqs = Vec::new();
                         if coord {
                             // reconcile_providers избирает провайдера/биржу + держит
@@ -866,7 +897,9 @@ fn main() -> anyhow::Result<()> {
                             }
                             reqs = std::mem::take(&mut b.show_group_request);
                         }
-                        if coord {
+                        if notify_due && dirty_since_notify {
+                            dirty_since_notify = false;
+                            crate::diag::bump(&crate::diag::BACKEND_NOTIFY);
                             cx.notify();
                         }
                         reqs
@@ -884,6 +917,11 @@ fn main() -> anyhow::Result<()> {
                         );
                     }
                 });
+                if last_report.elapsed().as_millis() >= 1000 {
+                    let ms = last_report.elapsed().as_secs_f64() * 1000.0;
+                    last_report = Instant::now();
+                    crate::diag::report(ms);
+                }
             }
         })
         .detach();

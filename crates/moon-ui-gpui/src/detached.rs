@@ -147,6 +147,7 @@ impl DetachedWindow {
 
 impl Render for DetachedWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::diag::bump(&crate::diag::DETACHED_RENDER);
         let p = MoonPalette::active(cx);
         // Снять геометрию окна → спека (save дебаунсит дренаж-таймер).
         if let WindowBounds::Windowed(b) = window.window_bounds() {

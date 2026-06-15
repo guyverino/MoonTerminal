@@ -68,6 +68,17 @@ pub struct ChartPanel {
     last_prepared_bounds: Option<Bounds<Pixels>>,
     view_dirty: bool,
     last_adaptive_notify_ms: f64,
+    /// Последний scale_factor окна (ставится в render). Нужен 60-Гц prepare-задаче, у
+    /// которой нет window — DPI меняется редко, между сменами берём запомненный.
+    last_ppp: f32,
+    /// Пока держим — окно презентит own-pass КАЖДЫЙ vsync (живой скролл) без перерисовки
+    /// GPUI-дерева (gpui Window::request_continuous_presentation). Берём, когда fast-чарт в
+    /// live-follow и виден; дропаем на паузе/скрытии вкладки/смене окна → present к on-demand.
+    present_guard: Option<Subscription>,
+    /// Окно, для которого взят present_guard. При переезде вкладки/детаче окно меняется —
+    /// сравниваем и перевзимаем guard для нового окна (иначе continuous-present остаётся на
+    /// старом окне, а новое его не получает).
+    present_guard_window: Option<WindowId>,
     focus: FocusHandle,
 }
 
@@ -94,6 +105,7 @@ impl ChartPanel {
         // Пере-рендер ТОЛЬКО при приходе данных (сигнатура) или истечении TTL-панели — иначе
         // окна не молотят зря. Own-pass рисует на каждом нашем кадре, поэтому достаточно notify.
         cx.observe(&backend, |this, backend, cx| {
+            crate::diag::bump(&crate::diag::CHART_OBS_FIRE);
             let now = now_unix_ms();
             let pruned = this.chart.prune_ttl(now);
             let sig = this.chart.data_signature(&backend.read(cx).session);
@@ -102,9 +114,50 @@ impl ChartPanel {
             }
             if pruned || sig != this.data_sig {
                 this.data_sig = sig;
-                if this.fast || pruned || now - this.last_adaptive_notify_ms >= 1000.0 {
+                // Троттл notify. Данные own-pass рисует сам по present (форк), notify нужен лишь
+                // для GPUI-оверлея осей, а он идёт top-down → дёргает Orders. Поэтому ≤4 Гц для
+                // fast (≥250мс) и ≤1 Гц для addto; pruned (удаление панели по TTL) — сразу. Для
+                // fast при live-follow реальный notify даёт 60-Гц prepare-задача (тоже ≥250мс через
+                // общий last_adaptive_notify_ms); этот источник работает на паузе, когда задача спит.
+                let floor = if this.fast { 250.0 } else { 1000.0 };
+                if pruned || now - this.last_adaptive_notify_ms >= floor {
                     this.last_adaptive_notify_ms = now;
+                    crate::diag::bump(&crate::diag::CHART_OBS_NOTIFY);
                     cx.notify();
+                }
+            }
+        })
+        .detach();
+        // 60-Гц prepare БЕЗ перерисовки GPUI-дерева и БЕЗ notify: двигает живой край
+        // (follow_edge(now)) и заливает новые тики в resident-слои. Own-pass презентится по vsync,
+        // пока render держит continuous-present guard (форк: Window::request_continuous_presentation,
+        // берём в render на live-follow), и рисует этот свежий вид — скролл гладкий БЕЗ GPUI-рендера.
+        // Раньше гладкость давал request_animation_frame,
+        // метивший дёрти весь путь до Shell → top-down перерисовка тяжёлого Orders на refresh
+        // монитора (диско). Оси (GPUI-текст-оверлей) освежает общий backend-пульс ~4 Гц (drain),
+        // тот же, что и весь хром, — отдельный notify отсюда был бы вторым несинхронным источником
+        // top-down рендера. Задача активна РОВНО когда держим present_guard (fast-чарт виден +
+        // live-follow); на паузе/скрытии вкладки guard дропается и задача спит (не молотит в фоне).
+        cx.spawn(async move |this, cx| {
+            // gpui (свежий): AsyncApp::update инфэллибл (возвращает R, не Result).
+            let executor = cx.update(|cx| cx.background_executor().clone());
+            loop {
+                executor.timer(std::time::Duration::from_millis(16)).await;
+                let alive = cx.update(|cx| {
+                    this.update(cx, |this, cx| {
+                        // present_guard.is_some() ⟺ fast-чарт виден (pass на окне) и в live-follow:
+                        // ровно когда нужно двигать край. Скрытая вкладка (unregister_pass) и пауза
+                        // дропают guard → задача засыпает, а не молотит в фоне.
+                        if this.present_guard.is_some() {
+                            crate::diag::bump(&crate::diag::CHART_TASK_PREP);
+                            let b = this.backend.read(cx);
+                            this.chart.prepare(&b.session, this.last_ppp);
+                        }
+                    })
+                    .is_ok()
+                });
+                if !alive {
+                    break;
                 }
             }
         })
@@ -125,6 +178,9 @@ impl ChartPanel {
             last_prepared_bounds: None,
             view_dirty: true,
             last_adaptive_notify_ms: 0.0,
+            last_ppp: 1.0,
+            present_guard: None,
+            present_guard_window: None,
             focus: cx.focus_handle(),
         }
     }
@@ -154,14 +210,21 @@ impl ChartPanel {
     ) -> Self {
         let chart = ChartEngine::new_kind(epoch, theme, ContainerKind::Chart { num, core });
         cx.observe(&backend, |this, backend, cx| {
-            let pruned = this.chart.prune_ttl(now_unix_ms());
+            let now = now_unix_ms();
+            let pruned = this.chart.prune_ttl(now);
             let sig = this.chart.data_signature(&backend.read(cx).session);
             if pruned {
                 this.view_dirty = true;
             }
             if pruned || sig != this.data_sig {
                 this.data_sig = sig;
-                cx.notify();
+                // AddToChart — фоновый/мультичарт: notify (а с ним top-down перерисовка Orders)
+                // ≤1 Гц; pruned (удаление панели) — сразу. У addto нет 60-Гц задачи, скролл идёт
+                // по этому observe + present own-pass.
+                if pruned || now - this.last_adaptive_notify_ms >= 1000.0 {
+                    this.last_adaptive_notify_ms = now;
+                    cx.notify();
+                }
             }
         })
         .detach();
@@ -181,6 +244,9 @@ impl ChartPanel {
             last_prepared_bounds: None,
             view_dirty: true,
             last_adaptive_notify_ms: 0.0,
+            last_ppp: 1.0,
+            present_guard: None,
+            present_guard_window: None,
             focus: cx.focus_handle(),
         }
     }
@@ -194,6 +260,11 @@ impl ChartPanel {
     /// зовётся, и без снятия их pas рисует застывший чарт поверх активного).
     pub fn unregister_pass(&mut self) {
         self.chart.unregister_pass();
+        // Вкладка скрыта: render больше не зовётся → guard сам не сбросится. Дропаем здесь,
+        // иначе окно продолжит continuous-present без pass'а (зря будит дисплей). Заодно это
+        // глушит 60-Гц prepare-задачу (она gated по present_guard.is_some()).
+        self.present_guard = None;
+        self.present_guard_window = None;
     }
 
     /// AddToChart: добавить монету авто-панелью (Tiled-мультичарт) с TTL.
@@ -256,7 +327,10 @@ impl Panel for ChartPanel {
 }
 impl Render for ChartPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::diag::bump(&crate::diag::CHART_RENDER);
         let ppp = window.scale_factor();
+        // Запоминаем DPI для 60-Гц prepare-задачи (у неё нет window). DPI меняется редко.
+        self.last_ppp = ppp;
         // Own-pass регистрируется один раз (внутри гейт по subscription).
         self.chart.register_pass(window);
         let monitor_rate_hz = chart_present_rate_hz();
@@ -267,14 +341,11 @@ impl Render for ChartPanel {
             60.0
         };
         self.chart.set_present_rate_hz(effective_present_rate_hz);
-        // raf нужен ТОЛЬКО когда чарт реально анимируется — live-follow (правый край едет за
-        // `now`, оси/скролл двигаются каждый кадр). На паузе/статике кадр не меняется, а каждый
-        // raf нотифает ChartPanel → GPUI метит дирти ВСЕХ предков (chart_tabs→dock→Shell), т.е.
-        // 60 Гц вхолостую гоняет тяжёлый Shell-рендер. Перерисовку на паузе дают notify ввода/
-        // данных, а не raf, поэтому крестик/пан/зум не страдают.
-        if self.fast && self.chart.follow() {
-            window.request_animation_frame();
-        }
+        // ВАЖНО: НЕТ request_animation_frame. raf нотифал ChartPanel каждый vsync → GPUI метил
+        // дёрти ВСЕХ предков (chart_tabs→dock→Shell→root) → top-down перерисовка всей сцены,
+        // включая тяжёлый Orders, на refresh монитора (240 Гц) = диско. Живой скролл теперь даёт
+        // 60-Гц prepare-задача (new()) + own-pass, презентящийся по vsync пока держим continuous-
+        // present guard (берём ниже на live-follow), БЕЗ перерисовки GPUI-дерева. См. §7 доки.
         self.chart.resize(self.chart_dev.0, self.chart_dev.1);
         // Origin слота В ОКНЕ (девайс-px): own-pass рисует в backbuffer окна, не в слот-текстуру.
         let (ox, oy) = self
@@ -300,6 +371,23 @@ impl Render for ChartPanel {
             self.view_dirty = true;
         }
 
+        // Continuous-present держим ТОЛЬКО для fast-чарта в live-follow: own-pass презентится
+        // каждый vsync (живой край едет 60-Гц задачей), GPUI-дерево не трогаем. AddToChart guard
+        // НЕ берёт (у него нет задачи → презентил бы один и тот же кадр зря). При переезде окна
+        // (детач/вкладка) — перевзять для текущего окна. На паузе/смене условий — дропнуть →
+        // present к on-demand (батарея). render зовётся на смену follow (notify ввода/настроек) +
+        // по backend-пульсу, так что переключение ловится вовремя.
+        let win_id = window.window_handle().window_id();
+        if self.fast && self.chart.follow() {
+            if self.present_guard_window != Some(win_id) {
+                self.present_guard = Some(window.request_continuous_presentation());
+                self.present_guard_window = Some(win_id);
+            }
+        } else if self.present_guard.is_some() {
+            self.present_guard = None;
+            self.present_guard_window = None;
+        }
+
         let cadence_due = if self.fast {
             let due = self.fast_frame_skip == 0;
             self.fast_frame_skip = (self.fast_frame_skip + 1) % fast_divisor.max(1);
@@ -316,6 +404,7 @@ impl Render for ChartPanel {
         // resize проходят сразу; own-pass на draw рисует последний подготовленный state.
         let view_changed = self.view_dirty;
         if cadence_due || data_changed || geometry_changed || view_changed {
+            crate::diag::bump(&crate::diag::CHART_PREPARE);
             let b = self.backend.read(cx);
             self.chart.prepare(&b.session, ppp);
             self.last_prepared_data_sig = self.data_sig;
