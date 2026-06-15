@@ -77,9 +77,10 @@ struct PaneRender {
     grid_params: GridParams,
     orderbook_view: ChartViewGpu,
     book_style: BookStyle,
-    /// Сколько тиков уже залито в кольцо combo + значение `dropped` (для append/reset).
-    last_len: usize,
-    last_dropped: u64,
+    /// Абсолютный индекс тиков (`total_pushed`), до которого combo уже залит. Сдвиг
+    /// головы кольца (drop) НЕ инвалидирует его — хвост `[last_total, total)` валиден
+    /// всегда. `u64::MAX` = ещё не заливали / смена монеты → форсит полный reset.
+    last_total: u64,
     last_price_lines_rev: u64,
     /// Последнее виденное поколение device combo: сменилось (device-lost) → перезалить историю.
     last_device_gen: u64,
@@ -104,8 +105,7 @@ impl PaneRender {
             grid_params: GridParams::default(),
             orderbook_view: ChartViewGpu::default(),
             book_style: BookStyle::default(),
-            last_len: 0,
-            last_dropped: u64::MAX,
+            last_total: u64::MAX,
             last_price_lines_rev: u64::MAX,
             last_device_gen: 0,
             last_book_rev: u64::MAX,
@@ -366,6 +366,17 @@ impl ChartEngine {
                 pr.core = Some(pane.core);
                 pr.market = pane.market.clone();
             }
+            // device-lost: combo инкрементит device_gen при пересоздании device (в своём
+            // render). Стакан/userdata тоже зануляют буферы при смене device, но их
+            // перезаливка гейтится book_rev/orders_rev — а они от потери device НЕ меняются
+            // (orders_rev — вообще только на мутацию ордера → линии исчезли бы навсегда).
+            // Форсим перезаливку, инвалидируя гейты; combo восстановит себя ниже по флагу.
+            let device_gen = pr.layers.device_gen();
+            let device_lost = pr.last_device_gen != device_gen;
+            if device_lost {
+                pr.last_book_rev = u64::MAX;
+                pr.last_orders_rev = u64::MAX;
+            }
             // Жёлоба шкал (физ. px): слева цена, снизу время. Подписи рисует GPUI (axes::draw);
             // own-pass рисует ВНУТРИ chart_area. Зона стакана справа добавится с OrderBook-слоем.
             let price_axis_w = moon_chart::PRICE_AXIS_W * ppp;
@@ -515,35 +526,36 @@ impl ChartEngine {
                 pr.layers.set_userdata(&[], &[], &[], &[]);
                 pr.last_orders_rev = u64::MAX;
             }
-            // Trades в combo: полный reset при съезде индексов (drain) ИЛИ device-lost (GPUI
-            // пересоздал device → кольцо combo пустое, append живого края не восстановит историю);
-            // иначе append живого края. device_gen combo инкрементится в его render при смене device.
+            // Trades в combo: combo адресует тики АБСОЛЮТНЫМ индексом (total_pushed), а не
+            // позицией в кольце. Поэтому сдвиг головы (drop старых тиков при переполнении)
+            // НЕ требует полного re-bake — догоняем только новый хвост [last_total, total).
+            // Полный reset лишь когда: device-lost (кольцо combo опустело), регрессия total
+            // (смена монеты / reset рынка), или combo отстал дальше глубины кольца (нужный
+            // хвост уже выпал из источника — бывает только если панель долго не рисовалась).
             if let Some(d) = data {
                 if pr.last_price_lines_rev != d.price_lines_rev {
                     pr.layers
                         .set_price_lines(d.last_line.points(), d.mark_line.points());
                     pr.last_price_lines_rev = d.price_lines_rev;
                 }
-                let cur_len = d.ring.len();
-                let cur_dropped = d.ring.dropped();
-                let cur_gen = pr.layers.device_gen();
-                if pr.last_dropped != cur_dropped || pr.last_device_gen != cur_gen {
+                let total = d.ring.total_pushed();
+                let avail_from = d.ring.dropped();
+                if device_lost || pr.last_total > total || pr.last_total < avail_from {
                     pr.layers.reset_combo(view::collect_all(&d.ring));
                     pr.layers
                         .set_price_lines(d.last_line.points(), d.mark_line.points());
-                    pr.last_len = cur_len;
-                    pr.last_dropped = cur_dropped;
                     pr.last_price_lines_rev = d.price_lines_rev;
-                    pr.last_device_gen = cur_gen;
-                } else if cur_len > pr.last_len {
+                    pr.last_total = total;
+                } else if total > pr.last_total {
                     pr.layers
-                        .append_combo(&view::collect_range(&d.ring, pr.last_len, cur_len));
-                    pr.last_len = cur_len;
+                        .append_combo(&view::collect_since(&d.ring, pr.last_total));
+                    pr.last_total = total;
                 }
             } else if pr.last_price_lines_rev != u64::MAX {
                 pr.layers.set_price_lines(&[], &[]);
                 pr.last_price_lines_rev = u64::MAX;
             }
+            pr.last_device_gen = device_gen;
             pr.active = true;
         }
     }

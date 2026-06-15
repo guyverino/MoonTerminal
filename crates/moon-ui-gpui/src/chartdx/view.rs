@@ -38,17 +38,13 @@ fn cross_of(t: &TickInstance) -> ChartCross {
     }
 }
 
-/// Весь набор тиков (reset кольца combo — reload истории / съезд индексов после drain).
+/// Весь набор тиков (reset кольца combo — reload истории / съезд за глубину кольца).
 pub fn collect_all(ring: &TickRing) -> Vec<ChartCross> {
-    ring.instances().iter().map(cross_of).collect()
+    ring.iter_all().map(cross_of).collect()
 }
 
-/// Новые тики [from, to) для инкрементального append в кольцо combo (живой край).
-pub fn collect_range(ring: &TickRing, from: usize, to: usize) -> Vec<ChartCross> {
-    let s = ring.instances();
-    let to = to.min(s.len());
-    if from >= to {
-        return Vec::new();
-    }
-    s[from..to].iter().map(cross_of).collect()
+/// Новый хвост от АБСОЛЮТНОГО индекса `from` до конца — для инкрементального append в
+/// кольцо combo (живой край). Абсолютный индекс устойчив к сдвигу головы (drop).
+pub fn collect_since(ring: &TickRing, from: u64) -> Vec<ChartCross> {
+    ring.iter_since(from).map(cross_of).collect()
 }
