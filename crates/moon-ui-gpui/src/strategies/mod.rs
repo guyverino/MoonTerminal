@@ -91,6 +91,8 @@ pub struct StrategiesView {
     expanded_folders: HashSet<(CoreId, String)>,
     /// Правила зависимостей полей (param_deps.toml; hot-reload).
     rules: Rules,
+    /// Сигнатура данных стратегий/схем, которые реально меняют окно.
+    last_sig: u64,
     /// Показывать только активные параметры (галка над параметрами).
     only_active_params: bool,
     focus: FocusHandle,
@@ -107,11 +109,17 @@ impl StrategiesView {
         })
         .detach();
 
-        // Новые снимки стратегий/схемы (дренаж backend) → перерисовка; заодно
-        // hot-reload правил зависимостей (param_deps.toml) — правка файла видна на лету.
-        cx.observe(&backend, |this, _b, cx| {
-            this.rules.reload_if_changed();
-            cx.notify();
+        let initial_sig = strategies_sig(backend.read(cx));
+
+        // Новые снимки стратегий/схемы → перерисовка; заодно hot-reload правил
+        // зависимостей (param_deps.toml) — только если файл реально изменился.
+        cx.observe(&backend, |this, backend, cx| {
+            let sig = strategies_sig(backend.read(cx));
+            let rules_changed = this.rules.reload_if_changed();
+            if sig != this.last_sig || rules_changed {
+                this.last_sig = sig;
+                cx.notify();
+            }
         })
         .detach();
 
@@ -133,6 +141,7 @@ impl StrategiesView {
             expanded_cores: HashSet::new(),
             expanded_folders: HashSet::new(),
             rules: Rules::load(),
+            last_sig: initial_sig,
             // По умолчанию неактивные параметры скрыты (галка включена).
             only_active_params: true,
             focus: cx.focus_handle(),
@@ -1410,6 +1419,20 @@ impl StrategiesView {
                 .into_any_element(),
         )
     }
+}
+
+fn strategies_sig(b: &Backend) -> u64 {
+    let store = b.session.store();
+    b.session
+        .sessions()
+        .iter()
+        .filter_map(|s| store.core(s.id))
+        .fold(0u64, |a, c| {
+            a.wrapping_mul(31)
+                .wrapping_add(c.strategies_rev)
+                .wrapping_mul(31)
+                .wrapping_add(c.schema_rev)
+        })
 }
 
 impl EventEmitter<()> for StrategiesView {}

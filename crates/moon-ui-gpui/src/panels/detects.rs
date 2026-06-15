@@ -49,6 +49,8 @@ pub struct DetectsPanel {
     group: String,
     items: VecDeque<DetectItem>,
     last_seq: HashMap<CoreId, u64>,
+    last_sig: u64,
+    last_prune_sec: u64,
     focus: FocusHandle,
 }
 
@@ -57,23 +59,43 @@ const DEFAULT_SERVER_COLOR: [u8; 3] = [0xff, 0xb3, 0x47];
 
 impl DetectsPanel {
     pub fn new(backend: Entity<Backend>, group: String, cx: &mut Context<Self>) -> Self {
+        let initial_sig = detects_sig(backend.read(cx), &group);
         cx.observe(&backend, |this, backend, cx| {
-            this.ingest(backend.read(cx));
-            this.prune(now_unix_ms());
-            cx.notify();
+            let now = now_unix_ms();
+            let sig = detects_sig(backend.read(cx), &this.group);
+            let mut changed = false;
+            if sig != this.last_sig {
+                this.last_sig = sig;
+                changed |= this.ingest(backend.read(cx));
+            }
+            let sec = (now as u64) / 1000;
+            if !this.items.is_empty() && sec != this.last_prune_sec {
+                this.last_prune_sec = sec;
+                changed |= this.prune(now);
+            }
+            if changed {
+                cx.notify();
+            }
         })
         .detach();
-        Self {
+        let initial_backend = backend.clone();
+        let mut this = Self {
             backend,
             group,
             items: VecDeque::new(),
             last_seq: HashMap::new(),
+            last_sig: initial_sig,
+            last_prune_sec: 0,
             focus: cx.focus_handle(),
-        }
+        };
+        this.ingest(initial_backend.read(cx));
+        this.prune(now_unix_ms());
+        this
     }
 
     /// Втянуть свежие детекты ядер группы (seq > курсора, sound_alert, не AddToChart).
-    fn ingest(&mut self, b: &Backend) {
+    fn ingest(&mut self, b: &Backend) -> bool {
+        let mut changed = false;
         // Цвет + quote ядра берём из его сервера в конфиге: quote выводим из рынка по
         // умолчанию (`server.market`), чтобы резать суффикс монеты (`ADAUSDT` → `ADA`),
         // как egui `CoreInfo.quote`.
@@ -122,6 +144,7 @@ impl DetectsPanel {
                     it.born_ms = det.time_ms;
                     it.ttl_ms = ttl;
                     it.color = color;
+                    changed = true;
                 } else {
                     self.items.push_back(DetectItem {
                         core: id,
@@ -132,16 +155,21 @@ impl DetectsPanel {
                         born_ms: det.time_ms,
                         ttl_ms: ttl,
                     });
+                    changed = true;
                 }
             }
         }
         while self.items.len() > MAX_DETECT_BTNS {
             self.items.pop_front();
+            changed = true;
         }
+        changed
     }
 
-    fn prune(&mut self, now_ms: f64) {
+    fn prune(&mut self, now_ms: f64) -> bool {
+        let before = self.items.len();
         self.items.retain(|it| now_ms - it.born_ms < it.ttl_ms);
+        self.items.len() != before
     }
 
     /// Открыть монету на Main: запрос в Backend (Shell откроет чарт) + убрать кнопку.
@@ -150,10 +178,21 @@ impl DetectsPanel {
             .retain(|it| !(it.core == core && it.market == market));
         self.backend.update(cx, |b, bcx| {
             b.open_request = Some((core, market.clone()));
+            b.open_request_rev = b.open_request_rev.wrapping_add(1);
             bcx.notify();
         });
         cx.notify();
     }
+}
+
+fn detects_sig(b: &Backend, group: &str) -> u64 {
+    let store = b.session.store();
+    b.session
+        .sessions()
+        .iter()
+        .filter(|s| s.group == group)
+        .filter_map(|s| store.core(s.id))
+        .fold(0u64, |a, c| a.wrapping_mul(31).wrapping_add(c.detects_rev))
 }
 
 impl EventEmitter<PanelEvent> for DetectsPanel {}

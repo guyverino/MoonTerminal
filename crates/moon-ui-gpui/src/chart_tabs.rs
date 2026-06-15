@@ -42,6 +42,9 @@ pub struct ChartTabs {
     active: Tab,
     /// Per-core курсор учтённых AddToChart-детектов.
     add_seq: HashMap<CoreId, u64>,
+    /// Сигнатура входов, которые реально меняют tab-strip: AddToChart-детекты,
+    /// split-настройка и явный запрос открыть монету на Main.
+    last_sig: u64,
     focus: FocusHandle,
 }
 
@@ -65,8 +68,15 @@ impl ChartTabs {
                 cx,
             )
         });
-        // Дренаж backend → перерисовка (ingest/prune/open_request делаем в render).
-        cx.observe(&backend, |_this, _b, cx| cx.notify()).detach();
+        let initial_sig = chart_tabs_sig(backend.read(cx), &group);
+        cx.observe(&backend, |this, backend, cx| {
+            let sig = chart_tabs_sig(backend.read(cx), &this.group);
+            if sig != this.last_sig {
+                this.last_sig = sig;
+                cx.notify();
+            }
+        })
+        .detach();
         Self {
             backend,
             group,
@@ -77,6 +87,7 @@ impl ChartTabs {
             detached: Vec::new(),
             active: Tab::Main,
             add_seq: HashMap::new(),
+            last_sig: initial_sig,
             focus: cx.focus_handle(),
         }
     }
@@ -279,6 +290,20 @@ impl ChartTabs {
             p.update(cx, |panel, _| panel.unregister_pass());
         }
     }
+}
+
+fn chart_tabs_sig(b: &Backend, group: &str) -> u64 {
+    let mut sig = b.open_request_rev;
+    sig = sig
+        .wrapping_mul(31)
+        .wrapping_add(u64::from(b.config.charts_split_by_core));
+    let store = b.session.store();
+    for s in b.session.sessions().iter().filter(|s| s.group == group) {
+        if let Some(d) = store.core(s.id) {
+            sig = sig.wrapping_mul(31).wrapping_add(d.detects_rev);
+        }
+    }
+    sig
 }
 
 impl EventEmitter<PanelEvent> for ChartTabs {}

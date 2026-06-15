@@ -108,6 +108,9 @@ struct Backend {
     /// Запрос «открыть монету на Main» (клик по детекту в DetectsPanel) — Shell
     /// читает и открывает в своём чарте. Порт egui open_detect→host.
     open_request: Option<(CoreId, String)>,
+    /// Ревизия `open_request`: нужна, чтобы ChartTabs просыпался по конкретному
+    /// запросу открытия, а не по страховочному backend-render.
+    open_request_rev: u64,
     /// Раскладка окон (геометрия по группам) — load на старте, save на изменении
     /// (дебаунс через дренаж-таймер). Порт egui WindowLayout/layout.toml.
     layout: WindowLayout,
@@ -808,6 +811,7 @@ fn main() -> anyhow::Result<()> {
             config: cfg.clone(),
             preview: None,
             open_request: None,
+            open_request_rev: 0,
             layout: layout.clone(),
             layout_dirty: false,
             dock_states,
