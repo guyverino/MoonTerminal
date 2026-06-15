@@ -593,17 +593,25 @@ impl ChartEngine {
         true
     }
 
-    /// Live-follow ко ВСЕМ панелям: true = к «сейчас» (resume_live), false = заморозить.
+    /// Глобальный live-follow из тулбара (Live/Пауза) ко ВСЕМ панелям. Реагирует ТОЛЬКО
+    /// на смену самого глобального флага (явный клик). НЕ на производное состояние от пана
+    /// одной панели: иначе пан одной монеты в Tiled гасил бы live у соседних, которых не
+    /// трогали (их view.follow перетирался). Пан/rejoin отдельной панели живут в её
+    /// view.follow; сюда уже сведённое значение прилетает через sync_follow_from_views, и
+    /// если глобальный флаг не изменился — выходим, панели не трогаем.
     pub fn set_follow(&mut self, follow: bool, now_ms: f64) -> bool {
-        let panes_match = self.container.panes.iter().all(|p| p.view.follow == follow);
-        if self.follow == follow && panes_match {
+        if self.follow == follow {
             return false;
         }
         self.follow = follow;
         for p in &mut self.container.panes {
             if follow {
-                p.view.resume_live(now_ms);
-                p.view.reset_default_window_on_next_prepare();
+                // Возобновляем live только у панелей, которые НЕ следовали (явный Live из
+                // тулбара): уже живые панели не трогаем — их окно/зум не сбрасываем.
+                if !p.view.follow {
+                    p.view.resume_live(now_ms);
+                    p.view.reset_default_window_on_next_prepare();
+                }
             } else {
                 p.view.follow = false;
             }
