@@ -27,7 +27,7 @@ impl SettingsView {
     /// список) + хинт; разделитель; чекбокс «чарт-вкладка на ядро» + хинт; разделитель;
     /// чекбокс «писать лог в файлы» + хинт; срок хранения (число) + хинт.
     pub(super) fn general_tab(&self, cx: &Context<Self>) -> impl IntoElement {
-        let p = MoonPalette::TERMINAL;
+        let p = MoonPalette::active(cx);
         let muted = rgba_from(p.text_muted, 1.0);
         let (split, logf, ret) = {
             let b = self.backend.read(cx);
@@ -55,7 +55,7 @@ impl SettingsView {
                     ),
             )
             .child(hint("Применяется после сохранения."))
-            .child(super::separator())
+            .child(super::separator(p))
             // Отдельная чарт-вкладка на каждое ядро.
             .child(
                 MoonCheckbox::new("split")
@@ -74,7 +74,7 @@ impl SettingsView {
                     })),
             )
             .child(hint("AddToChart: вкл — 1-HL-ядро (своя вкладка на ядро), выкл — все ядра в одной 1-HL."))
-            .child(super::separator())
+            .child(super::separator(p))
             // Логи в файлы + срок хранения.
             .child(
                 MoonCheckbox::new("logf")

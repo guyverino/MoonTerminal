@@ -69,7 +69,7 @@ pub(super) fn hsla_u8(h: Hsla) -> [u8; 3] {
 /// Строка слайдера (порт egui `Slider::new(..).text(label)`): сам слайдер, справа —
 /// подпись и текущее значение. Инлайн, на высоту одного ряда (как на стенде).
 pub(super) fn slider_row(label: &str, st: &Entity<MoonSliderState>, cx: &App) -> impl IntoElement {
-    let p = MoonPalette::TERMINAL;
+    let p = MoonPalette::active(cx);
     let val = st.read(cx).value();
     h_flex()
         .w_full()
@@ -95,25 +95,26 @@ pub(super) fn slider_row(label: &str, st: &Entity<MoonSliderState>, cx: &App) ->
 }
 
 /// Разделитель секций (порт egui `ui.separator()`).
-pub(super) fn separator() -> impl IntoElement {
-    div()
-        .my(px(8.0))
-        .h(px(1.0))
-        .bg(rgba_from(MoonPalette::TERMINAL.border, 1.0))
+pub(super) fn separator(p: MoonPalette) -> impl IntoElement {
+    div().my(px(8.0)).h(px(1.0)).bg(rgba_from(p.border, 1.0))
 }
 
 /// Секционный заголовок (порт egui `section()`): жирная подпись с отступом сверху.
-pub(super) fn section(title: &str) -> impl IntoElement {
+pub(super) fn section(title: &str, p: MoonPalette) -> impl IntoElement {
     div()
         .mt(px(10.0))
         .mb(px(4.0))
         .font_weight(FontWeight::SEMIBOLD)
-        .text_color(rgba_from(MoonPalette::TERMINAL.text, 1.0))
+        .text_color(rgba_from(p.text, 1.0))
         .child(title.to_string())
 }
 
 /// Строка цвета (порт egui `color_row`): свотч-пикер, затем подпись справа.
-pub(super) fn color_row(label: &str, st: &Entity<MoonColorPickerState>) -> impl IntoElement {
+pub(super) fn color_row(
+    label: &str,
+    st: &Entity<MoonColorPickerState>,
+    p: MoonPalette,
+) -> impl IntoElement {
     h_flex()
         .min_h(px(28.0))
         .gap(px(10.0))
@@ -121,7 +122,7 @@ pub(super) fn color_row(label: &str, st: &Entity<MoonColorPickerState>) -> impl 
         .child(MoonColorPicker::new(st))
         .child(
             div()
-                .text_color(rgba_from(MoonPalette::TERMINAL.text_soft, 1.0))
+                .text_color(rgba_from(p.text_soft, 1.0))
                 .child(label.to_string()),
         )
 }
@@ -334,7 +335,7 @@ impl SettingsView {
 
 impl Render for SettingsView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let p = MoonPalette::TERMINAL;
+        let p = MoonPalette::active(cx);
         let chrome_width = f32::from(window.viewport_size().width);
 
         // ── Полоска вкладок ─────────────────────────────────────────────────
@@ -424,7 +425,7 @@ impl Render for SettingsView {
             .text_size(px(11.0))
             .line_height(px(14.0))
             .text_color(rgba_from(p.text, 1.0))
-            .child(settings_header())
+            .child(settings_header(p))
             .child(tabs)
             .child(body)
             .child(footer)
@@ -432,8 +433,7 @@ impl Render for SettingsView {
     }
 }
 
-fn settings_header() -> impl IntoElement {
-    let p = MoonPalette::TERMINAL;
+fn settings_header(p: MoonPalette) -> impl IntoElement {
     h_flex()
         .id("settings-window-header")
         .relative()
@@ -472,11 +472,10 @@ fn settings_header() -> impl IntoElement {
                         .child("Настройки"),
                 ),
         )
-        .child(settings_window_buttons())
+        .child(settings_window_buttons(p))
 }
 
-fn settings_window_buttons() -> impl IntoElement {
-    let p = MoonPalette::TERMINAL;
+fn settings_window_buttons(p: MoonPalette) -> impl IntoElement {
     h_flex()
         .h(px(22.0))
         .gap(px(2.0))

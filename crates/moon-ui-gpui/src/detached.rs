@@ -12,13 +12,12 @@
 use std::rc::Rc;
 
 use gpui::*;
-use moon_palette::{PanelView, Root};
+use moon_palette::{MoonBackgroundPolicy, MoonPalette, PanelView, Root};
 use serde::{Deserialize, Serialize};
 
+use crate::Backend;
 use crate::panels::{LogPanel, OrdersPanel, ReportPanel, StubPanel};
-use crate::{Backend, hex};
 use moon_core::config::paths;
-use moon_core::palette;
 
 /// Одно откреплённое окно: какая панель (`panel_name`), из какой группы, геометрия окна.
 #[derive(Clone, Serialize, Deserialize)]
@@ -148,6 +147,7 @@ impl DetachedWindow {
 
 impl Render for DetachedWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let p = MoonPalette::active(cx);
         // Снять геометрию окна → спека (save дебаунсит дренаж-таймер).
         if let WindowBounds::Windowed(b) = window.window_bounds() {
             let geom = (
@@ -175,8 +175,8 @@ impl Render for DetachedWindow {
         }
         div()
             .size_full()
-            .bg(rgb(hex(palette::BG)))
-            .text_color(rgb(hex(palette::TEXT)))
+            .bg(rgb(p.shell))
+            .text_color(rgb(p.text))
             .child(self.content.clone())
     }
 }
@@ -227,7 +227,7 @@ pub fn spawn(app: &mut App, backend: &Entity<Backend>, spec: &DetachedSpec) {
                 cx,
             )
         });
-        cx.new(|cx| Root::new(dw, window, cx))
+        cx.new(|cx| Root::new(dw, window, cx).background_policy(MoonBackgroundPolicy::Opaque))
     })
     .ok();
 }

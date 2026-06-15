@@ -5,19 +5,19 @@
 //! приложения, `applog`-кольцо) и каждое ядро (его серверный лог, кольцо в `CoreData.log`).
 //! Для одного ядра/локального можно смотреть Live (текущий) ИЛИ файл с диска
 //! (`logs/<дата>_<источник>.log`); агрегат — только Live. Список виртуализирован
-//! (`ListState` с выравниванием к низу — как chat-лог, новые строки видны снизу).
+//! через `MoonVirtualList`; при появлении новых строк прокрутка держится у хвоста.
 
 use gpui::*;
 use moon_palette::{
     DockArea, MoonButton, MoonButtonSize, MoonButtonVariant, MoonCheckbox, MoonCheckboxSize,
-    MoonDropdown, MoonInput, MoonInputEvent, MoonInputState, MoonMenuItem, MoonMenuSize, Panel,
+    MoonDropdown, MoonInput, MoonInputEvent, MoonInputState, MoonMenuItem, MoonMenuSize,
+    MoonPalette, MoonScrollbarVisibility, MoonVirtualList, MoonVirtualListScrollHandle, Panel,
     PanelEvent, PanelState, StyledExt, h_flex, v_flex,
 };
 
+use crate::Backend;
 use crate::detached::DetachedSpec;
-use crate::{Backend, hex};
 use moon_core::applog::{self, LogLine};
-use moon_core::palette;
 use moon_core::session::{CoreId, CoreStore};
 
 /// Сколько последних строк держим в поле зрения.
@@ -59,7 +59,7 @@ pub struct LogPanel {
     loaded_lines: Vec<LogLine>,
     /// Отфильтрованные строки текущего кадра (читает рендер списка по индексу).
     lines: Vec<LogLine>,
-    list: ListState,
+    scroll: MoonVirtualListScrollHandle,
     /// Сигнатура лога прошлого кадра — чтобы НЕ пересобирать лог каждые 100мс
     /// (gather клонирует до 5000 строк; на холостом ходу это лишняя нагрузка).
     last_sig: u64,
@@ -100,7 +100,7 @@ impl LogPanel {
             loaded_name: None,
             loaded_lines: Vec::new(),
             lines: Vec::new(),
-            list: ListState::new(0, ListAlignment::Bottom, px(200.0)),
+            scroll: MoonVirtualListScrollHandle::new(),
             last_sig: 0,
             dock: None,
             focus: cx.focus_handle(),
@@ -296,16 +296,16 @@ fn aggregate(store: &CoreStore, sources: &[LogSourceItem]) -> Vec<LogLine> {
 }
 
 /// Бейдж уровня + цвет (палитра).
-fn level_tag(level: log::Level) -> Option<(&'static str, u32)> {
+fn level_tag(level: log::Level, p: MoonPalette) -> Option<(&'static str, u32)> {
     match level {
-        log::Level::Error => Some(("ERR", hex(palette::RED))),
-        log::Level::Warn => Some(("WARN", hex(palette::ACCENT))),
+        log::Level::Error => Some(("ERR", p.red)),
+        log::Level::Warn => Some(("WARN", p.amber)),
         _ => None,
     }
 }
 
 /// Рендер одной строки лога (время · [уровень] · источник · сообщение).
-fn log_row(line: &LogLine) -> AnyElement {
+fn log_row(line: &LogLine, p: MoonPalette) -> AnyElement {
     let time = line
         .ts
         .rsplit(' ')
@@ -314,13 +314,8 @@ fn log_row(line: &LogLine) -> AnyElement {
         .to_string();
     let flat = line.msg.replace('\n', " ⏎ ");
     let mut row = h_flex().w_full().gap_1().items_baseline().text_xs().px_1();
-    row = row.child(
-        div()
-            .flex_none()
-            .text_color(rgb(hex(palette::TEXT_2)))
-            .child(time),
-    );
-    if let Some((tag, col)) = level_tag(line.level) {
+    row = row.child(div().flex_none().text_color(rgb(p.text_soft)).child(time));
+    if let Some((tag, col)) = level_tag(line.level, p) {
         row = row.child(
             div()
                 .flex_none()
@@ -333,7 +328,7 @@ fn log_row(line: &LogLine) -> AnyElement {
         row = row.child(
             div()
                 .flex_none()
-                .text_color(rgb(hex(palette::TEXT_2)))
+                .text_color(rgb(p.text_soft))
                 .child(line.target.clone()),
         );
     }
@@ -341,7 +336,7 @@ fn log_row(line: &LogLine) -> AnyElement {
         div()
             .flex_1()
             .min_w_0()
-            .text_color(rgb(hex(palette::TEXT_2)))
+            .text_color(rgb(p.text_soft))
             .child(flat),
     )
     .into_any_element()
@@ -405,6 +400,7 @@ impl Panel for LogPanel {
 
 impl Render for LogPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let p = MoonPalette::active(cx);
         let query = self.query.read(cx).value().trim().to_lowercase();
         let errors_only = self.errors_only;
 
@@ -422,10 +418,12 @@ impl Render for LogPanel {
             .filter(|l| query.is_empty() || l.msg.to_lowercase().contains(&query))
             .collect();
 
-        // Обновить виртуализированный список (сброс счётчика при изменении длины).
+        // Держим лог у хвоста, как старый Bottom-aligned список.
+        let previous_len = self.lines.len();
         self.lines = filtered;
-        if self.list.item_count() != self.lines.len() {
-            self.list.reset(self.lines.len());
+        if previous_len != self.lines.len() && !self.lines.is_empty() {
+            self.scroll
+                .scroll_to_item(self.lines.len() - 1, ScrollStrategy::Bottom);
         }
 
         let is_agg = matches!(self.source, LogSource::Aggregate);
@@ -441,12 +439,7 @@ impl Render for LogPanel {
         controls = controls.child(self.source_combo(&sources, cx));
         if !is_agg {
             controls = controls
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(rgb(hex(palette::TEXT_2)))
-                        .child("Файл"),
-                )
+                .child(div().text_xs().text_color(rgb(p.text_soft)).child("Файл"))
                 .child(self.file_combo(&sources, cx));
         }
         controls = controls
@@ -468,12 +461,11 @@ impl Render for LogPanel {
                         cx.notify();
                     })),
             )
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(rgb(hex(palette::TEXT_3)))
-                    .child(format!("{} из {}", self.lines.len(), total)),
-            );
+            .child(div().text_xs().text_color(rgb(p.text_muted)).child(format!(
+                "{} из {}",
+                self.lines.len(),
+                total
+            )));
 
         // ── Список (виртуализирован, к низу) ──
         let weak = cx.entity().downgrade();
@@ -489,16 +481,26 @@ impl Render for LogPanel {
                 .flex()
                 .items_center()
                 .justify_center()
-                .text_color(rgb(hex(palette::TEXT_2)))
+                .text_color(rgb(p.text_soft))
                 .child(msg)
                 .into_any_element()
         } else {
-            let list_el = list(self.list.clone(), move |ix, _w, app| {
-                weak.upgrade()
-                    .and_then(|e| e.read(app).lines.get(ix).map(log_row))
-                    .unwrap_or_else(|| div().into_any_element())
-            })
-            .size_full();
+            let scroll = self.scroll.clone();
+            let list_el = MoonVirtualList::new(
+                "log-virtual-rows",
+                self.lines.len(),
+                18.0,
+                move |ix, _w, app| {
+                    weak.upgrade()
+                        .and_then(|e| e.read(app).lines.get(ix).map(|line| log_row(line, p)))
+                        .unwrap_or_else(|| div().into_any_element())
+                },
+            )
+            .track_scroll(&scroll)
+            .surface(false)
+            .border(false)
+            .radius(0.0)
+            .scrollbar_visibility(MoonScrollbarVisibility::Hover);
             div()
                 .flex_1()
                 .w_full()
@@ -512,7 +514,7 @@ impl Render for LogPanel {
             .size_full()
             .track_focus(&self.focus)
             .child(controls)
-            .child(div().w_full().h(px(1.0)).bg(rgb(hex(palette::LIFT_HOVER))))
+            .child(div().w_full().h(px(1.0)).bg(rgb(p.border)))
             .child(body)
     }
 }

@@ -21,9 +21,8 @@ use moon_palette::{
     MoonTone, MoonWindowChrome, MoonWindowChromeButton, Root, h_flex, rgba_from, v_flex,
 };
 
-use crate::{Backend, hex};
+use crate::Backend;
 use moon_core::feed::{SchemaField, SchemaFieldUi, SchemaSection, StrategyRow};
-use moon_core::palette;
 use moon_core::session::{CoreId, CoreStore};
 
 use filter::StrategyFilter;
@@ -380,7 +379,7 @@ impl StrategiesView {
         built: &mut Vec<Key>,
         cx: &Context<Self>,
     ) -> AnyElement {
-        let p = MoonPalette::TERMINAL;
+        let p = MoonPalette::active(cx);
         let accent = moon(p.blue);
         let border = moon(p.border);
 
@@ -427,7 +426,7 @@ impl StrategiesView {
                     .cursor_pointer()
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(accent)
-                    .hover(|s| s.bg(moon_alpha(MoonPalette::TERMINAL.panel, 0.78)))
+                    .hover(move |s| s.bg(moon_alpha(p.panel, 0.78)))
                     .child(label)
                     .on_click(cx.listener(move |this, _, _, cx| {
                         toggle(&mut this.expanded_cores, cid);
@@ -683,7 +682,7 @@ impl StrategiesView {
             row = row.child(
                 div()
                     .text_xs()
-                    .text_color(rgb(hex(palette::ACCENT)))
+                    .text_color(rgb(MoonPalette::active(cx).amber))
                     .child(format!("изменений: {}", self.staged.len())),
             );
         }
@@ -705,6 +704,7 @@ impl StrategiesView {
         out: &mut Vec<AnyElement>,
         cx: &Context<Self>,
     ) {
+        let p = MoonPalette::active(cx);
         for (name, child) in &node.children {
             prefix.push(name.clone());
             let path_key = prefix.join("/");
@@ -726,8 +726,8 @@ impl StrategiesView {
                     .flex()
                     .items_center()
                     .cursor_pointer()
-                    .text_color(moon(MoonPalette::TERMINAL.text_soft))
-                    .hover(|s| s.bg(moon_alpha(MoonPalette::TERMINAL.panel, 0.70)))
+                    .text_color(moon(p.text_soft))
+                    .hover(move |s| s.bg(moon_alpha(p.panel, 0.70)))
                     .child(flabel)
                     .on_click(cx.listener(move |this, _, _, cx| {
                         toggle(&mut this.expanded_folders, fkey_click.clone());
@@ -768,7 +768,7 @@ impl StrategiesView {
         let val = self.staged.get(&key).copied().unwrap_or(server);
 
         // Подсветка — для всех выбранных (мультивыбор), иначе для первичной.
-        let p = MoonPalette::TERMINAL;
+        let p = MoonPalette::active(cx);
         let highlighted = if self.sel.is_empty() {
             self.selected == Some(key)
         } else {
@@ -819,7 +819,7 @@ impl StrategiesView {
                 .bg(moon_alpha(p.amber, 0.16))
                 .border_color(moon_alpha(p.amber, 0.55));
         } else {
-            name_row = name_row.hover(|s| s.bg(moon_alpha(MoonPalette::TERMINAL.panel, 0.74)));
+            name_row = name_row.hover(move |s| s.bg(moon_alpha(p.panel, 0.74)));
         }
 
         h_flex()
@@ -849,7 +849,7 @@ impl StrategiesView {
     // ── Панель 2: разделы (секции) ────────────────────────────────────────────
 
     fn sections_panel(&self, store: &CoreStore, cx: &Context<Self>) -> AnyElement {
-        let p = MoonPalette::TERMINAL;
+        let p = MoonPalette::active(cx);
         let border = moon(p.border);
         let mut col = v_flex()
             .w(px(220.0))
@@ -923,7 +923,7 @@ impl StrategiesView {
                     .bg(moon_alpha(p.amber, 0.16))
                     .border_color(moon_alpha(p.amber, 0.55));
             } else {
-                row = row.hover(|s| s.bg(moon_alpha(MoonPalette::TERMINAL.panel, 0.74)));
+                row = row.hover(move |s| s.bg(moon_alpha(p.panel, 0.74)));
             }
             list = list.child(row);
         }
@@ -974,7 +974,7 @@ impl StrategiesView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let p = MoonPalette::TERMINAL;
+        let p = MoonPalette::active(cx);
         let mut col = v_flex()
             .flex_1()
             .h_full()
@@ -1124,7 +1124,7 @@ impl StrategiesView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let p = MoonPalette::TERMINAL;
+        let p = MoonPalette::active(cx);
         let name_col = if active { p.text_soft } else { p.text_muted };
         let val_col = if active { p.text } else { p.text_muted };
 
@@ -1267,7 +1267,7 @@ impl StrategiesView {
             .pr_2()
             .rounded(px(3.0))
             .when(dirty, |s| s.bg(moon_alpha(p.amber, 0.06)))
-            .hover(|s| s.bg(moon_alpha(MoonPalette::TERMINAL.panel, 0.46)))
+            .hover(move |s| s.bg(moon_alpha(p.panel, 0.46)))
             .child(
                 div()
                     .w(px(180.0))
@@ -1296,7 +1296,7 @@ impl StrategiesView {
         if !is_formula_field(&field) {
             return None;
         }
-        let p = MoonPalette::TERMINAL;
+        let p = MoonPalette::active(cx);
         let snippets = formula_snippets();
         let mut list = v_flex().w_full().gap_1();
         for (label, detail, insert) in snippets {
@@ -1312,7 +1312,7 @@ impl StrategiesView {
                     .px(px(8.0))
                     .py(px(6.0))
                     .cursor_pointer()
-                    .hover(|s| s.border_color(moon_alpha(MoonPalette::TERMINAL.amber, 0.72)))
+                    .hover(move |s| s.border_color(moon_alpha(p.amber, 0.72)))
                     .child(
                         div()
                             .font_family("Geist Mono")
@@ -1357,7 +1357,7 @@ impl StrategiesView {
     /// Окошко просмотра длинного значения (read-only) — оверлей поверх окна.
     fn popup_overlay(&self, cx: &Context<Self>) -> Option<AnyElement> {
         let (name, val) = self.popup.clone()?;
-        let p = MoonPalette::TERMINAL;
+        let p = MoonPalette::active(cx);
         Some(
             div()
                 .absolute()
@@ -1462,7 +1462,7 @@ impl Render for StrategiesView {
         // Сохранить порядок текущего кадра (store-borrow держит cx, не self).
         self.flat_order = built;
 
-        let p = MoonPalette::TERMINAL;
+        let p = MoonPalette::active(cx);
         let chrome_width = match window.window_bounds() {
             WindowBounds::Windowed(b)
             | WindowBounds::Maximized(b)
@@ -1477,7 +1477,7 @@ impl Render for StrategiesView {
             .text_size(px(11.0))
             .line_height(px(14.0))
             .track_focus(&self.focus)
-            .child(strategies_header())
+            .child(strategies_header(p))
             .child(
                 h_flex()
                     .flex_1()
@@ -1495,8 +1495,7 @@ impl Render for StrategiesView {
     }
 }
 
-fn strategies_header() -> impl IntoElement {
-    let p = MoonPalette::TERMINAL;
+fn strategies_header(p: MoonPalette) -> impl IntoElement {
     h_flex()
         .id("strategies-window-header")
         .relative()
@@ -1534,11 +1533,10 @@ fn strategies_header() -> impl IntoElement {
                         .child("Стратегии"),
                 ),
         )
-        .child(strategies_window_buttons())
+        .child(strategies_window_buttons(p))
 }
 
-fn strategies_window_buttons() -> impl IntoElement {
-    let p = MoonPalette::TERMINAL;
+fn strategies_window_buttons(p: MoonPalette) -> impl IntoElement {
     h_flex()
         .h(px(22.0))
         .gap(px(2.0))

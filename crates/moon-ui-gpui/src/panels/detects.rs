@@ -6,11 +6,10 @@
 use std::collections::{HashMap, VecDeque};
 
 use gpui::*;
-use moon_palette::{Panel, PanelEvent, PanelState, h_flex, v_flex};
+use moon_palette::{MoonPalette, Panel, PanelEvent, PanelState, h_flex, v_flex};
 
 use crate::{Backend, hex};
 use moon_chart::paint::now_unix_ms;
-use moon_core::palette;
 use moon_core::session::CoreId;
 
 /// Кнопка ленты детектов (порт `src/dock/detects.rs::RibbonItem`).
@@ -32,6 +31,14 @@ fn lerp_u8(a: [u8; 3], b: [u8; 3], t: f32) -> [u8; 3] {
     [f(a[0], b[0]), f(a[1], b[1]), f(a[2], b[2])]
 }
 
+fn u32_rgb(c: u32) -> [u8; 3] {
+    [
+        ((c >> 16) & 0xff) as u8,
+        ((c >> 8) & 0xff) as u8,
+        (c & 0xff) as u8,
+    ]
+}
+
 /// Яркость цвета (для инверсии цвета таймера на светлом глоу), порт egui-логики.
 fn luminance(c: [u8; 3]) -> f32 {
     0.299 * c[0] as f32 + 0.587 * c[1] as f32 + 0.114 * c[2] as f32
@@ -46,6 +53,7 @@ pub struct DetectsPanel {
 }
 
 const MAX_DETECT_BTNS: usize = 48;
+const DEFAULT_SERVER_COLOR: [u8; 3] = [0xff, 0xb3, 0x47];
 
 impl DetectsPanel {
     pub fn new(backend: Entity<Backend>, group: String, cx: &mut Context<Self>) -> Self {
@@ -81,7 +89,7 @@ impl DetectsPanel {
                     .iter()
                     .find(|sv| sv.id == s.id)
                     .map(|sv| (sv.color, moon_core::symbol::resolve_quote(&sv.market)))
-                    .unwrap_or((palette::ACCENT, String::new()));
+                    .unwrap_or((DEFAULT_SERVER_COLOR, String::new()));
                 (s.id, s.name.clone(), color, quote)
             })
             .collect();
@@ -167,6 +175,7 @@ impl Panel for DetectsPanel {
 }
 impl Render for DetectsPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let p = MoonPalette::active(cx);
         let now = now_unix_ms();
         let mut col = v_flex()
             .id("detects")
@@ -180,8 +189,10 @@ impl Render for DetectsPanel {
             // Меш-градиент кнопки (порт egui `detect_button`): верх = LIFT, низ = смесь
             // LIFT + цвет ядра. В покое доля 0.55, на ховере 0.80 (ярче). Цвет таймера
             // инвертируем по яркости низа (тёмный на светлом глоу), чтобы не сливался.
-            let bottom = lerp_u8(palette::LIFT, it.color, 0.55);
-            let bottom_hover = lerp_u8(palette::LIFT_HOVER, it.color, 0.80);
+            let top = u32_rgb(p.panel);
+            let top_hover = u32_rgb(p.panel_high);
+            let bottom = lerp_u8(top, it.color, 0.55);
+            let bottom_hover = lerp_u8(top_hover, it.color, 0.80);
             let grad = |top: [u8; 3], bot: [u8; 3]| {
                 linear_gradient(
                     180.0,
@@ -192,7 +203,7 @@ impl Render for DetectsPanel {
             let secs_color = if luminance(bottom) > 140.0 {
                 rgb(0x141416)
             } else {
-                rgb(hex(palette::TEXT))
+                rgb(p.text)
             };
             let (core, market) = (it.core, it.market.clone());
             col = col.child(
@@ -205,22 +216,18 @@ impl Render for DetectsPanel {
                     .cursor_pointer()
                     .rounded(px(4.0))
                     .border_1()
-                    .border_color(rgb(hex(palette::LIFT_HOVER)))
-                    .bg(grad(palette::LIFT, bottom))
+                    .border_color(rgb(p.border))
+                    .bg(grad(top, bottom))
                     .hover(|s| {
-                        s.border_color(rgb(hex(palette::ACCENT)))
-                            .bg(grad(palette::LIFT_HOVER, bottom_hover))
+                        s.border_color(rgb(p.amber))
+                            .bg(grad(top_hover, bottom_hover))
                     })
                     // Токен крупно сверху-слева; нижняя строка — таймер слева, ядро справа.
                     .child(
                         v_flex()
                             .size_full()
                             .justify_between()
-                            .child(
-                                div()
-                                    .text_color(rgb(hex(palette::TEXT)))
-                                    .child(it.base.clone()),
-                            )
+                            .child(div().text_color(rgb(p.text)).child(it.base.clone()))
                             .child(
                                 h_flex()
                                     .w_full()

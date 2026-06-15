@@ -26,6 +26,7 @@ mod input;
 mod panels;
 mod settings;
 mod strategies;
+mod terminal_chrome;
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -41,8 +42,9 @@ use panels::{DetectsPanel, LogPanel, OrderPanel, OrdersPanel, ReportPanel, StubP
 use moon_palette::MoonRect;
 use moon_palette::{
     DockArea, DockAreaState, DockEvent, DockItem, DockPlacement, MoonBackgroundPolicy, MoonPalette,
-    MoonStatusBar, MoonStatusIndicator, MoonStatusItem, MoonTooltipView, MoonWindowChrome,
-    MoonWindowChromeButton, PanelView, Root, h_flex, init as init_moon_palette, v_flex,
+    MoonStatusBar, MoonStatusIndicator, MoonStatusItem, MoonTheme, MoonThemeConfig,
+    MoonTooltipView, MoonWindowChrome, MoonWindowChromeButton, PanelView, Root,
+    init as init_moon_palette, v_flex,
 };
 
 use moon_core::config::{AppConfig, GroupLayout, WindowLayout};
@@ -50,8 +52,8 @@ use moon_core::feed::ConnStatus;
 use moon_core::metrics::{Metrics, MetricsSnapshot};
 use moon_core::session::{ConnSummary, CoreId, SessionManager};
 
-/// Палитра проекта [u8;3] → 0xRRGGBB для gpui `rgb()`. Единый источник цветов —
-/// `moon_core::palette` (тот же, что у egui-хрома); никаких литералов в UI.
+/// Runtime/chart config stores colors as `[u8; 3]`; GPUI APIs use `0xRRGGBB`.
+/// UI chrome itself is themed through MoonPalette, not through chart/runtime config.
 fn hex(c: [u8; 3]) -> u32 {
     (c[0] as u32) << 16 | (c[1] as u32) << 8 | c[2] as u32
 }
@@ -413,6 +415,7 @@ impl Render for Shell {
             )
         };
         let chrome_width = f32::from(window.viewport_size().width);
+        let p = MoonPalette::active(cx);
 
         v_flex()
             .size_full()
@@ -420,53 +423,15 @@ impl Render for Shell {
             // НЕТ корневого .bg(): чарт-регион (центр дока) держим прозрачным «окном» под
             // own-pass (UnderScene). Хром (хедер/тулбар/панели/статус) красит свой фон сам.
             .font_family(design::mono())
-            .text_color(design::solid(design::TEXT))
+            .text_color(rgb(p.text))
             .text_size(px(11.0))
             // ── Header ──────────────────────────────────────────────
-            .child(
-                h_flex()
-                    .w_full()
-                    .h(px(design::HEADER_TOP_H))
-                    .px(px(12.0))
-                    .gap(px(12.0))
-                    .justify_between()
-                    .bg(design::solid(design::HEADER))
-                    .child(
-                        h_flex()
-                            .gap(px(12.0))
-                            .items_center()
-                            .min_w_0()
-                            .overflow_hidden()
-                            .child(design::logo())
-                            .child(design::vline(16.0))
-                            .child(design::top_pill(
-                                "strat-pill",
-                                format!("{} · {}", self.group, market_label),
-                            ))
-                            .child(metric("Session", "+$24.30", design::GREEN))
-                            .child(metric("Real", "+$104.20", design::GREEN))
-                            .child(metric("Unreal", "−$8.10", design::ORANGE))
-                            .child(risk_meter()),
-                    )
-                    .child(
-                        h_flex()
-                            .flex_none()
-                            .gap(px(12.0))
-                            .items_center()
-                            .child(exchange_pill())
-                            .child(balance_label())
-                            .child(design::vline(16.0))
-                            .child(header_action("strategies", "Стратегии", {
-                                let backend = self.backend.clone();
-                                move |_, _, cx| strategies::open(backend.clone(), cx)
-                            }))
-                            .child(header_action("gear", "⚙", {
-                                let backend = self.backend.clone();
-                                move |_, _, cx| settings::open(backend.clone(), cx)
-                            }))
-                            .child(window_controls()),
-                    ),
-            )
+            .child(terminal_chrome::header(
+                &self.group,
+                market_label,
+                self.backend.clone(),
+                p,
+            ))
             // ── Тулбар: тонкая фикс. полоса (Размеры/Продажа/Масштаб+Live), порт верхней
             //    полосы стенда. Не dock-панель — единый ряд на высоту кнопки. ──
             .child(controls::toolbar(&self.backend, cx))
@@ -489,7 +454,7 @@ impl Render for Shell {
                     ),
             )
             // ── Status bar (полный порт egui `shell::ui` нижней панели) ──
-            .child(self.status_bar(conn, snap, tick_count, book_levels, fps))
+            .child(self.status_bar(conn, snap, tick_count, book_levels, fps, cx))
             .child(window_chrome(chrome_width))
     }
 }
@@ -516,148 +481,6 @@ fn window_chrome(width: f32) -> impl IntoElement {
     .render()
 }
 
-fn metric(label: &'static str, value: &'static str, color: u32) -> impl IntoElement {
-    h_flex()
-        .h(px(22.0))
-        .gap(px(5.0))
-        .font_family(design::mono())
-        .text_size(px(11.0))
-        .child(
-            div()
-                .text_size(px(9.0))
-                .font_family(design::ui_font())
-                .text_color(design::solid(design::TEXT_MUTED))
-                .child(label),
-        )
-        .child(
-            div()
-                .text_color(design::solid(color))
-                .font_weight(FontWeight::SEMIBOLD)
-                .child(value),
-        )
-}
-
-fn risk_meter() -> impl IntoElement {
-    h_flex()
-        .h(px(22.0))
-        .gap(px(8.0))
-        .font_family(design::mono())
-        .text_size(px(11.0))
-        .child(
-            div()
-                .text_size(px(9.0))
-                .font_family(design::ui_font())
-                .text_color(design::solid(design::TEXT_MUTED))
-                .child("Risk"),
-        )
-        .child(
-            div()
-                .w(px(64.0))
-                .h(px(4.0))
-                .rounded(px(2.0))
-                .bg(design::solid(design::PANEL))
-                .child(
-                    div()
-                        .w(px(12.0))
-                        .h(px(4.0))
-                        .bg(design::solid(design::GREEN)),
-                ),
-        )
-        .child(div().text_color(design::solid(design::GREEN)).child("18%"))
-}
-
-fn exchange_pill() -> impl IntoElement {
-    h_flex()
-        .h(px(24.0))
-        .gap(px(7.0))
-        .px(px(10.0))
-        .rounded(px(999.0))
-        .border_1()
-        .border_color(design::solid(design::BORDER))
-        .bg(design::solid(design::PANEL))
-        .font_family(design::mono())
-        .text_size(px(11.0))
-        .text_color(design::solid(design::TEXT_SOFT))
-        .child(design::status_dot(design::GREEN))
-        .child("Binance Futures")
-        .child(
-            div()
-                .text_color(design::solid(design::TEXT_MUTED))
-                .child("▾"),
-        )
-}
-
-fn balance_label() -> impl IntoElement {
-    h_flex()
-        .gap(px(0.0))
-        .font_family(design::mono())
-        .text_size(px(11.5))
-        .text_color(design::solid(design::TEXT_SOFT))
-        .child("Balance: ")
-        .child(
-            div()
-                .text_color(design::solid(design::TEXT))
-                .font_weight(FontWeight::SEMIBOLD)
-                .child("50.00"),
-        )
-        .child(
-            div()
-                .text_color(design::solid(design::TEXT_MUTED))
-                .child(" /50 USDT"),
-        )
-}
-
-fn window_controls() -> impl IntoElement {
-    h_flex()
-        .h(px(22.0))
-        .gap(px(2.0))
-        .font_family(design::mono())
-        .text_size(px(11.0))
-        .child(win_btn("—", design::TEXT_SOFT))
-        .child(win_btn("□", design::TEXT_SOFT))
-        .child(win_btn("×", design::ORANGE))
-}
-
-fn win_btn(label: &'static str, color: u32) -> impl IntoElement {
-    div()
-        .w(px(26.0))
-        .h(px(22.0))
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded(px(4.0))
-        .text_color(design::solid(color))
-        .hover(|s| s.bg(design::alpha(0xFFFFFF, 0x08)))
-        .child(label)
-}
-
-fn header_action(
-    id: impl Into<SharedString>,
-    label: impl Into<SharedString>,
-    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-) -> impl IntoElement {
-    div()
-        .id(id.into())
-        .h(px(24.0))
-        .flex()
-        .items_center()
-        .px(px(10.0))
-        .rounded(px(4.0))
-        .border_1()
-        .border_color(design::solid(design::BORDER))
-        .bg(design::solid(design::LIFT))
-        .font_family(design::mono())
-        .text_size(px(11.0))
-        .text_color(design::solid(design::TEXT_SOFT))
-        .cursor_pointer()
-        .hover(|s| {
-            s.bg(design::solid(design::LIFT_HOVER))
-                .text_color(design::solid(design::TEXT))
-        })
-        .child(label.into())
-        .on_click(on_click)
-}
-
 impl Shell {
     /// Нижняя строка состояния (порт egui `shell::mod`): слева — бейдж соединения
     /// «● N/M подключено» (зелёный=все на связи, красный=есть упавшие, иначе янтарный)
@@ -670,13 +493,14 @@ impl Shell {
         tick_count: usize,
         book_levels: usize,
         fps: f32,
+        cx: &App,
     ) -> impl IntoElement {
         let all_ok = conn.total > 0 && conn.ready == conn.total;
         let any_failed = conn
             .down
             .iter()
             .any(|(_, s)| matches!(s, ConnStatus::Failed(_) | ConnStatus::Disconnected));
-        let p = MoonPalette::TERMINAL;
+        let p = MoonPalette::active(cx);
         let badge_col = if all_ok {
             p.green
         } else if any_failed {
@@ -936,6 +760,7 @@ fn main() -> anyhow::Result<()> {
     let app = gpui_platform::application();
     app.run(move |cx| {
         init_moon_palette(cx);
+        MoonTheme::install_config(MoonThemeConfig::moon_terminal(), cx);
         cx.text_system()
             .add_fonts(embedded_fonts())
             .expect("failed to add embedded MoonBot fonts");

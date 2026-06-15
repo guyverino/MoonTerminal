@@ -6,11 +6,11 @@
 use gpui::*;
 
 use moon_palette::{
-    h_flex, v_flex, MoonAccent, MoonButton, MoonButtonSegment, MoonButtonSize, MoonButtonVariant,
-    MoonPalette, MoonPopover, MoonPopoverPlacement, MoonSegmentItem, MoonSegmentedControl,
+    MoonAccent, MoonButton, MoonButtonSegment, MoonButtonSize, MoonButtonVariant, MoonPalette,
+    MoonPopover, MoonPopoverPlacement, MoonSegmentItem, MoonSegmentedControl, h_flex, v_flex,
 };
 
-use crate::{design, Backend};
+use crate::{Backend, design};
 
 /// Высота полосы тулбара: 2-я строка header из HTML-эталона.
 pub const TOOLBAR_H: f32 = design::TOOLBAR_H;
@@ -35,8 +35,8 @@ fn toolbar_metric(
     value: &'static str,
     color: u32,
     width: f32,
+    p: MoonPalette,
 ) -> impl IntoElement {
-    let p = MoonPalette::TERMINAL;
     MoonButton::new(id)
         .width(width)
         .variant(MoonButtonVariant::Neutral)
@@ -51,17 +51,17 @@ fn toolbar_metric(
 }
 
 /// Мелкая тусклая подпись группы (`size`/`sell`/`МАСШТАБ`) — стендовый `.strip-label`.
-fn strip_label(text: &'static str) -> impl IntoElement {
+fn strip_label(text: &'static str, p: MoonPalette) -> impl IntoElement {
     div()
         .text_size(px(9.5))
         .font_family(design::ui_font())
-        .text_color(design::solid(design::TEXT_MUTED))
+        .text_color(rgb(p.text_muted))
         .child(text)
 }
 
 /// Вертикальный разделитель групп (стендовый `.divider`): тонкая линия высотой 16px.
-fn divider() -> impl IntoElement {
-    design::vline(16.0)
+fn divider(p: MoonPalette) -> impl IntoElement {
+    design::vline(16.0, p)
 }
 
 fn size_strip() -> impl IntoElement {
@@ -119,8 +119,7 @@ fn scale_label(scale: Option<f32>) -> &'static str {
         .unwrap_or("Авто")
 }
 
-fn scale_popover(scale: Option<f32>, backend: Entity<Backend>) -> impl IntoElement {
-    let p = MoonPalette::TERMINAL;
+fn scale_popover(scale: Option<f32>, backend: Entity<Backend>, p: MoonPalette) -> impl IntoElement {
     let selected_label = scale_label(scale);
     let trigger = MoonButton::new("toolbar-scale-trigger")
         .width(112.0)
@@ -164,7 +163,7 @@ pub fn toolbar(backend: &Entity<Backend>, cx: &App) -> impl IntoElement {
         let b = backend.read(cx);
         (b.price_scale, b.follow)
     };
-    let p = MoonPalette::TERMINAL;
+    let p = MoonPalette::active(cx);
 
     let mut row = h_flex()
         .id("toolbar")
@@ -173,22 +172,22 @@ pub fn toolbar(backend: &Entity<Backend>, cx: &App) -> impl IntoElement {
         .items_center()
         .gap(px(6.0))
         .px(px(12.0))
-        .bg(design::solid(design::HEADER))
+        .bg(rgb(p.shell_high))
         .border_b_1()
-        .border_color(design::solid(design::BORDER));
+        .border_color(rgb(p.border));
 
     row = row
-        .child(toolbar_metric("toolbar-tp", "TP", "+3.0%", p.blue, 74.6))
-        .child(toolbar_metric("toolbar-sl", "SL", "-2.0%", p.red, 74.6))
-        .child(toolbar_metric("toolbar-lev", "Lev", "×1", p.text, 61.6))
-        .child(divider())
-        .child(strip_label("size"))
+        .child(toolbar_metric("toolbar-tp", "TP", "+3.0%", p.blue, 74.6, p))
+        .child(toolbar_metric("toolbar-sl", "SL", "-2.0%", p.red, 74.6, p))
+        .child(toolbar_metric("toolbar-lev", "Lev", "×1", p.text, 61.6, p))
+        .child(divider(p))
+        .child(strip_label("size", p))
         .child(size_strip())
-        .child(divider())
-        .child(strip_label("sell"))
+        .child(divider(p))
+        .child(strip_label("sell", p))
         .child(sell_strip())
-        .child(divider())
-        .child(scale_popover(scale, backend.clone()));
+        .child(divider(p))
+        .child(scale_popover(scale, backend.clone(), p));
 
     let backend = backend.clone();
     row.child(

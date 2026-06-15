@@ -4,13 +4,13 @@
 
 use gpui::*;
 use moon_palette::{
-    MoonColorPickerEvent, MoonColorPickerState, MoonSliderEvent, MoonSliderState, v_flex,
+    MoonColorPickerEvent, MoonColorPickerState, MoonPalette, MoonSliderEvent, MoonSliderState,
+    v_flex,
 };
 
 use super::{SettingsView, color_row, hsla_u8, section, separator, slider_row};
 use crate::{Backend, hex};
 use moon_core::config::ChartTheme;
-use moon_core::palette;
 
 /// Состояние редактора темы: по entity на каждое поле.
 pub(super) struct Iface {
@@ -158,40 +158,45 @@ impl SettingsView {
     /// ряды (свотч+подпись) и слайдеры; разделители между секциями; хинт внизу.
     pub(super) fn interface_tab(&self, cx: &Context<Self>) -> impl IntoElement {
         let i = &self.iface;
+        let p = MoonPalette::active(cx);
         v_flex()
             .w_full()
             .gap_1()
             // График: фон и сетка
-            .child(section("График: фон и сетка"))
-            .child(color_row("Цвет фона графика", &i.bg))
-            .child(color_row("Цвет сетки", &i.grid))
+            .child(section("График: фон и сетка", p))
+            .child(color_row("Цвет фона графика", &i.bg, p))
+            .child(color_row("Цвет сетки", &i.grid, p))
             .child(slider_row("Видимость сетки", &i.grid_alpha, cx))
-            .child(separator())
+            .child(separator(p))
             // График: перекрестие
-            .child(section("График: перекрестие"))
-            .child(color_row("Цвет перекрестия", &i.cross))
+            .child(section("График: перекрестие", p))
+            .child(color_row("Цвет перекрестия", &i.cross, p))
             .child(slider_row("Прозрачность линий", &i.cross_alpha, cx))
             .child(slider_row("Толщина линий", &i.cross_thickness, cx))
             .child(slider_row("Радиус ореола", &i.halo_radius, cx))
             .child(slider_row("Яркость ореола", &i.halo_intensity, cx))
-            .child(separator())
+            .child(separator(p))
             // Стакан
-            .child(section("Стакан"))
-            .child(color_row("Фон стакана", &i.book_bg))
-            .child(color_row("Цвет покупок (bid)", &i.book_bid))
-            .child(color_row("Цвет продаж (ask)", &i.book_ask))
-            .child(separator())
+            .child(section("Стакан", p))
+            .child(color_row("Фон стакана", &i.book_bg, p))
+            .child(color_row("Цвет покупок (bid)", &i.book_bid, p))
+            .child(color_row("Цвет продаж (ask)", &i.book_ask, p))
+            .child(separator(p))
             // Панели
-            .child(section("Панели"))
-            .child(color_row("Фон панелей (тулбар, ордер, док, статус)", &i.panel_bg))
-            .child(separator())
+            .child(section("Панели", p))
+            .child(color_row(
+                "Фон панелей (тулбар, ордер, док, статус)",
+                &i.panel_bg,
+                p,
+            ))
+            .child(separator(p))
             // Закрытый график
-            .child(section("Закрытый график"))
-            .child(color_row("Фон пустого контейнера", &i.closed_bg))
+            .child(section("Закрытый график", p))
+            .child(color_row("Фон пустого контейнера", &i.closed_bg, p))
             .child(
                 div()
                     .mt_2()
-                    .text_color(rgb(hex(palette::TEXT_2)))
+                    .text_color(rgb(p.text_soft))
                     .child("Меняется вживую. «Сохранить» пишет theme.toml рядом с программой — им можно делиться."),
             )
     }

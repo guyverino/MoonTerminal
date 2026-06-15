@@ -3,11 +3,12 @@
 //! Кнопка «⧉» откпрепляет панель в отдельное окно (убирает из дока + окно открепления).
 
 use gpui::*;
-use moon_palette::{DockArea, MoonButton, MoonButtonSize, Panel, PanelEvent, PanelState};
+use moon_palette::{
+    DockArea, MoonButton, MoonButtonSize, MoonPalette, Panel, PanelEvent, PanelState,
+};
 
+use crate::Backend;
 use crate::detached::DetachedSpec;
-use crate::{Backend, hex};
-use moon_core::palette;
 
 /// Заглушка-панель (Активы/Лог/Отчёт) до подключения данных.
 pub struct StubPanel {
@@ -103,13 +104,14 @@ impl Panel for StubPanel {
     }
 }
 impl Render for StubPanel {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let p = MoonPalette::active(cx);
         div()
             .id(self.name)
             .size_full()
             .p_4()
             .track_focus(&self.focus)
-            .text_color(rgb(hex(palette::TEXT_2)))
+            .text_color(rgb(p.text_soft))
             .child(format!("{} — скоро", self.title))
     }
 }

@@ -14,16 +14,15 @@ use gpui::prelude::FluentBuilder;
 use gpui::*;
 use moon_palette::{
     DockArea, MoonBadge, MoonBadgeSize, MoonBadgeVariant, MoonButton, MoonButtonSize,
-    MoonButtonVariant, MoonDropdown, MoonMenuItem, MoonMenuSize, MoonPalette,
-    MoonScrollbarVisibility, MoonTableCell, MoonTableColumn, MoonTableRow, MoonText, MoonTone,
-    MoonVirtualTable, Panel, PanelEvent, PanelState, h_flex, v_flex,
+    MoonButtonVariant, MoonDataCell, MoonDataRow, MoonDataTable, MoonDataTableColumn, MoonDropdown,
+    MoonMenuItem, MoonMenuSize, MoonPalette, MoonText, MoonTone, Panel, PanelEvent, PanelState,
+    h_flex, v_flex,
 };
 
+use crate::Backend;
 use crate::design;
 use crate::detached::DetachedSpec;
-use crate::{Backend, hex};
 use moon_core::feed::OrderRow;
-use moon_core::palette;
 use moon_core::session::CoreId;
 use moon_core::symbol;
 
@@ -455,6 +454,7 @@ impl Render for OrdersPanel {
         });
         sort_entries(&mut entries, &view);
         let shown = entries.len();
+        let p = MoonPalette::active(cx);
 
         // ── Панель управления ──
         let mut controls = h_flex()
@@ -470,14 +470,14 @@ impl Render for OrdersPanel {
             .child(
                 div()
                     .text_xs()
-                    .text_color(rgb(hex(palette::TEXT_3)))
+                    .text_color(rgb(p.text_muted))
                     .child(format!("{shown}")),
             );
         if view.only_current_market {
             controls = controls.child(
                 div()
                     .text_xs()
-                    .text_color(rgb(hex(palette::TEXT_3)))
+                    .text_color(rgb(p.text_muted))
                     .child("· Только ордера текущего маркета"),
             );
         }
@@ -493,15 +493,9 @@ impl Render for OrdersPanel {
             .track_focus(&self.focus)
             .font_family(design::mono())
             .text_size(px(10.5))
-            .bg(design::solid(design::PANEL_DARK))
+            .bg(rgb(p.table_body))
             .child(controls)
-            .child(
-                div()
-                    .w_full()
-                    .h(px(1.0))
-                    .flex_none()
-                    .bg(design::solid(design::BORDER)),
-            )
+            .child(div().w_full().h(px(1.0)).flex_none().bg(rgb(p.border)))
             .child(table)
     }
 }
@@ -512,6 +506,7 @@ fn orders_table(entries: Vec<OrderEntry>, cx: &Context<OrdersPanel>) -> impl Int
     let row_count = rows.len();
     let view = cx.entity();
     let table_rows = rows.clone();
+    let p = MoonPalette::active(cx);
 
     div()
         .id("orders-table-host")
@@ -520,15 +515,14 @@ fn orders_table(entries: Vec<OrderEntry>, cx: &Context<OrdersPanel>) -> impl Int
         .w_full()
         .min_h(px(0.0))
         .overflow_hidden()
-        .bg(design::solid(design::PANEL_DARK))
+        .bg(rgb(p.table_body))
         .child(
-            MoonVirtualTable::new("orders-table", row_count, move |ix, _window, _app| {
-                order_table_row(&table_rows[ix], &view)
+            MoonDataTable::new("orders-table", row_count, move |ix, _window, _app| {
+                order_table_row(&table_rows[ix], &view, p)
             })
             .columns(order_columns())
             .header_height(design::TABLE_HEAD_H)
-            .row_height(design::TABLE_ROW_H)
-            .scrollbar_visibility(MoonScrollbarVisibility::Hover),
+            .row_height(design::TABLE_ROW_H),
         )
         .when(empty, |this| {
             this.child(
@@ -541,17 +535,17 @@ fn orders_table(entries: Vec<OrderEntry>, cx: &Context<OrdersPanel>) -> impl Int
                     .items_center()
                     .font_family(design::mono())
                     .text_size(px(10.5))
-                    .text_color(design::solid(design::TEXT_MUTED))
+                    .text_color(rgb(p.text_muted))
                     .child("нет открытых ордеров"),
             )
         })
 }
 
-fn order_columns() -> Vec<MoonTableColumn> {
+fn order_columns() -> Vec<MoonDataTableColumn> {
     vec![
-        MoonTableColumn::new("Market", 100.0),
-        MoonTableColumn::new("Side", 50.0),
-        MoonTableColumn::new("Status", 80.0),
+        MoonDataTableColumn::new("market", "Market", 100.0),
+        MoonDataTableColumn::new("side", "Side", 50.0),
+        MoonDataTableColumn::new("status", "Status", 80.0),
         numeric_column("Qty", 60.0),
         numeric_column("Price", 90.0),
         numeric_column("Filled", 60.0),
@@ -559,21 +553,16 @@ fn order_columns() -> Vec<MoonTableColumn> {
         numeric_column("TP", 80.0),
         numeric_column("SL", 80.0),
         numeric_column("Age", 50.0),
-        MoonTableColumn::new("Strategy", 130.0)
-            .fill()
-            .header_padding(10.0, 8.0)
-            .cell_padding(10.0, 8.0),
+        MoonDataTableColumn::new("strategy", "Strategy", 130.0),
     ]
 }
 
-fn numeric_column(title: impl Into<SharedString>, width: f32) -> MoonTableColumn {
-    MoonTableColumn::new(title, width)
-        .right()
-        .header_padding(10.0, 0.0)
-        .cell_padding(12.0, 0.0)
+fn numeric_column(title: impl Into<SharedString>, width: f32) -> MoonDataTableColumn {
+    let title = title.into();
+    MoonDataTableColumn::new(title.to_lowercase(), title, width).right()
 }
 
-fn order_table_row(e: &OrderEntry, view: &Entity<OrdersPanel>) -> MoonTableRow {
+fn order_table_row(e: &OrderEntry, view: &Entity<OrdersPanel>, p: MoonPalette) -> MoonDataRow {
     let r = &e.row;
     let (side, side_tone) = if is_sell(r) {
         ("SELL", MoonTone::Info)
@@ -604,25 +593,30 @@ fn order_table_row(e: &OrderEntry, view: &Entity<OrdersPanel>) -> MoonTableRow {
         r.strat.clone()
     };
 
-    MoonTableRow::new().cells([
-        MoonTableCell::element(market_cell(e, view)),
-        MoonTableCell::text(side, side_tone, 500.0),
+    MoonDataRow::new([
+        MoonDataCell::element(market_cell(e, view, p)),
+        MoonDataCell::text(side).tone(side_tone).weight(500.0),
         status_cell(r),
-        MoonTableCell::text(num(r.size), MoonTone::Default, 400.0),
-        MoonTableCell::text(num(price), MoonTone::Default, 400.0),
-        MoonTableCell::text(format!("{:.0}%", r.fill_pct), MoonTone::Muted, 400.0),
-        MoonTableCell::text(format!("{pnl:+.2}"), pnl_tone, 400.0),
-        MoonTableCell::text(opt_price(r.take_profit), MoonTone::Info, 400.0),
-        MoonTableCell::text(opt_price(r.stop_loss), MoonTone::Danger, 400.0),
-        MoonTableCell::text(age(r.create_time_ms), MoonTone::Muted, 400.0),
-        MoonTableCell::text(strategy, MoonTone::Muted, 400.0)
+        MoonDataCell::text(num(r.size)),
+        MoonDataCell::text(num(price)),
+        MoonDataCell::text(format!("{:.0}%", r.fill_pct)).tone(MoonTone::Muted),
+        MoonDataCell::text(format!("{pnl:+.2}")).tone(pnl_tone),
+        MoonDataCell::text(opt_price(r.take_profit)).tone(MoonTone::Info),
+        MoonDataCell::text(opt_price(r.stop_loss)).tone(MoonTone::Danger),
+        MoonDataCell::text(age(r.create_time_ms)).tone(MoonTone::Muted),
+        MoonDataCell::text(strategy)
+            .tone(MoonTone::Muted)
             .font_size(10.0)
             .line_height(13.0)
-            .text_color(MoonPalette::TERMINAL.text_muted),
+            .text_color(p.text_muted),
     ])
 }
 
-fn market_cell(e: &OrderEntry, view: &Entity<OrdersPanel>) -> impl IntoElement + 'static {
+fn market_cell(
+    e: &OrderEntry,
+    view: &Entity<OrdersPanel>,
+    p: MoonPalette,
+) -> impl IntoElement + 'static {
     let base = symbol::base_symbol(&e.row.market, &e.quote);
     let market_label = if e.quote.is_empty() {
         e.row.market.clone()
@@ -643,7 +637,7 @@ fn market_cell(e: &OrderEntry, view: &Entity<OrdersPanel>) -> impl IntoElement +
         .cursor_pointer()
         .child(
             MoonText::new(market_label)
-                .color(MoonPalette::TERMINAL.text)
+                .color(p.text)
                 .font_size(10.5)
                 .line_height(14.0)
                 .weight(500.0)
@@ -661,7 +655,7 @@ fn market_cell(e: &OrderEntry, view: &Entity<OrdersPanel>) -> impl IntoElement +
         })
 }
 
-fn status_cell(r: &OrderRow) -> MoonTableCell {
+fn status_cell(r: &OrderRow) -> MoonDataCell {
     let (label, tone) = if r.pending {
         ("pending", MoonTone::Notice)
     } else if r.filled || executed(r) {
@@ -671,7 +665,7 @@ fn status_cell(r: &OrderRow) -> MoonTableCell {
     } else {
         ("open", MoonTone::Muted)
     };
-    MoonTableCell::element(
+    MoonDataCell::element(
         MoonBadge::new(label)
             .size(MoonBadgeSize::Status)
             .variant(MoonBadgeVariant::Outline)

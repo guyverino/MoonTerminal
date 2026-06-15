@@ -7,19 +7,20 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use gpui::prelude::FluentBuilder;
 use gpui::*;
 use moon_palette::{
-    DockArea, MoonButton, MoonButtonSize, MoonButtonVariant, MoonDropdown, MoonInput,
-    MoonInputEvent, MoonInputState, MoonMenuItem, MoonMenuSize, MoonScrollbarVisibility,
-    MoonVirtualList, Panel, PanelEvent, PanelState, StyledExt, h_flex, v_flex,
+    DockArea, MoonButton, MoonButtonSize, MoonButtonVariant, MoonDataCell, MoonDataRow,
+    MoonDataTable, MoonDataTableColumn, MoonDataTableState, MoonDropdown, MoonInput,
+    MoonInputEvent, MoonInputState, MoonMenuItem, MoonMenuSize, MoonPalette, Panel, PanelEvent,
+    PanelState, StyledExt, h_flex, v_flex,
 };
 use rusqlite::Connection;
 use rusqlite::types::Value;
 
+use crate::Backend;
 use crate::detached::DetachedSpec;
-use crate::{Backend, hex};
 use moon_core::db::{self, ReportFilter, ReportTable, SideFilter};
-use moon_core::palette;
 
 /// Data cap для отчёта. UI ниже виртуализирован, так что 100k строк не превращаются
 /// в 100k GPUI-элементов; отдельная серверная пагинация здесь пока не нужна.
@@ -65,6 +66,7 @@ pub struct ReportPanel {
 
     /// Видимость колонок (параллельно db::DISPLAY_COLUMNS).
     visible: Vec<bool>,
+    table_state: Entity<MoonDataTableState>,
     dock: Option<WeakEntity<DockArea>>,
     focus: FocusHandle,
 }
@@ -95,6 +97,10 @@ impl ReportPanel {
             .as_ref()
             .and_then(db::load_sort)
             .unwrap_or_else(|| ("buydate".to_string(), true));
+        let table_state = cx.new(|_| MoonDataTableState::new());
+        table_state.update(cx, |state, _| {
+            state.set_sort(sort_key.clone(), !sort_desc);
+        });
 
         let coin = cx.new(|cx| MoonInputState::new(window, cx).placeholder("все"));
         let from = cx.new(|cx| MoonInputState::new(window, cx).placeholder("ГГГГ-ММ-ДД"));
@@ -143,6 +149,7 @@ impl ReportPanel {
             side: SideFilter::All,
             needs_query: true,
             visible,
+            table_state,
             dock: None,
             focus: cx.focus_handle(),
         }
@@ -201,13 +208,12 @@ impl ReportPanel {
         self.needs_query = true;
         cx.notify();
     }
-    fn click_header(&mut self, col: &str, cx: &mut Context<Self>) {
-        if self.sort_key == col {
-            self.sort_desc = !self.sort_desc;
-        } else {
-            self.sort_key = col.to_string();
-            self.sort_desc = true;
-        }
+    fn set_report_sort(&mut self, col: &str, sort_desc: bool, cx: &mut Context<Self>) {
+        self.sort_key = col.to_string();
+        self.sort_desc = sort_desc;
+        self.table_state.update(cx, |state, _| {
+            state.set_sort(col.to_string(), !sort_desc);
+        });
         self.needs_query = true;
         if let Some(conn) = &self.conn {
             db::save_sort(conn, &self.sort_key, self.sort_desc);
@@ -383,7 +389,11 @@ impl Render for ReportPanel {
             self.requery(cx);
         }
 
-        let border = rgb(hex(palette::LIFT_HOVER));
+        let p = MoonPalette::active(cx);
+        let border = rgb(p.border);
+        self.table_state.update(cx, |state, _| {
+            state.set_sort(self.sort_key.clone(), !self.sort_desc);
+        });
 
         // ── Фильтры ──
         let filters = h_flex()
@@ -393,17 +403,12 @@ impl Render for ReportPanel {
             .items_center()
             .px_2()
             .py_1()
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(rgb(hex(palette::TEXT_2)))
-                    .child("Ядро:"),
-            )
+            .child(div().text_xs().text_color(rgb(p.text_soft)).child("Ядро:"))
             .child(self.core_combo(cx))
             .child(
                 div()
                     .text_xs()
-                    .text_color(rgb(hex(palette::TEXT_2)))
+                    .text_color(rgb(p.text_soft))
                     .child("Монета:"),
             )
             .child(
@@ -417,27 +422,17 @@ impl Render for ReportPanel {
             .child(
                 div()
                     .text_xs()
-                    .text_color(rgb(hex(palette::TEXT_2)))
+                    .text_color(rgb(p.text_soft))
                     .child("Сторона:"),
             )
             .child(self.side_combo(cx))
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(rgb(hex(palette::TEXT_2)))
-                    .child("С:"),
-            )
+            .child(div().text_xs().text_color(rgb(p.text_soft)).child("С:"))
             .child(
                 div()
                     .w(px(110.0))
                     .child(MoonInput::new("rep-from").state(&self.from).small()),
             )
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(rgb(hex(palette::TEXT_2)))
-                    .child("По:"),
-            )
+            .child(div().text_xs().text_color(rgb(p.text_soft)).child("По:"))
             .child(
                 div()
                     .w(px(110.0))
@@ -452,91 +447,60 @@ impl Render for ReportPanel {
         let table_el: AnyElement = if vis.is_empty() {
             div()
                 .p_3()
-                .text_color(rgb(hex(palette::TEXT_2)))
+                .text_color(rgb(p.text_soft))
                 .child("Все колонки скрыты — включите в «Колонки».")
                 .into_any_element()
         } else {
-            // Заголовки (кликабельные, стрелка у активной колонки).
-            let mut header = h_flex().gap_0().items_center().py_1();
-            for &i in &vis {
-                let col = self.table.cols[i];
-                let arrow = if self.sort_key == col {
-                    if self.sort_desc { " ▼" } else { " ▲" }
-                } else {
-                    ""
-                };
-                let colname = col.to_string();
-                header = header.child(
-                    div()
-                        .id(SharedString::from(format!("rh-{col}")))
-                        .w(px(width_for(col)))
-                        .flex_none()
-                        .px_1()
-                        .cursor_pointer()
-                        .font_bold()
-                        .text_xs()
-                        .truncate()
-                        .text_color(rgb(hex(palette::TEXT)))
-                        .hover(|s| s.bg(rgb(hex(palette::LIFT_HOVER))))
-                        .child(format!("{}{arrow}", header_for(col)))
-                        .on_click(cx.listener(move |t, _, _, cx| t.click_header(&colname, cx))),
-                );
-            }
-
-            let rows_el: AnyElement = if self.table.rows.is_empty() {
-                div()
-                    .p_3()
-                    .text_color(rgb(hex(palette::TEXT_2)))
-                    .child("Нет отчётов под фильтр (или БД пуста).")
-                    .into_any_element()
-            } else {
-                let table = self.table.clone();
-                let visible = Rc::new(vis.clone());
-                let row_count = table.rows.len();
-                div()
-                    .id("rep-rows")
-                    .flex_1()
-                    .w_full()
-                    .child(
-                        MoonVirtualList::new(
-                            "rep-virtual-rows",
-                            row_count,
-                            24.0,
-                            move |ri, _window, _app| report_row(ri, &table, &visible),
-                        )
-                        .surface(false)
-                        .border(false)
-                        .radius(0.0)
-                        .scrollbar_visibility(MoonScrollbarVisibility::Hover),
-                    )
-                    .into_any_element()
-            };
-
-            // Горизонтальный скролл оборачивает заголовок + строки.
+            let table = self.table.clone();
+            let visible = Rc::new(vis.clone());
+            let row_count = table.rows.len();
+            let view = cx.entity();
+            let table_state = self.table_state.clone();
+            let columns = report_columns(&vis);
             div()
-                .id("rep-hscroll")
+                .id("rep-table-host")
+                .relative()
                 .flex_1()
                 .w_full()
-                .overflow_x_scroll()
+                .min_h_0()
                 .child(
-                    v_flex()
-                        .min_w(px(width_total(&vis)))
-                        .h_full()
-                        .child(header)
-                        .child(div().w_full().h(px(1.0)).bg(border))
-                        .child(rows_el),
+                    MoonDataTable::new("report-table", row_count, move |ri, _window, _app| {
+                        report_data_row(ri, &table, &visible, p)
+                    })
+                    .state(&table_state)
+                    .columns(columns)
+                    .header_height(24.0)
+                    .row_height(24.0)
+                    .on_sort(move |key, ascending, _window, app| {
+                        let key = key.to_string();
+                        view.update(app, |t, cx| t.set_report_sort(&key, !ascending, cx));
+                    }),
                 )
+                .when(row_count == 0, |this| {
+                    this.child(
+                        div()
+                            .absolute()
+                            .left(px(10.0))
+                            .top(px(25.0))
+                            .h(px(24.0))
+                            .flex()
+                            .items_center()
+                            .text_xs()
+                            .text_color(rgb(p.text_soft))
+                            .child("Нет отчётов под фильтр (или БД пуста)."),
+                    )
+                })
                 .into_any_element()
         };
 
         // ── ИТОГО ──
         let (sum, count) = self.totals;
         let sum_col = if sum > 0.0 {
-            palette::GREEN
+            p.green
         } else if sum < 0.0 {
-            palette::RED
+            p.red
         } else {
-            palette::TEXT_2
+            p.text_soft
         };
         let totals = h_flex()
             .w_full()
@@ -547,19 +511,19 @@ impl Render for ReportPanel {
             .child(
                 div()
                     .text_xs()
-                    .text_color(rgb(hex(palette::TEXT_2)))
+                    .text_color(rgb(p.text_soft))
                     .child("Итого за период:"),
             )
             .child(
                 div()
                     .font_bold()
-                    .text_color(rgb(hex(sum_col)))
+                    .text_color(rgb(sum_col))
                     .child(format!("{sum:+.6} BTC")),
             )
             .child(
                 div()
                     .text_xs()
-                    .text_color(rgb(hex(palette::TEXT_2)))
+                    .text_color(rgb(p.text_soft))
                     .child(format!("ордеров: {count}")),
             )
             .child(
@@ -568,7 +532,7 @@ impl Render for ReportPanel {
                     .flex()
                     .justify_end()
                     .text_xs()
-                    .text_color(rgb(hex(palette::TEXT_2)))
+                    .text_color(rgb(p.text_soft))
                     .child(format!("показано (топ): {}", self.table.rows.len())),
             );
 
@@ -576,6 +540,7 @@ impl Render for ReportPanel {
             .id("report-panel")
             .size_full()
             .track_focus(&self.focus)
+            .bg(rgb(p.table_body))
             .child(filters)
             .child(div().w_full().h(px(1.0)).bg(border))
             .child(table_el)
@@ -584,56 +549,79 @@ impl Render for ReportPanel {
     }
 }
 
-fn width_total(vis: &[usize]) -> f32 {
-    vis.iter().map(|&i| width_for(db::DISPLAY_COLUMNS[i])).sum()
+fn report_columns(vis: &[usize]) -> Vec<MoonDataTableColumn> {
+    vis.iter()
+        .map(|&i| {
+            let col = db::DISPLAY_COLUMNS[i];
+            let column =
+                MoonDataTableColumn::new(col, header_for(col), width_for(col)).sortable(true);
+            if is_numeric_report_column(col) {
+                column.right()
+            } else {
+                column
+            }
+        })
+        .collect()
 }
 
-fn report_row(ri: usize, table: &ReportTable, vis: &[usize]) -> AnyElement {
-    let mut row = h_flex().gap_0().items_center().h(px(24.0));
-    if ri % 2 == 1 {
-        row = row.bg(rgb(hex(palette::LIFT)));
-    }
+fn report_data_row(ri: usize, table: &ReportTable, vis: &[usize], p: MoonPalette) -> MoonDataRow {
+    let mut cells = Vec::with_capacity(vis.len());
     if let Some(r) = table.rows.get(ri) {
         for &i in vis {
             let cname = table.cols[i];
             let val = r.get(i).unwrap_or(&Value::Null);
-            let (text, color) = cell(cname, val);
-            let c = color.unwrap_or(hex(palette::TEXT));
-            row = row.child(
-                div()
-                    .w(px(width_for(cname)))
-                    .flex_none()
-                    .px_1()
-                    .text_xs()
-                    .truncate()
-                    .text_color(rgb(c))
-                    .child(text),
-            );
+            cells.push(report_data_cell(cname, val, p));
         }
     }
-    row.into_any_element()
+    MoonDataRow::new(cells)
+}
+
+fn report_data_cell(col: &str, val: &Value, p: MoonPalette) -> MoonDataCell {
+    let (text, color) = cell(col, val, p);
+    let cell = MoonDataCell::text(text).font_size(10.0).line_height(13.0);
+    if let Some(color) = color {
+        cell.text_color(color)
+    } else {
+        cell
+    }
+}
+
+fn is_numeric_report_column(col: &str) -> bool {
+    matches!(
+        col,
+        "quantity"
+            | "boughtq"
+            | "buyprice"
+            | "sellprice"
+            | "spentbtc"
+            | "gainedbtc"
+            | "profitbtc"
+            | "lev"
+            | "db_id"
+            | "taskid"
+    )
 }
 
 /// Текст + цвет ячейки по имени колонки и значению (порт `cell`).
-fn cell(col: &str, v: &Value) -> (String, Option<u32>) {
+fn cell(col: &str, v: &Value, p: MoonPalette) -> (String, Option<u32>) {
     match col {
         "buydate" | "closedate" | "sellsetdate" | "last_update_at" => {
             (as_i64(v).map(db::fmt_unix).unwrap_or_default(), None)
         }
         "isshort" => match as_i64(v) {
-            Some(1) => ("Шорт".into(), Some(hex(palette::RED))),
-            Some(0) => ("Лонг".into(), Some(hex(palette::GREEN))),
-            _ => (String::new(), Some(hex(palette::TEXT_2))),
+            Some(1) => ("Шорт".into(), Some(p.red)),
+            Some(0) => ("Лонг".into(), Some(p.green)),
+            _ => (String::new(), Some(p.text_soft)),
         },
         "emulator" => match as_i64(v) {
-            Some(1) => ("эму".into(), Some(hex(palette::TEXT_2))),
+            Some(1) => ("эму".into(), Some(p.text_soft)),
             _ => (String::new(), None),
         },
         "profitbtc" | "gainedbtc" => {
             let n = as_f64(v);
             let color = match n {
-                Some(x) if x > 0.0 => Some(hex(palette::GREEN)),
-                Some(x) if x < 0.0 => Some(hex(palette::RED)),
+                Some(x) if x > 0.0 => Some(p.green),
+                Some(x) if x < 0.0 => Some(p.red),
                 _ => None,
             };
             (n.map(|x| format!("{x:+.6}")).unwrap_or_default(), color)

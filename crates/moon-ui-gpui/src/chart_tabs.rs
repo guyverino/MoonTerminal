@@ -5,14 +5,16 @@
 //! `ChartPanel`. Детекты/ордер/нижние вкладки — отдельные MoonPalette Dock-панели.
 
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use gpui::*;
-use moon_palette::{MoonBackgroundPolicy, Panel, PanelEvent, PanelState, Root, h_flex, v_flex};
+use moon_palette::{
+    MoonBackgroundPolicy, MoonTabItem, MoonTabStrip, Panel, PanelEvent, PanelState, Root, v_flex,
+};
 
+use crate::Backend;
 use crate::panels::ChartPanel;
-use crate::{Backend, hex};
 use moon_core::config::ChartTheme;
-use moon_core::palette;
 use moon_core::session::CoreId;
 
 /// Идентичность вкладки чарта. Main — фуллскрин; Add(номер, ядро) — AddToChart-вкладка
@@ -35,8 +37,6 @@ pub struct ChartTabs {
     add: Vec<(u32, Option<CoreId>, Entity<ChartPanel>)>,
     /// Активная вкладка.
     active: Tab,
-    /// Вкладка под курсором (для показа ✕ только при наведении). None = нет.
-    hovered: Option<Tab>,
     /// Per-core курсор учтённых AddToChart-детектов.
     add_seq: HashMap<CoreId, u64>,
     focus: FocusHandle,
@@ -72,7 +72,6 @@ impl ChartTabs {
             main,
             add: Vec::new(),
             active: Tab::Main,
-            hovered: None,
             add_seq: HashMap::new(),
             focus: cx.focus_handle(),
         }
@@ -260,114 +259,78 @@ impl Render for ChartTabs {
         self.handle_open_request(cx);
         self.ingest(window, cx);
 
-        let accent = rgb(hex(palette::ACCENT));
-        let muted = rgb(hex(palette::TEXT_2));
-        let panel = rgb(hex(palette::SURFACE_1));
-        let border = rgb(hex(palette::LIFT_HOVER));
-        let bg0 = rgb(hex(palette::BG));
-
-        // Вкладка (underline-стиль): подпись + опц. бейдж-счётчик панелей + ✕ ТОЛЬКО при
-        // наведении. Одиночный клик — выбрать, ДВОЙНОЙ — открепить (только AddToChart).
-        let tab = |id: SharedString,
-                   label: String,
-                   on: bool,
-                   tab_id: Tab,
-                   detachable: bool,
-                   count: usize,
-                   show_close: bool| {
-            let (tc, bb) = if on { (accent, accent) } else { (muted, panel) };
-            let mut row = h_flex()
-                .id(id)
-                .items_center()
-                .gap_1()
-                .px_3()
-                .py_1()
-                .cursor_pointer()
-                .text_color(tc)
-                .border_b_2()
-                .border_color(bb)
-                .child(label);
-            if count > 1 {
-                row = row.child(
-                    div()
-                        .px_1()
-                        .rounded_full()
-                        .bg(accent)
-                        .text_color(bg0)
-                        .text_xs()
-                        .child(count.to_string()),
-                );
-            }
-            if detachable && show_close {
-                row = row.child(
-                    div()
-                        .id("cl")
-                        .px_1()
-                        .text_color(muted)
-                        .cursor_pointer()
-                        .child("✕")
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.add.retain(|(n, c, _)| Tab::Add(*n, *c) != tab_id);
-                            if this.active == tab_id {
-                                this.active = Tab::Main;
-                            }
-                            cx.notify();
-                        })),
-                );
-            }
-            row.on_click(cx.listener(move |this, e: &ClickEvent, _, cx| {
-                if detachable && e.click_count() >= 2 {
-                    this.detach(tab_id, cx); // двойной клик → открепить в окно
-                } else {
-                    let exists = matches!(tab_id, Tab::Main)
-                        || this.add.iter().any(|(n, c, _)| Tab::Add(*n, *c) == tab_id);
-                    if exists {
-                        this.active = tab_id;
-                    }
-                }
-                cx.notify();
-            }))
-            .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
-                if *hovered {
-                    this.hovered = Some(tab_id);
-                } else if this.hovered == Some(tab_id) {
-                    this.hovered = None;
-                }
-                cx.notify();
-            }))
-        };
-
-        let mut strip = h_flex()
-            .w_full()
-            .gap_1()
-            .px_2()
-            .bg(panel)
-            .border_b_1()
-            .border_color(border)
-            .child(tab(
-                "tab-main".into(),
-                // Main-вкладка всегда «Main» (в фуллскрине может быть много монет).
-                "Main".to_string(),
-                self.active == Tab::Main,
-                Tab::Main,
-                false,
-                0,
-                false,
-            ));
-        // Снимок (номер, ядро, счётчик панелей) — чтобы не держать &self.add при builder.
-        let tabs: Vec<(u32, Option<CoreId>, usize)> = self
-            .add
+        // Снимок вкладок — чтобы callbacks не держали borrow self.add.
+        let mut tabs: Vec<(Tab, String, usize, bool)> =
+            vec![(Tab::Main, "Main".to_string(), 0, false)];
+        tabs.extend(self.add.iter().map(|(n, core, panel)| {
+            (
+                Tab::Add(*n, *core),
+                self.add_label(*n, *core, cx),
+                panel.read(cx).pane_count(),
+                true,
+            )
+        }));
+        let tab_keys = Rc::new(tabs.iter().map(|(tab, _, _, _)| *tab).collect::<Vec<_>>());
+        let items = tabs
             .iter()
-            .map(|(n, c, p)| (*n, *c, p.read(cx).pane_count()))
-            .collect();
-        for (n, core, count) in tabs {
-            let tab_id = Tab::Add(n, core);
-            let on = self.active == tab_id;
-            let show_close = self.hovered == Some(tab_id);
-            let label = self.add_label(n, core, cx);
-            let id = SharedString::from(format!("tab-{n}-{}", core.unwrap_or(0)));
-            strip = strip.child(tab(id, label, on, tab_id, true, count, show_close));
-        }
+            .map(|(tab, label, count, detachable)| {
+                let width = (label.chars().count() as f32 * 7.0
+                    + if *count > 1 { 38.0 } else { 28.0 }
+                    + if *detachable { 20.0 } else { 0.0 })
+                .clamp(72.0, 168.0);
+                let mut item = MoonTabItem::new(label.clone())
+                    .width(width)
+                    .selected(self.active == *tab)
+                    .closable(*detachable);
+                if *count > 1 {
+                    item = item.badge(count.to_string());
+                }
+                item
+            })
+            .collect::<Vec<_>>();
+        let view = cx.entity();
+        let strip = MoonTabStrip::new("chart-tabs-strip")
+            .padding_left(8.0)
+            .gap(4.0)
+            .items(items)
+            .on_click({
+                let tab_keys = tab_keys.clone();
+                let view = view.clone();
+                move |ix, event, _window, app| {
+                    let Some(tab_id) = tab_keys.get(ix).copied() else {
+                        return;
+                    };
+                    view.update(app, |this, cx| {
+                        if !matches!(tab_id, Tab::Main) && event.click_count() >= 2 {
+                            this.detach(tab_id, cx);
+                        } else if matches!(tab_id, Tab::Main)
+                            || this.add.iter().any(|(n, c, _)| Tab::Add(*n, *c) == tab_id)
+                        {
+                            this.active = tab_id;
+                            cx.notify();
+                        }
+                    });
+                }
+            })
+            .on_close({
+                let tab_keys = tab_keys.clone();
+                let view = view.clone();
+                move |ix, _event, _window, app| {
+                    let Some(tab_id) = tab_keys.get(ix).copied() else {
+                        return;
+                    };
+                    if matches!(tab_id, Tab::Main) {
+                        return;
+                    }
+                    view.update(app, |this, cx| {
+                        this.add.retain(|(n, c, _)| Tab::Add(*n, *c) != tab_id);
+                        if this.active == tab_id {
+                            this.active = Tab::Main;
+                        }
+                        cx.notify();
+                    });
+                }
+            });
 
         v_flex()
             .size_full()

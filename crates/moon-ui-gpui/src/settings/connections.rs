@@ -10,15 +10,14 @@ use gpui::*;
 use moon_palette::{
     MoonButton, MoonButtonSize, MoonButtonVariant, MoonCheckbox, MoonCheckboxSize, MoonColorPicker,
     MoonColorPickerEvent, MoonColorPickerState, MoonDropdown, MoonInput, MoonInputEvent,
-    MoonInputState, MoonMenuItem, MoonMenuSize, MoonSelect, MoonTooltipView, StyledExt, h_flex,
-    v_flex,
+    MoonInputState, MoonMenuItem, MoonMenuSize, MoonPalette, MoonSelect, MoonTooltipView,
+    StyledExt, h_flex, v_flex,
 };
 
 use super::{SettingsView, hsla_u8};
 use crate::{Backend, hex};
 use moon_core::config::{FeedFlags, GroupConfig, Secret, ServerConfig};
 use moon_core::feed::ConnStatus;
-use moon_core::palette;
 use moon_core::session::CoreId;
 
 /// Редактор одной строки сервера: текст-поля + цвет (entity-стейты компонентов).
@@ -46,6 +45,14 @@ const FEED_FLAGS: [(&str, fn(&FeedFlags) -> bool, fn(&mut FeedFlags, bool)); 8] 
     ("Chart-алерты / текст", |f| f.alerts, |f, v| f.alerts = v),
     ("Арбитраж", |f| f.arb, |f, v| f.arb = v),
 ];
+
+fn u32_rgb(c: u32) -> [u8; 3] {
+    [
+        ((c >> 16) & 0xff) as u8,
+        ((c >> 8) & 0xff) as u8,
+        (c & 0xff) as u8,
+    ]
+}
 
 /// TextInput, привязанный к полю сервера `servers[i]` (пишет в draft).
 fn conn_input(
@@ -132,19 +139,24 @@ pub(super) fn build_conn(
 /// Кружок статуса подключения ядра (порт egui `status_dot`): зелёный=Ready, акцент=
 /// подключается, красный=ошибка, серый=неактивно/нет. `active=false` → всегда серый.
 /// Тултип поясняет состояние (для Failed — текст ошибки), как egui `on_hover_text`.
-fn status_dot(i: usize, active: bool, status: Option<&ConnStatus>) -> impl IntoElement {
+fn status_dot(
+    i: usize,
+    active: bool,
+    status: Option<&ConnStatus>,
+    p: MoonPalette,
+) -> impl IntoElement {
     let (color, tip) = match status {
         _ if !active => (
-            palette::TEXT_2,
+            p.text_soft,
             "Не подключается (галка «Акт» снята)".to_string(),
         ),
-        Some(ConnStatus::Ready) => (palette::GREEN, "Подключено".to_string()),
-        Some(ConnStatus::Connecting) => (palette::ACCENT, "Подключение…".to_string()),
-        Some(ConnStatus::Stage(s)) => (palette::ACCENT, format!("Подключение: {s}")),
-        Some(ConnStatus::Failed(e)) => (palette::RED, format!("Ошибка: {e}")),
-        Some(ConnStatus::Disconnected) => (palette::TEXT_2, "Отключено".to_string()),
+        Some(ConnStatus::Ready) => (p.green, "Подключено".to_string()),
+        Some(ConnStatus::Connecting) => (p.amber, "Подключение…".to_string()),
+        Some(ConnStatus::Stage(s)) => (p.amber, format!("Подключение: {s}")),
+        Some(ConnStatus::Failed(e)) => (p.red, format!("Ошибка: {e}")),
+        Some(ConnStatus::Disconnected) => (p.text_soft, "Отключено".to_string()),
         None => (
-            palette::TEXT_2,
+            p.text_soft,
             "Нет данных (сохрани настройки, чтобы подключиться)".to_string(),
         ),
     };
@@ -153,7 +165,7 @@ fn status_dot(i: usize, active: bool, status: Option<&ConnStatus>) -> impl IntoE
         .w(px(10.0))
         .h(px(10.0))
         .rounded_full()
-        .bg(rgb(hex(color)))
+        .bg(rgb(color))
         .tooltip(move |_window, cx| {
             cx.new(|_| MoonTooltipView::new(tip.clone()).max_width(320.0))
                 .into()
@@ -204,6 +216,7 @@ impl SettingsView {
 
     /// Добавить сервер в draft (id = max+1) и пересобрать editor-стейты.
     fn add_server(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let default_color = u32_rgb(MoonPalette::active(cx).amber);
         self.backend.update(cx, |b, bcx| {
             if let Some(p) = b.preview.as_mut() {
                 let next = p.servers.iter().map(|s| s.id).max().unwrap_or(0) + 1;
@@ -217,7 +230,7 @@ impl SettingsView {
                     key: Secret::new(""),
                     group: "default".into(),
                     market: "BTCUSDT".into(),
-                    color: palette::ACCENT,
+                    color: default_color,
                     synthetic: false,
                 });
                 bcx.notify();
@@ -381,26 +394,37 @@ impl SettingsView {
                     .render(),
             )
             .child(recon)
-            .child(status_dot(i, active, status.as_ref()))
+            .child(status_dot(
+                i,
+                active,
+                status.as_ref(),
+                MoonPalette::active(cx),
+            ))
     }
 
     /// Заголовок колонки таблицы серверов (тусклая подпись фикс. ширины).
-    fn col_head(label: &str, w: f32) -> impl IntoElement {
+    fn col_head(label: &str, w: f32, p: MoonPalette) -> impl IntoElement {
         div()
             .w(px(w))
             .text_xs()
-            .text_color(rgb(hex(palette::TEXT_2)))
+            .text_color(rgb(p.text_soft))
             .child(label.to_string())
     }
 
     /// Заголовок колонки с тултипом (порт egui `head_tip`): для сокращённых подписей
     /// галок «Акт»/«Окн» и кнопки «Данные».
-    fn col_head_tip(id: &'static str, label: &str, w: f32, tip: &'static str) -> impl IntoElement {
+    fn col_head_tip(
+        id: &'static str,
+        label: &str,
+        w: f32,
+        tip: &'static str,
+        p: MoonPalette,
+    ) -> impl IntoElement {
         div()
             .id(id)
             .w(px(w))
             .text_xs()
-            .text_color(rgb(hex(palette::TEXT_2)))
+            .text_color(rgb(p.text_soft))
             .child(label.to_string())
             .tooltip(move |_window, cx| {
                 cx.new(|_| MoonTooltipView::new(tip).max_width(360.0))
@@ -411,6 +435,7 @@ impl SettingsView {
     /// Вкладка «Подключения» — порт egui `settings/connections.rs`: источник данных
     /// (выпадающий), таблица ядер слева, панель групп (с иконками/👁/пикером) справа.
     pub(super) fn connections_tab(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let p = MoonPalette::active(cx);
         // Живой статус ядер для точек.
         let status = self.backend.read(cx).session.status_map();
         // Синхронизировать группы draft с именами групп серверов (создать недостающие,
@@ -474,12 +499,12 @@ impl SettingsView {
                     .w_full()
                     .gap_1()
                     .items_center()
-                    .child(Self::col_head_tip("h-act", "Акт", 28.0, "Подключаться к ядру"))
-                    .child(Self::col_head_tip("h-win", "Окн", 34.0, "Рисовать окно/чарт. Выкл = headless: данные в БД/память без окна"))
-                    .child(Self::col_head("Имя", 150.0))
-                    .child(Self::col_head("Ключ", 200.0))
-                    .child(Self::col_head("Группа", 110.0))
-                    .child(Self::col_head_tip("h-data", "Данные", 52.0, "Приём данных от ядра. Серая = принимаем всё; цветная = часть категорий выключена. Клик — настроить.")),
+                    .child(Self::col_head_tip("h-act", "Акт", 28.0, "Подключаться к ядру", p))
+                    .child(Self::col_head_tip("h-win", "Окн", 34.0, "Рисовать окно/чарт. Выкл = headless: данные в БД/память без окна", p))
+                    .child(Self::col_head("Имя", 150.0, p))
+                    .child(Self::col_head("Ключ", 200.0, p))
+                    .child(Self::col_head("Группа", 110.0, p))
+                    .child(Self::col_head_tip("h-data", "Данные", 52.0, "Приём данных от ядра. Серая = принимаем всё; цветная = часть категорий выключена. Клик — настроить.", p)),
             );
         for (i, (id, active)) in servers.iter().enumerate() {
             if let Some(row) = self.conn.get(i) {
@@ -507,7 +532,7 @@ impl SettingsView {
         if groups.is_empty() {
             groups_col = groups_col.child(
                 div()
-                    .text_color(rgb(hex(palette::TEXT_2)))
+                    .text_color(rgb(p.text_soft))
                     .child("задай группы серверам слева"),
             );
         }
@@ -604,7 +629,7 @@ impl SettingsView {
                         .p_0p5()
                         .cursor_pointer()
                         .rounded(px(4.0))
-                        .hover(|s| s.bg(rgb(hex(palette::LIFT_HOVER))))
+                        .hover(move |s| s.bg(rgb(p.panel_high)))
                         .child(cell)
                         .on_click(cx.listener(move |this, _, _, cx| {
                             let n = nm.clone();
@@ -631,7 +656,7 @@ impl SettingsView {
                             div()
                                 .flex_1()
                                 .text_xs()
-                                .text_color(rgb(hex(palette::TEXT_2)))
+                                .text_color(rgb(p.text_soft))
                                 .child(format!("Иконка для «{pick}»")),
                         )
                         .child(

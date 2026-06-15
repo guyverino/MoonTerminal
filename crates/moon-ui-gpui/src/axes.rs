@@ -5,10 +5,10 @@
 //! пиксели в системе окна (origin слота = `bounds.origin`).
 
 use gpui::{App, Bounds, Hsla, Pixels, Point, SharedString, TextRun, Window, fill, point, px};
+use moon_palette::MoonPalette;
 
 use moon_chart::axes::{AxisSnapshot, fmt_clock, nice_interval, price_decimals};
 use moon_chart::{GLASS_ZONE_PX, PRICE_AXIS_W, TIME_AXIS_H};
-use moon_core::palette;
 
 /// Размер шрифта подписей (логич. px) — как `theme::FONT_SIZE` egui-версии.
 const FONT_SIZE: f32 = 11.5;
@@ -86,9 +86,11 @@ fn chip(
     ax: f32,
     ay: f32,
     font: &gpui::Font,
+    accent: [u8; 3],
+    palette: MoonPalette,
 ) {
     let ts = window.text_system().clone();
-    let fg = rgb3(palette::ACCENT);
+    let fg = rgb3(accent);
     let run = TextRun {
         len: text.len(),
         font: font.clone(),
@@ -108,10 +110,10 @@ fn chip(
         point(origin.x - pad.x, origin.y - pad.y),
         gpui::size(w + pad.x * 2.0, lh + pad.y * 2.0),
     );
-    window.paint_quad(fill(bg, rgb3(palette::LIFT)));
+    window.paint_quad(fill(bg, gpui::rgb(palette.panel)));
     window.paint_quad(gpui::outline(
         bg,
-        rgba3(palette::ACCENT, 0.55),
+        rgba3(accent, 0.55),
         gpui::BorderStyle::Solid,
     ));
     let _ = line.paint(origin, lh, gpui::TextAlign::Left, None, window, cx);
@@ -129,6 +131,7 @@ pub fn draw(
     cursor: Option<Point<Pixels>>,
     ppp: f32,
     cross: CrossStyle,
+    palette: MoonPalette,
 ) {
     let left = f32::from(bounds.origin.x);
     let top = f32::from(bounds.origin.y);
@@ -150,11 +153,11 @@ pub fn draw(
     let plot_h = (plot_bottom - plot_top).max(1.0);
 
     let font = window.text_style().font();
-    let ink = rgb3(palette::TEXT_2);
+    let ink: Hsla = gpui::rgb(palette.text_soft).into();
 
     // Chart own-pass intentionally occupies the data/glass area, not the GPUI axis gutters.
     // With MoonPalette NoFill hosts those gutters would otherwise expose the raw backbuffer.
-    let gutter = rgb3(palette::BG);
+    let gutter: Hsla = gpui::rgb(palette.shell).into();
     window.paint_quad(fill(
         Bounds::new(
             point(px(left), px(top)),
@@ -284,6 +287,8 @@ pub fn draw(
                 0.5,
                 1.0,
                 &font,
+                cross.color,
+                palette,
             );
         }
         // Цена под горизонтальной линией — плашкой в жёлобе цены.
@@ -297,6 +302,8 @@ pub fn draw(
                 1.0,
                 0.5,
                 &font,
+                cross.color,
+                palette,
             );
         }
     }

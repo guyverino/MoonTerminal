@@ -7,7 +7,7 @@
 //! Текст осей и перекрестие — GPUI-оверлей ПОВЕРХ (нативный текст, см. `docs/RENDER_PLAN.md`).
 
 use gpui::*;
-use moon_palette::{MoonBackgroundPolicy, Panel, PanelEvent};
+use moon_palette::{MoonBackgroundPolicy, MoonPalette, Panel, PanelEvent};
 
 use crate::chartdx::ChartEngine;
 use crate::{Backend, axes, input};
@@ -517,6 +517,7 @@ impl Render for ChartPanel {
                         }
                         // Оси/перекрестие — ПО КАЖДОЙ панели (Tiled-мультичарт): свой
                         // прямоугольник (девайс-px → лог.px окна) и снимок. Курсор — под мышью.
+                        let palette = MoonPalette::active(cx);
                         for (idx, rect, snap) in &axis_panes {
                             let sub = Bounds::new(
                                 point(
@@ -535,7 +536,7 @@ impl Render for ChartPanel {
                             } else {
                                 None
                             };
-                            axes::draw(window, cx, sub, snap, cursor, sf, cross);
+                            axes::draw(window, cx, sub, snap, cursor, sf, cross, palette);
                         }
                     },
                 )

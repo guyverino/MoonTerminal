@@ -12,7 +12,6 @@ use moon_palette::{
 use super::{SettingsView, hsla_u8, separator, slider_row};
 use crate::{Backend, hex};
 use moon_core::config::OrdersStyle;
-use moon_core::palette;
 
 /// Чекбокс ордер-стиля: (id, подпись, геттер, сеттер) — для тела блока линии.
 type Check = (
@@ -251,7 +250,7 @@ impl SettingsView {
         title: &str,
     ) -> impl IntoElement {
         let open = self.open_lines.contains(key);
-        let p = MoonPalette::TERMINAL;
+        let p = MoonPalette::active(cx);
         h_flex()
             .id(key)
             .cursor_pointer()
@@ -294,6 +293,7 @@ impl SettingsView {
         markers: bool,
         checks: &[Check],
     ) -> AnyElement {
+        let p = MoonPalette::active(cx);
         let chk = |idx: usize| -> AnyElement {
             match checks.get(idx) {
                 Some((id, label, get, set)) => {
@@ -316,7 +316,7 @@ impl SettingsView {
             .child(chk(0));
         if markers {
             col = col
-                .child(separator())
+                .child(separator(p))
                 .child(chk(1))
                 .child(chk(2))
                 .child(slider_row("cross size", &ed.marker_size, cx))
@@ -571,7 +571,7 @@ impl SettingsView {
                 false,
                 &[("liq-d", "dashed", |o| o.liq.dashed, |o, v| o.liq.dashed = v)],
             ))
-            .child(separator())
+            .child(separator(MoonPalette::active(cx)))
             // Path (trail / змейка) — свой сворачиваемый блок.
             .child({
                 let mut section = v_flex().w_full().gap(px(6.0)).child(self.collapse_header(
@@ -610,7 +610,7 @@ impl SettingsView {
                 }
                 section
             })
-            .child(separator())
+            .child(separator(MoonPalette::active(cx)))
             .child(div().mt_1().font_bold().child("Global"))
             .child(slider_row("active alpha", &l.active_alpha, cx))
             .child(slider_row(
@@ -629,7 +629,7 @@ impl SettingsView {
             .child(
                 div()
                     .mt_2()
-                    .text_color(rgb(hex(palette::TEXT_2)))
+                    .text_color(rgb(MoonPalette::active(cx).text_soft))
                     .child("Stop/Trailing/Liq lines appear only after the entry is filled."),
             )
     }
