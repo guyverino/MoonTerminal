@@ -121,6 +121,12 @@ impl PaneRender {
 /// единственный поток UI: `prepare` и callback кадра не пересекаются по времени).
 struct RenderState {
     panes: Vec<PaneRender>,
+    /// Монотонный счётчик РЕАЛЬНЫХ present'ов own-pass (инкремент на каждый вызов callback'а).
+    /// 60-Гц prepare-задача движет край только когда счётчик вырос с прошлого раза — так она
+    /// матчит фактический present-rate и СПИТ, когда кадров нет (macOS occluded → CVDisplayLink
+    /// стоп → present=0; Windows inactive → 30fps вместо 60). Иначе задача молотила бы 60 Гц
+    /// вхолостую при guard'е, хотя картинки нет.
+    present_seq: u64,
     /// Scissor-растеризатор own-pass (lazy, пересоздаётся на смене device): клипует слои к
     /// зоне панели, чтобы стакан/ордера (позиционируются по ЦЕНЕ) не лезли за плот на тулбар/шкалы.
     #[cfg(windows)]
@@ -160,6 +166,7 @@ impl ChartEngine {
             container: Container::new(kind),
             state: Rc::new(RefCell::new(RenderState {
                 panes: Vec::new(),
+                present_seq: 0,
                 #[cfg(windows)]
                 scissor_rs: None,
                 #[cfg(windows)]
@@ -198,6 +205,10 @@ impl ChartEngine {
             GpuPhase::UnderScene,
             Box::new(move |gpu: &RawGpuAccess| {
                 let mut st = state.borrow_mut();
+                // Отметить РЕАЛЬНЫЙ present (этот callback зовётся только когда окно презентит).
+                // 60-Гц prepare-задача движет край, лишь когда этот счётчик вырос → она матчит
+                // фактический present-rate и спит при occluded-окне (нет present → нет инкремента).
+                st.present_seq = st.present_seq.wrapping_add(1);
                 match gpu.backend {
                     #[cfg(windows)]
                     GpuBackend::D3D11 => {
@@ -621,6 +632,13 @@ impl ChartEngine {
 
     pub fn follow(&self) -> bool {
         self.follow
+    }
+
+    /// Счётчик реальных present'ов own-pass (растёт на каждый презентнутый кадр). 60-Гц
+    /// prepare-задача движет край, лишь когда он вырос с прошлого раза → не молотит при
+    /// occluded-окне (present=0). См. RenderState::present_seq.
+    pub fn present_seq(&self) -> u64 {
+        self.state.borrow().present_seq
     }
 
     pub fn sync_follow_from_views(&mut self) -> bool {

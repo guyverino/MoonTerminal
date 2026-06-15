@@ -266,11 +266,15 @@ view-caching (отдельная задача в moon-palette).
    _Windows frame-pacing (WM_GPUI_VSYNC_TICK, waitable swapchain) — ОТДЕЛЬНЫЙ пласт форка, в этот PR не входит._
 2. **Чарт** ([chart.rs](../crates/moon-ui-gpui/src/panels/chart.rs)): убран `request_animation_frame`;
    живой край двигает 60-Гц prepare-задача (`follow_edge(now)`); гайд берётся в render на live-follow
-   и дропается на паузе (present → on-demand, батарея). Скролл гладкий БЕЗ notify.
-3. **Источник** ([main.rs](../crates/moon-ui-gpui/src/main.rs)): backend-notify → ~4 Гц единый пульс.
+   (только fast-чарт, привязан к WindowId), дропается на паузе/скрытии вкладки (present → on-demand,
+   батарея). Задача движет край, ЛИШЬ когда держим guard И вырос `present_seq` own-pass'а (счётчик
+   реальных present'ов) → матчит фактический present-rate и СПИТ при occluded-окне (macOS CVDisplayLink
+   стоп → present=0) или inactive (Windows 30fps → 30 prep/с, а не 60 вхолостую). Скролл гладкий БЕЗ notify.
+3. **Источник** ([main.rs](../crates/moon-ui-gpui/src/main.rs)): backend-notify → ≤4 Гц единый causal пульс.
 
-Итог (замерено): `orders_render: 240 → ~4/s` (≥250мс, требование юзера), `chart_task_prep ~59/с`
-(полные 60 Гц скролла — guard-форма освободила main-поток лучше прежнего хака). `chart_raf=0`.
+Итог (замерено): `orders_render: 240 → ~3-4/s` (≥250мс, требование юзера), `chart_raf=0`.
+`chart_task_prep` = present-rate чарта: ~60 на активном фокусном окне, ~30 на inactive (заcapped),
+0 на occluded — задача больше не молотит вхолостую, когда кадров нет.
 **Остаточная архитектурная сцепка:** Orders всё ещё перерисовывается top-down (не кэш-вью). Пока её
 держат на ≤4 Гц пульсом — ОК. Полная развязка (per-panel view-caching, чтобы Orders рисовалась ТОЛЬКО
 по своему гейту независимо от хрома) — отдельная задача в moon-palette (DockArea встраивает панели

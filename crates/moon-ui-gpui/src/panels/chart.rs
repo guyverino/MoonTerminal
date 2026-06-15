@@ -79,6 +79,9 @@ pub struct ChartPanel {
     /// сравниваем и перевзимаем guard для нового окна (иначе continuous-present остаётся на
     /// старом окне, а новое его не получает).
     present_guard_window: Option<WindowId>,
+    /// Последний виденный задачей present_seq own-pass'а. Задача движет край, лишь когда он
+    /// вырос (был реальный present) → матчит present-rate и спит при occluded-окне.
+    last_present_seq: u64,
     focus: FocusHandle,
 }
 
@@ -136,8 +139,10 @@ impl ChartPanel {
         // метивший дёрти весь путь до Shell → top-down перерисовка тяжёлого Orders на refresh
         // монитора (диско). Оси (GPUI-текст-оверлей) освежает общий backend-пульс ~4 Гц (drain),
         // тот же, что и весь хром, — отдельный notify отсюда был бы вторым несинхронным источником
-        // top-down рендера. Задача активна РОВНО когда держим present_guard (fast-чарт виден +
-        // live-follow); на паузе/скрытии вкладки guard дропается и задача спит (не молотит в фоне).
+        // top-down рендера. Задача движет край при ДВУХ условиях: держим present_guard (fast-чарт
+        // виден + live-follow; пауза/скрытие вкладки дропают его) И с прошлого раза был реальный
+        // present (present_seq own-pass'а вырос) — последнее глушит задачу при occluded-окне
+        // (macOS CVDisplayLink стоп → present=0) и матчит фактический present-rate.
         cx.spawn(async move |this, cx| {
             // gpui (свежий): AsyncApp::update инфэллибл (возвращает R, не Result).
             let executor = cx.update(|cx| cx.background_executor().clone());
@@ -145,10 +150,14 @@ impl ChartPanel {
                 executor.timer(std::time::Duration::from_millis(16)).await;
                 let alive = cx.update(|cx| {
                     this.update(cx, |this, cx| {
-                        // present_guard.is_some() ⟺ fast-чарт виден (pass на окне) и в live-follow:
-                        // ровно когда нужно двигать край. Скрытая вкладка (unregister_pass) и пауза
-                        // дропают guard → задача засыпает, а не молотит в фоне.
-                        if this.present_guard.is_some() {
+                        // Двигаем край, только если: (1) держим guard (fast-чарт виден + live-
+                        // follow; скрытая вкладка/пауза дропают его) И (2) с прошлого раза был
+                        // РЕАЛЬНЫЙ present (present_seq вырос). (2) глушит задачу при occluded-окне
+                        // (macOS CVDisplayLink стоп → present=0) и матчит present-rate (Windows
+                        // inactive 30fps → 30 prep/с, а не 60 вхолостую).
+                        let seq = this.chart.present_seq();
+                        if this.present_guard.is_some() && seq != this.last_present_seq {
+                            this.last_present_seq = seq;
                             crate::diag::bump(&crate::diag::CHART_TASK_PREP);
                             let b = this.backend.read(cx);
                             this.chart.prepare(&b.session, this.last_ppp);
@@ -181,6 +190,7 @@ impl ChartPanel {
             last_ppp: 1.0,
             present_guard: None,
             present_guard_window: None,
+            last_present_seq: 0,
             focus: cx.focus_handle(),
         }
     }
@@ -247,6 +257,7 @@ impl ChartPanel {
             last_ppp: 1.0,
             present_guard: None,
             present_guard_window: None,
+            last_present_seq: 0,
             focus: cx.focus_handle(),
         }
     }
@@ -489,6 +500,7 @@ impl Render for ChartPanel {
                     if let Some((core, market)) = this.input.pending_to_main.take() {
                         this.backend.update(cx, |b, bcx| {
                             b.open_request = Some((core, market));
+                            b.open_request_rev = b.open_request_rev.wrapping_add(1);
                             bcx.notify();
                         });
                     }
