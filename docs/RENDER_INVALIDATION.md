@@ -68,8 +68,8 @@ MoonBot копит 6 флагов между тиками, разруливае�
 | Источник | Где |
 |---|---|
 | приход данных (data_signature сменилась) | `observe(&backend)` — [panels/chart.rs:96](../crates/moon-ui-gpui/src/panels/chart.rs) |
-| дренаж данных / координация | timer-цикл — [main.rs](../crates/moon-ui-gpui/src/main.rs) (`drained \|\| coord`) |
-| mouse move/down/up/wheel, hover | input-хендлеры — [panels/chart.rs:340-502](../crates/moon-ui-gpui/src/panels/chart.rs) |
+| дренаж данных | timer-цикл — [main.rs](../crates/moon-ui-gpui/src/main.rs) (`drain()->bool`, не coord-пульс) |
+| mouse move/wheel/drag/hover-change | input-хендлеры — [panels/chart.rs](../crates/moon-ui-gpui/src/panels/chart.rs), только при смене cursor/drag/view |
 | fast-чарт: каждый vsync | `request_animation_frame` — [panels/chart.rs:271](../crates/moon-ui-gpui/src/panels/chart.rs) |
 | смена настроек темы/ордеров/масштаба/follow | `settings_changed` — [panels/chart.rs:290-296](../crates/moon-ui-gpui/src/panels/chart.rs) |
 
@@ -173,7 +173,7 @@ OrderLine/SysRect/NewsMarker). `userdata` рисует ТОЛЬКО линии �
 - ⚠️ **долг:** подписи осей **ре-шейпятся (glyph-раскладка) КАЖДЫЙ кадр** без кэша — на mouse-move зря. MoonBot держит `TextWidthInt`-кэш по строке (5с). Кандидат на кэш по (текст, стиль).
 
 ### Дренаж данных — [main.rs](../crates/moon-ui-gpui/src/main.rs)
-- Данные дренятся **~60Гц** (фид кладёт каждые ~8мс); тяжёлая координация (reconcile_providers/метрики/сохранения) — **~100мс** (каждый 6-й тик). Окна будятся **только когда реально пришли данные** (`drain()` → bool) или прошла координация.
+- Данные дренятся **~60Гц** (фид кладёт каждые ~8мс); тяжёлая координация (reconcile_providers/метрики/сохранения) — **~100мс** (каждый 6-й тик). Окна будятся **только когда реально пришли данные** (`drain()` → bool) и сработал общий cap `notify_due`. Координация/сохранения сами по себе НЕ являются причиной UI-render.
 
 ---
 
@@ -220,13 +220,15 @@ GAP-5 особенно: при перетаскивании ордера (ког
 | **ChartPanel (AddToChart)** | [chart.rs](../crates/moon-ui-gpui/src/panels/chart.rs) | `data_signature` + троттл **≥1с** | фон/мультичарт, нет задачи; скролл по observe + present |
 | **OrdersPanel** | [orders.rs](../crates/moon-ui-gpui/src/panels/orders.rs) | `orders_sig`(эпоха/статус) ИЛИ 1с (цены) | **ИСКЛЮЧЕНИЕ: НЕ ЧАЩЕ 250мс** — ордерные ивенты летят часто, глаз не различит → коалесцируем до 4 Гц |
 | **LogPanel** | [log.rs:85](../crates/moon-ui-gpui/src/panels/log.rs) | `log_sig` сменился | — |
-| **DetectsPanel** | [detects.rs:60](../crates/moon-ui-gpui/src/panels/detects.rs) | свой sig | — |
+| **DetectsPanel** | [detects.rs:60](../crates/moon-ui-gpui/src/panels/detects.rs) | `detects_sig` сменился | TTL-prune отдельным one-shot timer до ближайшего истечения, не от backend observe |
 | **ReportPanel** | [report.rs:119](../crates/moon-ui-gpui/src/panels/report.rs) | `generation` сменился | — |
 | **Shell** | [main.rs](../crates/moon-ui-gpui/src/main.rs) | **троттл ≥250мс** (`last_notify`) | показывает диагностику (fps/тики/cpu) — ≤4 Гц человеку хватает |
-| **DetachedWindow** | [detached.rs:128](../crates/moon-ui-gpui/src/detached.rs) | **НЕТ** | тонкий хост |
-| **ChartTabs** | [chart_tabs.rs:69](../crates/moon-ui-gpui/src/chart_tabs.rs) | **НЕТ** | содержит чарт |
-| **StrategiesView** | [strategies/mod.rs:112](../crates/moon-ui-gpui/src/strategies/mod.rs) | **НЕТ** | only-when-open |
-| **SettingsView** | [settings/mod.rs:221](../crates/moon-ui-gpui/src/settings/mod.rs) | **НЕТ** | only-when-open |
+| **DetachedWindow** | [detached.rs:128](../crates/moon-ui-gpui/src/detached.rs) | backend observe убран | геометрия сохраняется по `observe_window_bounds`, не polling по данным/render |
+| **ChartTabs** | [chart_tabs.rs:69](../crates/moon-ui-gpui/src/chart_tabs.rs) | `chart_tabs_sig`: detects_rev группы, split-настройка, open_request только своей группы | `open_request` больше не съедается чужой группой |
+| **StrategiesView** | [strategies/mod.rs:112](../crates/moon-ui-gpui/src/strategies/mod.rs) | `strategies_sig` (strategies/schema rev) | `param_deps.toml` hot-reload отдельным 1с file-mtime timer, не backend observe |
+| **SettingsView** | [settings/mod.rs:221](../crates/moon-ui-gpui/src/settings/mod.rs) | `settings_sig` (draft/config + статусы ядер) | only-when-open; вводы нотифают сами |
+
+**AddToChart TTL:** [chart.rs](../crates/moon-ui-gpui/src/panels/chart.rs) больше не prune'ит TTL из backend observe. У каждой AddToChart-панели свой one-shot timer до ближайшего deadline; он будит панель только если реально удалил истёкшую монету.
 
 **Источник backend-notify (ГЛАВНЫЙ рычаг):** дренаж-цикл [main.rs](../crates/moon-ui-gpui/src/main.rs),
 `notify_due = tick % 16` → **≤4 Гц (256мс)**, единый UI-пульс, И только когда `drain()->bool` показал
@@ -241,6 +243,13 @@ view-caching (отдельная задача в moon-palette).
 после raf-кила: orders_render=13  chart_raf=0   (диско монитор-рейта убито, но >4 Гц)
 + единый пульс: orders_render=2-4 shell_render=2-4 chart_render=2-4 backend_notify=2-4 chart_raf=0
 ```
+
+**Проверка 2026-06-16 после dirty/notify cleanup:** `MOON_RENDER_DIAG=1`, MSVC debug exe,
+8-10 секунд живого окна. Слепых `observe(&backend, |_this, _b, cx| cx.notify())` grep не находит.
+Фактический steady-state: `orders_render=2-4/s`, `shell_render=2-4/s`, `chart_render=2-4/s`,
+`backend_notify=2-4/s`; `chart_input_notify=0`, `chart_ttl_notify=0`, `chart_open_notify=0`,
+`chart_canvas_notify=1` только на первичное измерение геометрии окна.
+
 **Инсайт (доказан замером, не догадкой):** гейт ОТДЕЛЬНОЙ вьюхи (Shell/Orders/chart) против top-down
 рендера БЕССИЛЕН — GPUI перерисовывает дерево СВЕРХУ, минуя само-гейт листа (видели: гейтнули Shell
 10→3, а `orders_render` остался 13, т.к. дерево дёргали ДРУГИЕ источники). Любой `cx.notify()` любой

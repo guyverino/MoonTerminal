@@ -676,6 +676,10 @@ impl ChartEngine {
         self.container.has_ttl_panes()
     }
 
+    pub fn next_ttl_deadline_ms(&self) -> Option<f64> {
+        self.container.next_ttl_deadline_ms()
+    }
+
     /// Сигнатура данных (ticks_rev+book_rev+orders_rev по всем панелям) — для гейта пере-рендера.
     pub fn data_signature(&self, session: &SessionManager) -> u64 {
         let mut sig = 0u64;

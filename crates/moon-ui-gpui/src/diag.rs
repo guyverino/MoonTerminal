@@ -39,6 +39,10 @@ diag_counters!(
     SHELL_OBS_NOTIFY  => "shell_obs_notify",
     CHART_OBS_FIRE    => "chart_obs_fire",
     CHART_OBS_NOTIFY  => "chart_obs_notify",
+    CHART_OPEN_NOTIFY => "chart_open_notify",
+    CHART_TTL_NOTIFY  => "chart_ttl_notify",
+    CHART_INPUT_NOTIFY => "chart_input_notify",
+    CHART_CANVAS_NOTIFY => "chart_canvas_notify",
 );
 
 /// Диагностика включается ТОЛЬКО при заданной env `MOON_RENDER_DIAG` (любое значение). По

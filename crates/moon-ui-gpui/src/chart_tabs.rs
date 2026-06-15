@@ -94,11 +94,31 @@ impl ChartTabs {
 
     /// Дабл-клик по чарту AddToChart-вкладки → открыть монету на Main + переключиться.
     fn handle_open_request(&mut self, cx: &mut Context<Self>) {
-        let req = self.backend.update(cx, |b, _| b.open_request.take());
+        let pending = {
+            let b = self.backend.read(cx);
+            b.open_request
+                .as_ref()
+                .cloned()
+                .filter(|(core, _)| core_belongs_to_group(b, self.group.as_str(), *core))
+        };
+        let Some((pending_core, pending_market)) = pending else {
+            return;
+        };
+        let req = self.backend.update(cx, |b, _| {
+            if b.open_request
+                .as_ref()
+                .is_some_and(|(core, market)| *core == pending_core && market == &pending_market)
+            {
+                b.open_request.take()
+            } else {
+                None
+            }
+        });
         if let Some((core, market)) = req {
             self.main
                 .update(cx, |p, pcx| p.open_market(core, market, pcx));
             self.active = Tab::Main;
+            self.last_sig = chart_tabs_sig(self.backend.read(cx), self.group.as_str());
         }
     }
 
@@ -163,7 +183,7 @@ impl ChartTabs {
                         .find(|(num, c, _)| *num == n && *c == key_core)
                 })
             {
-                tab.update(cx, |p, _| p.add_coin(core, &market, ttl));
+                tab.update(cx, |p, pcx| p.add_coin(core, &market, ttl, pcx));
             } else {
                 let panel = cx.new(|cx| {
                     ChartPanel::new_addto(
@@ -176,7 +196,7 @@ impl ChartTabs {
                         cx,
                     )
                 });
-                panel.update(cx, |p, _| p.add_coin(core, &market, ttl));
+                panel.update(cx, |p, pcx| p.add_coin(core, &market, ttl, pcx));
                 self.add.push((n, key_core, panel));
                 // Порядок вкладок: по (номер, ядро) — как egui sort_by_key.
                 self.add.sort_by_key(|(num, c, _)| (*num, c.unwrap_or(0)));
@@ -293,7 +313,15 @@ impl ChartTabs {
 }
 
 fn chart_tabs_sig(b: &Backend, group: &str) -> u64 {
-    let mut sig = b.open_request_rev;
+    let mut sig = if b
+        .open_request
+        .as_ref()
+        .is_some_and(|(core, _)| core_belongs_to_group(b, group, *core))
+    {
+        b.open_request_rev
+    } else {
+        0
+    };
     sig = sig
         .wrapping_mul(31)
         .wrapping_add(u64::from(b.config.charts_split_by_core));
@@ -304,6 +332,13 @@ fn chart_tabs_sig(b: &Backend, group: &str) -> u64 {
         }
     }
     sig
+}
+
+fn core_belongs_to_group(b: &Backend, group: &str, core: CoreId) -> bool {
+    b.session
+        .sessions()
+        .iter()
+        .any(|s| s.id == core && s.group == group)
 }
 
 impl EventEmitter<PanelEvent> for ChartTabs {}
@@ -381,8 +416,10 @@ impl Render for ChartTabs {
                         } else if matches!(tab_id, Tab::Main)
                             || this.add.iter().any(|(n, c, _)| Tab::Add(*n, *c) == tab_id)
                         {
-                            this.active = tab_id;
-                            cx.notify();
+                            if this.active != tab_id {
+                                this.active = tab_id;
+                                cx.notify();
+                            }
                         }
                     });
                 }

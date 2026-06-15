@@ -6,6 +6,8 @@
 //! backbuffer GPUI без readback), `prepare` каждый кадр обновляет вид и заливает новые тики.
 //! Текст осей и перекрестие — GPUI-оверлей ПОВЕРХ (нативный текст, см. `docs/RENDER_PLAN.md`).
 
+use std::time::Duration;
+
 use gpui::*;
 use moon_palette::{MoonBackgroundPolicy, MoonPalette, Panel, PanelEvent};
 
@@ -82,6 +84,9 @@ pub struct ChartPanel {
     /// Последний виденный задачей present_seq own-pass'а. Задача движет край, лишь когда он
     /// вырос (был реальный present) → матчит present-rate и спит при occluded-окне.
     last_present_seq: u64,
+    /// One-shot timer до ближайшего истечения AddToChart TTL. Это time-based dirty,
+    /// поэтому он не должен зависеть от backend data observe.
+    ttl_timer_armed: bool,
     focus: FocusHandle,
 }
 
@@ -105,25 +110,21 @@ impl ChartPanel {
                 }
             });
         }
-        // Пере-рендер ТОЛЬКО при приходе данных (сигнатура) или истечении TTL-панели — иначе
-        // окна не молотят зря. Own-pass рисует на каждом нашем кадре, поэтому достаточно notify.
+        // Пере-рендер ТОЛЬКО при приходе данных (сигнатура). Time-based TTL панелей
+        // обслуживает локальный one-shot timer, не backend data observe.
         cx.observe(&backend, |this, backend, cx| {
             crate::diag::bump(&crate::diag::CHART_OBS_FIRE);
             let now = now_unix_ms();
-            let pruned = this.chart.prune_ttl(now);
             let sig = this.chart.data_signature(&backend.read(cx).session);
-            if pruned {
-                this.view_dirty = true;
-            }
-            if pruned || sig != this.data_sig {
+            if sig != this.data_sig {
                 this.data_sig = sig;
                 // Троттл notify. Данные own-pass рисует сам по present (форк), notify нужен лишь
                 // для GPUI-оверлея осей, а он идёт top-down → дёргает Orders. Поэтому ≤4 Гц для
-                // fast (≥250мс) и ≤1 Гц для addto; pruned (удаление панели по TTL) — сразу. Для
-                // fast при live-follow реальный notify даёт 60-Гц prepare-задача (тоже ≥250мс через
+                // fast (≥250мс) и ≤1 Гц для addto. Для fast при live-follow реальный notify даёт
+                // 60-Гц prepare-задача (тоже ≥250мс через
                 // общий last_adaptive_notify_ms); этот источник работает на паузе, когда задача спит.
                 let floor = if this.fast { 250.0 } else { 1000.0 };
-                if pruned || now - this.last_adaptive_notify_ms >= floor {
+                if now - this.last_adaptive_notify_ms >= floor {
                     this.last_adaptive_notify_ms = now;
                     crate::diag::bump(&crate::diag::CHART_OBS_NOTIFY);
                     cx.notify();
@@ -191,6 +192,7 @@ impl ChartPanel {
             present_guard: None,
             present_guard_window: None,
             last_present_seq: 0,
+            ttl_timer_armed: false,
             focus: cx.focus_handle(),
         }
     }
@@ -205,6 +207,7 @@ impl ChartPanel {
                 b.desired.push((core, market));
             }
         });
+        crate::diag::bump(&crate::diag::CHART_OPEN_NOTIFY);
         cx.notify();
     }
 
@@ -221,18 +224,14 @@ impl ChartPanel {
         let chart = ChartEngine::new_kind(epoch, theme, ContainerKind::Chart { num, core });
         cx.observe(&backend, |this, backend, cx| {
             let now = now_unix_ms();
-            let pruned = this.chart.prune_ttl(now);
             let sig = this.chart.data_signature(&backend.read(cx).session);
-            if pruned {
-                this.view_dirty = true;
-            }
-            if pruned || sig != this.data_sig {
+            if sig != this.data_sig {
                 this.data_sig = sig;
                 // AddToChart — фоновый/мультичарт: notify (а с ним top-down перерисовка Orders)
-                // ≤1 Гц; pruned (удаление панели) — сразу. У addto нет 60-Гц задачи, скролл идёт
-                // по этому observe + present own-pass.
-                if pruned || now - this.last_adaptive_notify_ms >= 1000.0 {
+                // ≤1 Гц. Time-based prune делает локальный TTL timer.
+                if now - this.last_adaptive_notify_ms >= 1000.0 {
                     this.last_adaptive_notify_ms = now;
+                    crate::diag::bump(&crate::diag::CHART_OBS_NOTIFY);
                     cx.notify();
                 }
             }
@@ -258,6 +257,7 @@ impl ChartPanel {
             present_guard: None,
             present_guard_window: None,
             last_present_seq: 0,
+            ttl_timer_armed: false,
             focus: cx.focus_handle(),
         }
     }
@@ -279,9 +279,43 @@ impl ChartPanel {
     }
 
     /// AddToChart: добавить монету авто-панелью (Tiled-мультичарт) с TTL.
-    pub fn add_coin(&mut self, core: CoreId, market: &str, ttl_ms: f64) {
+    pub fn add_coin(&mut self, core: CoreId, market: &str, ttl_ms: f64, cx: &mut Context<Self>) {
         self.chart.push_auto(core, market, ttl_ms, now_unix_ms());
         self.view_dirty = true;
+        self.arm_ttl_timer(cx);
+    }
+
+    fn next_ttl_delay(&self, now_ms: f64) -> Option<Duration> {
+        self.chart
+            .next_ttl_deadline_ms()
+            .map(|deadline| Duration::from_millis((deadline - now_ms).max(1.0).ceil() as u64))
+    }
+
+    fn arm_ttl_timer(&mut self, cx: &mut Context<Self>) {
+        if self.ttl_timer_armed {
+            return;
+        }
+        let Some(delay) = self.next_ttl_delay(now_unix_ms()) else {
+            return;
+        };
+        self.ttl_timer_armed = true;
+        cx.spawn(async move |this, cx| {
+            let executor = cx.update(|cx| cx.background_executor().clone());
+            executor.timer(delay).await;
+            let _ = cx.update(|cx| {
+                this.update(cx, |this, cx| {
+                    this.ttl_timer_armed = false;
+                    if this.chart.prune_ttl(now_unix_ms()) {
+                        this.view_dirty = true;
+                        crate::diag::bump(&crate::diag::CHART_TTL_NOTIFY);
+                        cx.notify();
+                    }
+                    this.arm_ttl_timer(cx);
+                })
+                .is_ok()
+            });
+        })
+        .detach();
     }
 
     fn mark_input_changed(&mut self, cx: &mut Context<Self>) {
@@ -467,6 +501,7 @@ impl Render for ChartPanel {
                     sf,
                 ) {
                     this.mark_input_changed(cx);
+                    crate::diag::bump(&crate::diag::CHART_INPUT_NOTIFY);
                     cx.notify();
                 }
             }))
@@ -488,7 +523,7 @@ impl Render for ChartPanel {
                     };
                     // На AddToChart-вкладках дабл-клик по ЧАРТУ → открыть монету на Main (fullscreen).
                     let allow_to_main = this.num.is_some();
-                    this.input.mouse_button(
+                    let input_changed = this.input.mouse_button(
                         input::Btn::Left,
                         true,
                         within,
@@ -497,14 +532,19 @@ impl Render for ChartPanel {
                         sf,
                         this.chart_dev.0 as f32,
                     );
+                    let mut opened_to_main = false;
                     if let Some((core, market)) = this.input.pending_to_main.take() {
                         this.backend.update(cx, |b, bcx| {
                             b.open_request = Some((core, market));
                             b.open_request_rev = b.open_request_rev.wrapping_add(1);
                             bcx.notify();
                         });
+                        opened_to_main = true;
                     }
-                    cx.notify();
+                    if input_changed || opened_to_main {
+                        crate::diag::bump(&crate::diag::CHART_INPUT_NOTIFY);
+                        cx.notify();
+                    }
                 }),
             )
             .on_mouse_up(
@@ -521,8 +561,9 @@ impl Render for ChartPanel {
                         this.chart_dev.0 as f32,
                     ) {
                         this.mark_input_changed(cx);
+                        crate::diag::bump(&crate::diag::CHART_INPUT_NOTIFY);
+                        cx.notify();
                     }
-                    cx.notify();
                 }),
             )
             .on_mouse_down(
@@ -547,6 +588,7 @@ impl Render for ChartPanel {
                         sf,
                         this.chart_dev.0 as f32,
                     ) {
+                        crate::diag::bump(&crate::diag::CHART_INPUT_NOTIFY);
                         cx.notify();
                     }
                 }),
@@ -565,8 +607,9 @@ impl Render for ChartPanel {
                         this.chart_dev.0 as f32,
                     ) {
                         this.view_dirty = true;
+                        crate::diag::bump(&crate::diag::CHART_INPUT_NOTIFY);
+                        cx.notify();
                     }
-                    cx.notify();
                 }),
             )
             .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, window, cx| {
@@ -581,6 +624,8 @@ impl Render for ChartPanel {
                     e.pressed_button == Some(MouseButton::Left),
                     e.pressed_button == Some(MouseButton::Right),
                 );
+                let prev_cursor = this.input.cursor;
+                let prev_hovered = this.input.hovered_pane;
                 this.input.cursor = if within { Some(pos) } else { None };
                 this.input.hovered_pane = if within {
                     this.input.pane_at(pos.0, pos.1)
@@ -599,13 +644,22 @@ impl Render for ChartPanel {
                 }
                 // Крестик и пан/зум — перерисовываемся на движение мыши (own-pass дёшев: combo
                 // блитит готовый битмап, оверлей крестика — нативный GPUI).
-                cx.notify();
+                if dragging
+                    || prev_cursor != this.input.cursor
+                    || prev_hovered != this.input.hovered_pane
+                {
+                    crate::diag::bump(&crate::diag::CHART_INPUT_NOTIFY);
+                    cx.notify();
+                }
             }))
             .on_hover(cx.listener(|this, hovered: &bool, _window, cx| {
                 if !*hovered {
-                    this.input.cursor = None;
-                    this.input.hovered_pane = None;
-                    cx.notify();
+                    let changed = this.input.cursor.take().is_some()
+                        || this.input.hovered_pane.take().is_some();
+                    if changed {
+                        crate::diag::bump(&crate::diag::CHART_INPUT_NOTIFY);
+                        cx.notify();
+                    }
                 }
             }))
             // Оверлей: оси/числа/перекрестие — GPUI поверх own-pass графика (прозрачный регион).
@@ -625,6 +679,7 @@ impl Render for ChartPanel {
                             entity.update(cx, |this, cx| {
                                 this.chart_bounds = Some(bounds);
                                 this.chart_dev = dev;
+                                crate::diag::bump(&crate::diag::CHART_CANVAS_NOTIFY);
                                 cx.notify();
                             });
                         }

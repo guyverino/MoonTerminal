@@ -13,14 +13,21 @@ use super::SettingsView;
 impl SettingsView {
     /// Изменить срок хранения логов (клампим 0..=365), правит draft.
     fn adjust_ret(&mut self, delta: i32, cx: &mut Context<Self>) {
-        self.backend.update(cx, |b, bcx| {
+        let changed = self.backend.update(cx, |b, bcx| {
+            let mut changed = false;
             if let Some(p) = b.preview.as_mut() {
                 let v = (p.log_retention_days as i32 + delta).clamp(0, 365) as u32;
-                p.log_retention_days = v;
-                bcx.notify();
+                if p.log_retention_days != v {
+                    p.log_retention_days = v;
+                    bcx.notify();
+                    changed = true;
+                }
             }
+            changed
         });
-        cx.notify();
+        if changed {
+            cx.notify();
+        }
     }
 
     /// Вкладка «Общие» — порт egui `settings/general.rs` точь-в-точь: язык (выпадающий
@@ -64,13 +71,20 @@ impl SettingsView {
                     .size(MoonCheckboxSize::Normal)
                     .on_change(cx.listener(|this, ch: &bool, _w, cx| {
                         let v = *ch;
-                        this.backend.update(cx, |b, bcx| {
+                        let changed = this.backend.update(cx, |b, bcx| {
+                            let mut changed = false;
                             if let Some(p) = b.preview.as_mut() {
-                                p.charts_split_by_core = v;
-                                bcx.notify();
+                                if p.charts_split_by_core != v {
+                                    p.charts_split_by_core = v;
+                                    bcx.notify();
+                                    changed = true;
+                                }
                             }
+                            changed
                         });
-                        cx.notify();
+                        if changed {
+                            cx.notify();
+                        }
                     })),
             )
             .child(hint("AddToChart: вкл — 1-HL-ядро (своя вкладка на ядро), выкл — все ядра в одной 1-HL."))
@@ -83,13 +97,20 @@ impl SettingsView {
                     .size(MoonCheckboxSize::Normal)
                     .on_change(cx.listener(|this, ch: &bool, _w, cx| {
                         let v = *ch;
-                        this.backend.update(cx, |b, bcx| {
+                        let changed = this.backend.update(cx, |b, bcx| {
+                            let mut changed = false;
                             if let Some(p) = b.preview.as_mut() {
-                                p.log_to_file = v;
-                                bcx.notify();
+                                if p.log_to_file != v {
+                                    p.log_to_file = v;
+                                    bcx.notify();
+                                    changed = true;
+                                }
                             }
+                            changed
                         });
-                        cx.notify();
+                        if changed {
+                            cx.notify();
+                        }
                     })),
             )
             .child(hint("Лог приложения и ядер пишется в logs/<дата>_<источник>.log (по файлу на источник в день)."))

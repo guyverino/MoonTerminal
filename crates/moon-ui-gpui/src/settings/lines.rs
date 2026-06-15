@@ -45,8 +45,10 @@ fn ord_color(
         let c = hsla_u8(*h);
         this.backend.update(cx, |b, cx| {
             if let Some(p) = b.preview.as_mut() {
-                set(&mut p.orders, c);
-                cx.notify();
+                if get(&p.orders) != c {
+                    set(&mut p.orders, c);
+                    cx.notify();
+                }
             }
         });
     })
@@ -79,8 +81,10 @@ fn ord_slider(
         let f = *f;
         this.backend.update(cx, |b, cx| {
             if let Some(p) = b.preview.as_mut() {
-                set(&mut p.orders, f);
-                cx.notify();
+                if get(&p.orders) != f {
+                    set(&mut p.orders, f);
+                    cx.notify();
+                }
             }
         });
     })
@@ -231,13 +235,20 @@ impl SettingsView {
             .size(MoonCheckboxSize::Compact)
             .on_change(cx.listener(move |this, ch: &bool, _w, cx| {
                 let v = *ch;
-                this.backend.update(cx, |b, bcx| {
+                let changed = this.backend.update(cx, |b, bcx| {
+                    let mut changed = false;
                     if let Some(p) = b.preview.as_mut() {
-                        set(&mut p.orders, v);
-                        bcx.notify();
+                        if get(&p.orders) != v {
+                            set(&mut p.orders, v);
+                            bcx.notify();
+                            changed = true;
+                        }
                     }
+                    changed
                 });
-                cx.notify();
+                if changed {
+                    cx.notify();
+                }
             }))
     }
 

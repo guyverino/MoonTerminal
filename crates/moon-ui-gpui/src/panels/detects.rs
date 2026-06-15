@@ -4,6 +4,7 @@
 //! `Backend.open_request`, который читает Shell).
 
 use std::collections::{HashMap, VecDeque};
+use std::time::Duration;
 
 use gpui::*;
 use moon_palette::{MoonPalette, Panel, PanelEvent, PanelState, h_flex, v_flex};
@@ -50,7 +51,7 @@ pub struct DetectsPanel {
     items: VecDeque<DetectItem>,
     last_seq: HashMap<CoreId, u64>,
     last_sig: u64,
-    last_prune_sec: u64,
+    prune_timer_armed: bool,
     focus: FocusHandle,
 }
 
@@ -68,11 +69,8 @@ impl DetectsPanel {
                 this.last_sig = sig;
                 changed |= this.ingest(backend.read(cx));
             }
-            let sec = (now as u64) / 1000;
-            if !this.items.is_empty() && sec != this.last_prune_sec {
-                this.last_prune_sec = sec;
-                changed |= this.prune(now);
-            }
+            changed |= this.prune(now);
+            this.arm_prune_timer(cx);
             if changed {
                 cx.notify();
             }
@@ -85,11 +83,12 @@ impl DetectsPanel {
             items: VecDeque::new(),
             last_seq: HashMap::new(),
             last_sig: initial_sig,
-            last_prune_sec: 0,
+            prune_timer_armed: false,
             focus: cx.focus_handle(),
         };
         this.ingest(initial_backend.read(cx));
         this.prune(now_unix_ms());
+        this.arm_prune_timer(cx);
         this
     }
 
@@ -172,6 +171,42 @@ impl DetectsPanel {
         self.items.len() != before
     }
 
+    fn next_prune_delay(&self, now_ms: f64) -> Option<Duration> {
+        self.items
+            .iter()
+            .map(|it| it.born_ms + it.ttl_ms - now_ms)
+            .min_by(|a, b| a.total_cmp(b))
+            .map(|ms| Duration::from_millis(ms.max(1.0).ceil() as u64))
+    }
+
+    fn arm_prune_timer(&mut self, cx: &mut Context<Self>) {
+        if self.prune_timer_armed {
+            return;
+        }
+        let Some(delay) = self.next_prune_delay(now_unix_ms()) else {
+            return;
+        };
+        self.prune_timer_armed = true;
+        cx.spawn(async move |this, cx| {
+            let executor = cx.update(|cx| cx.background_executor().clone());
+            executor.timer(delay).await;
+            let alive = cx.update(|cx| {
+                this.update(cx, |this, cx| {
+                    this.prune_timer_armed = false;
+                    if this.prune(now_unix_ms()) {
+                        cx.notify();
+                    }
+                    this.arm_prune_timer(cx);
+                })
+                .is_ok()
+            });
+            if !alive {
+                return;
+            }
+        })
+        .detach();
+    }
+
     /// Открыть монету на Main: запрос в Backend (Shell откроет чарт) + убрать кнопку.
     fn open(&mut self, core: CoreId, market: String, cx: &mut Context<Self>) {
         self.items
@@ -181,6 +216,7 @@ impl DetectsPanel {
             b.open_request_rev = b.open_request_rev.wrapping_add(1);
             bcx.notify();
         });
+        self.arm_prune_timer(cx);
         cx.notify();
     }
 }

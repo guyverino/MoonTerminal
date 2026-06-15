@@ -139,6 +139,16 @@ impl Container {
             .any(|p| matches!(p.source, PaneSource::AddToChart { .. }))
     }
 
+    pub fn next_ttl_deadline_ms(&self) -> Option<f64> {
+        self.panes
+            .iter()
+            .filter_map(|p| match p.source {
+                PaneSource::AddToChart { born_ms, ttl_ms } => Some(born_ms + ttl_ms),
+                PaneSource::Manual => None,
+            })
+            .min_by(|a, b| a.total_cmp(b))
+    }
+
     /// Удалить панель (закрытие крестиком — подключится в UI-обработчике позже).
     #[allow(dead_code)]
     pub fn remove(&mut self, idx: usize) {

@@ -11,6 +11,7 @@ mod rules;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::time::Duration;
 
 use gpui::prelude::FluentBuilder;
 use gpui::*;
@@ -111,14 +112,33 @@ impl StrategiesView {
 
         let initial_sig = strategies_sig(backend.read(cx));
 
-        // Новые снимки стратегий/схемы → перерисовка; заодно hot-reload правил
-        // зависимостей (param_deps.toml) — только если файл реально изменился.
+        // Новые снимки стратегий/схемы → перерисовка. Hot-reload правил живёт на
+        // отдельном file-mtime таймере ниже: backend data observe не должен быть
+        // суррогатным polling loop для файловой системы.
         cx.observe(&backend, |this, backend, cx| {
             let sig = strategies_sig(backend.read(cx));
-            let rules_changed = this.rules.reload_if_changed();
-            if sig != this.last_sig || rules_changed {
+            if sig != this.last_sig {
                 this.last_sig = sig;
                 cx.notify();
+            }
+        })
+        .detach();
+
+        cx.spawn(async move |this, cx| {
+            let executor = cx.update(|cx| cx.background_executor().clone());
+            loop {
+                executor.timer(Duration::from_secs(1)).await;
+                let alive = cx.update(|cx| {
+                    this.update(cx, |this, cx| {
+                        if this.rules.reload_if_changed() {
+                            cx.notify();
+                        }
+                    })
+                    .is_ok()
+                });
+                if !alive {
+                    break;
+                }
             }
         })
         .detach();
@@ -152,7 +172,10 @@ impl StrategiesView {
 
     /// Клик по стратегии с учётом модификаторов: Shift — диапазон от якоря (по
     /// `order`), Ctrl/Cmd — добавить/убрать по одной, без модификатора — выбрать одну.
-    fn apply_click(&mut self, key: Key, order: &[Key], shift: bool, command: bool) {
+    fn apply_click(&mut self, key: Key, order: &[Key], shift: bool, command: bool) -> bool {
+        let before_selected = self.selected;
+        let before_anchor = self.anchor;
+        let before_sel = self.sel.clone();
         if shift {
             if let Some(a) = self.anchor {
                 let ia = order.iter().position(|k| *k == a);
@@ -179,6 +202,7 @@ impl StrategiesView {
         }
         // Первичная (источник схемы/секций) — всегда кликнутая. Раздел не сбрасываем.
         self.selected = Some(key);
+        before_selected != self.selected || before_anchor != self.anchor || before_sel != self.sel
     }
 
     // ── Действия (старт/стоп отмеченных) ─────────────────────────────────────
@@ -527,8 +551,10 @@ impl StrategiesView {
                                     .checked(self.filter.only_active)
                                     .size(MoonCheckboxSize::Compact)
                                     .on_change(cx.listener(|this, ch: &bool, _, cx| {
-                                        this.filter.only_active = *ch;
-                                        cx.notify();
+                                        if this.filter.only_active != *ch {
+                                            this.filter.only_active = *ch;
+                                            cx.notify();
+                                        }
                                     })),
                             )
                             .child(
@@ -585,8 +611,10 @@ impl StrategiesView {
                     let view = view.clone();
                     move |_, _, app| {
                         view.update(app, |this, c| {
-                            this.filter.kind = None;
-                            c.notify();
+                            if this.filter.kind.is_some() {
+                                this.filter.kind = None;
+                                c.notify();
+                            }
                         });
                     }
                 }),
@@ -600,8 +628,10 @@ impl StrategiesView {
                         let name_ord = ord;
                         move |_, _, app| {
                             view.update(app, |this, c| {
-                                this.filter.kind = Some(name_ord);
-                                c.notify();
+                                if this.filter.kind != Some(name_ord) {
+                                    this.filter.kind = Some(name_ord);
+                                    c.notify();
+                                }
                             });
                         }
                     }),
@@ -632,8 +662,10 @@ impl StrategiesView {
                     .selected(self.filter.dir == val)
                     .on_click(move |_, _, app| {
                         view.update(app, |this, c| {
-                            this.filter.dir = val;
-                            c.notify();
+                            if this.filter.dir != val {
+                                this.filter.dir = val;
+                                c.notify();
+                            }
                         });
                     }),
             );
@@ -820,8 +852,9 @@ impl StrategiesView {
             )
             .on_click(cx.listener(move |this, e: &ClickEvent, _, cx| {
                 let m = e.modifiers();
-                this.apply_click(key, &order_c, m.shift, m.secondary());
-                cx.notify();
+                if this.apply_click(key, &order_c, m.shift, m.secondary()) {
+                    cx.notify();
+                }
             }));
         if highlighted {
             name_row = name_row
@@ -842,12 +875,15 @@ impl StrategiesView {
                     .size(MoonCheckboxSize::Compact)
                     .on_change(cx.listener(move |this, ch: &bool, _, cx| {
                         let v = *ch;
+                        let before = this.staged.get(&key).copied();
                         if v == server {
                             this.staged.remove(&key);
                         } else {
                             this.staged.insert(key, v);
                         }
-                        cx.notify();
+                        if before != this.staged.get(&key).copied() {
+                            cx.notify();
+                        }
                     })),
             )
             .child(div().text_color(moon(dot)).child("●"))
@@ -924,8 +960,10 @@ impl StrategiesView {
                 .text_color(moon(tcol))
                 .child(sec.title.clone())
                 .on_click(cx.listener(move |this, _, _, cx| {
-                    this.selected_section = i;
-                    cx.notify();
+                    if this.selected_section != i {
+                        this.selected_section = i;
+                        cx.notify();
+                    }
                 }));
             if on {
                 row = row
@@ -1073,8 +1111,10 @@ impl StrategiesView {
                     .checked(self.only_active_params)
                     .size(MoonCheckboxSize::Compact)
                     .on_change(cx.listener(|this, ch: &bool, _, cx| {
-                        this.only_active_params = *ch;
-                        cx.notify();
+                        if this.only_active_params != *ch {
+                            this.only_active_params = *ch;
+                            cx.notify();
+                        }
                     })),
             )
             .child(div().w_full().h(px(1.0)).bg(moon(p.border)));

@@ -199,16 +199,23 @@ impl ReportPanel {
     }
 
     fn set_core(&mut self, i: usize, cx: &mut Context<Self>) {
-        self.sel_core = i;
-        self.needs_query = true;
-        cx.notify();
+        if self.sel_core != i {
+            self.sel_core = i;
+            self.needs_query = true;
+            cx.notify();
+        }
     }
     fn set_side(&mut self, s: SideFilter, cx: &mut Context<Self>) {
-        self.side = s;
-        self.needs_query = true;
-        cx.notify();
+        if self.side != s {
+            self.side = s;
+            self.needs_query = true;
+            cx.notify();
+        }
     }
     fn set_report_sort(&mut self, col: &str, sort_desc: bool, cx: &mut Context<Self>) {
+        if self.sort_key == col && self.sort_desc == sort_desc {
+            return;
+        }
         self.sort_key = col.to_string();
         self.sort_desc = sort_desc;
         self.table_state.update(cx, |state, _| {

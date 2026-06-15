@@ -60,6 +60,7 @@ fn conn_input(
     cx: &mut Context<SettingsView>,
     i: usize,
     init: String,
+    get: fn(&ServerConfig) -> String,
     set: fn(&mut ServerConfig, String),
 ) -> Entity<MoonInputState> {
     let st = cx.new(|cx| MoonInputState::new(window, cx).default_value(init));
@@ -69,8 +70,10 @@ fn conn_input(
             this.backend.update(cx, |b, bcx| {
                 if let Some(p) = b.preview.as_mut() {
                     if let Some(s) = p.servers.get_mut(i) {
-                        set(s, val);
-                        bcx.notify();
+                        if get(s) != val {
+                            set(s, val);
+                            bcx.notify();
+                        }
                     }
                 }
             });
@@ -95,8 +98,10 @@ fn conn_color(
         this.backend.update(cx, |b, bcx| {
             if let Some(p) = b.preview.as_mut() {
                 if let Some(s) = p.servers.get_mut(i) {
-                    s.color = c;
-                    bcx.notify();
+                    if s.color != c {
+                        s.color = c;
+                        bcx.notify();
+                    }
                 }
             }
         });
@@ -120,17 +125,36 @@ pub(super) fn build_conn(
         .iter()
         .enumerate()
         .map(|(i, s)| ConnRow {
-            name: conn_input(window, cx, i, s.name.clone(), |s, v| s.name = v),
+            name: conn_input(
+                window,
+                cx,
+                i,
+                s.name.clone(),
+                |s| s.name.clone(),
+                |s, v| s.name = v,
+            ),
             // Ключ — поле пароля (порт egui `.password(true)`): символы скрыты, рядом
             // переключатель видимости (mask_toggle), чтобы при необходимости показать.
             key: {
-                let st = conn_input(window, cx, i, s.key.expose().to_string(), |s, v| {
-                    s.key = Secret::new(v)
-                });
+                let st = conn_input(
+                    window,
+                    cx,
+                    i,
+                    s.key.expose().to_string(),
+                    |s| s.key.expose().to_string(),
+                    |s, v| s.key = Secret::new(v),
+                );
                 st.update(cx, |st, c| st.set_masked(true, window, c));
                 st
             },
-            group: conn_input(window, cx, i, s.group.clone(), |s, v| s.group = v),
+            group: conn_input(
+                window,
+                cx,
+                i,
+                s.group.clone(),
+                |s| s.group.clone(),
+                |s, v| s.group = v,
+            ),
             color: conn_color(window, cx, i, s.color),
         })
         .collect()
@@ -198,15 +222,22 @@ impl SettingsView {
             .size(MoonCheckboxSize::Compact)
             .on_change(cx.listener(move |this, ch: &bool, _w, cx| {
                 let v = *ch;
-                this.backend.update(cx, |b, bcx| {
+                let changed = this.backend.update(cx, |b, bcx| {
+                    let mut changed = false;
                     if let Some(p) = b.preview.as_mut() {
                         if let Some(s) = p.servers.get_mut(i) {
-                            set(s, v);
-                            bcx.notify();
+                            if get(s) != v {
+                                set(s, v);
+                                bcx.notify();
+                                changed = true;
+                            }
                         }
                     }
+                    changed
                 });
-                cx.notify();
+                if changed {
+                    cx.notify();
+                }
             }));
         if !label.is_empty() {
             checkbox = checkbox.label(label);

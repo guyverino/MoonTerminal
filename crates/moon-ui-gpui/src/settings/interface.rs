@@ -45,8 +45,10 @@ fn color_field(
         let c = hsla_u8(*h);
         this.backend.update(cx, |b, cx| {
             if let Some(p) = b.preview.as_mut() {
-                set(&mut p.theme, c);
-                cx.notify();
+                if get(&p.theme) != c {
+                    set(&mut p.theme, c);
+                    cx.notify();
+                }
             }
         });
     })
@@ -80,8 +82,10 @@ fn num_field(
         let f = *f;
         this.backend.update(cx, |b, cx| {
             if let Some(p) = b.preview.as_mut() {
-                set(&mut p.theme, f);
-                cx.notify();
+                if get(&p.theme) != f {
+                    set(&mut p.theme, f);
+                    cx.notify();
+                }
             }
         });
     })

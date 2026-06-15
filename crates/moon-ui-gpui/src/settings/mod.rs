@@ -15,6 +15,8 @@ mod interface;
 mod lines;
 
 use std::collections::HashSet;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 
 use gpui::*;
 use moon_palette::{
@@ -152,6 +154,8 @@ pub struct SettingsView {
     icons: IconSet,
     /// Для какой группы открыт пикер иконок (None = закрыт). Порт egui `picking`.
     picking: Option<String>,
+    /// Сигнатура данных, которые реально читают настройки: draft/config + статусы.
+    last_sig: u64,
 }
 
 impl SettingsView {
@@ -216,9 +220,15 @@ impl SettingsView {
         )
         .detach();
 
-        // Живой статус ядер (точки в «Подключениях») + n/8 фид-кнопки → перерисовка
-        // окна настроек на каждый дренаж backend.
-        cx.observe(&backend, |_this, _b, cx| cx.notify()).detach();
+        let initial_sig = settings_sig(backend.read(cx));
+        cx.observe(&backend, |this, backend, cx| {
+            let sig = settings_sig(backend.read(cx));
+            if sig != this.last_sig {
+                this.last_sig = sig;
+                cx.notify();
+            }
+        })
+        .detach();
 
         // Закрытие окна (drop view) → сбросить draft: чарт откатывается к config
         // (отмена несохранённых правок) — как egui (draft discarded on close).
@@ -242,6 +252,7 @@ impl SettingsView {
             open_lines: HashSet::new(),
             icons: IconSet::discover(),
             picking: None,
+            last_sig: initial_sig,
         }
     }
 
@@ -496,6 +507,59 @@ fn settings_window_button(label: &'static str, color: u32) -> impl IntoElement {
         .text_color(rgba_from(color, 1.0))
         .hover(|s| s.bg(rgba_from(0xFFFFFF, 0.055)))
         .child(label)
+}
+
+fn settings_sig(b: &Backend) -> u64 {
+    let cfg = b.preview.as_ref().unwrap_or(&b.config);
+    let mut h = DefaultHasher::new();
+
+    cfg.language.code().hash(&mut h);
+    cfg.market_mode.code().hash(&mut h);
+    cfg.charts_split_by_core.hash(&mut h);
+    cfg.log_to_file.hash(&mut h);
+    cfg.log_retention_days.hash(&mut h);
+    format!("{:?}", cfg.theme).hash(&mut h);
+    format!("{:?}", cfg.orders).hash(&mut h);
+
+    cfg.servers.len().hash(&mut h);
+    for s in &cfg.servers {
+        s.id.hash(&mut h);
+        s.uid.hash(&mut h);
+        s.name.hash(&mut h);
+        s.active.hash(&mut h);
+        s.show_window.hash(&mut h);
+        s.feed.orders.hash(&mut h);
+        s.feed.detects.hash(&mut h);
+        s.feed.reports.hash(&mut h);
+        s.feed.balance.hash(&mut h);
+        s.feed.strategies.hash(&mut h);
+        s.feed.log.hash(&mut h);
+        s.feed.alerts.hash(&mut h);
+        s.feed.arb.hash(&mut h);
+        // The key input owns its local repaint while typing; only empty/non-empty
+        // affects surrounding settings layout.
+        s.key.is_empty().hash(&mut h);
+        s.group.hash(&mut h);
+        s.market.hash(&mut h);
+        s.color.hash(&mut h);
+        s.synthetic.hash(&mut h);
+    }
+
+    cfg.groups.len().hash(&mut h);
+    for g in &cfg.groups {
+        g.name.hash(&mut h);
+        g.active.hash(&mut h);
+        g.icon.hash(&mut h);
+    }
+
+    let mut statuses = b.session.status_map().into_iter().collect::<Vec<_>>();
+    statuses.sort_by_key(|(id, _)| *id);
+    for (id, status) in statuses {
+        id.hash(&mut h);
+        format!("{status:?}").hash(&mut h);
+    }
+
+    h.finish()
 }
 
 fn settings_window_chrome(width: f32) -> impl IntoElement {

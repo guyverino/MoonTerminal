@@ -122,10 +122,14 @@ impl DetachedWindow {
         group: String,
         panel: String,
         content: AnyView,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        // Перерисовка по дренажу → отслеживание геометрии окна каждые ~100мс (как Shell).
-        cx.observe(&backend, |_this, _b, cx| cx.notify()).detach();
+        // Геометрия окна — causal bounds event, а не polling через render/backend pulse.
+        cx.observe_window_bounds(window, |this, window, cx| {
+            this.persist_geometry(window, cx);
+        })
+        .detach();
         // Закрытие окна → репин (вернуть панель в док окна-владельца). На выходе из
         // приложения дренаж уже не обрабатывает запрос → спека остаётся в detached.json
         // (панель восстановится отцепленной на следующем запуске).
@@ -143,13 +147,8 @@ impl DetachedWindow {
             content,
         }
     }
-}
 
-impl Render for DetachedWindow {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        crate::diag::bump(&crate::diag::DETACHED_RENDER);
-        let p = MoonPalette::active(cx);
-        // Снять геометрию окна → спека (save дебаунсит дренаж-таймер).
+    fn persist_geometry(&mut self, window: &Window, cx: &mut Context<Self>) {
         if let WindowBounds::Windowed(b) = window.window_bounds() {
             let geom = (
                 f32::from(b.origin.x) as i32,
@@ -174,6 +173,13 @@ impl Render for DetachedWindow {
                 }
             });
         }
+    }
+}
+
+impl Render for DetachedWindow {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::diag::bump(&crate::diag::DETACHED_RENDER);
+        let p = MoonPalette::active(cx);
         div()
             .size_full()
             .bg(rgb(p.shell))
@@ -225,6 +231,7 @@ pub fn spawn(app: &mut App, backend: &Entity<Backend>, spec: &DetachedSpec) {
                 spec.group.clone(),
                 spec.panel.clone(),
                 content,
+                window,
                 cx,
             )
         });

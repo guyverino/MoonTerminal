@@ -206,12 +206,16 @@ impl OrdersPanel {
     }
 
     fn set_source(&mut self, s: OrdersSource, cx: &mut Context<Self>) {
-        self.view.source = s;
-        cx.notify();
+        if self.view.source != s {
+            self.view.source = s;
+            cx.notify();
+        }
     }
     fn set_kind(&mut self, k: OrderKind, cx: &mut Context<Self>) {
-        self.view.kind = k;
-        cx.notify();
+        if self.view.kind != k {
+            self.view.kind = k;
+            cx.notify();
+        }
     }
 
     /// Поле-список источника (Все ядра + ядра группы) — порт egui ComboBox.
@@ -303,8 +307,10 @@ impl OrdersPanel {
                     .checked(cur.only_current_market)
                     .on_click(move |_, _, app| {
                         v.update(app, |t, c| {
-                            t.view.only_current_market = true;
-                            c.notify();
+                            if !t.view.only_current_market {
+                                t.view.only_current_market = true;
+                                c.notify();
+                            }
                         })
                     }),
             );
@@ -315,8 +321,10 @@ impl OrdersPanel {
                     .checked(!cur.only_current_market)
                     .on_click(move |_, _, app| {
                         v.update(app, |t, c| {
-                            t.view.only_current_market = false;
-                            c.notify();
+                            if t.view.only_current_market {
+                                t.view.only_current_market = false;
+                                c.notify();
+                            }
                         })
                     }),
             )
@@ -332,8 +340,10 @@ impl OrdersPanel {
                     .checked(cur.primary == variant)
                     .on_click(move |_, _, app| {
                         v.update(app, |t, c| {
-                            t.view.primary = variant;
-                            c.notify();
+                            if t.view.primary != variant {
+                                t.view.primary = variant;
+                                c.notify();
+                            }
                         })
                     }),
             );
@@ -344,8 +354,10 @@ impl OrdersPanel {
                 .checked(cur.newest_first)
                 .on_click(move |_, _, app| {
                     v.update(app, |t, c| {
-                        t.view.newest_first = true;
-                        c.notify();
+                        if !t.view.newest_first {
+                            t.view.newest_first = true;
+                            c.notify();
+                        }
                     })
                 }),
         );
@@ -355,8 +367,10 @@ impl OrdersPanel {
                 .checked(!cur.newest_first)
                 .on_click(move |_, _, app| {
                     v.update(app, |t, c| {
-                        t.view.newest_first = false;
-                        c.notify();
+                        if t.view.newest_first {
+                            t.view.newest_first = false;
+                            c.notify();
+                        }
                     })
                 }),
         )

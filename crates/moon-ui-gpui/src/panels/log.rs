@@ -182,8 +182,10 @@ impl LogPanel {
         }
     }
     fn set_file(&mut self, f: LogFile, cx: &mut Context<Self>) {
-        self.file = f;
-        cx.notify();
+        if self.file != f {
+            self.file = f;
+            cx.notify();
+        }
     }
 
     /// Комбобокс источника.
@@ -457,8 +459,10 @@ impl Render for LogPanel {
                     .checked(self.errors_only)
                     .size(MoonCheckboxSize::Compact)
                     .on_change(cx.listener(|t, ch: &bool, _, cx| {
-                        t.errors_only = *ch;
-                        cx.notify();
+                        if t.errors_only != *ch {
+                            t.errors_only = *ch;
+                            cx.notify();
+                        }
                     })),
             )
             .child(div().text_xs().text_color(rgb(p.text_muted)).child(format!(

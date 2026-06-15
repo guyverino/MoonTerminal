@@ -140,8 +140,10 @@ fn scale_popover(scale: Option<f32>, backend: Entity<Backend>, p: MoonPalette) -
             scale_button(label, scale == pct, 104.0)
                 .on_click(move |_, _, cx| {
                     backend.update(cx, |b, bcx| {
-                        b.price_scale = pct;
-                        bcx.notify();
+                        if b.price_scale != pct {
+                            b.price_scale = pct;
+                            bcx.notify();
+                        }
                     });
                 })
                 .render(),
