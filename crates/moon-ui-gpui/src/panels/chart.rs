@@ -267,7 +267,12 @@ impl Render for ChartPanel {
             60.0
         };
         self.chart.set_present_rate_hz(effective_present_rate_hz);
-        if self.fast {
+        // raf нужен ТОЛЬКО когда чарт реально анимируется — live-follow (правый край едет за
+        // `now`, оси/скролл двигаются каждый кадр). На паузе/статике кадр не меняется, а каждый
+        // raf нотифает ChartPanel → GPUI метит дирти ВСЕХ предков (chart_tabs→dock→Shell), т.е.
+        // 60 Гц вхолостую гоняет тяжёлый Shell-рендер. Перерисовку на паузе дают notify ввода/
+        // данных, а не raf, поэтому крестик/пан/зум не страдают.
+        if self.fast && self.chart.follow() {
             window.request_animation_frame();
         }
         self.chart.resize(self.chart_dev.0, self.chart_dev.1);

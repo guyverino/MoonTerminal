@@ -74,9 +74,15 @@ impl CoreData {
             FeedMsg::Orders(orders) => {
                 // Сначала обновляем ретейн-стор линий (трассы/узлы/закрытия) по
                 // свежему снимку, затем перемещаем его в список для дока.
-                self.order_lines.update(&orders);
+                // orders_rev бампим ТОЛЬКО при реальном изменении (update вернул true):
+                // тождественный снимок 4 Гц иначе зря дёргал бы и таблицу Orders, и
+                // пересборку userdata чарта. Числовые price/fill% в таблице ловит 1 Гц-тик
+                // самой панели (там данные читаются из свежего self.orders каждый рендер).
+                let changed = self.order_lines.update(&orders);
                 self.orders = orders;
-                self.orders_rev = self.orders_rev.wrapping_add(1);
+                if changed {
+                    self.orders_rev = self.orders_rev.wrapping_add(1);
+                }
             }
             FeedMsg::Detects(detects) => {
                 if !detects.is_empty() {

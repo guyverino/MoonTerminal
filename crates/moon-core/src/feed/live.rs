@@ -536,6 +536,7 @@ pub fn run(
                         strat,
                         uid: o.uid,
                         emulator: o.emulator_mode,
+                        job_is_done: o.job_is_done,
                         pending,
                         filled,
                         stop_loss,

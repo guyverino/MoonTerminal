@@ -203,10 +203,13 @@ pub struct OrderLineStore {
 impl OrderLineStore {
     /// Применяет свежий снимок ордеров: обновляет активные, фиксирует узлы при
     /// перестановках, помечает исчезнувшие закрытыми. Бампит rev при изменениях.
-    pub fn update(&mut self, rows: &[OrderRow]) {
+    pub fn update(&mut self, rows: &[OrderRow]) -> bool {
         let now_ms = now_unix_ms();
         let mut changed = false;
         let mut seen: HashSet<u64> = HashSet::with_capacity(rows.len());
+        // uid'ы, закрытые в этом апдейте по ЯВНОМУ флагу job_is_done — remember_closed
+        // после цикла (внутри цикла держим &mut-заём self.orders через entry).
+        let mut close_now: Vec<u64> = Vec::new();
 
         for r in rows {
             seen.insert(r.uid);
@@ -219,8 +222,11 @@ impl OrderLineStore {
                 self.seq_counter += 1;
             }
             order.last_seen_ms = now_ms;
-            // Воскрешение закрытого uid (редко) → снова активен.
-            if order.closed_ms.take().is_some() {
+            // Воскрешение: ранее закрытый uid снова АКТИВЕН (НЕ job_is_done) → опять живой.
+            // Терминальный (job_is_done) ордер может оставаться в снимке весь deferred-window
+            // ядра — его НЕ воскрешаем, иначе линия мигала бы closed→open каждый апдейт.
+            if order.closed_ms.is_some() && !r.job_is_done {
+                order.closed_ms = None;
                 changed = true;
             }
             order.is_short = r.is_short;
@@ -278,10 +284,24 @@ impl OrderLineStore {
             for (v, start_ms, i) in vals {
                 changed |= order.lines[i].update(v, start_ms, now_ms);
             }
+            // Закрытие по ЯВНОМУ флагу ядра: job_is_done = ордер терминальный (исполнен/
+            // отменён), ждёт deferred-removal. Помечаем закрытым СРАЗУ, пока он ещё в
+            // снимке — не дожидаясь исчезновения + грейса (см. ЕБАНИНА Пример 4).
+            if r.job_is_done && order.closed_ms.is_none() {
+                order.closed_ms = Some(now_ms);
+                close_now.push(r.uid);
+                changed = true;
+            }
         }
 
-        // Исчезли из снимка дольше грейса → закрыты (грейс гасит мигание на
-        // кратком пустом/частичном снимке при реконнекте/churn подписки).
+        for uid in close_now {
+            self.remember_closed(uid);
+        }
+
+        // BACKSTOP: ордер ИСЧЕЗ из снимка дольше грейса → закрыт. Основной путь — job_is_done
+        // выше (закрывает, пока ордер ещё в снимке). Сюда падают лишь ордера, убранные ядром
+        // БЕЗ виденного нами job_is_done (пропущенный кадр/гэп); грейс гасит ложное мигание
+        // на кратком пустом/частичном снимке (реконнект/churn подписки).
         let mut newly_closed = Vec::new();
         for (uid, ord) in self.orders.iter_mut() {
             if !seen.contains(uid)
@@ -302,6 +322,7 @@ impl OrderLineStore {
             self.rev = self.rev.wrapping_add(1);
             self.rebuild_buy_sell_ranges();
         }
+        changed
     }
 
     /// Пересобирает кэш buy/sell-диапазонов по рынкам из текущих открытых ордеров.

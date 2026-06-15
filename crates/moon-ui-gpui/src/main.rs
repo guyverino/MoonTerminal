@@ -829,7 +829,12 @@ fn main() -> anyhow::Result<()> {
                     // Сессия/метрики/реконнект — внутри backend.update; запросы
                     // «показать группу» забираем наружу (нужен &mut App для окон).
                     let show_reqs = drain_backend.update(cx, |b, cx| {
-                        let drained = b.session.drain();
+                        // Данные дренятся ~60 Гц (чарт читает store в prepare по raf, НЕ по
+                        // этому notify). А backend-notify будит ВСЕХ обзёрверов (Shell/Orders/
+                        // детачи) — гнать его 60 Гц = перерисовывать тяжёлый Shell/таблицы на
+                        // каждый рыночный тик (диско окна ордеров). Будим только на coord (~10 Гц):
+                        // гладкость чарта от raf+prepare не страдает, UI-хрому 10 Гц хватает.
+                        b.session.drain();
                         let mut reqs = Vec::new();
                         if coord {
                             // reconcile_providers избирает провайдера/биржу + держит
@@ -861,9 +866,7 @@ fn main() -> anyhow::Result<()> {
                             }
                             reqs = std::mem::take(&mut b.show_group_request);
                         }
-                        // Будим окна только когда есть новые данные или прошла координация
-                        // (обновились метрики/статусы) — не молотим observe на пустой тик.
-                        if drained || coord {
+                        if coord {
                             cx.notify();
                         }
                         reqs

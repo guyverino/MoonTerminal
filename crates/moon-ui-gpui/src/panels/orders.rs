@@ -102,6 +102,9 @@ pub struct OrdersPanel {
     /// перестраивать таблицу каждые 100мс на холостом ходу (иначе вместе с readback
     /// чарта это перегружает UI-поток → рывки графика, когда вкладка «Ордера» активна).
     last_sig: u64,
+    /// Секундное ведро для ~1 Гц обновления свежести цен/P&L (они живут от рынка, а
+    /// orders_sig на тик цены не реагирует). Перерисовка: эпоха/статус ордера ИЛИ раз в сек.
+    last_sec: u64,
     dock: Option<WeakEntity<DockArea>>,
     focus: FocusHandle,
 }
@@ -116,8 +119,11 @@ impl OrdersPanel {
         // Перерисовка по дренажу backend — ТОЛЬКО когда реально изменились ордера.
         cx.observe(&backend, |this, backend, cx| {
             let sig = orders_sig(backend.read(cx), &this.group);
-            if sig != this.last_sig {
+            // ~1 Гц тик: цены/P&L в таблице живут от рынка, orders_sig их не ловит.
+            let sec = (moon_chart::paint::now_unix_ms() as u64) / 1000;
+            if sig != this.last_sig || sec != this.last_sec {
                 this.last_sig = sig;
+                this.last_sec = sec;
                 cx.notify();
             }
         })
@@ -127,6 +133,7 @@ impl OrdersPanel {
             group,
             view: OrdersViewState::default(),
             last_sig: 0,
+            last_sec: 0,
             dock: None,
             focus: cx.focus_handle(),
         }
@@ -542,6 +549,9 @@ fn orders_table(entries: Vec<OrderEntry>, cx: &Context<OrdersPanel>) -> impl Int
 }
 
 fn order_columns() -> Vec<MoonDataTableColumn> {
+    // Widths are logical design pixels and act as minimums. Keep numeric
+    // trading columns fixed; mark the descriptive tail column as fill so the
+    // table consumes the whole panel width without deforming numbers.
     vec![
         MoonDataTableColumn::new("market", "Market", 100.0),
         MoonDataTableColumn::new("side", "Side", 50.0),
@@ -553,7 +563,7 @@ fn order_columns() -> Vec<MoonDataTableColumn> {
         numeric_column("TP", 80.0),
         numeric_column("SL", 80.0),
         numeric_column("Age", 50.0),
-        MoonDataTableColumn::new("strategy", "Strategy", 130.0),
+        MoonDataTableColumn::new("strategy", "Strategy", 130.0).fill(),
     ]
 }
 
