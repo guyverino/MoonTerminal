@@ -4,20 +4,20 @@
 //! по клику на заголовок. Автообновление по счётчику-генерации writer'а (Backend.reports).
 
 use std::rc::Rc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use gpui::*;
 use moon_palette::{
-    h_flex, v_flex, DockArea, MoonButton, MoonButtonSize, MoonButtonVariant, MoonDropdown,
-    MoonInput, MoonInputEvent, MoonInputState, MoonMenuItem, MoonMenuSize, MoonScrollbarVisibility,
-    MoonVirtualList, Panel, PanelEvent, PanelState, StyledExt,
+    DockArea, MoonButton, MoonButtonSize, MoonButtonVariant, MoonDropdown, MoonInput,
+    MoonInputEvent, MoonInputState, MoonMenuItem, MoonMenuSize, MoonScrollbarVisibility,
+    MoonVirtualList, Panel, PanelEvent, PanelState, StyledExt, h_flex, v_flex,
 };
-use rusqlite::types::Value;
 use rusqlite::Connection;
+use rusqlite::types::Value;
 
 use crate::detached::DetachedSpec;
-use crate::{hex, Backend};
+use crate::{Backend, hex};
 use moon_core::db::{self, ReportFilter, ReportTable, SideFilter};
 use moon_core::palette;
 
@@ -27,8 +27,19 @@ const MAX_REPORT_ROWS: usize = 100_000;
 
 /// Колонки, видимые по умолчанию (имена = колонки БД).
 const DEFAULT_VISIBLE: &[&str] = &[
-    "buydate", "closedate", "core_name", "coin", "isshort", "quantity", "buyprice",
-    "sellprice", "profitbtc", "lev", "strategyid", "sellreason", "comment",
+    "buydate",
+    "closedate",
+    "core_name",
+    "coin",
+    "isshort",
+    "quantity",
+    "buyprice",
+    "sellprice",
+    "profitbtc",
+    "lev",
+    "strategyid",
+    "sellreason",
+    "comment",
 ];
 
 pub struct ReportPanel {
@@ -59,13 +70,31 @@ pub struct ReportPanel {
 }
 
 impl ReportPanel {
-    pub fn new(backend: Entity<Backend>, group: String, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let generation = backend.read(cx).reports.as_ref().map(|h| h.generation.clone());
+    pub fn new(
+        backend: Entity<Backend>,
+        group: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let generation = backend
+            .read(cx)
+            .reports
+            .as_ref()
+            .map(|h| h.generation.clone());
         let conn = db::open_reader();
         let cores = conn.as_ref().map(db::distinct_cores).unwrap_or_default();
-        let last_gen = generation.as_ref().map(|g| g.load(Ordering::Relaxed)).unwrap_or(0);
-        let visible = db::DISPLAY_COLUMNS.iter().map(|c| DEFAULT_VISIBLE.contains(c)).collect();
-        let (sort_key, sort_desc) = conn.as_ref().and_then(db::load_sort).unwrap_or_else(|| ("buydate".to_string(), true));
+        let last_gen = generation
+            .as_ref()
+            .map(|g| g.load(Ordering::Relaxed))
+            .unwrap_or(0);
+        let visible = db::DISPLAY_COLUMNS
+            .iter()
+            .map(|c| DEFAULT_VISIBLE.contains(c))
+            .collect();
+        let (sort_key, sort_desc) = conn
+            .as_ref()
+            .and_then(db::load_sort)
+            .unwrap_or_else(|| ("buydate".to_string(), true));
 
         let coin = cx.new(|cx| MoonInputState::new(window, cx).placeholder("все"));
         let from = cx.new(|cx| MoonInputState::new(window, cx).placeholder("ГГГГ-ММ-ДД"));
@@ -100,7 +129,10 @@ impl ReportPanel {
             last_gen,
             conn,
             cores,
-            table: Rc::new(ReportTable { cols: db::DISPLAY_COLUMNS, rows: Vec::new() }),
+            table: Rc::new(ReportTable {
+                cols: db::DISPLAY_COLUMNS,
+                rows: Vec::new(),
+            }),
             totals: (0.0, 0),
             sort_key,
             sort_desc,
@@ -118,7 +150,11 @@ impl ReportPanel {
 
     fn filter(&self, cx: &App) -> ReportFilter {
         ReportFilter {
-            core_uid: if self.sel_core == 0 { None } else { self.cores.get(self.sel_core - 1).map(|(uid, _)| *uid) },
+            core_uid: if self.sel_core == 0 {
+                None
+            } else {
+                self.cores.get(self.sel_core - 1).map(|(uid, _)| *uid)
+            },
             date_from: db::parse_ymd(&self.from.read(cx).value()),
             date_to: db::parse_ymd(&self.to.read(cx).value()).map(|d| d + 86_399),
             coin: self.coin.read(cx).value().to_string(),
@@ -143,7 +179,13 @@ impl ReportPanel {
         let f = self.filter(cx);
         if let Some(conn) = &self.conn {
             self.cores = db::distinct_cores(conn);
-            self.table = Rc::new(db::query_reports(conn, &f, &self.sort_key, self.sort_desc, MAX_REPORT_ROWS));
+            self.table = Rc::new(db::query_reports(
+                conn,
+                &f,
+                &self.sort_key,
+                self.sort_desc,
+                MAX_REPORT_ROWS,
+            ));
             self.totals = db::query_totals(conn, &f);
         }
         self.needs_query = false;
@@ -178,18 +220,23 @@ impl ReportPanel {
         let cur = if self.sel_core == 0 {
             "Все".to_string()
         } else {
-            self.cores.get(self.sel_core - 1).map(|(_, n)| n.clone()).unwrap_or_else(|| "Все".into())
+            self.cores
+                .get(self.sel_core - 1)
+                .map(|(_, n)| n.clone())
+                .unwrap_or_else(|| "Все".into())
         };
         let view = cx.entity();
         let cores = self.cores.clone();
-        let mut items = vec![MoonMenuItem::with_key("rc-all", "Все")
-            .selected(self.sel_core == 0)
-            .on_click({
-                let view = view.clone();
-                move |_, _, app| {
-                    view.update(app, |t, c| t.set_core(0, c));
-                }
-            })];
+        let mut items = vec![
+            MoonMenuItem::with_key("rc-all", "Все")
+                .selected(self.sel_core == 0)
+                .on_click({
+                    let view = view.clone();
+                    move |_, _, app| {
+                        view.update(app, |t, c| t.set_core(0, c));
+                    }
+                }),
+        ];
         for (i, (_u, name)) in cores.into_iter().enumerate() {
             let view = view.clone();
             items.push(
@@ -219,7 +266,11 @@ impl ReportPanel {
             SideFilter::Short => "Шорт",
         };
         let view = cx.entity();
-        let opts = [(SideFilter::All, "Все"), (SideFilter::Long, "Лонг"), (SideFilter::Short, "Шорт")];
+        let opts = [
+            (SideFilter::All, "Все"),
+            (SideFilter::Long, "Лонг"),
+            (SideFilter::Short, "Шорт"),
+        ];
         MoonDropdown::new("rep-side")
             .label(format!("{cur} ▾"))
             .trigger_variant(MoonButtonVariant::Soft)
@@ -285,32 +336,43 @@ impl Panel for ReportPanel {
     fn dump(&self, _cx: &App) -> PanelState {
         crate::dock_persist::panel_state_with_group("Report", &self.group)
     }
-    fn on_added_to(&mut self, dock_area: WeakEntity<DockArea>, _window: &mut Window, _cx: &mut Context<Self>) {
+    fn on_added_to(
+        &mut self,
+        dock_area: WeakEntity<DockArea>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) {
         self.dock = Some(dock_area);
     }
-    fn toolbar_buttons(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> Option<Vec<AnyElement>> {
+    fn toolbar_buttons(
+        &mut self,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<Vec<AnyElement>> {
         let backend = self.backend.clone();
         let group = self.group.clone();
         let dock = self.dock.clone();
-        Some(vec![MoonButton::new("detach-report")
-            .ghost()
-            .size(MoonButtonSize::Action)
-            .label("⧉")
-            .on_click(move |_, window, app| {
-                if let Some(dock) = dock.as_ref().and_then(|d| d.upgrade()) {
-                    dock.update(app, |area, cx| {
-                        area.remove_panel_by_name("Report", window, cx);
+        Some(vec![
+            MoonButton::new("detach-report")
+                .ghost()
+                .size(MoonButtonSize::Action)
+                .label("⧉")
+                .on_click(move |_, window, app| {
+                    if let Some(dock) = dock.as_ref().and_then(|d| d.upgrade()) {
+                        dock.update(app, |area, cx| {
+                            area.remove_panel_by_name("Report", window, cx);
+                        });
+                    }
+                    let spec = DetachedSpec::new(group.clone(), "Report".to_string());
+                    crate::detached::spawn(app, &backend, &spec);
+                    backend.update(app, |b, _| {
+                        b.detached.push(spec);
+                        b.detached_dirty = true;
                     });
-                }
-                let spec = DetachedSpec::new(group.clone(), "Report".to_string());
-                crate::detached::spawn(app, &backend, &spec);
-                backend.update(app, |b, _| {
-                    b.detached.push(spec);
-                    b.detached_dirty = true;
-                });
-            })
-            .render()
-            .into_any_element()])
+                })
+                .render()
+                .into_any_element(),
+        ])
     }
 }
 
@@ -331,22 +393,68 @@ impl Render for ReportPanel {
             .items_center()
             .px_2()
             .py_1()
-            .child(div().text_xs().text_color(rgb(hex(palette::TEXT_2))).child("Ядро:"))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(hex(palette::TEXT_2)))
+                    .child("Ядро:"),
+            )
             .child(self.core_combo(cx))
-            .child(div().text_xs().text_color(rgb(hex(palette::TEXT_2))).child("Монета:"))
-            .child(div().w(px(90.0)).child(MoonInput::new("rep-coin").state(&self.coin).small().cleanable(true)))
-            .child(div().text_xs().text_color(rgb(hex(palette::TEXT_2))).child("Сторона:"))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(hex(palette::TEXT_2)))
+                    .child("Монета:"),
+            )
+            .child(
+                div().w(px(90.0)).child(
+                    MoonInput::new("rep-coin")
+                        .state(&self.coin)
+                        .small()
+                        .cleanable(true),
+                ),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(hex(palette::TEXT_2)))
+                    .child("Сторона:"),
+            )
             .child(self.side_combo(cx))
-            .child(div().text_xs().text_color(rgb(hex(palette::TEXT_2))).child("С:"))
-            .child(div().w(px(110.0)).child(MoonInput::new("rep-from").state(&self.from).small()))
-            .child(div().text_xs().text_color(rgb(hex(palette::TEXT_2))).child("По:"))
-            .child(div().w(px(110.0)).child(MoonInput::new("rep-to").state(&self.to).small()))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(hex(palette::TEXT_2)))
+                    .child("С:"),
+            )
+            .child(
+                div()
+                    .w(px(110.0))
+                    .child(MoonInput::new("rep-from").state(&self.from).small()),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(hex(palette::TEXT_2)))
+                    .child("По:"),
+            )
+            .child(
+                div()
+                    .w(px(110.0))
+                    .child(MoonInput::new("rep-to").state(&self.to).small()),
+            )
             .child(self.columns_menu(cx));
 
         // ── Таблица ──
-        let vis: Vec<usize> = (0..self.table.cols.len()).filter(|i| self.visible.get(*i).copied().unwrap_or(false)).collect();
+        let vis: Vec<usize> = (0..self.table.cols.len())
+            .filter(|i| self.visible.get(*i).copied().unwrap_or(false))
+            .collect();
         let table_el: AnyElement = if vis.is_empty() {
-            div().p_3().text_color(rgb(hex(palette::TEXT_2))).child("Все колонки скрыты — включите в «Колонки».").into_any_element()
+            div()
+                .p_3()
+                .text_color(rgb(hex(palette::TEXT_2)))
+                .child("Все колонки скрыты — включите в «Колонки».")
+                .into_any_element()
         } else {
             // Заголовки (кликабельные, стрелка у активной колонки).
             let mut header = h_flex().gap_0().items_center().py_1();
@@ -376,7 +484,11 @@ impl Render for ReportPanel {
             }
 
             let rows_el: AnyElement = if self.table.rows.is_empty() {
-                div().p_3().text_color(rgb(hex(palette::TEXT_2))).child("Нет отчётов под фильтр (или БД пуста).").into_any_element()
+                div()
+                    .p_3()
+                    .text_color(rgb(hex(palette::TEXT_2)))
+                    .child("Нет отчётов под фильтр (или БД пуста).")
+                    .into_any_element()
             } else {
                 let table = self.table.clone();
                 let visible = Rc::new(vis.clone());
@@ -386,9 +498,12 @@ impl Render for ReportPanel {
                     .flex_1()
                     .w_full()
                     .child(
-                        MoonVirtualList::new("rep-virtual-rows", row_count, 24.0, move |ri, _window, _app| {
-                            report_row(ri, &table, &visible)
-                        })
+                        MoonVirtualList::new(
+                            "rep-virtual-rows",
+                            row_count,
+                            24.0,
+                            move |ri, _window, _app| report_row(ri, &table, &visible),
+                        )
                         .surface(false)
                         .border(false)
                         .radius(0.0)
@@ -403,22 +518,50 @@ impl Render for ReportPanel {
                 .flex_1()
                 .w_full()
                 .overflow_x_scroll()
-                .child(v_flex().min_w(px(width_total(&vis))).h_full().child(header).child(div().w_full().h(px(1.0)).bg(border)).child(rows_el))
+                .child(
+                    v_flex()
+                        .min_w(px(width_total(&vis)))
+                        .h_full()
+                        .child(header)
+                        .child(div().w_full().h(px(1.0)).bg(border))
+                        .child(rows_el),
+                )
                 .into_any_element()
         };
 
         // ── ИТОГО ──
         let (sum, count) = self.totals;
-        let sum_col = if sum > 0.0 { palette::GREEN } else if sum < 0.0 { palette::RED } else { palette::TEXT_2 };
+        let sum_col = if sum > 0.0 {
+            palette::GREEN
+        } else if sum < 0.0 {
+            palette::RED
+        } else {
+            palette::TEXT_2
+        };
         let totals = h_flex()
             .w_full()
             .gap_2()
             .items_center()
             .px_2()
             .py_1()
-            .child(div().text_xs().text_color(rgb(hex(palette::TEXT_2))).child("Итого за период:"))
-            .child(div().font_bold().text_color(rgb(hex(sum_col))).child(format!("{sum:+.6} BTC")))
-            .child(div().text_xs().text_color(rgb(hex(palette::TEXT_2))).child(format!("ордеров: {count}")))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(hex(palette::TEXT_2)))
+                    .child("Итого за период:"),
+            )
+            .child(
+                div()
+                    .font_bold()
+                    .text_color(rgb(hex(sum_col)))
+                    .child(format!("{sum:+.6} BTC")),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(hex(palette::TEXT_2)))
+                    .child(format!("ордеров: {count}")),
+            )
             .child(
                 div()
                     .flex_1()
@@ -474,7 +617,9 @@ fn report_row(ri: usize, table: &ReportTable, vis: &[usize]) -> AnyElement {
 /// Текст + цвет ячейки по имени колонки и значению (порт `cell`).
 fn cell(col: &str, v: &Value) -> (String, Option<u32>) {
     match col {
-        "buydate" | "closedate" | "sellsetdate" | "last_update_at" => (as_i64(v).map(db::fmt_unix).unwrap_or_default(), None),
+        "buydate" | "closedate" | "sellsetdate" | "last_update_at" => {
+            (as_i64(v).map(db::fmt_unix).unwrap_or_default(), None)
+        }
         "isshort" => match as_i64(v) {
             Some(1) => ("Шорт".into(), Some(hex(palette::RED))),
             Some(0) => ("Лонг".into(), Some(hex(palette::GREEN))),
@@ -568,4 +713,3 @@ fn width_for(col: &str) -> f32 {
         _ => 82.0,
     }
 }
-

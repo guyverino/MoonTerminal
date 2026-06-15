@@ -10,7 +10,7 @@
 use std::collections::{HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::feed::OrderRow;
+use crate::feed::{OrderRow, OrderTrace};
 
 /// Виды трассируемых линий (у каждой свой старт/узлы/конец). Ликвидация — отдельно
 /// (непрерывная линия без маркеров), хранится как `RetainedOrder::liq`.
@@ -55,6 +55,11 @@ fn price_eps(p: f32) -> f32 {
 pub struct LineTrace {
     /// Ступени `(t_ms, price)`: с `t_ms` цена = `price` до следующей ступени.
     pub steps: Vec<(f64, f32)>,
+    /// Точная серверная polyline-трасса для buy/sell. Когда она есть, рендерит
+    /// именно её; `steps` остаётся fallback для старых/неполных снимков.
+    pub server_points: Vec<(f64, f32)>,
+    /// Живая temp-точка серверной трассы: рисуется пунктиром от последней точки.
+    pub tmp_point: Option<(f64, f32)>,
     /// Линия выключена (цена стала недоступна), но ордер ещё жив. Конец линии.
     pub off_ms: Option<f64>,
 }
@@ -64,6 +69,11 @@ impl LineTrace {
     /// (для линии входа = создание ордера; для стопов = момент фила). Возвращает
     /// true при изменении (новая ступень / выключение) — для бампа ревизии стора.
     fn update(&mut self, price: Option<f32>, start_ms: f64, now_ms: f64) -> bool {
+        let had_server = !self.server_points.is_empty() || self.tmp_point.is_some();
+        if had_server {
+            self.server_points.clear();
+            self.tmp_point = None;
+        }
         match price {
             Some(p) if p.is_finite() && p > 0.0 => {
                 let was_off = self.off_ms.take().is_some();
@@ -78,7 +88,7 @@ impl LineTrace {
                             self.steps.push((now_ms, p));
                             true
                         } else {
-                            was_off
+                            was_off || had_server
                         }
                     }
                 }
@@ -88,10 +98,33 @@ impl LineTrace {
                     self.off_ms = Some(now_ms);
                     true
                 } else {
-                    false
+                    had_server
                 }
             }
         }
+    }
+
+    fn update_server(&mut self, trace: Option<&OrderTrace>) -> bool {
+        let Some(trace) = trace else {
+            return false;
+        };
+        let points: Vec<(f64, f32)> = trace.points.iter().map(|p| (p.time_ms, p.price)).collect();
+        let tmp = trace.tmp_point.map(|p| (p.time_ms, p.price));
+        let changed =
+            self.server_points != points || self.tmp_point != tmp || self.off_ms.is_some();
+        if changed {
+            self.server_points = points;
+            self.tmp_point = tmp;
+            self.off_ms = None;
+        }
+        changed
+    }
+
+    pub fn current_price(&self) -> Option<f32> {
+        self.server_points
+            .last()
+            .map(|(_, p)| *p)
+            .or_else(|| self.steps.last().map(|(_, p)| *p))
     }
 }
 
@@ -103,6 +136,10 @@ pub struct RetainedOrder {
     pub market: String,
     pub is_short: bool,
     pub pending: bool,
+    pub panic_sell: bool,
+    pub is_moon_shot: bool,
+    pub corridor_price_down: f32,
+    pub corridor_price_up: f32,
     /// Время создания (начало линий), unix мс.
     pub create_ms: f64,
     /// Время закрытия (отмена/исполнение); None = ордер активен.
@@ -131,6 +168,10 @@ impl RetainedOrder {
             market: r.market.clone(),
             is_short: r.is_short,
             pending: r.pending,
+            panic_sell: r.panic_sell,
+            is_moon_shot: r.is_moon_shot,
+            corridor_price_down: r.corridor_price_down,
+            corridor_price_up: r.corridor_price_up,
             create_ms,
             closed_ms: None,
             last_seen_ms: now_ms,
@@ -175,6 +216,17 @@ impl OrderLineStore {
             }
             order.is_short = r.is_short;
             order.pending = r.pending;
+            if order.panic_sell != r.panic_sell
+                || order.is_moon_shot != r.is_moon_shot
+                || order.corridor_price_down != r.corridor_price_down
+                || order.corridor_price_up != r.corridor_price_up
+            {
+                order.panic_sell = r.panic_sell;
+                order.is_moon_shot = r.is_moon_shot;
+                order.corridor_price_down = r.corridor_price_down;
+                order.corridor_price_up = r.corridor_price_up;
+                changed = true;
+            }
             let f = r.filled;
             // Вход (для long и short) — всегда BUY pending-ордер: видна сразу, старт =
             // создание. SELL (закрытие, в противоположную сторону) появляется только
@@ -188,17 +240,33 @@ impl OrderLineStore {
             let g = |show: bool, v: f64| (show && v.is_finite() && v > 0.0).then_some(v as f32);
             let go = |show: bool, v: Option<f64>| if show { v.map(|x| x as f32) } else { None };
             // (значение, время первой ступени) по видам.
-            let vals: [(Option<f32>, f64); TRACED_KINDS] = [
-                (g(true, r.buy_price), order.create_ms), // вход (buy) — всегда
-                (g(f, r.sell_price), now_ms),            // закрытие (sell) — после фила
-                (go(f, r.stop_loss), now_ms),
-                (go(f, r.trailing), now_ms),
-                (go(f, r.take_profit), now_ms),
-                (go(f, r.vstop), now_ms),
+            changed |= order.lines[LineKind::Buy as usize].update_server(r.buy_trace.as_ref());
+            if r.buy_trace.is_none() {
+                changed |= order.lines[LineKind::Buy as usize].update(
+                    g(true, r.buy_price),
+                    order.create_ms,
+                    now_ms,
+                );
+            }
+            changed |= order.lines[LineKind::Sell as usize].update_server(r.sell_trace.as_ref());
+            if r.sell_trace.is_none() {
+                changed |=
+                    order.lines[LineKind::Sell as usize].update(g(f, r.sell_price), now_ms, now_ms);
+            }
+
+            let vals: [(Option<f32>, f64, usize); TRACED_KINDS - 2] = [
+                (go(f, r.stop_loss), now_ms, LineKind::Stop as usize),
+                (go(f, r.trailing), now_ms, LineKind::Trailing as usize),
+                (go(f, r.take_profit), now_ms, LineKind::TakeProfit as usize),
+                (go(f, r.vstop), now_ms, LineKind::VStop as usize),
                 // Pending-условие осмысленно только до фила (старт = создание).
-                (go(!f, r.pending_cond), order.create_ms),
+                (
+                    go(!f, r.pending_cond),
+                    order.create_ms,
+                    LineKind::PendingCond as usize,
+                ),
             ];
-            for (i, (v, start_ms)) in vals.into_iter().enumerate() {
+            for (v, start_ms, i) in vals {
                 changed |= order.lines[i].update(v, start_ms, now_ms);
             }
         }
@@ -261,7 +329,7 @@ impl OrderLineStore {
                 continue;
             }
             for idx in [LineKind::Buy as usize, LineKind::Sell as usize] {
-                if let Some(&(_, p)) = o.lines[idx].steps.last() {
+                if let Some(p) = o.lines[idx].current_price() {
                     if p.is_finite() && p > 0.0 {
                         lo = lo.min(p);
                         hi = hi.max(p);

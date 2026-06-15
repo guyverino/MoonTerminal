@@ -10,12 +10,13 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::data::{OrderBookModel, TickRing};
-use crate::feed::{OrderBook, Tick};
+use crate::data::{OrderBookModel, PriceLineRing, TickRing};
+use crate::feed::{OrderBook, PriceLineKind, PricePoint, Tick};
 use crate::session::CoreId;
 
 /// Ёмкость кольца крестиков на один (провайдер, рынок).
 const TICK_CAP: usize = 200_000;
+const PRICE_LINE_CAP: usize = 200_000;
 
 /// Режим источника рыночных данных (рубильник из настроек). Хранится в settings.toml
 /// кодом ("dedup"/"percore"); неизвестный код откатывается на дефолт.
@@ -63,11 +64,14 @@ impl<'de> Deserialize<'de> for MarketDataMode {
 /// Поля совпадают по имени с тем, что читает chart-рендер (раньше брал из CoreData).
 pub struct MarketView {
     pub ring: TickRing,
+    pub last_line: PriceLineRing,
+    pub mark_line: PriceLineRing,
     pub book: OrderBookModel,
     pub last_price: Option<f32>,
     /// Время последнего тика (unix ms) — правый край графика следует за ним.
     pub last_tick_ms: Option<f64>,
     pub ticks_rev: u64,
+    pub price_lines_rev: u64,
     pub book_rev: u64,
 }
 
@@ -75,10 +79,13 @@ impl MarketView {
     fn new(epoch_ms: f64) -> Self {
         Self {
             ring: TickRing::new(epoch_ms, TICK_CAP),
+            last_line: PriceLineRing::new(epoch_ms, PRICE_LINE_CAP),
+            mark_line: PriceLineRing::new(epoch_ms, PRICE_LINE_CAP),
             book: OrderBookModel::default(),
             last_price: None,
             last_tick_ms: None,
             ticks_rev: 0,
+            price_lines_rev: 0,
             book_rev: 0,
         }
     }
@@ -90,6 +97,17 @@ impl MarketView {
         }
         self.ring.push_many(ticks);
         self.ticks_rev = self.ticks_rev.wrapping_add(1);
+    }
+
+    fn push_price_line(&mut self, kind: PriceLineKind, points: &[PricePoint]) {
+        if points.is_empty() {
+            return;
+        }
+        match kind {
+            PriceLineKind::Last => self.last_line.push_many(points),
+            PriceLineKind::Mark => self.mark_line.push_many(points),
+        }
+        self.price_lines_rev = self.price_lines_rev.wrapping_add(1);
     }
 
     fn set_book(&mut self, book: &OrderBook) {
@@ -153,6 +171,23 @@ impl MarketStore {
             .and_then(|m| m.get_mut(market))
         {
             v.push_ticks(ticks);
+        }
+    }
+
+    /// Retained price-line points from provider.
+    pub fn apply_price_line(
+        &mut self,
+        provider: CoreId,
+        market: &str,
+        kind: PriceLineKind,
+        points: &[PricePoint],
+    ) {
+        if let Some(v) = self
+            .by_provider
+            .get_mut(&provider)
+            .and_then(|m| m.get_mut(market))
+        {
+            v.push_price_line(kind, points);
         }
     }
 

@@ -11,31 +11,13 @@ use windows::Win32::Graphics::Direct3D::D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
 use windows::Win32::Graphics::Direct3D11::*;
 
 use super::gpu::{
-    create_alpha_blend, create_dynamic_cb, create_srv, create_structured, full_viewport, make_ps,
-    make_vs, update_dynamic, ChartViewGpu,
+    ChartViewGpu, create_alpha_blend, create_dynamic_cb, create_srv, create_structured,
+    full_viewport, make_ps, make_vs, update_dynamic,
 };
+pub use super::types::BookStyle;
 
 const BARS_HLSL: &str = include_str!("shaders/bars.hlsl");
 const CAP: u32 = 1 << 12; // уровней стакана (с запасом; реально сотни)
-
-/// cbuffer `BookStyle` (bars.hlsl, b1). 48 байт. Цвета sRGB rgb (+pad).
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct BookStyle {
-    pub book_bg: [f32; 4],
-    pub bid: [f32; 4],
-    pub ask: [f32; 4],
-}
-
-impl Default for BookStyle {
-    fn default() -> Self {
-        Self {
-            book_bg: [0.0745, 0.0784, 0.0863, 1.0], // #131416
-            bid: [0.1294, 0.5137, 0.1922, 1.0],     // #218331 (как buy-крест)
-            ask: [1.0, 0.4980, 0.3137, 1.0],        // #FF7F50 (как sell-крест)
-        }
-    }
-}
 
 struct BookPipe {
     bars_vs: ID3D11VertexShader,
@@ -58,7 +40,12 @@ pub struct OrderBookLayer {
 
 impl OrderBookLayer {
     pub fn new() -> Self {
-        Self { pipe: None, count: 0, pending: None, device_ptr: std::ptr::null_mut() }
+        Self {
+            pipe: None,
+            count: 0,
+            pending: None,
+            device_ptr: std::ptr::null_mut(),
+        }
     }
 
     /// Залить уровни стакана (целиком). Зовётся при изменении книги/окна.
@@ -137,6 +124,16 @@ impl OrderBookLayer {
         let srv = create_srv(device, &buffer);
         let view_cb = create_dynamic_cb(device, std::mem::size_of::<ChartViewGpu>() as u32);
         let style_cb = create_dynamic_cb(device, std::mem::size_of::<BookStyle>() as u32);
-        BookPipe { bars_vs, bars_ps, bg_vs, bg_ps, blend, buffer, srv, view_cb, style_cb }
+        BookPipe {
+            bars_vs,
+            bars_ps,
+            bg_vs,
+            bg_ps,
+            blend,
+            buffer,
+            srv,
+            view_cb,
+            style_cb,
+        }
     }
 }

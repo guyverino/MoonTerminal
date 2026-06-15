@@ -93,7 +93,10 @@ impl Rules {
             }
             self.deps.insert(key, parse_conds(expr));
         }
-        log::info!("strategy param rules: {} полей с зависимостями", self.deps.len());
+        log::info!(
+            "strategy param rules: {} полей с зависимостями",
+            self.deps.len()
+        );
     }
 
     /// Поле активно (редактируемо), если все его условия истинны на текущих
@@ -152,7 +155,9 @@ fn value_eq(actual: &str, expected: &str) -> bool {
 
 /// mtime внешнего файла правил (None — файла нет).
 fn file_mtime() -> Option<SystemTime> {
-    std::fs::metadata(EXTERNAL).ok().and_then(|m| m.modified().ok())
+    std::fs::metadata(EXTERNAL)
+        .ok()
+        .and_then(|m| m.modified().ok())
 }
 
 /// Разбирает `A=VAL;B<>VAL;C>1` в условия. Операторы проверяем от длинных к

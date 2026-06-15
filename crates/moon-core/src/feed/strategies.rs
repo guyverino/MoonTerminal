@@ -68,7 +68,12 @@ pub(super) fn fv_from_str(
     stype: Option<StrategyFieldType>,
     s: &str,
 ) -> FieldValue {
-    let b = || matches!(s.trim().to_ascii_lowercase().as_str(), "yes" | "true" | "1" | "on");
+    let b = || {
+        matches!(
+            s.trim().to_ascii_lowercase().as_str(),
+            "yes" | "true" | "1" | "on"
+        )
+    };
     let i = |def: i64| s.trim().parse::<i64>().unwrap_or(def);
     let u = || s.trim().parse::<u64>().unwrap_or(0);
     let f = || s.trim().parse::<f64>().unwrap_or(0.0);

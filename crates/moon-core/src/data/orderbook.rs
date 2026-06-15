@@ -16,7 +16,7 @@ use crate::feed::OrderBook;
 pub struct LevelInstance {
     /// Цена центра полосы.
     pub price: f32,
-    /// Высота полосы в единицах цены (зазор до соседнего уровня).
+    /// Signed-delta до второго ценового края полосы.
     pub span: f32,
     /// Длина полосы 0..1 (доля ширины зоны).
     pub len_norm: f32,
@@ -29,6 +29,8 @@ pub struct LevelInstance {
 #[derive(Clone, Copy)]
 struct RawLevel {
     price: f32,
+    /// Signed-delta до второго ценового края полосы. Лучший bid/ask тянется
+    /// вглубь книги, а не в спред.
     span: f32,
     /// Индивидуальный объём уровня (для тонкой линии).
     qty: f32,
@@ -59,8 +61,9 @@ impl OrderBookModel {
     }
 
     /// Строит GPU-инстансы, нормируя длину баров по максимуму среди уровней
-    /// внутри видимого окна `[lo, hi]` (единицы цены). Внеоконные уровни тоже
-    /// эмитятся (их отсечёт viewport/scissor), но в знаменатель не входят.
+    /// внутри видимого окна `[lo, hi]` (единицы цены). Внеоконные уровни не
+    /// эмитятся: scissor остаётся защитой от краёв полос, но CPU/GPU не гоняют
+    /// заведомо невидимую книгу.
     pub fn build_instances(&self, lo: f32, hi: f32, out: &mut Vec<LevelInstance>) {
         out.clear();
 
@@ -69,7 +72,7 @@ impl OrderBookModel {
         let mut max_qty = 1e-6_f32;
         let mut max_cum = 1e-6_f32;
         for r in &self.raw {
-            if r.price >= lo && r.price <= hi {
+            if level_overlaps(r, lo, hi) {
                 max_qty = max_qty.max(r.qty);
                 max_cum = max_cum.max(r.cum);
             }
@@ -77,6 +80,9 @@ impl OrderBookModel {
 
         // Сначала все fill (полупрозрачные кумулятив-полосы), потом все line.
         for r in &self.raw {
+            if !level_overlaps(r, lo, hi) {
+                continue;
+            }
             out.push(LevelInstance {
                 price: r.price,
                 span: r.span,
@@ -85,6 +91,9 @@ impl OrderBookModel {
             });
         }
         for r in &self.raw {
+            if !level_overlaps(r, lo, hi) {
+                continue;
+            }
             out.push(LevelInstance {
                 price: r.price,
                 span: r.span,
@@ -100,20 +109,37 @@ impl OrderBookModel {
     }
 }
 
+fn level_overlaps(r: &RawLevel, lo: f32, hi: f32) -> bool {
+    let other = r.price + r.span;
+    r.price.max(other) >= lo && r.price.min(other) <= hi
+}
+
 fn push_side(out: &mut Vec<RawLevel>, levels: &[crate::feed::Level], is_ask: bool) {
     let n = levels.len();
     let mut cum = 0.0_f32;
     for i in 0..n {
         let l = levels[i];
         cum += l.qty;
-        // Зазор до соседнего уровня (для высоты непрерывной полосы).
+        // Signed-delta края: лучший уровень уходит вглубь книги, остальные
+        // стыкуются обратно к соседу со стороны спреда. Так bid/ask не
+        // перекрываются в спреде, а глубина остаётся непрерывной.
         let span = if n > 1 {
-            let j = if i > 0 { i - 1 } else { 1 };
-            (levels[i].price - levels[j].price).abs()
+            let neighbor = if i > 0 {
+                levels[i - 1].price
+            } else {
+                levels[1].price
+            };
+            neighbor - levels[i].price
         } else {
-            l.price * 0.0005
+            let width = (l.price.abs() * 0.0005).max(1e-6);
+            if is_ask { width } else { -width }
         }
-        .max(1e-6);
+        .clamp(-f32::MAX, f32::MAX);
+        let span = if span.abs() < 1e-6 {
+            if is_ask { 1e-6 } else { -1e-6 }
+        } else {
+            span
+        };
 
         out.push(RawLevel {
             price: l.price,

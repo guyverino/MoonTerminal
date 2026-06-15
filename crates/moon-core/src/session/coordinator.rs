@@ -97,7 +97,10 @@ impl SessionManager {
         }
         for (id, provider, markets) in cmds {
             if let Some(s) = self.sessions.iter().find(|s| s.id == id) {
-                let _ = s.handle.cmd_tx.send(CoreCmd::SetMarket { provider, markets });
+                let _ = s
+                    .handle
+                    .cmd_tx
+                    .send(CoreCmd::SetMarket { provider, markets });
             }
         }
     }

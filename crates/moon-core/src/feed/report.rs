@@ -60,7 +60,9 @@ impl OrderIndex {
     }
 
     pub fn by_dbid(&self, db_id: i32) -> Option<&OrderMeta> {
-        self.dbid_to_uid.get(&db_id).and_then(|uid| self.by_uid.get(uid))
+        self.dbid_to_uid
+            .get(&db_id)
+            .and_then(|uid| self.by_uid.get(uid))
     }
 }
 

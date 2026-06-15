@@ -5,57 +5,19 @@
 //! Шейдеры компилируются из ВКОМПИЛЕННОЙ строки (`include_str!` → `D3DCompile`), а не из
 //! файла на диске — бинарь самодостаточен при деплое (нет внешних .hlsl рядом с exe).
 
-use std::ffi::{c_void, CString};
+use std::ffi::{CString, c_void};
 
 use gpui::RawGpuAccess;
-use windows::core::{Interface, PCSTR};
 use windows::Win32::Foundation::RECT;
 use windows::Win32::Graphics::Direct3D::Fxc::D3DCompile;
-use windows::Win32::Graphics::Direct3D::{ID3DBlob, D3D11_SRV_DIMENSION_BUFFER};
+use windows::Win32::Graphics::Direct3D::{D3D11_SRV_DIMENSION_BUFFER, ID3DBlob};
 use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_UNKNOWN;
+use windows::core::{Interface, PCSTR};
+
+pub use super::types::{BlitParams, ChartCross, ChartViewGpu};
 
 // ───────────────────────── GPU-типы (layout = HLSL) ─────────────────────────
-
-/// Один тик в VRAM — layout совпадает с `Cross` в crosses.hlsl. 16 байт.
-/// `side` хранится как u32 (+pad) под StructuredBuffer; конвертится из `TickInstance`
-/// (12б, side:f32) при заливке — см. `combo`.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct ChartCross {
-    pub time_rel: f32,
-    pub price: f32,
-    pub side: u32,
-    pub pad: u32,
-}
-
-/// Трансформ чарта — cbuffer `ChartView` в шейдерах. 48 байт.
-/// ВАЖНО (грабли): порядок полей `time_to_px → view_time0 → price_to_px → view_price0`
-/// (НЕ как `moon_chart::transform::ChartUniform`, где `time_to_px → price_to_px → …`).
-/// Заполнять по именам из `moon_chart::view::ChartView::uniform()`, не memcpy.
-#[repr(C)]
-#[derive(Clone, Copy, Default)]
-pub struct ChartViewGpu {
-    pub bounds: [f32; 4],     // ox, oy, w, h (px) — область чарта
-    pub resolution: [f32; 2], // w, h бэкбуфера (px)
-    pub time_to_px: f32,
-    pub view_time0: f32,
-    pub price_to_px: f32,
-    pub view_price0: f32,
-    pub marker_half: f32, // 3.5 для 7×7
-    pub pad: f32,
-}
-
-/// cbuffer `BlitParams` (combo-композит / блит подложки). 48 байт.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct BlitParams {
-    pub dst: [f32; 4],
-    pub resolution: [f32; 2],
-    pub uv_off: [f32; 2],
-    pub uv_scale: [f32; 2],
-    pub pad: [f32; 2],
-}
 
 // ───────────────────────── Компиляция шейдеров ─────────────────────────
 
@@ -96,7 +58,9 @@ pub fn compile_shader(src: &str, entry: &str, target: &str) -> ID3DBlob {
 }
 
 pub fn blob_bytes(blob: &ID3DBlob) -> &[u8] {
-    unsafe { std::slice::from_raw_parts(blob.GetBufferPointer() as *const u8, blob.GetBufferSize()) }
+    unsafe {
+        std::slice::from_raw_parts(blob.GetBufferPointer() as *const u8, blob.GetBufferSize())
+    }
 }
 
 pub fn make_vs(device: &ID3D11Device, src: &str, entry: &str) -> ID3D11VertexShader {
@@ -162,7 +126,9 @@ pub fn create_srv_range(
         ViewDimension: D3D11_SRV_DIMENSION_BUFFER,
         Anonymous: D3D11_SHADER_RESOURCE_VIEW_DESC_0 {
             Buffer: D3D11_BUFFER_SRV {
-                Anonymous1: D3D11_BUFFER_SRV_0 { FirstElement: first },
+                Anonymous1: D3D11_BUFFER_SRV_0 {
+                    FirstElement: first,
+                },
                 Anonymous2: D3D11_BUFFER_SRV_1 { NumElements: count },
             },
         },
@@ -328,7 +294,22 @@ pub fn create_scissor_rasterizer(device: &ID3D11Device) -> ID3D11RasterizerState
 
 /// Поставить scissor-прямоугольник (px окна) + scissor-растеризатор. Прямоугольник =
 /// зона рисования слоя (плот+стакан панели); всё вне него растеризатор отбросит.
-pub fn set_scissor(context: &ID3D11DeviceContext, rs: &ID3D11RasterizerState, l: f32, t: f32, r: f32, b: f32) {
+pub fn set_scissor(
+    context: &ID3D11DeviceContext,
+    rs: &ID3D11RasterizerState,
+    l: f32,
+    t: f32,
+    r: f32,
+    b: f32,
+) {
+    unsafe {
+        context.RSSetState(Some(rs));
+    }
+    set_scissor_rect(context, l, t, r, b);
+}
+
+/// Обновить только прямоугольник scissor, не трогая rasterizer state.
+pub fn set_scissor_rect(context: &ID3D11DeviceContext, l: f32, t: f32, r: f32, b: f32) {
     let rect = RECT {
         left: l.floor() as i32,
         top: t.floor() as i32,
@@ -337,6 +318,5 @@ pub fn set_scissor(context: &ID3D11DeviceContext, rs: &ID3D11RasterizerState, l:
     };
     unsafe {
         context.RSSetScissorRects(Some(&[rect]));
-        context.RSSetState(Some(rs));
     }
 }

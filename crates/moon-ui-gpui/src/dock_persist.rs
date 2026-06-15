@@ -12,14 +12,14 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use gpui::*;
-use moon_palette::{register_panel, DockAreaState, PanelInfo, PanelState};
+use moon_palette::{DockAreaState, PanelInfo, PanelState, register_panel};
 
 use moon_core::config::paths;
 use moon_core::session::CoreId;
 
+use crate::Backend;
 use crate::chart_tabs::ChartTabs;
 use crate::panels::{DetectsPanel, LogPanel, OrderPanel, OrdersPanel, ReportPanel, StubPanel};
-use crate::Backend;
 
 /// Версия схемы раскладки доков. Поднимаем при несовместимом изменении структуры
 /// панелей → старый `docks.json` игнорируется (откат к дефолтной раскладке).

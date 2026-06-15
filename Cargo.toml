@@ -1,69 +1,13 @@
-# Workspace: legacy egui-бинарь в корне + текущая GPUI-оболочка moon-ui-gpui +
-# UI-агностичное ядро moon-core.
+# Virtual workspace. Единственный бинарь — GPUI-оболочка moon-ui-gpui (`moon-gpui`)
+# поверх UI-агностичного ядра moon-core; общий чарт-крейт moon-chart даёт математику/
+# геометрию (view/axes/transform/build_order_geometry/инстанс-типы), wgpu-free.
+#
+# Старый egui-бинарь moon-terminal (корневой src/) удалён вместе с wgpu-движком и
+# offscreen→readback — рисование переведено на own-pass DX11 (chartdx). См.
+# docs/REFACTOR_RENDER.md.
 [workspace]
-members = [".", "crates/moon-core", "crates/moon-chart", "crates/moon-ui-gpui"]
+members = ["crates/moon-core", "crates/moon-chart", "crates/moon-ui-gpui"]
 resolver = "2"
-
-[package]
-name = "moon-terminal"
-version = "0.1.0"
-edition = "2021"
-description = "MoonBot terminal — wgpu chart + orderbook, egui shell, moonproto feed"
-
-[dependencies]
-# Бэкенд-ядро: feed/session/market/config/db/data/util/palette/symbol/metrics.
-moon-core = { path = "crates/moon-core" }
-# wgpu-движок чарта (egui-free слои + render_panes). Оси/оверлей — здесь, в UI.
-moon-chart = { path = "crates/moon-chart" }
-
-winit = "0.30"
-wgpu = "22"
-egui = "0.29"
-egui-wgpu = "0.29"
-egui-winit = "0.29"
-bytemuck = { version = "1", features = ["derive"] }
-pollster = "0.3"
-serde = { version = "1", features = ["derive"] }
-toml = "0.8"
-anyhow = "1"
-log = "0.4"
-env_logger = "0.11"
-
-# Локализация интерфейса (RU/EN/ES). Строки в locales/app.yml, переключение
-# языка в рантайме через rust_i18n::set_locale. Дефолт по системе (sys-locale) и
-# метрики/секреты/БД-движок теперь в moon-core.
-rust-i18n = "3"
-
-# Загрузка PNG-иконок (кросс-платформенно), извлечённых из mb_ico.dll в assets/icons.
-image = { version = "0.25", default-features = false, features = ["png"] }
-raw-window-handle = "0.6"
-
-# Рендер встроенного SVG-логотипа (assets/brand/moonbot-logo.svg) в текстуру egui.
-# default-features=false — без текстовых/шрифтовых фич: лого состоит из путей.
-resvg = { version = "0.44", default-features = false }
-
-# Локальная БД отчётов по закрытым ордерам. "bundled" статически линкует sqlite3
-# в exe — без системных зависимостей. UI читает reports.db напрямую в
-# dock/report_view.rs (writer-путь — в moon-core::db). moonproto переехал в core.
-rusqlite = { version = "0.32", features = ["bundled"] }
-
-# Иконка самого exe (Explorer + таскбар) — вшивается build.rs из assets/icons/0.png,
-# того же файла, что и иконки окон. Единый источник: заменил 0.png → пересборка
-# обновляет иконку везде. ТОЛЬКО Windows; на других платформах build.rs — no-op.
-[target.'cfg(windows)'.build-dependencies]
-winresource = "0.1"
-ico = "0.3"
-
-# Раздельные кнопки/иконки в taskbar (AppUserModelID) — ТОЛЬКО Windows.
-# На macOS/Linux секция игнорируется → сборка чистая.
-[target.'cfg(windows)'.dependencies]
-windows = { version = "0.58", features = [
-    "Win32_Foundation",
-    "Win32_System_Com",
-    "Win32_System_SystemInformation",
-    "Win32_UI_Shell",
-    "Win32_UI_Shell_PropertiesSystem",
-] }
 
 [profile.release]
 codegen-units = 1
@@ -73,7 +17,7 @@ strip = true
 # Dev-сборка для GPUI-оболочки: главный источник рывков (вплоть до курсора) — DX12
 # debug/validation-слой, который GPUI и wgpu включают в debug по `cfg!(debug_assertions)`
 # (он же `HRESULT 0x887A002D` на старте без Graphics Tools). Отключаем его, не уходя в
-# release: debug_assertions=false снимает оба слоя; зависимости (gpui/wgpu/skia) собираем
+# release: debug_assertions=false снимает оба слоя; зависимости (gpui/skia) собираем
 # оптимизированно — рантайм близок к release, а инкрементальная сборка своего кода быстра.
 [profile.dev]
 debug-assertions = false
@@ -84,19 +28,25 @@ opt-level = 3
 # MoonKernel: единая GPUI база для public-сборки.
 #
 # Пока raw GPU-pass hook не принят upstream Zed, канонический источник GPUI для
-# всего Moon-стека — Moonbot-Tech/ZedFork@9b7bbde. Терминал, MoonPalette и
+# всего Moon-стека — Moonbot-Tech/ZedFork@f2f07f30692dcc1d3791acc454f4822ac81eaf9c. Терминал, MoonPalette и
 # связанные GPUI-крейты должны смотреть на один fork commit, чтобы Cargo не
 # собирал две несовместимые копии GPUI.
 #
 # Локальные path overrides живут только в ignored .cargo/config.toml.
 [patch."https://github.com/zed-industries/zed"]
-gpui = { git = "https://github.com/Moonbot-Tech/ZedFork", rev = "9b7bbde6833d3178b7116f1774ee1b55c584950a" }
-gpui_platform = { git = "https://github.com/Moonbot-Tech/ZedFork", rev = "9b7bbde6833d3178b7116f1774ee1b55c584950a" }
-gpui_windows = { git = "https://github.com/Moonbot-Tech/ZedFork", rev = "9b7bbde6833d3178b7116f1774ee1b55c584950a" }
-gpui_macos = { git = "https://github.com/Moonbot-Tech/ZedFork", rev = "9b7bbde6833d3178b7116f1774ee1b55c584950a" }
-gpui_linux = { git = "https://github.com/Moonbot-Tech/ZedFork", rev = "9b7bbde6833d3178b7116f1774ee1b55c584950a" }
-gpui_web = { git = "https://github.com/Moonbot-Tech/ZedFork", rev = "9b7bbde6833d3178b7116f1774ee1b55c584950a" }
-gpui_wgpu = { git = "https://github.com/Moonbot-Tech/ZedFork", rev = "9b7bbde6833d3178b7116f1774ee1b55c584950a" }
-gpui_macros = { git = "https://github.com/Moonbot-Tech/ZedFork", rev = "9b7bbde6833d3178b7116f1774ee1b55c584950a" }
-gpui_shared_string = { git = "https://github.com/Moonbot-Tech/ZedFork", rev = "9b7bbde6833d3178b7116f1774ee1b55c584950a" }
-gpui_util = { git = "https://github.com/Moonbot-Tech/ZedFork", rev = "9b7bbde6833d3178b7116f1774ee1b55c584950a" }
+gpui = { git = "https://github.com/Moonbot-Tech/ZedFork", rev = "f2f07f30692dcc1d3791acc454f4822ac81eaf9c" }
+gpui_platform = { git = "https://github.com/Moonbot-Tech/ZedFork", rev = "f2f07f30692dcc1d3791acc454f4822ac81eaf9c" }
+gpui_windows = { git = "https://github.com/Moonbot-Tech/ZedFork", rev = "f2f07f30692dcc1d3791acc454f4822ac81eaf9c" }
+gpui_macos = { git = "https://github.com/Moonbot-Tech/ZedFork", rev = "f2f07f30692dcc1d3791acc454f4822ac81eaf9c" }
+gpui_linux = { git = "https://github.com/Moonbot-Tech/ZedFork", rev = "f2f07f30692dcc1d3791acc454f4822ac81eaf9c" }
+gpui_web = { git = "https://github.com/Moonbot-Tech/ZedFork", rev = "f2f07f30692dcc1d3791acc454f4822ac81eaf9c" }
+gpui_wgpu = { git = "https://github.com/Moonbot-Tech/ZedFork", rev = "f2f07f30692dcc1d3791acc454f4822ac81eaf9c" }
+gpui_macros = { git = "https://github.com/Moonbot-Tech/ZedFork", rev = "f2f07f30692dcc1d3791acc454f4822ac81eaf9c" }
+gpui_shared_string = { git = "https://github.com/Moonbot-Tech/ZedFork", rev = "f2f07f30692dcc1d3791acc454f4822ac81eaf9c" }
+gpui_util = { git = "https://github.com/Moonbot-Tech/ZedFork", rev = "f2f07f30692dcc1d3791acc454f4822ac81eaf9c" }
+
+# Zed's crates.io patches are not inherited transitively when GPUI is consumed as a dependency.
+# Keep the GPUI process stack on the same patched crates the fork itself uses.
+[patch.crates-io]
+async-process = { git = "https://github.com/zed-industries/async-process.git", rev = "0b6d6713570af61806e1e5cb40e0f757cb93fd9d" }
+async-task = { git = "https://github.com/smol-rs/async-task.git", rev = "b4486cd71e4e94fbda54ce6302444de14f4d190e" }

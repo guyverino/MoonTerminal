@@ -1,6 +1,6 @@
 //! Слой сетки (хром данных): СТАТИЧНЫЕ вертикали (фикс. X-деления) + горизонтали по цене.
 //! Процедурный fullscreen-проход над chart_area (1 drawcall). Рисуется ПЕРВЫМ в нашем
-//! own-pass — под крестами/данными. Вертикали не «едут» (модель MoonBot, см. §9 арх-дока).
+//! own-pass — под крестами/данными. Вертикали не «едут» (модель MoonBot, см. `docs/RENDER_PLAN.md`).
 
 use std::ffi::c_void;
 
@@ -8,25 +8,12 @@ use gpui::RawGpuAccess;
 use windows::Win32::Graphics::Direct3D::D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
 use windows::Win32::Graphics::Direct3D11::*;
 
-use super::gpu::{create_alpha_blend, create_dynamic_cb, full_viewport, make_ps, make_vs, update_dynamic};
+use super::gpu::{
+    create_alpha_blend, create_dynamic_cb, full_viewport, make_ps, make_vs, update_dynamic,
+};
+pub use super::types::GridParams;
 
 const GRID_HLSL: &str = include_str!("shaders/grid.hlsl");
-
-/// cbuffer `GridParams` (grid.hlsl). 80 байт (16-байт-выровнено).
-#[repr(C)]
-#[derive(Clone, Copy, Default)]
-pub struct GridParams {
-    pub bounds: [f32; 4],
-    pub resolution: [f32; 2],
-    pub n_vert: f32,
-    pub price_to_px: f32,
-    pub view_price0: f32,
-    pub price_interval: f32,
-    pub grid_alpha: f32,
-    pub _pad: f32,
-    pub bg: [f32; 4],       // фон чарта (sRGB)
-    pub grid_col: [f32; 4], // цвет линий сетки (sRGB)
-}
 
 struct GridPipe {
     vs: ID3D11VertexShader,
@@ -42,7 +29,10 @@ pub struct GridLayer {
 
 impl GridLayer {
     pub fn new() -> Self {
-        Self { pipe: None, device_ptr: std::ptr::null_mut() }
+        Self {
+            pipe: None,
+            device_ptr: std::ptr::null_mut(),
+        }
     }
 
     /// Рисует сетку в backbuffer хука (под данными). `params.resolution` ставит вызывающий

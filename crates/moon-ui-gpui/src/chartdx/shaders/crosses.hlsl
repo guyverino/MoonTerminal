@@ -12,13 +12,17 @@ cbuffer ChartView : register(b0) {
     float  cv_view_price0;
     float  cv_marker_half; // 3.5 для 7×7
     float  cv_pad;
+    float  cv_volume_buy_inv;
+    float  cv_volume_sell_inv;
+    float  cv_volume_alpha;
+    float  cv_pad2;
 };
 
 struct Cross {
     float time_rel;
     float price;
     uint  side; // 0 buy / 1 sell
-    uint  pad;
+    float qty;
 };
 
 StructuredBuffer<Cross> crosses : register(t1);
@@ -85,4 +89,87 @@ float4 crosses_fragment(CrossOut i) : SV_Target {
     float3 sell = float3(1.0,     0.55686, 0.35294); // #FF8E5A palette ORANGE
     float3 rgb = (i.side == 0u) ? buy : sell;
     return float4(rgb, 1.0);
+}
+
+struct VolumeOut {
+    float4 pos : SV_Position;
+    nointerpolation uint side : TEXCOORD0;
+};
+
+VolumeOut volume_vertex(uint vid : SV_VertexID, uint iid : SV_InstanceID) {
+    Cross c = crosses[iid];
+    VolumeOut o;
+
+    float sx = cv_bounds.x + (c.time_rel - cv_view_time0) * cv_time_to_px;
+    if (sx < cv_bounds.x - 2.0 || sx > cv_bounds.x + cv_bounds.z + 2.0 || c.qty <= 0.0) {
+        o.pos = float4(2.0, 2.0, 0.0, 1.0);
+        o.side = 0u;
+        return o;
+    }
+
+    float inv = (c.side == 0u) ? cv_volume_buy_inv : cv_volume_sell_inv;
+    float norm = saturate(c.qty * inv);
+    float band_h = min(cv_bounds.w * 0.18, 72.0);
+    float h = max(1.0, sqrt(norm) * band_h);
+    float base = cv_bounds.y + cv_bounds.w - 1.0;
+    float bar_w = clamp(cv_time_to_px * 0.35, 1.0, 3.0);
+    float2 corner = CORNERS[vid] * 0.5 + 0.5;
+    float2 px = float2(round(sx) - bar_w * 0.5, base - h) + corner * float2(bar_w, h);
+    float2 ndc = float2(px.x / cv_resolution.x * 2.0 - 1.0,
+                        1.0 - px.y / cv_resolution.y * 2.0);
+    o.pos = float4(ndc, 0.0, 1.0);
+    o.side = c.side;
+    return o;
+}
+
+float4 volume_fragment(VolumeOut i) : SV_Target {
+    float3 buy  = float3(0.18431, 0.65882, 0.36078);
+    float3 sell = float3(1.0,     0.55686, 0.35294);
+    float3 rgb = (i.side == 0u) ? buy : sell;
+    return float4(rgb, saturate(cv_volume_alpha));
+}
+
+struct PricePoint {
+    float time_rel;
+    float price;
+};
+
+StructuredBuffer<PricePoint> price_points : register(t2);
+
+struct PriceLineOut {
+    float4 pos : SV_Position;
+};
+
+float2 price_point_px(PricePoint p) {
+    float x = cv_bounds.x + (p.time_rel - cv_view_time0) * cv_time_to_px;
+    float y = cv_bounds.y + cv_bounds.w - (p.price - cv_view_price0) * cv_price_to_px;
+    return float2(x, y);
+}
+
+PriceLineOut price_line_vertex(uint vid : SV_VertexID, uint iid : SV_InstanceID) {
+    PricePoint p0 = price_points[iid];
+    PricePoint p1 = price_points[iid + 1];
+    float2 a = price_point_px(p0);
+    float2 b = price_point_px(p1);
+    float2 dir = b - a;
+    float len = max(length(dir), 1e-4);
+    dir /= len;
+    float2 nrm = float2(-dir.y, dir.x) * 0.85;
+    float along[6] = { 0, 1, 1, 0, 1, 0 };
+    float side[6]  = { -1, -1, 1, -1, 1, 1 };
+    float2 px = lerp(a, b, along[vid]) + nrm * side[vid];
+    PriceLineOut o;
+    o.pos = float4(px.x / cv_resolution.x * 2.0 - 1.0,
+                   1.0 - px.y / cv_resolution.y * 2.0,
+                   0.0,
+                   1.0);
+    return o;
+}
+
+float4 price_last_fragment(PriceLineOut i) : SV_Target {
+    return float4(0.82, 0.60, 0.36, 0.82);
+}
+
+float4 price_mark_fragment(PriceLineOut i) : SV_Target {
+    return float4(0.42, 0.72, 1.00, 0.78);
 }

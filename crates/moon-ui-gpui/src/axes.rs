@@ -4,11 +4,9 @@
 //! (canvas-оверлей, см. main.rs), а не egui-painter'ом. Координаты — логические
 //! пиксели в системе окна (origin слота = `bounds.origin`).
 
-use gpui::{
-    fill, point, px, App, Bounds, Hsla, Pixels, Point, SharedString, TextRun, Window,
-};
+use gpui::{App, Bounds, Hsla, Pixels, Point, SharedString, TextRun, Window, fill, point, px};
 
-use moon_chart::axes::{fmt_clock, nice_interval, price_decimals, AxisSnapshot};
+use moon_chart::axes::{AxisSnapshot, fmt_clock, nice_interval, price_decimals};
 use moon_chart::{GLASS_ZONE_PX, PRICE_AXIS_W, TIME_AXIS_H};
 use moon_core::palette;
 
@@ -111,7 +109,11 @@ fn chip(
         gpui::size(w + pad.x * 2.0, lh + pad.y * 2.0),
     );
     window.paint_quad(fill(bg, rgb3(palette::LIFT)));
-    window.paint_quad(gpui::outline(bg, rgba3(palette::ACCENT, 0.55), gpui::BorderStyle::Solid));
+    window.paint_quad(gpui::outline(
+        bg,
+        rgba3(palette::ACCENT, 0.55),
+        gpui::BorderStyle::Solid,
+    ));
     let _ = line.paint(origin, lh, gpui::TextAlign::Left, None, window, cx);
 }
 
@@ -154,22 +156,34 @@ pub fn draw(
     // With MoonPalette NoFill hosts those gutters would otherwise expose the raw backbuffer.
     let gutter = rgb3(palette::BG);
     window.paint_quad(fill(
-        Bounds::new(point(px(left), px(top)), gpui::size(px(PRICE_AXIS_W), px(height))),
+        Bounds::new(
+            point(px(left), px(top)),
+            gpui::size(px(PRICE_AXIS_W), px(height)),
+        ),
         gutter,
     ));
     window.paint_quad(fill(
-        Bounds::new(point(px(plot_left), px(plot_bottom)), gpui::size(px(right - plot_left), px(TIME_AXIS_H))),
+        Bounds::new(
+            point(px(plot_left), px(plot_bottom)),
+            gpui::size(px(right - plot_left), px(TIME_AXIS_H)),
+        ),
         gutter,
     ));
 
     // Сепараторы (белый ~6% альфа): вертикаль у plot_left, горизонталь у plot_bottom.
     let sep = rgba3([255, 255, 255], 16.0 / 255.0);
     window.paint_quad(fill(
-        Bounds::new(point(px(plot_left), px(plot_top)), gpui::size(px(1.0), px(plot_h))),
+        Bounds::new(
+            point(px(plot_left), px(plot_top)),
+            gpui::size(px(1.0), px(plot_h)),
+        ),
         sep,
     ));
     window.paint_quad(fill(
-        Bounds::new(point(px(plot_left), px(plot_bottom)), gpui::size(px(right - plot_left), px(1.0))),
+        Bounds::new(
+            point(px(plot_left), px(plot_bottom)),
+            gpui::size(px(right - plot_left), px(1.0)),
+        ),
         sep,
     ));
 
@@ -206,7 +220,8 @@ pub fn draw(
     //    только ЗНАЧЕНИЯ времени (модель MoonBot §3.1: линии не привязаны к круглым меткам,
     //    время считается НА фиксированном пикселе). НЕ скроллим подписи за данными.
     let window_ms = plot_w as f64 * ppp as f64 / snap.px_per_ms.max(1e-6) as f64;
-    let right_rel = (snap.right_time_ms - snap.epoch_ms) + window_ms * snap.right_margin_frac as f64;
+    let right_rel =
+        (snap.right_time_ms - snap.epoch_ms) + window_ms * snap.right_margin_frac as f64;
     let left_unix = snap.epoch_ms + right_rel - window_ms;
     let px_per_ms_log = plot_w as f64 / window_ms.max(1e-6);
     // ~6 подписей на фиксированных долях ширины плота. Секунды — если деление < 60 c.
@@ -236,9 +251,7 @@ pub fn draw(
         let cy_px = f32::from(c.y);
 
         // Крест: вертикаль на всю высоту plot-зоны, горизонталь на всю ширину
-        // (чарт + стакан, без жёлобов) — как cursor-слой движка. Цвет/толщина из
-        // темы. Ореол движка (мягкое свечение) пока не воспроизводим (нужен
-        // радиальный градиент; крест-линии — главный элемент).
+        // (чарт + стакан, без жёлобов).
         let line = rgba3(cross.color, cross.alpha);
         let lw = cross.thickness.max(1.0);
         if cx_px >= plot_left && cx_px <= right {

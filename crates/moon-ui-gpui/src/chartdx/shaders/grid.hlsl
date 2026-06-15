@@ -12,7 +12,7 @@ cbuffer GridParams : register(b0) {
     float  g_view_price0;  // цена у НИЗА bounds
     float  g_price_interval; // шаг цены для горизонталей (== nice_interval подписей)
     float  g_grid_alpha;   // видимость сетки 0..1 (тема)
-    float  g_pad;
+    float  g_bg_alpha;     // 1 = grid сам красит фон, 0 = фон уже нарисован Background-слоем
     float4 g_bg;           // фон чарта (sRGB)
     float4 g_grid_col;     // цвет линий (sRGB)
 };
@@ -66,5 +66,6 @@ float4 grid_fragment(GridOut i) : SV_Target {
         }
     }
 
-    return float4(hit ? grid_col : bg, 1.0); // непрозрачный фон+линии
+    float alpha = hit ? 1.0 : saturate(g_bg_alpha);
+    return float4(hit ? grid_col : bg, alpha);
 }

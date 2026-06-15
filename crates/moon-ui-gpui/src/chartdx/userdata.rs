@@ -8,48 +8,36 @@
 use std::ffi::c_void;
 
 use gpui::RawGpuAccess;
-use moon_chart::layers::{LineInstance, MarkerInstance, SegInstance};
+use moon_chart::layers::{LineInstance, MarkerInstance, SegInstance, ZoneInstance};
 use windows::Win32::Graphics::Direct3D::D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
 use windows::Win32::Graphics::Direct3D11::*;
 
 use super::gpu::{
-    create_alpha_blend, create_dynamic_cb, create_srv, create_structured, full_viewport, make_ps,
-    make_vs, update_dynamic, ChartViewGpu,
+    ChartViewGpu, create_alpha_blend, create_dynamic_cb, create_srv, create_structured,
+    full_viewport, make_ps, make_vs, update_dynamic,
 };
+use super::types::{HLineGpu, MarkerGpu, SegGpu, ZoneGpu};
 
 const HLSL: &str = include_str!("shaders/order_lines.hlsl");
 const CAP: u32 = 1 << 12; // ордерных примитивов с запасом (реально десятки)
 
-// GPU-структы — 16-байт-выровнены (float4-поля), чтобы StructuredBuffer читал верно.
-#[repr(C)]
-#[derive(Clone, Copy, Default)]
-struct HLineGpu {
-    color: [f32; 4],
-    m: [f32; 4], // price, style, thickness, _
-}
-#[repr(C)]
-#[derive(Clone, Copy, Default)]
-struct SegGpu {
-    pts: [f32; 4], // t0, p0, t1, p1
-    color: [f32; 4],
-    m: [f32; 4], // thickness, dashed, _, _
-}
-#[repr(C)]
-#[derive(Clone, Copy, Default)]
-struct MarkerGpu {
-    color: [f32; 4],
-    pos: [f32; 4], // t_rel, price, size, thickness
-    m: [f32; 4],   // shape, _, _, _
-}
-
 fn hl_of(h: &LineInstance) -> HLineGpu {
-    HLineGpu { color: h.color, m: [h.price, h.style, h.thickness, 0.0] }
+    HLineGpu {
+        color: h.color,
+        m: [h.price, h.style, h.thickness, 0.0],
+    }
+}
+fn zone_of(z: &ZoneInstance) -> ZoneGpu {
+    ZoneGpu {
+        color: z.color,
+        m: [z.price0, z.price1, 0.0, 0.0],
+    }
 }
 fn seg_of(s: &SegInstance) -> SegGpu {
     SegGpu {
         pts: [s.t0_rel, s.p0, s.t1_rel, s.p1],
         color: s.color,
-        m: [s.thickness, s.dashed, 0.0, 0.0],
+        m: [s.thickness, s.dashed, s.extend, 0.0],
     }
 }
 fn mk_of(m: &MarkerInstance) -> MarkerGpu {
@@ -61,6 +49,8 @@ fn mk_of(m: &MarkerInstance) -> MarkerGpu {
 }
 
 struct UdPipe {
+    zone_vs: ID3D11VertexShader,
+    zone_ps: ID3D11PixelShader,
     hl_vs: ID3D11VertexShader,
     hl_ps: ID3D11PixelShader,
     seg_vs: ID3D11VertexShader,
@@ -69,6 +59,8 @@ struct UdPipe {
     mk_ps: ID3D11PixelShader,
     blend: ID3D11BlendState,
     view_cb: ID3D11Buffer,
+    zone_buf: ID3D11Buffer,
+    zone_srv: ID3D11ShaderResourceView,
     hl_buf: ID3D11Buffer,
     hl_srv: ID3D11ShaderResourceView,
     seg_buf: ID3D11Buffer,
@@ -79,6 +71,7 @@ struct UdPipe {
 
 #[derive(Default)]
 struct Pending {
+    zone: Vec<ZoneGpu>,
     hl: Vec<HLineGpu>,
     seg: Vec<SegGpu>,
     mk: Vec<MarkerGpu>,
@@ -86,6 +79,7 @@ struct Pending {
 
 pub struct UserDataLayer {
     pipe: Option<UdPipe>,
+    zone_count: u32,
     hl_count: u32,
     seg_count: u32,
     mk_count: u32,
@@ -97,6 +91,7 @@ impl UserDataLayer {
     pub fn new() -> Self {
         Self {
             pipe: None,
+            zone_count: 0,
             hl_count: 0,
             seg_count: 0,
             mk_count: 0,
@@ -106,8 +101,15 @@ impl UserDataLayer {
     }
 
     /// Залить геометрию ордеров (целиком). Зовётся по изменению ордеров/вида (мутация).
-    pub fn set(&mut self, hlines: &[LineInstance], segs: &[SegInstance], markers: &[MarkerInstance]) {
+    pub fn set(
+        &mut self,
+        zones: &[ZoneInstance],
+        hlines: &[LineInstance],
+        segs: &[SegInstance],
+        markers: &[MarkerInstance],
+    ) {
         self.pending = Some(Pending {
+            zone: zones.iter().map(zone_of).collect(),
             hl: hlines.iter().map(hl_of).collect(),
             seg: segs.iter().map(seg_of).collect(),
             mk: markers.iter().map(mk_of).collect(),
@@ -128,6 +130,7 @@ impl UserDataLayer {
         // ордера заново этим же кадром через set()/pending, инвариант: новый device = 0 валидных).
         if self.device_ptr != gpu.device {
             self.pipe = None;
+            self.zone_count = 0;
             self.hl_count = 0;
             self.seg_count = 0;
             self.mk_count = 0;
@@ -138,11 +141,12 @@ impl UserDataLayer {
         }
         let pipe = self.pipe.as_ref().unwrap();
         if let Some(p) = self.pending.take() {
+            self.zone_count = upload_capped(context, &pipe.zone_buf, &p.zone);
             self.hl_count = upload_capped(context, &pipe.hl_buf, &p.hl);
             self.seg_count = upload_capped(context, &pipe.seg_buf, &p.seg);
             self.mk_count = upload_capped(context, &pipe.mk_buf, &p.mk);
         }
-        if self.hl_count == 0 && self.seg_count == 0 && self.mk_count == 0 {
+        if self.zone_count == 0 && self.hl_count == 0 && self.seg_count == 0 && self.mk_count == 0 {
             return;
         }
         update_dynamic(context, &pipe.view_cb, &[*view]);
@@ -153,7 +157,13 @@ impl UserDataLayer {
             context.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
             context.VSSetConstantBuffers(0, Some(&[Some(pipe.view_cb.clone())]));
             context.OMSetBlendState(&pipe.blend, None, 0xFFFFFFFF);
-            // Горизонтали (вход/стоп/liq) → отрезки (лестница) → маркеры (поверх).
+            // Зоны → горизонтали (вход/стоп/liq) → отрезки (лестница) → маркеры (поверх).
+            if self.zone_count > 0 {
+                context.VSSetShaderResources(1, Some(&[Some(pipe.zone_srv.clone())]));
+                context.VSSetShader(&pipe.zone_vs, None);
+                context.PSSetShader(&pipe.zone_ps, None);
+                context.DrawInstanced(6, self.zone_count, 0, 0);
+            }
             if self.hl_count > 0 {
                 context.VSSetShaderResources(1, Some(&[Some(pipe.hl_srv.clone())]));
                 context.VSSetShader(&pipe.hl_vs, None);
@@ -177,9 +187,12 @@ impl UserDataLayer {
 
     fn create_pipe(device: &ID3D11Device) -> UdPipe {
         let hl_buf = create_structured(device, std::mem::size_of::<HLineGpu>() as u32, CAP);
+        let zone_buf = create_structured(device, std::mem::size_of::<ZoneGpu>() as u32, CAP);
         let seg_buf = create_structured(device, std::mem::size_of::<SegGpu>() as u32, CAP);
         let mk_buf = create_structured(device, std::mem::size_of::<MarkerGpu>() as u32, CAP);
         UdPipe {
+            zone_vs: make_vs(device, HLSL, "zone_vertex"),
+            zone_ps: make_ps(device, HLSL, "zone_fragment"),
             hl_vs: make_vs(device, HLSL, "hline_vertex"),
             hl_ps: make_ps(device, HLSL, "hline_fragment"),
             seg_vs: make_vs(device, HLSL, "seg_vertex"),
@@ -188,9 +201,11 @@ impl UserDataLayer {
             mk_ps: make_ps(device, HLSL, "marker_fragment"),
             blend: create_alpha_blend(device),
             view_cb: create_dynamic_cb(device, std::mem::size_of::<ChartViewGpu>() as u32),
+            zone_srv: create_srv(device, &zone_buf),
             hl_srv: create_srv(device, &hl_buf),
             seg_srv: create_srv(device, &seg_buf),
             mk_srv: create_srv(device, &mk_buf),
+            zone_buf,
             hl_buf,
             seg_buf,
             mk_buf,
@@ -199,7 +214,11 @@ impl UserDataLayer {
 }
 
 fn upload_capped<T: Copy>(context: &ID3D11DeviceContext, buf: &ID3D11Buffer, data: &[T]) -> u32 {
-    let data: &[T] = if data.len() as u32 > CAP { &data[..CAP as usize] } else { data };
+    let data: &[T] = if data.len() as u32 > CAP {
+        &data[..CAP as usize]
+    } else {
+        data
+    };
     if !data.is_empty() {
         update_dynamic(context, buf, data);
     }

@@ -30,6 +30,25 @@ static const float2 CORNERS[6] = {
     float2(-1, -1), float2(1, 1), float2(-1, 1)
 };
 
+// ── Зона (ZoneInstance: color, m=(price0,price1,_,_)) ───────────────────────
+struct Zone { float4 color; float4 m; };
+StructuredBuffer<Zone> zones : register(t1);
+struct ZOut { float4 pos : SV_Position; float4 color : COLOR0; };
+
+ZOut zone_vertex(uint vid : SV_VertexID, uint iid : SV_InstanceID) {
+    Zone z = zones[iid];
+    float y0 = cv_bounds.y + cv_bounds.w - (z.m.x - cv_view_price0) * cv_price_to_px;
+    float y1 = cv_bounds.y + cv_bounds.w - (z.m.y - cv_view_price0) * cv_price_to_px;
+    float left = cv_bounds.x;
+    float right = cv_bounds.x + (cv_pad - cv_view_time0) * cv_time_to_px;
+    float2 corner = CORNERS[vid];
+    float2 px = float2(lerp(left, right, (corner.x + 1.0) * 0.5), lerp(y0, y1, (corner.y + 1.0) * 0.5));
+    ZOut o; o.pos = float4(to_clip(px), 0, 1); o.color = z.color; return o;
+}
+float4 zone_fragment(ZOut i) : SV_Target {
+    return float4(i.color.rgb, i.color.a);
+}
+
 // ── Горизонталь (LineInstance: color, m=(price,style,thickness,_)) ───────────
 struct HLine { float4 color; float4 m; };
 StructuredBuffer<HLine> hlines : register(t1);
@@ -59,7 +78,8 @@ struct SOut { float4 pos : SV_Position; float4 color : COLOR0; nointerpolation f
 SOut seg_vertex(uint vid : SV_VertexID, uint iid : SV_InstanceID) {
     Seg s = segs[iid];
     float2 a = data_to_px(s.pts.x, s.pts.y);
-    float2 b = data_to_px(s.pts.z, s.pts.w);
+    float t1 = s.m.z >= 0.5 ? cv_pad : s.pts.z;
+    float2 b = data_to_px(t1, s.pts.w);
     float2 dir = b - a;
     float len = max(length(dir), 1e-4);
     dir /= len;

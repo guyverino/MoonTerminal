@@ -71,9 +71,17 @@ impl LogLine {
             return true;
         }
         let m = self.msg.to_lowercase();
-        ["error", "ошиб", "fail", "warn", "panic", "exception", "critical"]
-            .iter()
-            .any(|k| m.contains(k))
+        [
+            "error",
+            "ошиб",
+            "fail",
+            "warn",
+            "panic",
+            "exception",
+            "critical",
+        ]
+        .iter()
+        .any(|k| m.contains(k))
     }
 }
 
@@ -210,11 +218,7 @@ pub fn sanitize_label(name: &str) -> String {
             }
         })
         .collect();
-    if s.is_empty() {
-        "core".to_string()
-    } else {
-        s
-    }
+    if s.is_empty() { "core".to_string() } else { s }
 }
 
 /// Файловый писатель лога одного источника с дневной ротацией: пишет в
@@ -298,7 +302,9 @@ pub fn purge_old() {
         if !name.ends_with(".log") {
             continue;
         }
-        let Some(date) = name.get(0..10) else { continue };
+        let Some(date) = name.get(0..10) else {
+            continue;
+        };
         let Some(file_secs) = crate::db::parse_ymd(date) else {
             continue; // нет даты в начале имени → не наш ротируемый файл
         };

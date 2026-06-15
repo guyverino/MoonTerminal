@@ -84,7 +84,11 @@ impl Metrics {
         {
             self.mem_hist.pop_front();
         }
-        let mem_delta_mb = self.mem_hist.front().map(|(_, m0)| mem_mb - *m0).unwrap_or(0.0);
+        let mem_delta_mb = self
+            .mem_hist
+            .front()
+            .map(|(_, m0)| mem_mb - *m0)
+            .unwrap_or(0.0);
 
         self.snap = MetricsSnapshot {
             cpu_process,

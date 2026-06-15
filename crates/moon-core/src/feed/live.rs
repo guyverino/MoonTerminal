@@ -9,17 +9,19 @@ use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use moonproto::state::OrderBookKind;
+use moonproto::state::{OrderBookKind, OrderTraceChartPoint, OrderTraceLine};
 use moonproto::{
     ClientConfig, ConnectConfig, Event, InitConfig, InitialStrategies, LifecycleEvent, MoonClient,
     TradesStreamMode, TransportMode,
 };
 
-use super::report::{delphi_to_unix, send_close_report, OrderIndex, OrderMeta};
-use super::strategies::{alert_params, build_schema_model, fmt_field, fv_from_str, strat_kind_name};
+use super::report::{OrderIndex, OrderMeta, delphi_to_unix, send_close_report};
+use super::strategies::{
+    alert_params, build_schema_model, fmt_field, fv_from_str, strat_kind_name,
+};
 use super::{
     ConnStatus, CoreCmd, CoreLogLine, DetectRow, ExchangeId, FeedMsg, FeedTx, Level, OrderBook,
-    OrderRow, Side, StrategyRow, Tick,
+    OrderRow, OrderTrace, OrderTracePoint, PriceLineKind, PricePoint, Side, StrategyRow, Tick,
 };
 use crate::config::ServerConfig;
 use crate::db::ReportTx;
@@ -29,6 +31,31 @@ fn now_ms() -> f64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs_f64() * 1000.0)
         .unwrap_or(0.0)
+}
+
+fn trace_point(p: OrderTraceChartPoint) -> Option<OrderTracePoint> {
+    let time_ms = p.unix_millis() as f64;
+    (time_ms > 1.0 && p.price.is_finite() && p.price > 0.0).then_some(OrderTracePoint {
+        time_ms,
+        price: p.price,
+    })
+}
+
+fn order_trace(line: &OrderTraceLine) -> Option<OrderTrace> {
+    let points: Vec<OrderTracePoint> = line
+        .points
+        .iter()
+        .copied()
+        .filter_map(trace_point)
+        .collect();
+    if points.is_empty() {
+        return None;
+    }
+    Some(OrderTrace {
+        points,
+        tmp_point: line.tmp_point.and_then(trace_point),
+        stop_price: line.stop_price.filter(|p| p.is_finite() && *p > 0.0),
+    })
 }
 
 pub fn run(
@@ -81,8 +108,12 @@ pub fn run(
     let mut is_provider = false;
     let mut wanted: Vec<String> = Vec::new();
     let mut cursors = HashMap::new(); // market -> SeqRingCursor (тип выводится)
+    let mut last_price_cursors = HashMap::new();
+    let mut mark_price_cursors = HashMap::new();
     let mut identity_sent = false;
     let mut rows = Vec::new(); // тип Vec<TradeHistoryRow> выводится
+    let mut last_price_rows = Vec::new();
+    let mut mark_price_rows = Vec::new();
     let mut last_book = Instant::now();
     let mut last_orders = Instant::now();
     let mut last_strats = Instant::now();
@@ -116,6 +147,8 @@ pub fn run(
                         } else {
                             let _ = client.streams().unsubscribe_all_trades();
                             cursors.clear();
+                            last_price_cursors.clear();
+                            mark_price_cursors.clear();
                             log::info!("core {} → account-only", server.id);
                         }
                         is_provider = provider;
@@ -128,12 +161,16 @@ pub fn run(
                         if !wanted.iter().any(|w| w == m) {
                             let _ = client.streams().subscribe_orderbook(m.clone());
                             cursors.remove(m);
+                            last_price_cursors.remove(m);
+                            mark_price_cursors.remove(m);
                         }
                     }
                     for m in &wanted {
                         if !markets.iter().any(|x| x == m) {
                             let _ = client.streams().unsubscribe_orderbook(m.clone());
                             cursors.remove(m);
+                            last_price_cursors.remove(m);
+                            mark_price_cursors.remove(m);
                         }
                     }
                     wanted = markets;
@@ -172,13 +209,17 @@ pub fn run(
                         let schema = strats.strategy_schema();
                         let mut modified = Vec::new();
                         for id in &ids {
-                            let Some(s) = strats.snapshot(*id) else { continue };
+                            let Some(s) = strats.snapshot(*id) else {
+                                continue;
+                            };
                             let mut sc = s.clone();
                             for (name, val) in &changes {
                                 let existing = sc.fields.get(name).cloned();
                                 let stype = schema.and_then(|s| s.field(name)).map(|f| f.type_id);
-                                sc.fields
-                                    .insert(name.as_str(), fv_from_str(existing.as_ref(), stype, val));
+                                sc.fields.insert(
+                                    name.as_str(),
+                                    fv_from_str(existing.as_ref(), stype, val),
+                                );
                             }
                             modified.push(sc);
                         }
@@ -247,7 +288,9 @@ pub fn run(
                     connect_failed = Some(msg.clone());
                     ConnStatus::Failed(msg)
                 }
-                LifecycleEvent::BindFailed { consecutive_failures } => ConnStatus::Failed(format!(
+                LifecycleEvent::BindFailed {
+                    consecutive_failures,
+                } => ConnStatus::Failed(format!(
                     "UDP bind failed x{consecutive_failures} (VPN/firewall/порты?)"
                 )),
                 LifecycleEvent::Disconnected => ConnStatus::Disconnected,
@@ -276,7 +319,10 @@ pub fn run(
                         // На диск — сразу (буферизованно); время бьём на дату+часы.
                         let (date, hms) = crate::applog::split_unix_ms(ms);
                         log_writer.write(&date, &hms, "INFO", "", &l.msg);
-                        logs.push(CoreLogLine { time_ms: ms, msg: l.msg });
+                        logs.push(CoreLogLine {
+                            time_ms: ms,
+                            msg: l.msg,
+                        });
                     }
                     Event::Detect(d) if server.feed.detects => {
                         let params = detect_snap
@@ -376,7 +422,11 @@ pub fn run(
                         None => o.strat_id.to_string(),
                     };
                     // Входная нога: buy для long, sell для short.
-                    let leg = if o.is_short { &o.sell_order } else { &o.buy_order };
+                    let leg = if o.is_short {
+                        &o.sell_order
+                    } else {
+                        &o.buy_order
+                    };
                     let fill_pct = if leg.quantity > 0.0 {
                         ((leg.quantity - leg.quantity_remaining) / leg.quantity * 100.0) as f32
                     } else {
@@ -494,6 +544,12 @@ pub fn run(
                         vstop,
                         pending_cond,
                         liq,
+                        panic_sell: o.panic_sell,
+                        is_moon_shot: o.is_moon_shot,
+                        corridor_price_down: o.corridor_price_down,
+                        corridor_price_up: o.corridor_price_up,
+                        buy_trace: o.buy_trace_line.as_ref().and_then(order_trace),
+                        sell_trace: o.sell_trace_line.as_ref().and_then(order_trace),
                     });
                 }
                 if orders_due {
@@ -573,79 +629,145 @@ pub fn run(
         // Рыночные данные обслуживаем, только если мы провайдер и есть wanted-рынки.
         // Крестики читаем по каждому рынку своим курсором; стакан троттлим ~20 Гц.
         if is_provider && !wanted.is_empty() {
-          if let Some(snap) = client.snapshot() {
-            // Трейды -> крестики (append-only через курсор на рынок).
-            for market in &wanted {
-                let Some(reader) = snap
-                    .market_history_readers(market)
-                    .and_then(|r| r.futures_trades)
-                else {
-                    continue;
-                };
-                let cur = cursors
-                    .entry(market.clone())
-                    .or_insert_with(|| reader.cursor_from_oldest());
-                rows.clear();
-                reader.copy_new_since(cur, 8192, &mut rows);
-                if !rows.is_empty() {
-                    let ticks: Vec<Tick> = rows
-                        .iter()
-                        .map(|r| Tick {
-                            time_ms: r.unix_millis() as f64,
-                            price: r.price,
-                            side: if r.is_buy() { Side::Buy } else { Side::Sell },
-                        })
-                        .collect();
-                    if tx
-                        .send(FeedMsg::Ticks {
-                            market: market.clone(),
-                            ticks,
-                        })
-                        .is_err()
-                    {
-                        let _ = client.disconnect();
-                        return Ok(()); // координатор ушёл.
-                    }
-                }
-            }
-
-            // Стакан по каждому рынку — троттлим ~20 Гц.
-            if last_book.elapsed() >= Duration::from_millis(50) {
-                last_book = Instant::now();
+            if let Some(snap) = client.snapshot() {
+                // Трейды -> крестики (append-only через курсор на рынок).
                 for market in &wanted {
-                    if let Some(book) = snap.order_book(market, OrderBookKind::Futures) {
-                        let ob = OrderBook {
-                            bids: book
-                                .buys
-                                .iter()
-                                .map(|l| Level {
-                                    price: l.rate as f32,
-                                    qty: l.quantity as f32,
-                                })
-                                .collect(),
-                            asks: book
-                                .sells
-                                .iter()
-                                .map(|l| Level {
-                                    price: l.rate as f32,
-                                    qty: l.quantity as f32,
-                                })
-                                .collect(),
-                        };
+                    let Some(reader) = snap
+                        .market_history_readers(market)
+                        .and_then(|r| r.futures_trades)
+                    else {
+                        continue;
+                    };
+                    let cur = cursors
+                        .entry(market.clone())
+                        .or_insert_with(|| reader.cursor_from_oldest());
+                    rows.clear();
+                    reader.copy_new_since(cur, 8192, &mut rows);
+                    if !rows.is_empty() {
+                        let ticks: Vec<Tick> = rows
+                            .iter()
+                            .map(|r| Tick {
+                                time_ms: r.unix_millis() as f64,
+                                price: r.price,
+                                qty: r.quantity(),
+                                side: if r.is_buy() { Side::Buy } else { Side::Sell },
+                            })
+                            .collect();
                         if tx
-                            .send(FeedMsg::OrderBook {
+                            .send(FeedMsg::Ticks {
                                 market: market.clone(),
-                                book: ob,
+                                ticks,
                             })
                             .is_err()
                         {
                             let _ = client.disconnect();
-                            return Ok(());
+                            return Ok(()); // координатор ушёл.
+                        }
+                    }
+                }
+
+                // Retained price-lines (LastPrice / MarkPrice) для combo.
+                for market in &wanted {
+                    if let Some(reader) = snap
+                        .market_history_readers(market)
+                        .and_then(|r| r.last_prices)
+                    {
+                        let cur = last_price_cursors
+                            .entry(market.clone())
+                            .or_insert_with(|| reader.cursor_from_oldest());
+                        last_price_rows.clear();
+                        reader.copy_new_since(cur, 8192, &mut last_price_rows);
+                        if !last_price_rows.is_empty() {
+                            let points: Vec<PricePoint> = last_price_rows
+                                .iter()
+                                .map(|p| PricePoint {
+                                    time_ms: p.unix_millis() as f64,
+                                    price: p.price(),
+                                })
+                                .collect();
+                            if tx
+                                .send(FeedMsg::PriceLine {
+                                    market: market.clone(),
+                                    kind: PriceLineKind::Last,
+                                    points,
+                                })
+                                .is_err()
+                            {
+                                let _ = client.disconnect();
+                                return Ok(());
+                            }
+                        }
+                    }
+
+                    if let Some(reader) = snap
+                        .market_history_readers(market)
+                        .and_then(|r| r.mark_prices)
+                    {
+                        let cur = mark_price_cursors
+                            .entry(market.clone())
+                            .or_insert_with(|| reader.cursor_from_oldest());
+                        mark_price_rows.clear();
+                        reader.copy_new_since(cur, 8192, &mut mark_price_rows);
+                        if !mark_price_rows.is_empty() {
+                            let points: Vec<PricePoint> = mark_price_rows
+                                .iter()
+                                .map(|p| PricePoint {
+                                    time_ms: p.unix_millis() as f64,
+                                    price: p.price(),
+                                })
+                                .collect();
+                            if tx
+                                .send(FeedMsg::PriceLine {
+                                    market: market.clone(),
+                                    kind: PriceLineKind::Mark,
+                                    points,
+                                })
+                                .is_err()
+                            {
+                                let _ = client.disconnect();
+                                return Ok(());
+                            }
+                        }
+                    }
+                }
+
+                // Стакан по каждому рынку — троттлим ~20 Гц.
+                if last_book.elapsed() >= Duration::from_millis(50) {
+                    last_book = Instant::now();
+                    for market in &wanted {
+                        if let Some(book) = snap.order_book(market, OrderBookKind::Futures) {
+                            let ob = OrderBook {
+                                bids: book
+                                    .buys
+                                    .iter()
+                                    .map(|l| Level {
+                                        price: l.rate as f32,
+                                        qty: l.quantity as f32,
+                                    })
+                                    .collect(),
+                                asks: book
+                                    .sells
+                                    .iter()
+                                    .map(|l| Level {
+                                        price: l.rate as f32,
+                                        qty: l.quantity as f32,
+                                    })
+                                    .collect(),
+                            };
+                            if tx
+                                .send(FeedMsg::OrderBook {
+                                    market: market.clone(),
+                                    book: ob,
+                                })
+                                .is_err()
+                            {
+                                let _ = client.disconnect();
+                                return Ok(());
+                            }
                         }
                     }
                 }
             }
-          }
         }
 
         std::thread::sleep(Duration::from_millis(8));

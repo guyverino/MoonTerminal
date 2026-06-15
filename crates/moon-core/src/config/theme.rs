@@ -18,6 +18,8 @@ pub struct ChartTheme {
     pub grid: [u8; 3],
     /// Видимость сетки 0..1 (0 — скрыть).
     pub grid_alpha: f32,
+    /// Непрозрачность фото-подложки 0..1 (0 — выключить).
+    pub background_opacity: f32,
 
     // --- График: перекрестие ---
     /// Цвет перекрестия и ореола (sRGB).
@@ -54,18 +56,19 @@ pub struct ChartTheme {
 impl Default for ChartTheme {
     fn default() -> Self {
         Self {
-            bg: palette::BG,              // --bg, как панели/тулбары
-            grid: palette::GRID,          // едва заметная сетка
+            bg: palette::BG,     // --bg, как панели/тулбары
+            grid: palette::GRID, // едва заметная сетка
             grid_alpha: 1.0,
-            cross: palette::ACCENT,       // --accent (янтарный)
+            background_opacity: 0.18,
+            cross: palette::ACCENT, // --accent (янтарный)
             cross_alpha: 0.5,
             cross_thickness: 1.0,
             halo_radius: 44.0,
             halo_intensity: 0.14,
-            book_bg: palette::BG,         // как фон чарта
-            book_bid: palette::GREEN,     // --long (зелёный)
-            book_ask: palette::ORANGE,    // --short (оранжевый)
-            panel_bg: palette::BG,        // --bg
+            book_bg: palette::BG,          // как фон чарта
+            book_bid: palette::GREEN,      // --long (зелёный)
+            book_ask: palette::ORANGE,     // --short (оранжевый)
+            panel_bg: palette::BG,         // --bg
             closed_bg: palette::SURFACE_1, // --surface-1 (нейтральный контейнер)
         }
     }

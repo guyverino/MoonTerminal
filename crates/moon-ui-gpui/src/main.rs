@@ -15,8 +15,8 @@
 //! Чарт/dock/таблицы/настройки — следующие этапы.
 
 mod axes;
-mod chartdx;
 mod chart_tabs;
+mod chartdx;
 mod controls;
 mod design;
 mod detached;
@@ -38,12 +38,12 @@ use chart_tabs::ChartTabs;
 use dock_persist::DOCK_VERSION;
 use panels::{DetectsPanel, LogPanel, OrderPanel, OrdersPanel, ReportPanel, StubPanel};
 
-use moon_palette::{
-    h_flex, init as init_moon_palette, v_flex, DockArea, DockAreaState, DockEvent, DockItem,
-    DockPlacement, MoonBackgroundPolicy, MoonPalette, MoonStatusBar, MoonStatusIndicator,
-    MoonStatusItem, MoonTooltipView, MoonWindowChrome, MoonWindowChromeButton, PanelView, Root,
-};
 use moon_palette::MoonRect;
+use moon_palette::{
+    DockArea, DockAreaState, DockEvent, DockItem, DockPlacement, MoonBackgroundPolicy, MoonPalette,
+    MoonStatusBar, MoonStatusIndicator, MoonStatusItem, MoonTooltipView, MoonWindowChrome,
+    MoonWindowChromeButton, PanelView, Root, h_flex, init as init_moon_palette, v_flex,
+};
 
 use moon_core::config::{AppConfig, GroupLayout, WindowLayout};
 use moon_core::feed::ConnStatus;
@@ -58,12 +58,24 @@ fn hex(c: [u8; 3]) -> u32 {
 
 fn embedded_fonts() -> Vec<Cow<'static, [u8]>> {
     vec![
-        include_bytes!("../../../assets/fonts/Inter-400.ttf").as_slice().into(),
-        include_bytes!("../../../assets/fonts/Inter-500.ttf").as_slice().into(),
-        include_bytes!("../../../assets/fonts/Inter-600.ttf").as_slice().into(),
-        include_bytes!("../../../assets/fonts/GeistMono-400.ttf").as_slice().into(),
-        include_bytes!("../../../assets/fonts/GeistMono-500.ttf").as_slice().into(),
-        include_bytes!("../../../assets/fonts/GeistMono-600.ttf").as_slice().into(),
+        include_bytes!("../../../assets/fonts/Inter-400.ttf")
+            .as_slice()
+            .into(),
+        include_bytes!("../../../assets/fonts/Inter-500.ttf")
+            .as_slice()
+            .into(),
+        include_bytes!("../../../assets/fonts/Inter-600.ttf")
+            .as_slice()
+            .into(),
+        include_bytes!("../../../assets/fonts/GeistMono-400.ttf")
+            .as_slice()
+            .into(),
+        include_bytes!("../../../assets/fonts/GeistMono-500.ttf")
+            .as_slice()
+            .into(),
+        include_bytes!("../../../assets/fonts/GeistMono-600.ttf")
+            .as_slice()
+            .into(),
     ]
 }
 
@@ -114,6 +126,8 @@ struct Backend {
     show_group_request: Vec<String>,
     /// Открытые окна групп (группа → handle) — фокус по 👁, дедуп окон.
     group_windows: HashMap<String, WindowHandle<Root>>,
+    /// Окно «Настройки» (floating tool-window) — дедуп/фокус.
+    settings_window: Option<WindowHandle<Root>>,
     /// Окно «Стратегии» (отдельное ОС-окно, общее на приложение) — дедуп/фокус.
     strategies_window: Option<WindowHandle<Root>>,
     /// Откреплённые dock-панели (какая панель, из какой группы, геометрия окна) — load
@@ -147,9 +161,9 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-            // Единый DockArea на окно. Панели: чарт=center, детекты+ордер=right (split),
-            // нижние вкладки=bottom. Dock/TabPanel — MoonPalette, чтобы фоны управлялись
-            // MoonBackgroundPolicy и не перекрывали chart UnderScene.
+        // Единый DockArea на окно. Панели: чарт=center, детекты+ордер=right (split),
+        // нижние вкладки=bottom. Dock/TabPanel — MoonPalette, чтобы фоны управлялись
+        // MoonBackgroundPolicy и не перекрывали chart UnderScene.
         let dock = cx.new(|cx| {
             DockArea::new("group-dock", Some(DOCK_VERSION), window, cx)
                 .background_policy(MoonBackgroundPolicy::NoFill)
@@ -176,7 +190,17 @@ impl Shell {
         } else {
             // Чарт-вкладки (Main + AddToChart-N) — свой таб-стрип (chart_tabs.rs), полный
             // контроль активной вкладки/детача. Детекты/ордер/нижние — gpui-Dock-панели.
-            let charts = cx.new(|cx| ChartTabs::new(backend.clone(), group.clone(), focus, epoch, theme.clone(), window, cx));
+            let charts = cx.new(|cx| {
+                ChartTabs::new(
+                    backend.clone(),
+                    group.clone(),
+                    focus,
+                    epoch,
+                    theme.clone(),
+                    window,
+                    cx,
+                )
+            });
             let detects = cx.new(|cx| DetectsPanel::new(backend.clone(), group.clone(), cx));
             let order = cx.new(|cx| OrderPanel::new(cx));
 
@@ -191,9 +215,9 @@ impl Shell {
                 .collect();
             let mut bottom_tabs: Vec<Rc<dyn PanelView>> = Vec::new();
             if !detached_set.contains("Orders") {
-                bottom_tabs.push(Rc::new(cx.new(|cx| {
-                    OrdersPanel::new(backend.clone(), group.clone(), window, cx)
-                })));
+                bottom_tabs.push(Rc::new(
+                    cx.new(|cx| OrdersPanel::new(backend.clone(), group.clone(), window, cx)),
+                ));
             }
             if !detached_set.contains("Assets") {
                 bottom_tabs.push(Rc::new(cx.new(|cx| {
@@ -201,13 +225,18 @@ impl Shell {
                 })));
             }
             if !detached_set.contains("Log") {
-                bottom_tabs.push(Rc::new(cx.new(|cx| LogPanel::new(backend.clone(), group.clone(), window, cx))));
+                bottom_tabs.push(Rc::new(
+                    cx.new(|cx| LogPanel::new(backend.clone(), group.clone(), window, cx)),
+                ));
             }
             if !detached_set.contains("Report") {
-                bottom_tabs.push(Rc::new(cx.new(|cx| ReportPanel::new(backend.clone(), group.clone(), window, cx))));
+                bottom_tabs.push(Rc::new(
+                    cx.new(|cx| ReportPanel::new(backend.clone(), group.clone(), window, cx)),
+                ));
             }
 
-            // ВСЁ — в center-сплите (свободный пересплит drag-to-edge + детач панелей).
+            // ВСЁ — в center-сплите: размеры панелей меняются split-handle'ами,
+            // tab-docking/drag-to-edge — отдельный следующий слой док-механики.
             // Чарт-вкладки слева, детекты+ордер стопкой справа (≈220px), нижние вкладки внизу.
             // Тулбар (Размеры/Продажа/Масштаб) — отдельная фикс. полоса в Shell::render, не док.
             let chart_item = DockItem::tab(charts, &weak, window, cx);
@@ -242,7 +271,8 @@ impl Shell {
         }
 
         // Header читает backend каждый кадр → перерисовка по дренажу.
-        cx.observe(&backend, |_this, _backend, cx| cx.notify()).detach();
+        cx.observe(&backend, |_this, _backend, cx| cx.notify())
+            .detach();
 
         // Любое изменение раскладки доков (drag/split/resize/detach) → дамп в backend,
         // сохранение дебаунсит дренаж-таймер (docks.json). Порт персиста раскладки.
@@ -256,7 +286,13 @@ impl Shell {
         })
         .detach();
 
-        Self { backend, group, dock, last_frame: None, fps: 0.0 }
+        Self {
+            backend,
+            group,
+            dock,
+            last_frame: None,
+            fps: 0.0,
+        }
     }
 }
 
@@ -287,7 +323,8 @@ impl Render for Shell {
                 });
             }
             backend.update(cx, |b, _| {
-                b.detached.retain(|s| !(s.group == group && s.panel == panel_name));
+                b.detached
+                    .retain(|s| !(s.group == group && s.panel == panel_name));
                 b.detached_dirty = true;
             });
         }
@@ -366,7 +403,14 @@ impl Render for Shell {
                     None => ("—".into(), "—".into(), 0, 0),
                 }
             };
-            (conn, snap, market_label, price_label, tick_count, book_levels)
+            (
+                conn,
+                snap,
+                market_label,
+                price_label,
+                tick_count,
+                book_levels,
+            )
         };
         let chrome_width = f32::from(window.viewport_size().width);
 
@@ -391,9 +435,14 @@ impl Render for Shell {
                         h_flex()
                             .gap(px(12.0))
                             .items_center()
+                            .min_w_0()
+                            .overflow_hidden()
                             .child(design::logo())
                             .child(design::vline(16.0))
-                            .child(design::top_pill("strat-pill", format!("{} · {}", self.group, market_label)))
+                            .child(design::top_pill(
+                                "strat-pill",
+                                format!("{} · {}", self.group, market_label),
+                            ))
                             .child(metric("Session", "+$24.30", design::GREEN))
                             .child(metric("Real", "+$104.20", design::GREEN))
                             .child(metric("Unreal", "−$8.10", design::ORANGE))
@@ -401,24 +450,21 @@ impl Render for Shell {
                     )
                     .child(
                         h_flex()
+                            .flex_none()
                             .gap(px(12.0))
                             .items_center()
                             .child(exchange_pill())
                             .child(balance_label())
                             .child(design::vline(16.0))
-                            .child(
-                                header_action("strategies", "Стратегии", {
-                                    let backend = self.backend.clone();
-                                    move |_, _, cx| strategies::open(backend.clone(), cx)
-                                }),
-                            )
-                            .child(
-                                header_action("gear", "⚙", {
-                                    let backend = self.backend.clone();
-                                    move |_, _, cx| settings::open(backend.clone(), cx)
-                                }),
-                            )
-                            .child(window_controls())
+                            .child(header_action("strategies", "Стратегии", {
+                                let backend = self.backend.clone();
+                                move |_, _, cx| strategies::open(backend.clone(), cx)
+                            }))
+                            .child(header_action("gear", "⚙", {
+                                let backend = self.backend.clone();
+                                move |_, _, cx| settings::open(backend.clone(), cx)
+                            }))
+                            .child(window_controls()),
                     ),
             )
             // ── Тулбар: тонкая фикс. полоса (Размеры/Продажа/Масштаб+Live), порт верхней
@@ -451,15 +497,23 @@ impl Render for Shell {
 fn window_chrome(width: f32) -> impl IntoElement {
     let controls_x = (width - 108.0).max(0.0);
 
-    MoonWindowChrome::new("moon-window-chrome", MoonRect::new(0.0, 0.0, width, design::HEADER_TOP_H))
-        .drag_bounds(MoonRect::new(0.0, 0.0, 116.0_f32.min(width), design::HEADER_TOP_H))
-        .controls_bounds(MoonRect::new(controls_x, 0.0, 96.0, design::HEADER_TOP_H))
-        .buttons([
-            MoonWindowChromeButton::Minimize,
-            MoonWindowChromeButton::Maximize,
-            MoonWindowChromeButton::Close,
-        ])
-        .render()
+    MoonWindowChrome::new(
+        "moon-window-chrome",
+        MoonRect::new(0.0, 0.0, width, design::HEADER_TOP_H),
+    )
+    .drag_bounds(MoonRect::new(
+        0.0,
+        0.0,
+        116.0_f32.min(width),
+        design::HEADER_TOP_H,
+    ))
+    .controls_bounds(MoonRect::new(controls_x, 0.0, 96.0, design::HEADER_TOP_H))
+    .buttons([
+        MoonWindowChromeButton::Minimize,
+        MoonWindowChromeButton::Maximize,
+        MoonWindowChromeButton::Close,
+    ])
+    .render()
 }
 
 fn metric(label: &'static str, value: &'static str, color: u32) -> impl IntoElement {
@@ -468,8 +522,19 @@ fn metric(label: &'static str, value: &'static str, color: u32) -> impl IntoElem
         .gap(px(5.0))
         .font_family(design::mono())
         .text_size(px(11.0))
-        .child(div().text_size(px(9.0)).font_family(design::ui_font()).text_color(design::solid(design::TEXT_MUTED)).child(label))
-        .child(div().text_color(design::solid(color)).font_weight(FontWeight::SEMIBOLD).child(value))
+        .child(
+            div()
+                .text_size(px(9.0))
+                .font_family(design::ui_font())
+                .text_color(design::solid(design::TEXT_MUTED))
+                .child(label),
+        )
+        .child(
+            div()
+                .text_color(design::solid(color))
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(value),
+        )
 }
 
 fn risk_meter() -> impl IntoElement {
@@ -478,14 +543,25 @@ fn risk_meter() -> impl IntoElement {
         .gap(px(8.0))
         .font_family(design::mono())
         .text_size(px(11.0))
-        .child(div().text_size(px(9.0)).font_family(design::ui_font()).text_color(design::solid(design::TEXT_MUTED)).child("Risk"))
+        .child(
+            div()
+                .text_size(px(9.0))
+                .font_family(design::ui_font())
+                .text_color(design::solid(design::TEXT_MUTED))
+                .child("Risk"),
+        )
         .child(
             div()
                 .w(px(64.0))
                 .h(px(4.0))
                 .rounded(px(2.0))
                 .bg(design::solid(design::PANEL))
-                .child(div().w(px(12.0)).h(px(4.0)).bg(design::solid(design::GREEN))),
+                .child(
+                    div()
+                        .w(px(12.0))
+                        .h(px(4.0))
+                        .bg(design::solid(design::GREEN)),
+                ),
         )
         .child(div().text_color(design::solid(design::GREEN)).child("18%"))
 }
@@ -504,7 +580,11 @@ fn exchange_pill() -> impl IntoElement {
         .text_color(design::solid(design::TEXT_SOFT))
         .child(design::status_dot(design::GREEN))
         .child("Binance Futures")
-        .child(div().text_color(design::solid(design::TEXT_MUTED)).child("▾"))
+        .child(
+            div()
+                .text_color(design::solid(design::TEXT_MUTED))
+                .child("▾"),
+        )
 }
 
 fn balance_label() -> impl IntoElement {
@@ -514,8 +594,17 @@ fn balance_label() -> impl IntoElement {
         .text_size(px(11.5))
         .text_color(design::solid(design::TEXT_SOFT))
         .child("Balance: ")
-        .child(div().text_color(design::solid(design::TEXT)).font_weight(FontWeight::SEMIBOLD).child("50.00"))
-        .child(div().text_color(design::solid(design::TEXT_MUTED)).child(" /50 USDT"))
+        .child(
+            div()
+                .text_color(design::solid(design::TEXT))
+                .font_weight(FontWeight::SEMIBOLD)
+                .child("50.00"),
+        )
+        .child(
+            div()
+                .text_color(design::solid(design::TEXT_MUTED))
+                .child(" /50 USDT"),
+        )
 }
 
 fn window_controls() -> impl IntoElement {
@@ -561,7 +650,10 @@ fn header_action(
         .text_size(px(11.0))
         .text_color(design::solid(design::TEXT_SOFT))
         .cursor_pointer()
-        .hover(|s| s.bg(design::solid(design::LIFT_HOVER)).text_color(design::solid(design::TEXT)))
+        .hover(|s| {
+            s.bg(design::solid(design::LIFT_HOVER))
+                .text_color(design::solid(design::TEXT))
+        })
         .child(label.into())
         .on_click(on_click)
 }
@@ -585,7 +677,13 @@ impl Shell {
             .iter()
             .any(|(_, s)| matches!(s, ConnStatus::Failed(_) | ConnStatus::Disconnected));
         let p = MoonPalette::TERMINAL;
-        let badge_col = if all_ok { p.green } else if any_failed { p.red } else { p.amber };
+        let badge_col = if all_ok {
+            p.green
+        } else if any_failed {
+            p.red
+        } else {
+            p.amber
+        };
         // Текст тултипа — только про НЕ подключённых (имя: причина).
         let down_text: String = conn
             .down
@@ -615,30 +713,68 @@ impl Shell {
             .h(px(design::STATUS_H))
             .child(
                 MoonStatusBar::new("status-bar")
-                    .indicator(MoonStatusIndicator::new(badge_col).alpha(0.685).size(6.0).glow(8.0, 0.30))
+                    .indicator(
+                        MoonStatusIndicator::new(badge_col)
+                            .alpha(0.685)
+                            .size(6.0)
+                            .glow(8.0, 0.30),
+                    )
                     .items([
-                        MoonStatusItem::new(status_text).color(badge_col).weight(600.0).gap_after(10.0),
-                        MoonStatusItem::new("Binance Futures").color(p.text_soft).gap_after(10.0),
-                        MoonStatusItem::separator().gap_after(10.0),
-                        MoonStatusItem::new("ping").color(p.text_muted).gap_after(6.0),
-                        MoonStatusItem::new("32ms").color(p.text_soft).gap_after(10.0),
-                        MoonStatusItem::separator().gap_after(10.0),
-                        MoonStatusItem::new("Mode:").color(p.text_muted).gap_after(6.0),
-                        MoonStatusItem::new("Demo").color(p.text_soft).gap_after(10.0),
-                        MoonStatusItem::separator().gap_after(10.0),
-                        MoonStatusItem::new("ticks").color(p.text_muted).gap_after(6.0),
-                        MoonStatusItem::new(format!("{tick_count}")).color(p.text_soft).gap_after(10.0),
-                        MoonStatusItem::new("book").color(p.text_muted).gap_after(6.0),
-                        MoonStatusItem::new(format!("{book_levels}")).color(p.text_soft).gap_after(10.0),
-                        MoonStatusItem::new(format!("{fps:.0} fps")).color(p.text_soft).gap_after(10.0),
-                        MoonStatusItem::separator().gap_after(10.0),
-                        MoonStatusItem::new("CPU").color(p.text_muted).gap_after(6.0),
-                        MoonStatusItem::new(format!("{:.0}%/{:.0}%", snap.cpu_process, snap.cpu_system))
+                        MoonStatusItem::new(status_text)
+                            .color(badge_col)
+                            .weight(600.0)
+                            .gap_after(10.0),
+                        MoonStatusItem::new("Binance Futures")
                             .color(p.text_soft)
                             .gap_after(10.0),
-                        MoonStatusItem::new("RAM").color(p.text_muted).gap_after(6.0),
-                        MoonStatusItem::new(format!("{:.0} MB ({:+.1})", snap.mem_mb, snap.mem_delta_mb))
-                            .color(p.text_soft),
+                        MoonStatusItem::separator().gap_after(10.0),
+                        MoonStatusItem::new("ping")
+                            .color(p.text_muted)
+                            .gap_after(6.0),
+                        MoonStatusItem::new("32ms")
+                            .color(p.text_soft)
+                            .gap_after(10.0),
+                        MoonStatusItem::separator().gap_after(10.0),
+                        MoonStatusItem::new("Mode:")
+                            .color(p.text_muted)
+                            .gap_after(6.0),
+                        MoonStatusItem::new("Demo")
+                            .color(p.text_soft)
+                            .gap_after(10.0),
+                        MoonStatusItem::separator().gap_after(10.0),
+                        MoonStatusItem::new("ticks")
+                            .color(p.text_muted)
+                            .gap_after(6.0),
+                        MoonStatusItem::new(format!("{tick_count}"))
+                            .color(p.text_soft)
+                            .gap_after(10.0),
+                        MoonStatusItem::new("book")
+                            .color(p.text_muted)
+                            .gap_after(6.0),
+                        MoonStatusItem::new(format!("{book_levels}"))
+                            .color(p.text_soft)
+                            .gap_after(10.0),
+                        MoonStatusItem::new(format!("{fps:.0} fps"))
+                            .color(p.text_soft)
+                            .gap_after(10.0),
+                        MoonStatusItem::separator().gap_after(10.0),
+                        MoonStatusItem::new("CPU")
+                            .color(p.text_muted)
+                            .gap_after(6.0),
+                        MoonStatusItem::new(format!(
+                            "{:.0}%/{:.0}%",
+                            snap.cpu_process, snap.cpu_system
+                        ))
+                        .color(p.text_soft)
+                        .gap_after(10.0),
+                        MoonStatusItem::new("RAM")
+                            .color(p.text_muted)
+                            .gap_after(6.0),
+                        MoonStatusItem::new(format!(
+                            "{:.0} MB ({:+.1})",
+                            snap.mem_mb, snap.mem_delta_mb
+                        ))
+                        .color(p.text_soft),
                     ])
                     .right_item(MoonStatusItem::new("moonbot.pro").color(p.blue))
                     .render(),
@@ -681,7 +817,10 @@ pub(crate) fn spawn_group_window(
 ) {
     // Уже открыто → сфокусировать (handle.update вернёт Err, если окно закрыли).
     if let Some(handle) = backend.read(cx).group_windows.get(&group).copied() {
-        if handle.update(cx, |_, window, _| window.activate_window()).is_ok() {
+        if handle
+            .update(cx, |_, window, _| window.activate_window())
+            .is_ok()
+        {
             return;
         }
     }
@@ -703,8 +842,13 @@ pub(crate) fn spawn_group_window(
     };
     let opts = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(win_bounds)),
-        titlebar: None,
-        window_min_size: Some(size(px(1280.0), px(720.0))),
+        titlebar: Some(TitlebarOptions {
+            title: Some("MoonTerminal".into()),
+            appears_transparent: true,
+            ..Default::default()
+        }),
+        app_id: Some("MoonTerminal".to_string()),
+        window_min_size: Some(size(px(520.0), px(340.0))),
         ..Default::default()
     };
     let theme = cfg.theme.clone();
@@ -727,8 +871,8 @@ fn configure_dwm_window(window: &Window) {
     use windows::Win32::{
         Foundation::HWND,
         Graphics::Dwm::{
-            DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_CAPTION_COLOR,
-            DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND,
+            DWMWA_BORDER_COLOR, DWMWA_CAPTION_COLOR, DWMWA_WINDOW_CORNER_PREFERENCE,
+            DWMWCP_DONOTROUND, DwmSetWindowAttribute,
         },
     };
 
@@ -828,6 +972,7 @@ fn main() -> anyhow::Result<()> {
             reconnect_request: Vec::new(),
             show_group_request: Vec::new(),
             group_windows: HashMap::new(),
+            settings_window: None,
             strategies_window: None,
             detached,
             detached_dirty: false,
@@ -849,45 +994,54 @@ fn main() -> anyhow::Result<()> {
                 // gpui (свежий): AsyncApp::update инфэллибл; при закрытии приложения
                 // спавн-задача отменяется самим gpui (future дропается на await ниже).
                 cx.update(|cx| {
-                        // Сессия/метрики/реконнект — внутри backend.update; запросы
-                        // «показать группу» забираем наружу (нужен &mut App для окон).
-                        let show_reqs = drain_backend.update(cx, |b, cx| {
-                            b.session.drain();
-                            // Каждый кадр (как egui app/mod.rs): reconcile_providers
-                            // избирает провайдера/биржу + держит подписку на desired-рынки.
-                            // subscribe_all_trades провайдера = ретейн всех трейдов биржи
-                            // (десятки ГБ — by-design, ради мгновенного открытия монеты;
-                            // дедуп держит 1 провайдера/биржу).
-                            b.session.set_open(&b.desired);
-                            b.snap = b.metrics.sample(Instant::now());
-                            // Реконнект ядер по кнопке ↻ (порт egui take_actions.reconnect).
-                            let recon: Vec<CoreId> = b.reconnect_request.drain(..).collect();
-                            for id in recon {
-                                b.session.reconnect(id, &b.config, b.reports.as_ref().map(|h| &h.tx));
-                            }
-                            // Дебаунс-сохранение раскладки окон (≤10/с).
-                            if b.layout_dirty {
-                                b.layout.save();
-                                b.layout_dirty = false;
-                            }
-                            // Дебаунс-сохранение раскладки доков (docks.json).
-                            if b.dock_dirty {
-                                dock_persist::save_all(&b.dock_states);
-                                b.dock_dirty = false;
-                            }
-                            // Дебаунс-сохранение откреплённых окон (detached.json).
-                            if b.detached_dirty {
-                                detached::save_all(&b.detached);
-                                b.detached_dirty = false;
-                            }
-                            cx.notify();
-                            std::mem::take(&mut b.show_group_request)
-                        });
-                        // Открыть/сфокусировать окна по запросам 👁.
-                        for g in show_reqs {
-                            spawn_group_window(cx, &drain_backend, &drain_cfg, g, epoch, &drain_layout, 0.0);
+                    // Сессия/метрики/реконнект — внутри backend.update; запросы
+                    // «показать группу» забираем наружу (нужен &mut App для окон).
+                    let show_reqs = drain_backend.update(cx, |b, cx| {
+                        b.session.drain();
+                        // Каждый кадр (как egui app/mod.rs): reconcile_providers
+                        // избирает провайдера/биржу + держит подписку на desired-рынки.
+                        // subscribe_all_trades провайдера = ретейн всех трейдов биржи
+                        // (десятки ГБ — by-design, ради мгновенного открытия монеты;
+                        // дедуп держит 1 провайдера/биржу).
+                        b.session.set_open(&b.desired);
+                        b.snap = b.metrics.sample(Instant::now());
+                        // Реконнект ядер по кнопке ↻ (порт egui take_actions.reconnect).
+                        let recon: Vec<CoreId> = b.reconnect_request.drain(..).collect();
+                        for id in recon {
+                            b.session
+                                .reconnect(id, &b.config, b.reports.as_ref().map(|h| &h.tx));
                         }
+                        // Дебаунс-сохранение раскладки окон (≤10/с).
+                        if b.layout_dirty {
+                            b.layout.save();
+                            b.layout_dirty = false;
+                        }
+                        // Дебаунс-сохранение раскладки доков (docks.json).
+                        if b.dock_dirty {
+                            dock_persist::save_all(&b.dock_states);
+                            b.dock_dirty = false;
+                        }
+                        // Дебаунс-сохранение откреплённых окон (detached.json).
+                        if b.detached_dirty {
+                            detached::save_all(&b.detached);
+                            b.detached_dirty = false;
+                        }
+                        cx.notify();
+                        std::mem::take(&mut b.show_group_request)
                     });
+                    // Открыть/сфокусировать окна по запросам 👁.
+                    for g in show_reqs {
+                        spawn_group_window(
+                            cx,
+                            &drain_backend,
+                            &drain_cfg,
+                            g,
+                            epoch,
+                            &drain_layout,
+                            0.0,
+                        );
+                    }
+                });
             }
         })
         .detach();

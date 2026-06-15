@@ -56,7 +56,10 @@ impl IconSet {
                     .count() as u32
             })
             .unwrap_or(0);
-        Self { count, cache: HashMap::new() }
+        Self {
+            count,
+            cache: HashMap::new(),
+        }
     }
 
     /// Иконка по id (лениво грузит + кэширует). None — если файла нет/битый.

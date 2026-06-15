@@ -19,8 +19,9 @@ use std::collections::HashSet;
 use gpui::*;
 use moon_palette::{
     IndexPath, MoonBackgroundPolicy, MoonButton, MoonButtonSize, MoonButtonVariant,
-    MoonColorPicker, MoonColorPickerState, MoonPalette, MoonSelectEvent, MoonSelectItem,
-    MoonSelectState, MoonSlider, MoonSliderState, Root, h_flex, rgba_from, v_flex,
+    MoonColorPicker, MoonColorPickerState, MoonPalette, MoonRect, MoonSelectEvent, MoonSelectItem,
+    MoonSelectState, MoonSlider, MoonSliderState, MoonWindowChrome, MoonWindowChromeButton, Root,
+    h_flex, rgba_from, v_flex,
 };
 
 use crate::Backend;
@@ -32,6 +33,8 @@ use moon_core::session::SessionManager;
 use connections::ConnRow;
 use interface::Iface;
 use lines::Lines;
+
+const SETTINGS_HEADER_H: f32 = 30.0;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
@@ -221,6 +224,7 @@ impl SettingsView {
         cx.on_release(|this, app| {
             this.backend.update(app, |b, cx| {
                 b.preview = None;
+                b.settings_window = None;
                 cx.notify();
             });
         })
@@ -329,8 +333,9 @@ impl SettingsView {
 }
 
 impl Render for SettingsView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = MoonPalette::TERMINAL;
+        let chrome_width = f32::from(window.viewport_size().width);
 
         // ── Полоска вкладок ─────────────────────────────────────────────────
         let mut tabs = h_flex()
@@ -413,21 +418,127 @@ impl Render for SettingsView {
 
         v_flex()
             .size_full()
+            .relative()
             .bg(rgba_from(p.shell, 1.0))
             .font_family("Geist Mono")
             .text_size(px(11.0))
             .line_height(px(14.0))
             .text_color(rgba_from(p.text, 1.0))
+            .child(settings_header())
             .child(tabs)
             .child(body)
             .child(footer)
+            .child(settings_window_chrome(chrome_width))
     }
+}
+
+fn settings_header() -> impl IntoElement {
+    let p = MoonPalette::TERMINAL;
+    h_flex()
+        .id("settings-window-header")
+        .relative()
+        .flex_none()
+        .w_full()
+        .h(px(SETTINGS_HEADER_H))
+        .justify_between()
+        .px(px(12.0))
+        .bg(rgba_from(p.shell_high, 1.0))
+        .border_b(px(1.0))
+        .border_color(rgba_from(p.border, 1.0))
+        .child(
+            h_flex()
+                .gap(px(8.0))
+                .items_center()
+                .child(
+                    div()
+                        .w(px(7.0))
+                        .h(px(7.0))
+                        .rounded(px(999.0))
+                        .bg(rgba_from(p.blue, 1.0))
+                        .shadow(vec![moon_palette::foundation::box_shadow(
+                            px(0.0),
+                            px(0.0),
+                            px(8.0),
+                            px(0.0),
+                            rgba_from(p.blue, 0.34),
+                        )]),
+                )
+                .child(
+                    div()
+                        .font_family("Inter")
+                        .text_size(px(12.0))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(rgba_from(p.text, 1.0))
+                        .child("Настройки"),
+                ),
+        )
+        .child(settings_window_buttons())
+}
+
+fn settings_window_buttons() -> impl IntoElement {
+    let p = MoonPalette::TERMINAL;
+    h_flex()
+        .h(px(22.0))
+        .gap(px(2.0))
+        .font_family("Geist Mono")
+        .text_size(px(11.0))
+        .child(settings_window_button("—", p.text_soft))
+        .child(settings_window_button("×", p.orange))
+}
+
+fn settings_window_button(label: &'static str, color: u32) -> impl IntoElement {
+    div()
+        .w(px(26.0))
+        .h(px(22.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(4.0))
+        .text_color(rgba_from(color, 1.0))
+        .hover(|s| s.bg(rgba_from(0xFFFFFF, 0.055)))
+        .child(label)
+}
+
+fn settings_window_chrome(width: f32) -> impl IntoElement {
+    let controls_w = 52.0;
+    let controls_x = (width - controls_w - 12.0).max(0.0);
+
+    MoonWindowChrome::new(
+        "settings-window-chrome",
+        MoonRect::new(0.0, 0.0, width, SETTINGS_HEADER_H),
+    )
+    .drag_bounds(MoonRect::new(
+        0.0,
+        0.0,
+        (width - controls_w - 20.0).max(0.0),
+        SETTINGS_HEADER_H,
+    ))
+    .controls_bounds(MoonRect::new(
+        controls_x,
+        0.0,
+        controls_w,
+        SETTINGS_HEADER_H,
+    ))
+    .button_width(26.0)
+    .buttons([
+        MoonWindowChromeButton::Minimize,
+        MoonWindowChromeButton::Close,
+    ])
+    .render()
 }
 
 /// Открыть окно настроек (отдельное ОС-окно). Заводит draft = копия config (его
 /// правят вкладки, чарт показывает его живьём). Повторный клик при уже открытом
 /// окне игнорируем (draft уже есть) — иначе два окна делили бы один draft.
 pub fn open(backend: Entity<Backend>, cx: &mut App) {
+    if let Some(handle) = backend.read(cx).settings_window {
+        if handle
+            .update(cx, |_, window, _| window.activate_window())
+            .is_ok()
+        {
+            return;
+        }
+    }
     if backend.read(cx).preview.is_some() {
         return;
     }
@@ -435,17 +546,32 @@ pub fn open(backend: Entity<Backend>, cx: &mut App) {
     let opts = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds {
             origin: point(px(160.0), px(120.0)),
-            size: size(px(860.0), px(580.0)),
+            size: size(px(860.0), px(620.0)),
         })),
         titlebar: Some(TitlebarOptions {
             title: Some("MoonTerminal — Настройки".into()),
+            appears_transparent: true,
             ..Default::default()
         }),
+        kind: WindowKind::Floating,
+        app_id: Some("MoonTerminal".to_string()),
+        window_min_size: Some(size(px(620.0), px(420.0))),
         ..Default::default()
     };
-    cx.open_window(opts, |window, cx| {
-        let view = cx.new(|cx| SettingsView::new(backend, window, cx));
+    let b = backend.clone();
+    match cx.open_window(opts, move |window, cx| {
+        let view = cx.new(|cx| SettingsView::new(b, window, cx));
         cx.new(|cx| Root::new(view, window, cx).background_policy(MoonBackgroundPolicy::Opaque))
-    })
-    .ok();
+    }) {
+        Ok(handle) => {
+            backend.update(cx, |b, _| b.settings_window = Some(handle));
+        }
+        Err(_) => {
+            backend.update(cx, |b, cx| {
+                b.preview = None;
+                b.settings_window = None;
+                cx.notify();
+            });
+        }
+    }
 }

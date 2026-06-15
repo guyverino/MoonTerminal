@@ -21,7 +21,23 @@ pub struct Tick {
     /// Unix-время в миллисекундах (из core: row.unix_millis()).
     pub time_ms: f64,
     pub price: f32,
+    /// Абсолютный объём сделки в базовой валюте.
+    pub qty: f32,
     pub side: Side,
+}
+
+/// Retained price-line source kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PriceLineKind {
+    Last,
+    Mark,
+}
+
+/// Точка retained price-line (LastPrice / MarkPrice), уже в unix ms.
+#[derive(Debug, Clone, Copy)]
+pub struct PricePoint {
+    pub time_ms: f64,
+    pub price: f32,
 }
 
 /// Уровень стакана.
@@ -38,6 +54,22 @@ pub struct OrderBook {
     pub bids: Vec<Level>,
     /// Аски — по возрастанию цены.
     pub asks: Vec<Level>,
+}
+
+/// Точка серверной ордерной трассы для чарта, уже в unix ms.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct OrderTracePoint {
+    pub time_ms: f64,
+    pub price: f32,
+}
+
+/// Серверная polyline-трасса buy/sell линии ордера. Moonproto остаётся внутри
+/// feed-слоя; UI получает только доменную структуру.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct OrderTrace {
+    pub points: Vec<OrderTracePoint>,
+    pub tmp_point: Option<OrderTracePoint>,
+    pub stop_price: Option<f32>,
 }
 
 /// Открытый ордер (для нижнего дока).
@@ -90,6 +122,17 @@ pub struct OrderRow {
     pub pending_cond: Option<f64>,
     /// Цена ликвидации позиции (из рынка, по стороне).
     pub liq: Option<f64>,
+    /// Локальный/серверный PanicSell флаг.
+    pub panic_sell: bool,
+    /// Moon-shot corridor active marker.
+    pub is_moon_shot: bool,
+    /// Corridor price band from server, 0/NaN means absent.
+    pub corridor_price_down: f32,
+    pub corridor_price_up: f32,
+    /// Серверная трасса buy-линии (если ядро её уже построило).
+    pub buy_trace: Option<OrderTrace>,
+    /// Серверная трасса sell-линии (если ядро её уже построило).
+    pub sell_trace: Option<OrderTrace>,
 }
 
 /// Один детект ядра (для тулбара/истории). Декаплено от moonproto.
@@ -213,9 +256,21 @@ pub enum FeedMsg {
     /// Биржа ядра (из server_info после BaseCheck). Шлётся один раз.
     Identity(ExchangeId),
     /// Пачка новых тиков рынка (append-only по времени). Только от провайдера.
-    Ticks { market: String, ticks: Vec<Tick> },
+    Ticks {
+        market: String,
+        ticks: Vec<Tick>,
+    },
+    /// Новые точки retained price-line рынка. Только от провайдера.
+    PriceLine {
+        market: String,
+        kind: PriceLineKind,
+        points: Vec<PricePoint>,
+    },
     /// Свежий снимок стакана рынка. Только от провайдера.
-    OrderBook { market: String, book: OrderBook },
+    OrderBook {
+        market: String,
+        book: OrderBook,
+    },
     /// Открытые ордера ядра (все рынки).
     Orders(Vec<OrderRow>),
     /// Пачка новых детектов (накопленных за тик дренажа событий).

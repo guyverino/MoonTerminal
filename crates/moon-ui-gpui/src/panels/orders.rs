@@ -13,15 +13,15 @@ use std::rc::Rc;
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use moon_palette::{
-    h_flex, v_flex, DockArea, MoonBadge, MoonBadgeSize, MoonBadgeVariant, MoonButton,
-    MoonButtonSize, MoonButtonVariant, MoonDropdown, MoonMenuItem, MoonMenuSize, MoonPalette,
+    DockArea, MoonBadge, MoonBadgeSize, MoonBadgeVariant, MoonButton, MoonButtonSize,
+    MoonButtonVariant, MoonDropdown, MoonMenuItem, MoonMenuSize, MoonPalette,
     MoonScrollbarVisibility, MoonTableCell, MoonTableColumn, MoonTableRow, MoonText, MoonTone,
-    MoonVirtualTable, Panel, PanelEvent, PanelState,
+    MoonVirtualTable, Panel, PanelEvent, PanelState, h_flex, v_flex,
 };
 
-use crate::detached::DetachedSpec;
 use crate::design;
-use crate::{hex, Backend};
+use crate::detached::DetachedSpec;
+use crate::{Backend, hex};
 use moon_core::feed::OrderRow;
 use moon_core::palette;
 use moon_core::session::CoreId;
@@ -108,7 +108,12 @@ pub struct OrdersPanel {
 }
 
 impl OrdersPanel {
-    pub fn new(backend: Entity<Backend>, group: String, _window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        backend: Entity<Backend>,
+        group: String,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         // Перерисовка по дренажу backend — ТОЛЬКО когда реально изменились ордера.
         cx.observe(&backend, |this, backend, cx| {
             let sig = orders_sig(backend.read(cx), &this.group);
@@ -118,14 +123,26 @@ impl OrdersPanel {
             }
         })
         .detach();
-        Self { backend, group, view: OrdersViewState::default(), last_sig: 0, dock: None, focus: cx.focus_handle() }
+        Self {
+            backend,
+            group,
+            view: OrdersViewState::default(),
+            last_sig: 0,
+            dock: None,
+            focus: cx.focus_handle(),
+        }
     }
 
     /// Открытые ордера ядер группы (с именем ядра и quote) — порт `collect_orders`.
     fn collect(&self, b: &Backend) -> Vec<OrderEntry> {
         let store = b.session.store();
         let mut rows = Vec::new();
-        for s in b.session.sessions().iter().filter(|s| s.group == self.group) {
+        for s in b
+            .session
+            .sessions()
+            .iter()
+            .filter(|s| s.group == self.group)
+        {
             let quote = b
                 .config
                 .servers
@@ -135,7 +152,12 @@ impl OrdersPanel {
                 .unwrap_or_default();
             if let Some(d) = store.core(s.id) {
                 for o in &d.orders {
-                    rows.push(OrderEntry { core: s.id, core_name: s.name.clone(), quote: quote.clone(), row: o.clone() });
+                    rows.push(OrderEntry {
+                        core: s.id,
+                        core_name: s.name.clone(),
+                        quote: quote.clone(),
+                        row: o.clone(),
+                    });
                 }
             }
         }
@@ -144,13 +166,26 @@ impl OrdersPanel {
 
     /// (ядро, маркет) монеты, открытой на Main группы — для фильтра «только текущий».
     fn current_market(&self, b: &Backend) -> Option<(CoreId, String)> {
-        let focus = b.session.sessions().iter().find(|s| s.group == self.group).map(|s| s.id)?;
-        b.desired.iter().find(|(id, _)| *id == focus).map(|(c, m)| (*c, m.clone()))
+        let focus = b
+            .session
+            .sessions()
+            .iter()
+            .find(|s| s.group == self.group)
+            .map(|s| s.id)?;
+        b.desired
+            .iter()
+            .find(|(id, _)| *id == focus)
+            .map(|(c, m)| (*c, m.clone()))
     }
 
     /// Имена ядер группы (id, имя) — для поля-списка источника.
     fn group_cores(&self, b: &Backend) -> Vec<(CoreId, String)> {
-        b.session.sessions().iter().filter(|s| s.group == self.group).map(|s| (s.id, s.name.clone())).collect()
+        b.session
+            .sessions()
+            .iter()
+            .filter(|s| s.group == self.group)
+            .map(|s| (s.id, s.name.clone()))
+            .collect()
     }
 
     fn set_source(&mut self, s: OrdersSource, cx: &mut Context<Self>) {
@@ -166,7 +201,11 @@ impl OrdersPanel {
     fn source_combo(&self, cores: &[(CoreId, String)], cx: &Context<Self>) -> impl IntoElement {
         let cur = match self.view.source {
             OrdersSource::All => "Все ядра".to_string(),
-            OrdersSource::Core(id) => cores.iter().find(|(c, _)| *c == id).map(|(_, n)| n.clone()).unwrap_or_else(|| "Все ядра".into()),
+            OrdersSource::Core(id) => cores
+                .iter()
+                .find(|(c, _)| *c == id)
+                .map(|(_, n)| n.clone())
+                .unwrap_or_else(|| "Все ядра".into()),
         };
         let view = cx.entity();
         let mut menu = MoonDropdown::new("orders-source")
@@ -176,10 +215,14 @@ impl OrdersPanel {
             .trigger_width(118.0)
             .menu_width(160.0)
             .menu_size(MoonMenuSize::Compact)
-            .item(MoonMenuItem::with_key("all", "Все ядра").checked(matches!(self.view.source, OrdersSource::All)).on_click({
-                let view = view.clone();
-                move |_, _, app| view.update(app, |t, c| t.set_source(OrdersSource::All, c))
-            }));
+            .item(
+                MoonMenuItem::with_key("all", "Все ядра")
+                    .checked(matches!(self.view.source, OrdersSource::All))
+                    .on_click({
+                        let view = view.clone();
+                        move |_, _, app| view.update(app, |t, c| t.set_source(OrdersSource::All, c))
+                    }),
+            );
         for (id, name) in cores {
             let id = *id;
             let selected = matches!(self.view.source, OrdersSource::Core(cur) if cur == id);
@@ -187,7 +230,9 @@ impl OrdersPanel {
             menu = menu.item(
                 MoonMenuItem::with_key(format!("core-{id}"), name.clone())
                     .checked(selected)
-                    .on_click(move |_, _, app| view.update(app, |t, c| t.set_source(OrdersSource::Core(id), c))),
+                    .on_click(move |_, _, app| {
+                        view.update(app, |t, c| t.set_source(OrdersSource::Core(id), c))
+                    }),
             );
         }
         menu
@@ -208,7 +253,11 @@ impl OrdersPanel {
             .trigger_width(102.0)
             .menu_width(138.0)
             .menu_size(MoonMenuSize::Compact);
-        for (k, label) in [(OrderKind::All, "Все"), (OrderKind::Real, "Реальные"), (OrderKind::Emu, "Эмуляторные")] {
+        for (k, label) in [
+            (OrderKind::All, "Все"),
+            (OrderKind::Real, "Реальные"),
+            (OrderKind::Emu, "Эмуляторные"),
+        ] {
             let view = view.clone();
             menu = menu.item(
                 MoonMenuItem::with_key(format!("kind-{label}"), label)
@@ -273,18 +322,16 @@ impl OrdersPanel {
             );
         }
         let v = view.clone();
-        menu = menu
-            .item(MoonMenuItem::separator())
-            .item(
-                MoonMenuItem::with_key("m-new", "Новые первые")
-                    .checked(cur.newest_first)
-                    .on_click(move |_, _, app| {
-                        v.update(app, |t, c| {
-                            t.view.newest_first = true;
-                            c.notify();
-                        })
-                    }),
-            );
+        menu = menu.item(MoonMenuItem::separator()).item(
+            MoonMenuItem::with_key("m-new", "Новые первые")
+                .checked(cur.newest_first)
+                .on_click(move |_, _, app| {
+                    v.update(app, |t, c| {
+                        t.view.newest_first = true;
+                        c.notify();
+                    })
+                }),
+        );
         let v = view;
         menu.item(
             MoonMenuItem::with_key("m-old", "Старые первые")
@@ -339,32 +386,43 @@ impl Panel for OrdersPanel {
     fn dump(&self, _cx: &App) -> PanelState {
         crate::dock_persist::panel_state_with_group("Orders", &self.group)
     }
-    fn on_added_to(&mut self, dock_area: WeakEntity<DockArea>, _window: &mut Window, _cx: &mut Context<Self>) {
+    fn on_added_to(
+        &mut self,
+        dock_area: WeakEntity<DockArea>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) {
         self.dock = Some(dock_area);
     }
-    fn toolbar_buttons(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> Option<Vec<AnyElement>> {
+    fn toolbar_buttons(
+        &mut self,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<Vec<AnyElement>> {
         let backend = self.backend.clone();
         let group = self.group.clone();
         let dock = self.dock.clone();
-        Some(vec![MoonButton::new("detach-orders")
-            .ghost()
-            .size(MoonButtonSize::Action)
-            .label("⧉")
-            .on_click(move |_, window, app| {
-                if let Some(dock) = dock.as_ref().and_then(|d| d.upgrade()) {
-                    dock.update(app, |area, cx| {
-                        area.remove_panel_by_name("Orders", window, cx);
+        Some(vec![
+            MoonButton::new("detach-orders")
+                .ghost()
+                .size(MoonButtonSize::Action)
+                .label("⧉")
+                .on_click(move |_, window, app| {
+                    if let Some(dock) = dock.as_ref().and_then(|d| d.upgrade()) {
+                        dock.update(app, |area, cx| {
+                            area.remove_panel_by_name("Orders", window, cx);
+                        });
+                    }
+                    let spec = DetachedSpec::new(group.clone(), "Orders".to_string());
+                    crate::detached::spawn(app, &backend, &spec);
+                    backend.update(app, |b, _| {
+                        b.detached.push(spec);
+                        b.detached_dirty = true;
                     });
-                }
-                let spec = DetachedSpec::new(group.clone(), "Orders".to_string());
-                crate::detached::spawn(app, &backend, &spec);
-                backend.update(app, |b, _| {
-                    b.detached.push(spec);
-                    b.detached_dirty = true;
-                });
-            })
-            .render()
-            .into_any_element()])
+                })
+                .render()
+                .into_any_element(),
+        ])
     }
 }
 
@@ -409,10 +467,19 @@ impl Render for OrdersPanel {
             .child(self.source_combo(&cores, cx))
             .child(self.kind_combo(cx))
             .child(self.sort_menu(cx))
-            .child(div().text_xs().text_color(rgb(hex(palette::TEXT_3))).child(format!("{shown}")));
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(hex(palette::TEXT_3)))
+                    .child(format!("{shown}")),
+            );
         if view.only_current_market {
-            controls = controls
-                .child(div().text_xs().text_color(rgb(hex(palette::TEXT_3))).child("· Только ордера текущего маркета"));
+            controls = controls.child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(hex(palette::TEXT_3)))
+                    .child("· Только ордера текущего маркета"),
+            );
         }
 
         // ── Виртуальная таблица в геометрии HTML-эталона ──
@@ -428,7 +495,13 @@ impl Render for OrdersPanel {
             .text_size(px(10.5))
             .bg(design::solid(design::PANEL_DARK))
             .child(controls)
-            .child(div().w_full().h(px(1.0)).flex_none().bg(design::solid(design::BORDER)))
+            .child(
+                div()
+                    .w_full()
+                    .h(px(1.0))
+                    .flex_none()
+                    .bg(design::solid(design::BORDER)),
+            )
             .child(table)
     }
 }
@@ -487,8 +560,9 @@ fn order_columns() -> Vec<MoonTableColumn> {
         numeric_column("SL", 80.0),
         numeric_column("Age", 50.0),
         MoonTableColumn::new("Strategy", 130.0)
-            .header_padding(0.0, 8.0)
-            .cell_padding(0.0, 8.0),
+            .fill()
+            .header_padding(10.0, 8.0)
+            .cell_padding(10.0, 8.0),
     ]
 }
 
@@ -508,11 +582,27 @@ fn order_table_row(e: &OrderEntry, view: &Entity<OrdersPanel>) -> MoonTableRow {
     } else {
         ("BUY", MoonTone::Accent)
     };
-    let side = if r.emulator { format!("{side}(E)") } else { side.to_string() };
+    let side = if r.emulator {
+        format!("{side}(E)")
+    } else {
+        side.to_string()
+    };
     let pnl = pnl_value(r);
-    let pnl_tone = if pnl >= 0.0 { MoonTone::Positive } else { MoonTone::Danger };
-    let price = if r.sell_price > 0.0 { r.sell_price } else { r.buy_price };
-    let strategy = if r.strat.is_empty() { e.core_name.clone() } else { r.strat.clone() };
+    let pnl_tone = if pnl >= 0.0 {
+        MoonTone::Positive
+    } else {
+        MoonTone::Danger
+    };
+    let price = if r.sell_price > 0.0 {
+        r.sell_price
+    } else {
+        r.buy_price
+    };
+    let strategy = if r.strat.is_empty() {
+        e.core_name.clone()
+    } else {
+        r.strat.clone()
+    };
 
     MoonTableRow::new().cells([
         MoonTableCell::element(market_cell(e, view)),
@@ -598,12 +688,18 @@ fn pnl_value(r: &OrderRow) -> f64 {
         return 0.0;
     }
     let cur = r.price as f64;
-    let delta = if r.is_short { r.buy_price - cur } else { cur - r.buy_price };
+    let delta = if r.is_short {
+        r.buy_price - cur
+    } else {
+        cur - r.buy_price
+    };
     delta * r.size
 }
 
 fn opt_price(v: Option<f64>) -> String {
-    v.filter(|x| *x > 0.0).map(num).unwrap_or_else(|| "—".into())
+    v.filter(|x| *x > 0.0)
+        .map(num)
+        .unwrap_or_else(|| "—".into())
 }
 
 fn age(create_time_ms: f64) -> String {

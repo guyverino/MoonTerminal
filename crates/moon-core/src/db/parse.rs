@@ -73,7 +73,10 @@ fn parse_insert(sql: &str) -> Vec<(String, String)> {
     let Some((vals_inner, _)) = read_group(&after_values[lp2..]) else {
         return Vec::new();
     };
-    let cols: Vec<String> = cols_inner.split(',').map(|c| c.trim().to_string()).collect();
+    let cols: Vec<String> = cols_inner
+        .split(',')
+        .map(|c| c.trim().to_string())
+        .collect();
     let vals = split_top_level(&vals_inner);
     cols.into_iter().zip(vals).collect()
 }
@@ -182,7 +185,9 @@ fn num_f64(v: &str) -> Option<f64> {
 }
 fn num_i64(v: &str) -> Option<i64> {
     let tok = v.split_whitespace().next()?;
-    tok.parse::<i64>().ok().or_else(|| tok.parse::<f64>().ok().map(|f| f as i64))
+    tok.parse::<i64>()
+        .ok()
+        .or_else(|| tok.parse::<f64>().ok().map(|f| f as i64))
 }
 
 /// Строковое значение в кавычках: до закрывающей кавычки, '' → ', хвост отброшен.

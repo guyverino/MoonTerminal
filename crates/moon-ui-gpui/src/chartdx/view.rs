@@ -5,7 +5,7 @@
 use moon_chart::view::{ChartView, Rect};
 use moon_core::data::{TickInstance, TickRing};
 
-use super::gpu::{ChartCross, ChartViewGpu};
+use super::types::{ChartCross, ChartViewGpu};
 
 /// Собирает GPU-юнформ для текущего вида и чарт-области (физ. px). Поля заполняются ПО ИМЕНАМ
 /// (порядок в `ChartViewGpu` отличается от `moon_chart` ChartUniform — нельзя memcpy).
@@ -21,6 +21,10 @@ pub fn view_gpu(view: &ChartView, area: Rect, resolution: [f32; 2]) -> ChartView
         view_price0,
         marker_half: view.marker_half_px,
         pad: 0.0,
+        volume_buy_inv: 0.0,
+        volume_sell_inv: 0.0,
+        volume_alpha: 0.32,
+        _pad2: 0.0,
     }
 }
 
@@ -30,7 +34,7 @@ fn cross_of(t: &TickInstance) -> ChartCross {
         time_rel: t.time_rel_ms,
         price: t.price,
         side: if t.side >= 0.5 { 1 } else { 0 }, // 0 buy / 1 sell (TickInstance side: 0.0/1.0)
-        pad: 0,
+        qty: t.qty,
     }
 }
 

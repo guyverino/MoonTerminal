@@ -152,6 +152,7 @@ fn scale_popover(scale: Option<f32>, backend: Entity<Backend>) -> impl IntoEleme
     MoonPopover::new("toolbar-scale-popover")
         .placement(MoonPopoverPlacement::BottomEnd)
         .width(116.0)
+        .close_on_content_click(true)
         .trigger(trigger)
         .content(menu)
 }

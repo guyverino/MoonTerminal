@@ -18,13 +18,13 @@ mod parse;
 
 pub use parse::parse_report_sql;
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
-use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use rusqlite::types::Value;
 use rusqlite::Connection;
+use rusqlite::types::Value;
 
 use crate::config::paths;
 
@@ -75,34 +75,111 @@ fn now_ms() -> i64 {
 /// Полный набор колонок (сверх core_uid/core_name/db_id/sql/created_ms/updated_ms),
 /// зеркалящий Postgres `orders`. Используется и для CREATE, и для ALTER-апгрейда.
 const ALL_DB_COLUMNS: &[(&str, &str)] = &[
-    ("taskid", "INTEGER"), ("exorderid", "TEXT"), ("coin", "TEXT"), ("isshort", "INTEGER"),
-    ("buydate", "INTEGER"), ("sellsetdate", "INTEGER"), ("closedate", "INTEGER"),
-    ("quantity", "REAL"), ("boughtq", "REAL"), ("buyprice", "REAL"), ("sellprice", "REAL"),
-    ("spentbtc", "REAL"), ("gainedbtc", "REAL"), ("profitbtc", "REAL"),
-    ("lev", "INTEGER"), ("strategyid", "INTEGER"),
-    ("source", "INTEGER"), ("channel", "INTEGER"), ("channelname", "TEXT"),
-    ("signaltype", "TEXT"), ("fname", "TEXT"), ("basecurrency", "INTEGER"),
-    ("emulator", "INTEGER"), ("status", "INTEGER"), ("sellreason", "TEXT"), ("comment", "TEXT"),
-    ("deleted", "INTEGER"), ("imp", "INTEGER"),
-    ("btc1hdelta", "REAL"), ("exchange1hdelta", "REAL"), ("btc24hdelta", "REAL"),
-    ("exchange24hdelta", "REAL"), ("btc5mdelta", "REAL"), ("bvsvratio", "REAL"),
-    ("pump1h", "REAL"), ("dump1h", "REAL"), ("d24h", "REAL"), ("d3h", "REAL"),
-    ("d1h", "REAL"), ("d15m", "REAL"), ("d5m", "REAL"), ("d1m", "REAL"),
-    ("dbtc1m", "REAL"), ("vd1m", "REAL"), ("pricebug", "REAL"),
-    ("hvol", "REAL"), ("hvolf", "REAL"), ("dvol", "REAL"),
-    ("takeprofitlag", "REAL"), ("last_update_at", "INTEGER"),
+    ("taskid", "INTEGER"),
+    ("exorderid", "TEXT"),
+    ("coin", "TEXT"),
+    ("isshort", "INTEGER"),
+    ("buydate", "INTEGER"),
+    ("sellsetdate", "INTEGER"),
+    ("closedate", "INTEGER"),
+    ("quantity", "REAL"),
+    ("boughtq", "REAL"),
+    ("buyprice", "REAL"),
+    ("sellprice", "REAL"),
+    ("spentbtc", "REAL"),
+    ("gainedbtc", "REAL"),
+    ("profitbtc", "REAL"),
+    ("lev", "INTEGER"),
+    ("strategyid", "INTEGER"),
+    ("source", "INTEGER"),
+    ("channel", "INTEGER"),
+    ("channelname", "TEXT"),
+    ("signaltype", "TEXT"),
+    ("fname", "TEXT"),
+    ("basecurrency", "INTEGER"),
+    ("emulator", "INTEGER"),
+    ("status", "INTEGER"),
+    ("sellreason", "TEXT"),
+    ("comment", "TEXT"),
+    ("deleted", "INTEGER"),
+    ("imp", "INTEGER"),
+    ("btc1hdelta", "REAL"),
+    ("exchange1hdelta", "REAL"),
+    ("btc24hdelta", "REAL"),
+    ("exchange24hdelta", "REAL"),
+    ("btc5mdelta", "REAL"),
+    ("bvsvratio", "REAL"),
+    ("pump1h", "REAL"),
+    ("dump1h", "REAL"),
+    ("d24h", "REAL"),
+    ("d3h", "REAL"),
+    ("d1h", "REAL"),
+    ("d15m", "REAL"),
+    ("d5m", "REAL"),
+    ("d1m", "REAL"),
+    ("dbtc1m", "REAL"),
+    ("vd1m", "REAL"),
+    ("pricebug", "REAL"),
+    ("hvol", "REAL"),
+    ("hvolf", "REAL"),
+    ("dvol", "REAL"),
+    ("takeprofitlag", "REAL"),
+    ("last_update_at", "INTEGER"),
 ];
 
 /// Колонки и порядок для отображения в окне «Отчёты» (плюс заголовок/ширина —
 /// в самом окне). core_uid скрыт (служебный), db_id показываем как «ID».
 pub const DISPLAY_COLUMNS: &[&str] = &[
-    "buydate", "closedate", "sellsetdate", "core_name", "db_id", "taskid", "exorderid",
-    "coin", "isshort", "quantity", "boughtq", "buyprice", "sellprice", "spentbtc",
-    "gainedbtc", "profitbtc", "lev", "strategyid", "source", "channel", "channelname",
-    "signaltype", "fname", "basecurrency", "emulator", "status", "sellreason", "comment",
-    "btc1hdelta", "exchange1hdelta", "btc24hdelta", "exchange24hdelta", "btc5mdelta",
-    "bvsvratio", "pump1h", "dump1h", "d24h", "d3h", "d1h", "d15m", "d5m", "d1m", "dbtc1m",
-    "vd1m", "pricebug", "hvol", "hvolf", "dvol", "takeprofitlag", "last_update_at",
+    "buydate",
+    "closedate",
+    "sellsetdate",
+    "core_name",
+    "db_id",
+    "taskid",
+    "exorderid",
+    "coin",
+    "isshort",
+    "quantity",
+    "boughtq",
+    "buyprice",
+    "sellprice",
+    "spentbtc",
+    "gainedbtc",
+    "profitbtc",
+    "lev",
+    "strategyid",
+    "source",
+    "channel",
+    "channelname",
+    "signaltype",
+    "fname",
+    "basecurrency",
+    "emulator",
+    "status",
+    "sellreason",
+    "comment",
+    "btc1hdelta",
+    "exchange1hdelta",
+    "btc24hdelta",
+    "exchange24hdelta",
+    "btc5mdelta",
+    "bvsvratio",
+    "pump1h",
+    "dump1h",
+    "d24h",
+    "d3h",
+    "d1h",
+    "d15m",
+    "d5m",
+    "d1m",
+    "dbtc1m",
+    "vd1m",
+    "pricebug",
+    "hvol",
+    "hvolf",
+    "dvol",
+    "takeprofitlag",
+    "last_update_at",
 ];
 
 fn init_db(conn: &Connection) -> rusqlite::Result<()> {
@@ -129,12 +206,16 @@ fn init_db(conn: &Connection) -> rusqlite::Result<()> {
     }
 
     // CREATE с полным набором колонок.
-    let mut cols = String::from("core_uid INTEGER NOT NULL, core_name TEXT NOT NULL, db_id INTEGER NOT NULL");
+    let mut cols =
+        String::from("core_uid INTEGER NOT NULL, core_name TEXT NOT NULL, db_id INTEGER NOT NULL");
     for (n, d) in ALL_DB_COLUMNS {
         cols.push_str(&format!(", {n} {d}"));
     }
     cols.push_str(", sql TEXT, created_ms INTEGER NOT NULL, updated_ms INTEGER NOT NULL, PRIMARY KEY (core_uid, db_id)");
-    conn.execute(&format!("CREATE TABLE IF NOT EXISTS closed_sell_reports ({cols})"), [])?;
+    conn.execute(
+        &format!("CREATE TABLE IF NOT EXISTS closed_sell_reports ({cols})"),
+        [],
+    )?;
 
     // ALTER-апгрейд: дописываем недостающие колонки в более старую таблицу.
     let mut existing = std::collections::HashSet::new();
@@ -225,10 +306,14 @@ pub fn spawn_writer() -> Option<ReportsHandle> {
                         gen_writer.fetch_add(1, Ordering::Relaxed);
                         log::info!(
                             "отчёт: {} ({}) db_id={} {} buy@{:?} {}",
-                            row.core_uid, row.core_name, row.db_id,
+                            row.core_uid,
+                            row.core_name,
+                            row.db_id,
                             row.coin.as_deref().unwrap_or("?"),
                             row.buydate,
-                            row.profitbtc.map(|p| format!("{p:+.4}BTC")).unwrap_or_default(),
+                            row.profitbtc
+                                .map(|p| format!("{p:+.4}BTC"))
+                                .unwrap_or_default(),
                         );
                     }
                     Err(e) => log::error!("отчёты: запись db_id={} упала: {e}", row.db_id),
@@ -286,10 +371,16 @@ pub fn open_reader() -> Option<Connection> {
 
 pub fn load_sort(conn: &Connection) -> Option<(String, bool)> {
     let key: String = conn
-        .query_row("SELECT value FROM app_meta WHERE key='sort_key'", [], |r| r.get(0))
+        .query_row("SELECT value FROM app_meta WHERE key='sort_key'", [], |r| {
+            r.get(0)
+        })
         .ok()?;
     let desc: String = conn
-        .query_row("SELECT value FROM app_meta WHERE key='sort_desc'", [], |r| r.get(0))
+        .query_row(
+            "SELECT value FROM app_meta WHERE key='sort_desc'",
+            [],
+            |r| r.get(0),
+        )
         .unwrap_or_else(|_| "1".into());
     Some((key, desc != "0"))
 }
@@ -347,7 +438,9 @@ fn build_where(f: &ReportFilter) -> (String, Vec<Box<dyn rusqlite::types::ToSql>
 /// Итог по ВСЕМУ фильтру (не по топ-N): (сумма profitbtc, число ордеров).
 pub fn query_totals(conn: &Connection, f: &ReportFilter) -> (f64, i64) {
     let (where_sql, params) = build_where(f);
-    let sql = format!("SELECT COALESCE(SUM(profitbtc),0.0), COUNT(*) FROM closed_sell_reports{where_sql}");
+    let sql = format!(
+        "SELECT COALESCE(SUM(profitbtc),0.0), COUNT(*) FROM closed_sell_reports{where_sql}"
+    );
     let refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|b| b.as_ref()).collect();
     conn.query_row(&sql, refs.as_slice(), |r| Ok((r.get(0)?, r.get(1)?)))
         .unwrap_or((0.0, 0))
@@ -387,7 +480,10 @@ pub fn query_reports(
             }
         }
     }
-    ReportTable { cols: DISPLAY_COLUMNS, rows }
+    ReportTable {
+        cols: DISPLAY_COLUMNS,
+        rows,
+    }
 }
 
 pub fn distinct_cores(conn: &Connection) -> Vec<(u64, String)> {

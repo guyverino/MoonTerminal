@@ -24,7 +24,7 @@ cbuffer BookStyle : register(b1) {
 
 struct Level {
     float price;
-    float span;     // высота полосы (ед. цены = зазор до соседнего уровня)
+    float span;     // signed-delta цены до второго края fill-полосы
     float len_norm; // 0..1 доля ширины зоны
     float kind;     // 0 bid fill / 1 ask fill / 2 bid line / 3 ask line
 };
@@ -54,12 +54,7 @@ BarOut bars_vertex(uint vid : SV_VertexID, uint iid : SV_InstanceID) {
     float base = cv_bounds.y + cv_bounds.w;
     float y_price = base - (lv.price - cv_view_price0) * cv_price_to_px;
     // fill: строим по двум округлённым краям-ценам → полосы стыкуются без 1px-швов.
-    float inner = lv.price;
-    if (lv.kind < 0.5) {
-        inner = lv.price + lv.span;       // bid: сосед к спреду выше
-    } else if (lv.kind < 1.5) {
-        inner = lv.price - lv.span;       // ask: сосед к спреду ниже
-    }
+    float inner = lv.price + lv.span;
     float y_inner = base - (inner - cv_view_price0) * cv_price_to_px;
     float top = round(min(y_price, y_inner));
     float bot = round(max(y_price, y_inner));

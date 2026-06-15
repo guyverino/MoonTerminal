@@ -27,7 +27,10 @@ pub enum CoreCmd {
     /// обслуживает рынки из `markets`: подписывает их стакан и читает их крестики,
     /// помечая именем рынка. `provider=false` → никаких рыночных подписок (ядро
     /// отдаёт только аккаунтный план: ордера/детекты/стратегии).
-    SetMarket { provider: bool, markets: Vec<String> },
+    SetMarket {
+        provider: bool,
+        markets: Vec<String>,
+    },
     /// Действие со стратегиями ядра. Сначала синхронизирует галки (`set_checked`
     /// по каждой паре + `send_checked_delta`), затем, если задано, шлёт «старт
     /// отмеченных» (`start_stop=Some(true)`) или «стоп отмеченных» (`Some(false)`).
@@ -75,7 +78,11 @@ fn jittered(d: Duration) -> Duration {
 /// `startup_delay` — пауза перед ПЕРВЫМ коннектом: на старте сессии ядра разносятся
 /// веером (см. `SessionManager::start`), чтобы не бить в сеть/UDP-bind все разом.
 /// Ручной реконнект передаёт `Duration::ZERO` — он должен срабатывать мгновенно.
-pub fn spawn(server: ServerConfig, reports: Option<ReportTx>, startup_delay: Duration) -> FeedHandle {
+pub fn spawn(
+    server: ServerConfig,
+    reports: Option<ReportTx>,
+    startup_delay: Duration,
+) -> FeedHandle {
     let (tx, rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<CoreCmd>();
     let join = std::thread::Builder::new()

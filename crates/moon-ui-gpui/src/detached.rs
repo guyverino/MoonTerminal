@@ -16,7 +16,7 @@ use moon_palette::{PanelView, Root};
 use serde::{Deserialize, Serialize};
 
 use crate::panels::{LogPanel, OrdersPanel, ReportPanel, StubPanel};
-use crate::{hex, Backend};
+use crate::{Backend, hex};
 use moon_core::config::paths;
 use moon_core::palette;
 
@@ -35,7 +35,14 @@ pub struct DetachedSpec {
 impl DetachedSpec {
     /// Спека с дефолтной геометрией (каскад) — для первого открепления.
     pub fn new(group: String, panel: String) -> Self {
-        Self { group, panel, x: 200, y: 160, w: 1100, h: 520 }
+        Self {
+            group,
+            panel,
+            x: 200,
+            y: 160,
+            w: 1100,
+            h: 520,
+        }
     }
 }
 
@@ -82,13 +89,22 @@ pub fn build_panel(
     window: &mut Window,
     cx: &mut App,
 ) -> Option<Rc<dyn PanelView>> {
-    let panel: Rc<dyn PanelView> = match name {
-        "Orders" => Rc::new(cx.new(|cx| OrdersPanel::new(backend.clone(), group.to_string(), window, cx))),
-        "Log" => Rc::new(cx.new(|cx| LogPanel::new(backend.clone(), group.to_string(), window, cx))),
-        "Report" => Rc::new(cx.new(|cx| ReportPanel::new(backend.clone(), group.to_string(), window, cx))),
-        "Assets" => Rc::new(cx.new(|cx| StubPanel::new("Assets", "Активы", group.to_string(), backend.clone(), cx))),
-        _ => return None,
-    };
+    let panel: Rc<dyn PanelView> =
+        match name {
+            "Orders" => Rc::new(
+                cx.new(|cx| OrdersPanel::new(backend.clone(), group.to_string(), window, cx)),
+            ),
+            "Log" => {
+                Rc::new(cx.new(|cx| LogPanel::new(backend.clone(), group.to_string(), window, cx)))
+            }
+            "Report" => Rc::new(
+                cx.new(|cx| ReportPanel::new(backend.clone(), group.to_string(), window, cx)),
+            ),
+            "Assets" => Rc::new(cx.new(|cx| {
+                StubPanel::new("Assets", "Активы", group.to_string(), backend.clone(), cx)
+            })),
+            _ => return None,
+        };
     Some(panel)
 }
 
@@ -121,7 +137,12 @@ impl DetachedWindow {
             });
         })
         .detach();
-        Self { backend, group, panel, content }
+        Self {
+            backend,
+            group,
+            panel,
+            content,
+        }
     }
 }
 
@@ -137,7 +158,11 @@ impl Render for DetachedWindow {
             );
             let (group, panel) = (self.group.clone(), self.panel.clone());
             self.backend.update(cx, |bk, _| {
-                if let Some(s) = bk.detached.iter_mut().find(|s| s.group == group && s.panel == panel) {
+                if let Some(s) = bk
+                    .detached
+                    .iter_mut()
+                    .find(|s| s.group == group && s.panel == panel)
+                {
                     if (s.x, s.y, s.w, s.h) != geom {
                         s.x = geom.0;
                         s.y = geom.1;
@@ -175,14 +200,32 @@ pub fn spawn(app: &mut App, backend: &Entity<Backend>, spec: &DetachedSpec) {
     let spec = spec.clone();
     app.open_window(opts, move |window, cx| {
         let content: AnyView = match spec.panel.as_str() {
-            "Orders" => cx.new(|cx| OrdersPanel::new(backend.clone(), spec.group.clone(), window, cx)).into(),
-            "Log" => cx.new(|cx| LogPanel::new(backend.clone(), spec.group.clone(), window, cx)).into(),
-            "Report" => cx.new(|cx| ReportPanel::new(backend.clone(), spec.group.clone(), window, cx)).into(),
-            "Assets" => cx.new(|cx| StubPanel::new("Assets", "Активы", spec.group.clone(), backend.clone(), cx)).into(),
-            _ => cx.new(|cx| StubPanel::new("?", "Панель", spec.group.clone(), backend.clone(), cx)).into(),
+            "Orders" => cx
+                .new(|cx| OrdersPanel::new(backend.clone(), spec.group.clone(), window, cx))
+                .into(),
+            "Log" => cx
+                .new(|cx| LogPanel::new(backend.clone(), spec.group.clone(), window, cx))
+                .into(),
+            "Report" => cx
+                .new(|cx| ReportPanel::new(backend.clone(), spec.group.clone(), window, cx))
+                .into(),
+            "Assets" => cx
+                .new(|cx| {
+                    StubPanel::new("Assets", "Активы", spec.group.clone(), backend.clone(), cx)
+                })
+                .into(),
+            _ => cx
+                .new(|cx| StubPanel::new("?", "Панель", spec.group.clone(), backend.clone(), cx))
+                .into(),
         };
         let dw = cx.new(|cx| {
-            DetachedWindow::new(backend.clone(), spec.group.clone(), spec.panel.clone(), content, cx)
+            DetachedWindow::new(
+                backend.clone(),
+                spec.group.clone(),
+                spec.panel.clone(),
+                content,
+                cx,
+            )
         });
         cx.new(|cx| Root::new(dw, window, cx))
     })

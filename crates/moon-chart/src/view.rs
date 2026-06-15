@@ -1,12 +1,10 @@
-//! Состояние вида графика — порт интерактива из moonweb (ChartInteraction +
-//! CoordManager + YZoomController), с поведением «свободно листаем, через 3 с
-//! возврат к лайву»:
-//!   X (время): зум колесом, пан ЛКМ/Shift-колесо. Пан НЕ снимает Live — он
-//!              лишь «удерживает» вид (manual_until), затем возврат к «сейчас».
-//!   Y (цена):  авто-центрирование по цене с мёртвой зоной 10% масштаба
-//!              (не дёргается на каждом тике) + масштаб Авто/фикс-процент.
-
-use super::transform::ChartUniform;
+//! Состояние вида графика — порт интерактива из MoonBot/WebGame:
+//!   X (время): зум колесом вокруг курсора, пан ЛКМ/Shift-колесо. Live/latest
+//!              определяется пространственно: правый край в пределах 5% окна
+//!              от now снова якорится к «сейчас», таймера возврата нет.
+//!   Y (цена):  авто/фикс-процент и ручной Y-pan/RMB-zoom живут отдельно от
+//!              X-follow, чтобы горизонтальный просмотр истории не замораживал
+//!              ценовую шкалу.
 
 /// Прямоугольник в пикселях (top-left origin).
 #[derive(Clone, Copy)]
@@ -27,22 +25,17 @@ const CENTER_BUFFER: f32 = 0.10;
 const TICK_LERP: f32 = 0.10;
 /// Пикселей вертикального drag ПКМ на удвоение/деление диапазона Y.
 const YSCALE_PX_PER_2X: f32 = 150.0;
-/// Сколько держать ручной вид после последнего действия, мс (затем — к лайву).
-const MANUAL_HOLD_MS: f64 = 3000.0;
 /// Гистерезис диапазона Y: render_range держим, пока «гладкая» цель не уйдёт за
 /// ±15% — тогда снап к цели. Между снапами масштаб Y постоянен (нужно, чтобы
 /// scrollable canvas Stage 2 оставался валиден кадрами между прыжками).
 const RANGE_HYST: f32 = 1.15;
 /// Порог сдвига центра Y в пикселях: пока цена не уехала дальше — центр стоит.
 const CENTER_SNAP_PX: f32 = 8.0;
-/// Минимальное видимое окно времени, мс. Зум по X не даёт окну схлопнуться
-/// меньше — иначе секунда занимает весь экран и follow по правому краю гонит
-/// график (тот самый «улёт»). Порог-«упор» из ТЗ: ~1 с.
-const MIN_WINDOW_MS: f32 = 1_000.0;
+/// Если правый live-якорь ближе этого расстояния к now, считаем вид снова live.
+const LIVE_REJOIN_FRAC: f32 = 0.05;
 /// Максимальное видимое окно времени, мс (зум по X не растягивает больше). 1 час.
 const MAX_WINDOW_MS: f32 = 3_600_000.0;
-/// Дефолтное видимое окно при первом открытии, мс. Под него подгоняется зум по
-/// реальной ширине зоны графика (1 минута; сетка 30 вертикалей → ~2 с на риску).
+/// Дефолтное видимое окно, к которому выбираем пиксельно-гладкий live scale.
 const DEFAULT_WINDOW_MS: f32 = 60_000.0;
 
 pub struct ChartView {
@@ -63,6 +56,9 @@ pub struct ChartView {
     pub price_range: f32,
     /// Авто-подгон диапазона цены (кнопка «Авто»).
     pub auto_price: bool,
+    /// Ручной Y-view после вертикального drag / RMB zoom. Сбрасывается кнопками
+    /// масштаба, но не кнопкой Live: Live отвечает только за X/latest.
+    pub manual_price: bool,
     /// Последний фикс-процент (range = center*percent), для дрейф-режима.
     pub scale_percent: f32,
     /// Производное: пикселей на единицу цены (кэш для пана/хит-теста).
@@ -75,15 +71,18 @@ pub struct ChartView {
     pub render_center: f32,
     pub render_range: f32,
 
-    /// До этого момента (unix ms) вид удерживается вручную (нет авто-возврата).
-    pub manual_until: f64,
-
     /// Полуразмер крестика, px.
     pub marker_half_px: f32,
 
+    /// Временной scale стоит в default-фазовом режиме: можно пересчитать его при
+    /// resize/present-rate change. Первый ручной zoom выводит из этого режима.
+    x_default_scale: bool,
     /// Ещё не подгоняли зум под дефолтное окно (делается раз, по реальной ширине
     /// зоны графика в первом кадре).
     x_init_pending: bool,
+    last_phase_area_w: f32,
+    last_phase_present_hz: f32,
+    phase_default_px_per_ms: f32,
 }
 
 impl ChartView {
@@ -97,29 +96,60 @@ impl ChartView {
             center_price: 0.0,
             price_range: 1.0,
             auto_price: true,
+            manual_price: false,
             scale_percent: 0.10,
             px_per_price: 0.5,
             render_center: 0.0,
             render_range: 1.0,
-            manual_until: 0.0,
             marker_half_px: 3.5, // крест 7px (NormalX MoonBot)
+            x_default_scale: true,
             x_init_pending: true,
+            last_phase_area_w: f32::NAN,
+            last_phase_present_hz: f32::NAN,
+            phase_default_px_per_ms: 0.0,
         }
     }
 
-    /// Один раз подгоняет зум по X так, чтобы видимое окно было ровно
-    /// DEFAULT_WINDOW_MS при реальной ширине зоны графика `area_w` (физ. px).
-    /// Зовётся каждым кадром — срабатывает лишь на первом (когда ширина известна).
-    pub fn ensure_default_window(&mut self, area_w: f32) {
-        if self.x_init_pending && area_w >= 1.0 {
-            self.px_per_ms = (area_w / DEFAULT_WINDOW_MS).clamp(0.0005, 5.0);
-            self.x_init_pending = false;
-        }
+    fn phase_clean_default_px_per_ms(area_w: f32, present_hz: f32) -> f32 {
+        let dt_ms = 1000.0 / present_hz.max(1.0);
+        let s0 = area_w.max(1.0) * dt_ms / DEFAULT_WINDOW_MS;
+        let shift_px = if s0 >= 1.0 {
+            s0.round().max(1.0)
+        } else {
+            let n = (1.0 / s0.max(1e-9)).round().max(1.0);
+            1.0 / n
+        };
+        (shift_px / dt_ms).max(1e-9)
     }
 
-    /// Лайв сейчас? (Live включён И не идёт ручное удержание после действия.)
+    /// Подгоняет default time window к ближайшей фазо-чистой точке вокруг 60 c:
+    /// целое число px/frame или 1 px за N кадров. Пересчитывается только пока
+    /// scale остаётся default/reset-to-live, при первом кадре/resize/present change.
+    pub fn ensure_default_window(&mut self, area_w: f32, present_hz: f32) {
+        if area_w < 1.0 {
+            return;
+        }
+        let present_hz = present_hz.max(1.0);
+        let default_px_per_ms = Self::phase_clean_default_px_per_ms(area_w, present_hz);
+        let phase_changed = (area_w - self.last_phase_area_w).abs() >= 0.5
+            || (present_hz - self.last_phase_present_hz).abs() >= 0.5;
+        if phase_changed || self.x_init_pending {
+            self.phase_default_px_per_ms = default_px_per_ms;
+            self.last_phase_area_w = area_w;
+            self.last_phase_present_hz = present_hz;
+        }
+        if !self.x_init_pending && !(self.x_default_scale && phase_changed) {
+            return;
+        }
+        self.px_per_ms = default_px_per_ms;
+        self.x_default_scale = true;
+        self.x_init_pending = false;
+    }
+
+    /// Лайв сейчас?
     pub fn is_live(&self, now_ms: f64) -> bool {
-        self.follow && now_ms >= self.manual_until
+        let _ = now_ms;
+        self.follow
     }
 
     /// Якорит правый край к `edge_ms`, если идёт лайв. Smooth wall-clock режим
@@ -132,39 +162,37 @@ impl ChartView {
         }
     }
 
-    /// Отмечает ручное действие: удерживаем вид MANUAL_HOLD_MS, потом — к лайву.
-    pub fn begin_manual(&mut self, now_ms: f64) {
-        self.manual_until = now_ms + MANUAL_HOLD_MS;
-    }
-
-    /// Немедленный возврат к лайву (кнопка Live): к «сейчас», сброс удержания.
+    /// Немедленный возврат к лайву (кнопка Live): к «сейчас».
     pub fn resume_live(&mut self, now_ms: f64) {
         self.follow = true;
-        self.manual_until = 0.0;
         self.right_time_ms = now_ms;
     }
 
-    /// Сброс Y-вида для мгновенного переоткрытия на новой монете/цене: обнуляем
-    /// центр/диапазон (живые и render), чтобы следующий update_y встал СРАЗУ на
-    /// цену без плавного «добега» (lerp). Цена появляется через кадр-два после
-    /// подписки — тогда вид мгновенно встаёт на неё, а не бежит от старой.
-    pub fn reset_y(&mut self) {
-        self.center_price = 0.0;
-        self.price_range = 0.0;
-        self.render_center = 0.0;
-        self.render_range = 0.0;
+    pub fn reset_default_window_on_next_prepare(&mut self) {
+        self.x_default_scale = true;
+        self.x_init_pending = true;
     }
 
-    /// Пиксель правого края по заданному времени (для триггера перерисовки).
-    pub fn pixel_at(&self, edge_ms: f64) -> i64 {
-        ((edge_ms - self.epoch_ms) * self.px_per_ms as f64).floor() as i64
+    pub fn snap_to_live_if_near(&mut self, now_ms: f64, area_w: f32) -> bool {
+        if self.follow {
+            return false;
+        }
+        let tolerance_ms =
+            (area_w.max(1.0) * LIVE_REJOIN_FRAC) as f64 / self.px_per_ms.max(1e-6) as f64;
+        if now_ms - self.right_time_ms <= tolerance_ms {
+            self.resume_live(now_ms);
+            true
+        } else {
+            false
+        }
     }
 
     /// Видимое окно по X: (время у левого края, ширина окна в мс).
     /// Единый источник X-геометрии для uniform и для куллинга видимых тиков.
     pub fn visible_x(&self, area_w: f32) -> (f32, f32) {
         let window_ms = area_w / self.px_per_ms.max(1e-6);
-        let right_rel = (self.right_time_ms - self.epoch_ms) as f32 + window_ms * self.right_margin_frac;
+        let right_rel =
+            (self.right_time_ms - self.epoch_ms) as f32 + window_ms * self.right_margin_frac;
         (right_rel - window_ms, window_ms)
     }
 
@@ -173,11 +201,13 @@ impl ChartView {
     /// Кнопка «Авто» — динамический подгон под видимый диапазон.
     pub fn set_auto(&mut self) {
         self.auto_price = true;
+        self.manual_price = false;
     }
 
     /// Фикс-процент: видимый диапазон = цена*percent (как ZoomBar moonweb).
     pub fn set_scale_percent(&mut self, percent: f32) {
         self.auto_price = false;
+        self.manual_price = false;
         self.scale_percent = percent;
         let base = if self.center_price.abs() > 1e-6 {
             self.center_price.abs()
@@ -185,38 +215,62 @@ impl ChartView {
             self.price_range
         };
         self.price_range = (base * percent).max(1e-6);
+        self.render_range = self.price_range;
+        self.render_center = self.center_price;
     }
 
     // ── Пан / зум мышью ─────────────────────────────────────────────────────────
-    // Пан НЕ снимает Live: ставит ручное удержание (begin_manual), через 3 с —
-    // авто-возврат к «сейчас». Зум по X (колесо) — постоянный, без удержания.
+    // X-drag отрывает view от live сразу; re-anchor проверяется отдельно на mouse-up.
 
     /// Пан по X на dx пикселей (drag ЛКМ / Shift-колесо).
-    pub fn pan_x_px(&mut self, dx: f32, now_ms: f64) {
+    pub fn pan_x_px(&mut self, dx: f32, now_ms: f64, area_w: f32) {
         let dt_ms = dx as f64 / self.px_per_ms.max(1e-6) as f64;
-        self.right_time_ms -= dt_ms; // тянем вправо → смотрим в прошлое
-        self.begin_manual(now_ms);
+        self.right_time_ms = (self.right_time_ms - dt_ms).min(now_ms);
+        self.follow = false;
+        let _ = area_w;
     }
 
     /// Пан по Y на dy пикселей (drag ЛКМ).
     pub fn pan_y_px(&mut self, dy: f32, now_ms: f64) {
+        let _ = now_ms;
         self.center_price += dy / self.px_per_price.max(1e-6);
-        self.begin_manual(now_ms);
+        self.manual_price = true;
+        self.render_center = self.center_price;
     }
 
-    /// Зум по X вокруг правого края (колесо). Ограничиваем не px_per_ms напрямую,
-    /// а ВИДИМОЕ окно времени: [MIN_WINDOW_MS, MAX_WINDOW_MS]. `area_w` — ширина
-    /// зоны графика в физ. пикселях (та же шкала, что px_per_ms). Если ширина ещё
-    /// неизвестна (нулевая, до первого кадра) — мягкий абсолютный фолбэк.
-    pub fn zoom_x(&mut self, factor: f32, area_w: f32) {
+    /// Зум по X. В live сохраняем live-якорь (как WebGame/MoonBot); в ручном X-view
+    /// сохраняем время под курсором и после дискретного шага можем re-anchor к live.
+    pub fn zoom_x_at(&mut self, factor: f32, area_w: f32, cursor_x: f32, now_ms: f64) {
+        let was_follow = self.follow;
+        let old_px = self.px_per_ms.max(1e-6);
+        let cursor_x = cursor_x.clamp(0.0, area_w.max(1.0));
+        let (old_left, _) = self.visible_x(area_w);
+        let cursor_time = self.epoch_ms + old_left as f64 + cursor_x as f64 / old_px as f64;
         let next = self.px_per_ms * factor;
-        let (lo, hi) = if area_w >= 1.0 {
-            // window_ms = area_w / px_per_ms → больше px_per_ms = у́же окно.
-            (area_w / MAX_WINDOW_MS, area_w / MIN_WINDOW_MS)
+        let lo = if area_w >= 1.0 {
+            area_w / MAX_WINDOW_MS
         } else {
-            (0.0005, 5.0)
+            0.0005
         };
+        let hi = if self.phase_default_px_per_ms > 0.0 {
+            self.phase_default_px_per_ms
+        } else {
+            Self::phase_clean_default_px_per_ms(area_w, 60.0)
+        }
+        .max(lo);
         self.px_per_ms = next.clamp(lo, hi);
+        self.x_default_scale = (self.px_per_ms - self.phase_default_px_per_ms).abs() <= 1e-9;
+        if was_follow {
+            self.right_time_ms = now_ms;
+            self.follow = true;
+            return;
+        }
+        let new_window = area_w / self.px_per_ms.max(1e-6);
+        let left = cursor_time - self.epoch_ms - cursor_x as f64 / self.px_per_ms as f64;
+        self.right_time_ms =
+            (self.epoch_ms + left + new_window as f64 * (1.0 - self.right_margin_frac as f64))
+                .min(now_ms);
+        self.snap_to_live_if_near(now_ms, area_w);
     }
 
     /// Зум по Y (drag ПКМ) от снимка на момент нажатия. up=zoom out, down=zoom in.
@@ -225,15 +279,17 @@ impl ChartView {
         let r = (start_range * factor).clamp(start_range * 0.25, start_range * 4.0);
         self.center_price = start_center;
         self.price_range = r.max(1e-6);
-        self.begin_manual(now_ms);
+        self.manual_price = true;
+        self.render_center = self.center_price;
+        self.render_range = self.price_range;
+        let _ = now_ms;
     }
 
     // ── Обновление шкалы цены раз в кадр ─────────────────────────────────────────
 
-    /// Подгоняет центр/диапазон цены. Работает только в лайве (вне ручного
-    /// удержания и при включённом Live) — иначе вид заморожен. Центрирование
-    /// по цене с мёртвой зоной CENTER_BUFFER; масштаб Авто (фит видимого,
-    /// симметрично цене) или фикс-процент (range = цена*percent).
+    /// Подгоняет центр/диапазон цены. X-follow влияет только на выбор target:
+    /// live центрируется по последней цене, manual-X — по видимому диапазону.
+    /// Ручной Y-pan/RMB-zoom (`manual_price`) замораживает Y до выбора масштаба.
     pub fn update_y(
         &mut self,
         now_ms: f64,
@@ -241,32 +297,44 @@ impl ChartView {
         visible: Option<(f32, f32)>,
         last_price: Option<f32>,
     ) {
-        if self.is_live(now_ms) {
-            if let Some(p) = last_price {
-                // 1) Масштаб (range).
-                if self.auto_price {
-                    if let Some((lo, hi)) = visible {
-                        // Симметрично цене, чтобы при центровке по цене ни верх,
-                        // ни низ видимых данных не обрезались. +10% запас.
-                        let half = (p - lo).max(hi - p).max(p.abs() * 0.0005 + 1e-6);
-                        let trange = half * 2.0 * 1.10;
-                        if self.center_price == 0.0 || self.price_range <= 0.0 {
-                            self.price_range = trange;
-                        } else {
-                            self.price_range += (trange - self.price_range) * AUTO_LERP;
-                        }
-                    }
-                } else {
-                    self.price_range = (p.abs() * self.scale_percent).max(1e-6);
+        let live = self.is_live(now_ms);
+        if !self.manual_price {
+            let visible_mid = visible.map(|(lo, hi)| (lo + hi) * 0.5);
+            let target_center = if live {
+                last_price.or(visible_mid)
+            } else {
+                visible_mid.or(last_price)
+            };
+            let target_range = match (self.auto_price, visible, target_center) {
+                (true, Some((lo, hi)), Some(c)) if live => {
+                    // В live держим последнюю цену в центре и симметрично расширяем
+                    // range, чтобы ни хвосты тиков, ни price lines не обрезались.
+                    let half = (c - lo).max(hi - c).max(c.abs() * 0.0005 + 1e-6);
+                    Some(half * 2.0 * 1.10)
                 }
+                (true, Some((lo, hi)), Some(c)) => {
+                    Some((hi - lo).abs().max(c.abs() * 0.0005 + 1e-6) * 1.10)
+                }
+                (true, None, Some(c)) => Some((c.abs() * 0.001).max(1e-6)),
+                (false, _, Some(c)) => Some((c.abs() * self.scale_percent).max(1e-6)),
+                _ => None,
+            };
 
-                // 2) Центровка по цене с мёртвой зоной 10% масштаба.
-                if self.center_price == 0.0 {
-                    self.center_price = p;
+            if let Some(r) = target_range {
+                if live && self.auto_price && self.center_price != 0.0 && self.price_range > 0.0 {
+                    self.price_range += (r - self.price_range) * AUTO_LERP;
+                } else {
+                    self.price_range = r;
+                }
+            }
+
+            if let Some(c) = target_center {
+                if self.center_price == 0.0 || !live {
+                    self.center_price = c;
                 } else if self.price_range > 1e-9 {
-                    let drift = (p - self.center_price).abs() / self.price_range;
+                    let drift = (c - self.center_price).abs() / self.price_range;
                     if drift > CENTER_BUFFER {
-                        self.center_price += (p - self.center_price) * TICK_LERP;
+                        self.center_price += (c - self.center_price) * TICK_LERP;
                     }
                 }
             }
@@ -278,9 +346,10 @@ impl ChartView {
         // ушла за ±RANGE_HYST; центр — пока цена не уехала > CENTER_SNAP_PX px.
         // В ручном режиме следуем точно за вводом (drag отзывчив; canvas
         // пере-бейкается — это transient на время взаимодействия).
-        if self.is_live(now_ms) {
+        if live && !self.manual_price {
             let target = self.price_range.max(1e-9);
-            if !(self.render_range > 1e-9)
+            if !self.auto_price
+                || !(self.render_range > 1e-9)
                 || target > self.render_range * RANGE_HYST
                 || target < self.render_range / RANGE_HYST
             {
@@ -296,39 +365,59 @@ impl ChartView {
         }
         self.px_per_price = (area_h / self.render_range.max(1e-9)).max(1e-6);
     }
+}
 
-    /// Uniform для запекания крестиков в канвас (Stage 2c): фиксированный левый
-    /// край времени `bake_time0` (rel ms) и viewport = весь канвас [0,0,W,H]. Y
-    /// берём из render-параметров — те же, что на экране, поэтому при неизменном Y
-    /// запечённая картинка совпадает с экранной и нужен лишь UV-сдвиг по X.
-    pub fn bake_uniform(&self, bake_time0: f32, canvas_w: f32, area_h: f32) -> ChartUniform {
-        let view_price0 = self.render_center - (area_h * 0.5) / self.px_per_price.max(1e-6);
-        ChartUniform {
-            viewport: [0.0, 0.0, canvas_w, area_h],
-            resolution: [canvas_w, area_h],
-            time_to_px: self.px_per_ms,
-            price_to_px: self.px_per_price,
-            view_time0: bake_time0,
-            view_price0,
-            marker_half_px: self.marker_half_px,
-            _pad: 0.0,
+#[cfg(test)]
+mod tests {
+    use super::ChartView;
+
+    fn default_window_sec(width: f32, present_hz: f32) -> f32 {
+        let px_per_ms = ChartView::phase_clean_default_px_per_ms(width, present_hz);
+        width / px_per_ms / 1000.0
+    }
+
+    #[test]
+    fn default_time_window_snaps_to_phase_clean_values_around_60s() {
+        let cases = [
+            (1000.0, 66.66667),
+            (1280.0, 64.0),
+            (1920.0, 64.0),
+            (2560.0, 42.66667),
+        ];
+        for (width, expected) in cases {
+            let actual = default_window_sec(width, 60.0);
+            assert!(
+                (actual - expected).abs() < 0.01,
+                "width={width}: got {actual}, expected {expected}"
+            );
         }
     }
 
-    /// Собирает GPU-uniform для текущего вида и области.
-    pub fn uniform(&self, area: Rect, resolution: [f32; 2]) -> ChartUniform {
-        let (view_time0, _window_ms) = self.visible_x(area.w);
-        let view_price0 = self.render_center - (area.h * 0.5) / self.px_per_price.max(1e-6);
+    #[test]
+    fn x_pan_detaches_immediately_even_inside_live_snap_zone() {
+        let now = 100_000.0;
+        let mut view = ChartView::new(0.0);
+        view.ensure_default_window(1000.0, 60.0);
+        view.resume_live(now);
 
-        ChartUniform {
-            viewport: [area.x, area.y, area.w, area.h],
-            resolution,
-            time_to_px: self.px_per_ms,
-            price_to_px: self.px_per_price,
-            view_time0,
-            view_price0,
-            marker_half_px: self.marker_half_px,
-            _pad: 0.0,
-        }
+        view.pan_x_px(1.0, now, 1000.0);
+
+        assert!(!view.follow);
+        assert!(view.right_time_ms < now);
+        assert!(view.snap_to_live_if_near(now, 1000.0));
+        assert!(view.follow);
+    }
+
+    #[test]
+    fn zoom_in_is_clamped_to_phase_clean_default_window() {
+        let now = 100_000.0;
+        let mut view = ChartView::new(0.0);
+        view.ensure_default_window(1000.0, 60.0);
+        let default_px_per_ms = view.px_per_ms;
+
+        view.zoom_x_at(2.0, 1000.0, 500.0, now);
+
+        assert!((view.px_per_ms - default_px_per_ms).abs() < 1e-9);
+        assert!(view.follow);
     }
 }

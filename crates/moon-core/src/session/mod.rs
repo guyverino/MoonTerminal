@@ -131,6 +131,14 @@ impl SessionManager {
                     FeedMsg::Ticks { market, ticks } => {
                         self.market.apply_ticks(sess.id, &market, &ticks);
                     }
+                    FeedMsg::PriceLine {
+                        market,
+                        kind,
+                        points,
+                    } => {
+                        self.market
+                            .apply_price_line(sess.id, &market, kind, &points);
+                    }
                     FeedMsg::OrderBook { market, book } => {
                         self.market.apply_book(sess.id, &market, &book);
                     }
@@ -190,7 +198,12 @@ impl SessionManager {
         let handle = feed::spawn(server, reports.cloned(), Duration::ZERO);
         match self.sessions.iter_mut().find(|s| s.id == id) {
             Some(sess) => sess.handle = handle, // дроп старого хэндла → старый поток завершится
-            None => self.sessions.push(CoreSession { id, name, group, handle }),
+            None => self.sessions.push(CoreSession {
+                id,
+                name,
+                group,
+                handle,
+            }),
         }
         self.store.ensure(id);
         if let Some(core) = self.store.core_mut(id) {
@@ -207,7 +220,12 @@ impl SessionManager {
     /// Действие со стратегиями ядра (из окна стратегий): единый путь команд через
     /// per-core канал. Сначала синхронизирует галки (`checks`), затем — старт/стоп
     /// отмеченных (`start_stop`). Пустое действие — no-op.
-    pub fn apply_strategies(&self, core: CoreId, checks: Vec<(u64, bool)>, start_stop: Option<bool>) {
+    pub fn apply_strategies(
+        &self,
+        core: CoreId,
+        checks: Vec<(u64, bool)>,
+        start_stop: Option<bool>,
+    ) {
         if checks.is_empty() && start_stop.is_none() {
             return;
         }

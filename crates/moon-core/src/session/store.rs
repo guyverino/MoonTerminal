@@ -110,7 +110,10 @@ impl CoreData {
                 }
             }
             // Рыночные/идентификационные сообщения сюда не маршрутизируются.
-            FeedMsg::Identity(_) | FeedMsg::Ticks { .. } | FeedMsg::OrderBook { .. } => {}
+            FeedMsg::Identity(_)
+            | FeedMsg::Ticks { .. }
+            | FeedMsg::PriceLine { .. }
+            | FeedMsg::OrderBook { .. } => {}
         }
     }
 }

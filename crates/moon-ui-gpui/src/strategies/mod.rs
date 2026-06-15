@@ -15,13 +15,13 @@ use std::sync::Arc;
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use moon_palette::{
-    h_flex, rgba_from, v_flex, MoonBackgroundPolicy, MoonButton, MoonButtonSize,
-    MoonButtonVariant, MoonCheckbox, MoonCheckboxSize, MoonDropdown, MoonInput, MoonInputEvent,
-    MoonInputState, MoonMenuItem, MoonMenuSize, MoonPalette, MoonTextArea, MoonTextAreaEvent,
-    MoonTextAreaState, MoonTone, Root,
+    MoonBackgroundPolicy, MoonButton, MoonButtonSize, MoonButtonVariant, MoonCheckbox,
+    MoonCheckboxSize, MoonDropdown, MoonInput, MoonInputEvent, MoonInputState, MoonMenuItem,
+    MoonMenuSize, MoonPalette, MoonRect, MoonTextArea, MoonTextAreaEvent, MoonTextAreaState,
+    MoonTone, MoonWindowChrome, MoonWindowChromeButton, Root, h_flex, rgba_from, v_flex,
 };
 
-use crate::{hex, Backend};
+use crate::{Backend, hex};
 use moon_core::feed::{SchemaField, SchemaFieldUi, SchemaSection, StrategyRow};
 use moon_core::palette;
 use moon_core::session::{CoreId, CoreStore};
@@ -31,6 +31,8 @@ use rules::{Rules, Values};
 
 pub type Key = (CoreId, u64);
 type FieldEditKey = (CoreId, u64, String);
+
+const STRATEGIES_HEADER_H: f32 = 32.0;
 
 enum ParamsPanelModel {
     NoSelection,
@@ -568,17 +570,19 @@ impl StrategiesView {
     ) -> AnyElement {
         let view = cx.entity();
         let selected_kind = self.filter.kind;
-        let mut items = vec![MoonMenuItem::with_key("kind-all", "все типы")
-            .selected(selected_kind.is_none())
-            .on_click({
-                let view = view.clone();
-                move |_, _, app| {
-                    view.update(app, |this, c| {
-                        this.filter.kind = None;
-                        c.notify();
-                    });
-                }
-            })];
+        let mut items = vec![
+            MoonMenuItem::with_key("kind-all", "все типы")
+                .selected(selected_kind.is_none())
+                .on_click({
+                    let view = view.clone();
+                    move |_, _, app| {
+                        view.update(app, |this, c| {
+                            this.filter.kind = None;
+                            c.notify();
+                        });
+                    }
+                }),
+        ];
         for (ord, name) in kinds {
             let view = view.clone();
             items.push(
@@ -1024,12 +1028,7 @@ impl StrategiesView {
                 h_flex()
                     .items_center()
                     .gap_2()
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(moon(p.text_muted))
-                            .child(count),
-                    )
+                    .child(div().text_xs().text_color(moon(p.text_muted)).child(count))
                     .when(dirty > 0, |row| {
                         row.child(
                             MoonButton::new("strat-fields-apply")
@@ -1044,7 +1043,9 @@ impl StrategiesView {
                                 .ghost()
                                 .size(MoonButtonSize::Micro)
                                 .label("revert")
-                                .on_click(cx.listener(|this, _, _, cx| this.discard_field_edits(cx)))
+                                .on_click(
+                                    cx.listener(|this, _, _, cx| this.discard_field_edits(cx)),
+                                )
                                 .render(),
                         )
                     }),
@@ -1163,7 +1164,11 @@ impl StrategiesView {
                     let mut items = Vec::with_capacity(f.picklist.len());
                     for option in &f.picklist {
                         let option_value = option.clone();
-                        let label = if option.is_empty() { "—".to_string() } else { option.clone() };
+                        let label = if option.is_empty() {
+                            "—".to_string()
+                        } else {
+                            option.clone()
+                        };
                         let keys = keys.to_vec();
                         let field = field_name.clone();
                         let view = view.clone();
@@ -1172,7 +1177,12 @@ impl StrategiesView {
                                 .selected(option_value == value)
                                 .on_click(move |_, _, app| {
                                     view.update(app, |this, cx| {
-                                        this.stage_field_value(&keys, &field, option_value.clone(), cx);
+                                        this.stage_field_value(
+                                            &keys,
+                                            &field,
+                                            option_value.clone(),
+                                            cx,
+                                        );
                                     });
                                 }),
                         );
@@ -1267,7 +1277,13 @@ impl StrategiesView {
                     .text_color(moon(name_col))
                     .child(f.name.clone()),
             )
-            .child(div().flex_1().min_w_0().text_color(moon(val_col)).child(value_el))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_color(moon(val_col))
+                    .child(value_el),
+            )
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.focused_field = Some(field_for_focus.clone());
                 cx.notify();
@@ -1447,6 +1463,11 @@ impl Render for StrategiesView {
         self.flat_order = built;
 
         let p = MoonPalette::TERMINAL;
+        let chrome_width = match window.window_bounds() {
+            WindowBounds::Windowed(b)
+            | WindowBounds::Maximized(b)
+            | WindowBounds::Fullscreen(b) => f32::from(b.size.width),
+        };
         let mut root = v_flex()
             .size_full()
             .relative()
@@ -1456,6 +1477,7 @@ impl Render for StrategiesView {
             .text_size(px(11.0))
             .line_height(px(14.0))
             .track_focus(&self.focus)
+            .child(strategies_header())
             .child(
                 h_flex()
                     .flex_1()
@@ -1468,8 +1490,103 @@ impl Render for StrategiesView {
         if let Some(overlay) = overlay {
             root = root.child(overlay);
         }
+        root = root.child(strategies_window_chrome(chrome_width));
         root
     }
+}
+
+fn strategies_header() -> impl IntoElement {
+    let p = MoonPalette::TERMINAL;
+    h_flex()
+        .id("strategies-window-header")
+        .relative()
+        .flex_none()
+        .w_full()
+        .h(px(STRATEGIES_HEADER_H))
+        .justify_between()
+        .px(px(12.0))
+        .bg(moon(p.shell_high))
+        .border_b(px(1.0))
+        .border_color(moon_alpha(p.border, 1.0))
+        .child(
+            h_flex()
+                .gap(px(8.0))
+                .child(
+                    div()
+                        .w(px(7.0))
+                        .h(px(7.0))
+                        .rounded(px(999.0))
+                        .bg(moon(p.accent))
+                        .shadow(vec![moon_palette::foundation::box_shadow(
+                            px(0.0),
+                            px(0.0),
+                            px(8.0),
+                            px(0.0),
+                            moon_alpha(p.accent, 0.36),
+                        )]),
+                )
+                .child(
+                    div()
+                        .font_family("Inter")
+                        .text_size(px(12.0))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(moon(p.text))
+                        .child("Стратегии"),
+                ),
+        )
+        .child(strategies_window_buttons())
+}
+
+fn strategies_window_buttons() -> impl IntoElement {
+    let p = MoonPalette::TERMINAL;
+    h_flex()
+        .h(px(22.0))
+        .gap(px(2.0))
+        .font_family("Geist Mono")
+        .text_size(px(11.0))
+        .child(strategies_window_button("—", p.text_soft))
+        .child(strategies_window_button("×", p.orange))
+}
+
+fn strategies_window_button(label: &'static str, color: u32) -> impl IntoElement {
+    div()
+        .w(px(26.0))
+        .h(px(22.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(4.0))
+        .text_color(moon(color))
+        .hover(|s| s.bg(moon_alpha(0xFFFFFF, 0.055)))
+        .child(label)
+}
+
+fn strategies_window_chrome(width: f32) -> impl IntoElement {
+    let controls_w = 52.0;
+    let controls_x = (width - controls_w - 12.0).max(0.0);
+
+    MoonWindowChrome::new(
+        "strategies-window-chrome",
+        MoonRect::new(0.0, 0.0, width, STRATEGIES_HEADER_H),
+    )
+    .drag_bounds(MoonRect::new(
+        0.0,
+        0.0,
+        (width - controls_w - 20.0).max(0.0),
+        STRATEGIES_HEADER_H,
+    ))
+    .controls_bounds(MoonRect::new(
+        controls_x,
+        0.0,
+        controls_w,
+        STRATEGIES_HEADER_H,
+    ))
+    .button_width(26.0)
+    .buttons([
+        MoonWindowChromeButton::Minimize,
+        MoonWindowChromeButton::Close,
+    ])
+    .render()
 }
 
 // ── Чистые помощники (порт `strategies/mod.rs`) ──────────────────────────────
@@ -1605,7 +1722,9 @@ fn merged_value_for_owned(
     rows: &[(Key, StrategyRow)],
     f: &SchemaField,
 ) -> Option<String> {
-    let mut it = rows.iter().map(|(key, row)| edited_field_value(st, *key, row, f));
+    let mut it = rows
+        .iter()
+        .map(|(key, row)| edited_field_value(st, *key, row, f));
     let first = it.next()?;
     if it.all(|v| v == first) {
         Some(first)
@@ -1666,7 +1785,11 @@ fn formula_snippets() -> [(&'static str, &'static str, &'static str); 10] {
         ("Vol(t,i)", "volume indicator", "Vol(5m, 1)"),
         ("Arb(ex)", "arb spread", "Arb(GateS)"),
         ("EMA short", "EMA(60s,1)<{v}", "EMA(60s, 1) < "),
-        ("Multi-TF", "MIN(15m,1)<{v} AND MIN(5m,1)<{v}", "MIN(15m, 1) <  AND MIN(5m, 1) < "),
+        (
+            "Multi-TF",
+            "MIN(15m,1)<{v} AND MIN(5m,1)<{v}",
+            "MIN(15m, 1) <  AND MIN(5m, 1) < ",
+        ),
     ]
 }
 
@@ -1679,7 +1802,10 @@ fn field_id(field: &str) -> String {
 }
 
 fn editor_state_id(keys: &[Key], field: &str) -> String {
-    let mut key_parts: Vec<String> = keys.iter().map(|(core, id)| format!("{core}-{id}")).collect();
+    let mut key_parts: Vec<String> = keys
+        .iter()
+        .map(|(core, id)| format!("{core}-{id}"))
+        .collect();
     key_parts.sort();
     format!("{}:{}", field_id(field), key_parts.join(","))
 }
@@ -1786,8 +1912,12 @@ pub fn open(backend: Entity<Backend>, cx: &mut App) {
         })),
         titlebar: Some(TitlebarOptions {
             title: Some("MoonTerminal — Стратегии".into()),
+            appears_transparent: true,
             ..Default::default()
         }),
+        kind: WindowKind::Floating,
+        app_id: Some("MoonTerminal".to_string()),
+        window_min_size: Some(size(px(920.0), px(560.0))),
         ..Default::default()
     };
     let b = backend.clone();

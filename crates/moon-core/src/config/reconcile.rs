@@ -4,11 +4,11 @@
 //! один раз привязываемся по `name` и тут же проставляем свежий uid: после этого
 //! переименование сервера больше НЕ теряет его галки (привязка идёт по uid).
 
+use super::ServerConfig;
 use super::groups::GroupConfig;
 use super::lang::Language;
-use super::schema::{ServerEntry, ServerMeta, ServersFile, SettingsFile, SCHEMA_VERSION};
+use super::schema::{SCHEMA_VERSION, ServerEntry, ServerMeta, ServersFile, SettingsFile};
 use super::servers;
-use super::ServerConfig;
 use crate::market::MarketDataMode;
 
 /// Результат слияния двух файлов в рантайм.

@@ -7,10 +7,10 @@
 use std::collections::HashMap;
 
 use gpui::*;
-use moon_palette::{h_flex, v_flex, MoonBackgroundPolicy, Panel, PanelEvent, PanelState, Root};
+use moon_palette::{MoonBackgroundPolicy, Panel, PanelEvent, PanelState, Root, h_flex, v_flex};
 
 use crate::panels::ChartPanel;
-use crate::{hex, Backend};
+use crate::{Backend, hex};
 use moon_core::config::ChartTheme;
 use moon_core::palette;
 use moon_core::session::CoreId;
@@ -52,7 +52,16 @@ impl ChartTabs {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let main = cx.new(|cx| ChartPanel::new(backend.clone(), focus_open, epoch, theme.clone(), window, cx));
+        let main = cx.new(|cx| {
+            ChartPanel::new(
+                backend.clone(),
+                focus_open,
+                epoch,
+                theme.clone(),
+                window,
+                cx,
+            )
+        });
         // Дренаж backend → перерисовка (ingest/prune/open_request делаем в render).
         cx.observe(&backend, |_this, _b, cx| cx.notify()).detach();
         Self {
@@ -73,7 +82,8 @@ impl ChartTabs {
     fn handle_open_request(&mut self, cx: &mut Context<Self>) {
         let req = self.backend.update(cx, |b, _| b.open_request.take());
         if let Some((core, market)) = req {
-            self.main.update(cx, |p, pcx| p.open_market(core, market, pcx));
+            self.main
+                .update(cx, |p, pcx| p.open_market(core, market, pcx));
             self.active = Tab::Main;
         }
     }
@@ -87,9 +97,16 @@ impl ChartTabs {
             let split = b.config.charts_split_by_core;
             let mut fresh = Vec::new();
             let mut cursors = Vec::new();
-            for s in b.session.sessions().iter().filter(|s| s.group == self.group) {
+            for s in b
+                .session
+                .sessions()
+                .iter()
+                .filter(|s| s.group == self.group)
+            {
                 let id = s.id;
-                let Some(d) = b.session.store().core(id) else { continue };
+                let Some(d) = b.session.store().core(id) else {
+                    continue;
+                };
                 let last = self.add_seq.get(&id).copied().unwrap_or(0);
                 let mut mx = last;
                 for det in &d.detects {
@@ -122,11 +139,23 @@ impl ChartTabs {
                     b.desired.push((core, market.clone()));
                 }
             });
-            if let Some((_, _, tab)) = self.add.iter().find(|(num, c, _)| *num == n && *c == key_core) {
+            if let Some((_, _, tab)) = self
+                .add
+                .iter()
+                .find(|(num, c, _)| *num == n && *c == key_core)
+            {
                 tab.update(cx, |p, _| p.add_coin(core, &market, ttl));
             } else {
                 let panel = cx.new(|cx| {
-                    ChartPanel::new_addto(backend.clone(), n, key_core, epoch, theme.clone(), window, cx)
+                    ChartPanel::new_addto(
+                        backend.clone(),
+                        n,
+                        key_core,
+                        epoch,
+                        theme.clone(),
+                        window,
+                        cx,
+                    )
                 });
                 panel.update(cx, |p, _| p.add_coin(core, &market, ttl));
                 self.add.push((n, key_core, panel));
@@ -140,7 +169,13 @@ impl ChartTabs {
     /// Отцепить AddToChart-вкладку в отдельное ОС-окно (убрать из стрипа).
     fn detach(&mut self, tab: Tab, cx: &mut Context<Self>) {
         let Tab::Add(n, core) = tab else { return };
-        let Some(pos) = self.add.iter().position(|(num, c, _)| *num == n && *c == core) else { return };
+        let Some(pos) = self
+            .add
+            .iter()
+            .position(|(num, c, _)| *num == n && *c == core)
+        else {
+            return;
+        };
         let (_, _, panel) = self.add.remove(pos);
         if self.active == tab {
             self.active = Tab::Main;
@@ -157,9 +192,11 @@ impl ChartTabs {
             ..Default::default()
         };
         cx.open_window(opts, |window, cx| {
-            cx.new(|cx| Root::new(panel.clone(), window, cx).background_policy(MoonBackgroundPolicy::NoFill))
+            cx.new(|cx| {
+                Root::new(panel.clone(), window, cx).background_policy(MoonBackgroundPolicy::NoFill)
+            })
         })
-            .ok();
+        .ok();
         cx.notify();
     }
 
@@ -318,8 +355,11 @@ impl Render for ChartTabs {
                 false,
             ));
         // Снимок (номер, ядро, счётчик панелей) — чтобы не держать &self.add при builder.
-        let tabs: Vec<(u32, Option<CoreId>, usize)> =
-            self.add.iter().map(|(n, c, p)| (*n, *c, p.read(cx).pane_count())).collect();
+        let tabs: Vec<(u32, Option<CoreId>, usize)> = self
+            .add
+            .iter()
+            .map(|(n, c, p)| (*n, *c, p.read(cx).pane_count()))
+            .collect();
         for (n, core, count) in tabs {
             let tab_id = Tab::Add(n, core);
             let on = self.active == tab_id;

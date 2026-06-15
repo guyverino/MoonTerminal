@@ -6,9 +6,9 @@
 use std::collections::{HashMap, VecDeque};
 
 use gpui::*;
-use moon_palette::{h_flex, v_flex, Panel, PanelEvent, PanelState};
+use moon_palette::{Panel, PanelEvent, PanelState, h_flex, v_flex};
 
-use crate::{hex, Backend};
+use crate::{Backend, hex};
 use moon_chart::paint::now_unix_ms;
 use moon_core::palette;
 use moon_core::session::CoreId;
@@ -55,7 +55,13 @@ impl DetectsPanel {
             cx.notify();
         })
         .detach();
-        Self { backend, group, items: VecDeque::new(), last_seq: HashMap::new(), focus: cx.focus_handle() }
+        Self {
+            backend,
+            group,
+            items: VecDeque::new(),
+            last_seq: HashMap::new(),
+            focus: cx.focus_handle(),
+        }
     }
 
     /// Втянуть свежие детекты ядер группы (seq > курсора, sound_alert, не AddToChart).
@@ -80,7 +86,9 @@ impl DetectsPanel {
             })
             .collect();
         for (id, name, color, quote) in cores {
-            let Some(d) = b.session.store().core(id) else { continue };
+            let Some(d) = b.session.store().core(id) else {
+                continue;
+            };
             let last = self.last_seq.get(&id).copied().unwrap_or(0);
             let mut fresh: Vec<&moon_core::feed::DetectRow> = Vec::new();
             for det in d.detects.iter().rev() {
@@ -98,7 +106,11 @@ impl DetectsPanel {
                     continue;
                 }
                 let ttl = (det.keep_alert_secs.max(1) as f64) * 1000.0;
-                if let Some(it) = self.items.iter_mut().find(|it| it.core == id && it.market == det.market) {
+                if let Some(it) = self
+                    .items
+                    .iter_mut()
+                    .find(|it| it.core == id && it.market == det.market)
+                {
                     it.born_ms = det.time_ms;
                     it.ttl_ms = ttl;
                     it.color = color;
@@ -126,7 +138,8 @@ impl DetectsPanel {
 
     /// Открыть монету на Main: запрос в Backend (Shell откроет чарт) + убрать кнопку.
     fn open(&mut self, core: CoreId, market: String, cx: &mut Context<Self>) {
-        self.items.retain(|it| !(it.core == core && it.market == market));
+        self.items
+            .retain(|it| !(it.core == core && it.market == market));
         self.backend.update(cx, |b, bcx| {
             b.open_request = Some((core, market.clone()));
             bcx.notify();
@@ -155,7 +168,12 @@ impl Panel for DetectsPanel {
 impl Render for DetectsPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let now = now_unix_ms();
-        let mut col = v_flex().id("detects").size_full().gap_1p5().p_2().track_focus(&self.focus);
+        let mut col = v_flex()
+            .id("detects")
+            .size_full()
+            .gap_1p5()
+            .p_2()
+            .track_focus(&self.focus);
         // Новые сверху.
         for (i, it) in self.items.iter().enumerate().rev() {
             let secs = ((it.ttl_ms - (now - it.born_ms)) / 1000.0).ceil().max(0.0) as u32;
@@ -189,13 +207,20 @@ impl Render for DetectsPanel {
                     .border_1()
                     .border_color(rgb(hex(palette::LIFT_HOVER)))
                     .bg(grad(palette::LIFT, bottom))
-                    .hover(|s| s.border_color(rgb(hex(palette::ACCENT))).bg(grad(palette::LIFT_HOVER, bottom_hover)))
+                    .hover(|s| {
+                        s.border_color(rgb(hex(palette::ACCENT)))
+                            .bg(grad(palette::LIFT_HOVER, bottom_hover))
+                    })
                     // Токен крупно сверху-слева; нижняя строка — таймер слева, ядро справа.
                     .child(
                         v_flex()
                             .size_full()
                             .justify_between()
-                            .child(div().text_color(rgb(hex(palette::TEXT))).child(it.base.clone()))
+                            .child(
+                                div()
+                                    .text_color(rgb(hex(palette::TEXT)))
+                                    .child(it.base.clone()),
+                            )
                             .child(
                                 h_flex()
                                     .w_full()

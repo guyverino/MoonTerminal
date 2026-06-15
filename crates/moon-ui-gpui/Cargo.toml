@@ -8,19 +8,23 @@ description = "MoonTerminal GPUI shell over moon-core; UI migration target is Mo
 name = "moon-gpui"
 path = "src/main.rs"
 
+[build-dependencies]
+ico = "0.3"
+winresource = "0.1"
+
 [dependencies]
 # Общий backend (config/session/market/metrics/...). UI-агностик.
 moon-core = { path = "../moon-core" }
-# wgpu-движок чарта (общий с egui-версией). Рендерим offscreen → readback → GPUI.
+# Чарт-математика/геометрия (view/axes/transform/build_order_geometry/инстанс-типы,
+# константы). wgpu-free: данные рисует НАШ own-pass DX11 (chartdx), не wgpu-движок.
 moon-chart = { path = "../moon-chart" }
-wgpu = "22"
-pollster = "0.3"
 image = "0.25"
+bytemuck = { version = "1", features = ["derive"] }
 
 # GPUI source identity must stay single across terminal and MoonPalette.
 # Local path overrides live in the workspace .cargo/config.toml.
-gpui = { git = "https://github.com/Moonbot-Tech/ZedFork", rev = "9b7bbde6833d3178b7116f1774ee1b55c584950a" }
-gpui_platform = { git = "https://github.com/Moonbot-Tech/ZedFork", rev = "9b7bbde6833d3178b7116f1774ee1b55c584950a", features = ["font-kit", "wayland", "x11"] }
+gpui = { git = "https://github.com/Moonbot-Tech/ZedFork", rev = "f2f07f30692dcc1d3791acc454f4822ac81eaf9c" }
+gpui_platform = { git = "https://github.com/Moonbot-Tech/ZedFork", rev = "f2f07f30692dcc1d3791acc454f4822ac81eaf9c", features = ["font-kit", "wayland", "x11"] }
 moon-palette = { path = "../../../MoonPalette" }
 
 anyhow = "1"
@@ -46,5 +50,13 @@ windows = { version = "0.61", features = [
     "Win32_Graphics_Direct3D_Fxc",
     "Win32_Graphics_Direct3D11",
     "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_Gdi",
 ] }
 raw-window-handle = "0.6"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+wgpu = { git = "https://github.com/zed-industries/wgpu.git", rev = "357a0c56e0070480ad9daea5d2eaa83150b79e88" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+metal = "0.33"
+foreign-types = "0.5"

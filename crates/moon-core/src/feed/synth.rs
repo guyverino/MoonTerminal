@@ -6,7 +6,9 @@
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
-use super::{ConnStatus, CoreCmd, DetectRow, ExchangeId, FeedMsg, FeedTx, Level, OrderBook, Side, Tick};
+use super::{
+    ConnStatus, CoreCmd, DetectRow, ExchangeId, FeedMsg, FeedTx, Level, OrderBook, Side, Tick,
+};
 use crate::config::ServerConfig;
 
 fn now_ms() -> f64 {
@@ -16,17 +18,26 @@ fn now_ms() -> f64 {
         .unwrap_or(0.0)
 }
 fn env_usize(k: &str, d: usize) -> usize {
-    std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d)
+    std::env::var(k)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(d)
 }
 fn env_f64(k: &str, d: f64) -> f64 {
-    std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d)
+    std::env::var(k)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(d)
 }
 
 /// Детерминированный LCG — тот же, что в Tauri-синте (одинаковый поток данных).
 struct Lcg(u64);
 impl Lcg {
     fn next(&mut self) -> u64 {
-        self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        self.0 = self
+            .0
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         self.0
     }
     fn unit(&mut self) -> f64 {
@@ -42,10 +53,15 @@ pub fn run(_server: &ServerConfig, tx: &FeedTx, cmd_rx: &Receiver<CoreCmd>) -> a
     let tps = env_f64("MOON_SYNTH_TPS", 50.0).max(0.1);
     let bookhz = env_f64("MOON_SYNTH_BOOKHZ", 20.0).max(0.1);
     let depth = env_usize("MOON_SYNTH_DEPTH", 50).max(1);
-    let seed = std::env::var("MOON_SYNTH_SEED").ok().and_then(|v| v.parse().ok()).unwrap_or(1u64);
+    let seed = std::env::var("MOON_SYNTH_SEED")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1u64);
 
     let markets: Vec<String> = (0..n).map(|i| format!("SYNTH{i}")).collect();
-    log::info!("synth-фид: {windows} окон × {charts} панелей, {n} рынков, {tps} тик/с, {bookhz} стак/с");
+    log::info!(
+        "synth-фид: {windows} окон × {charts} панелей, {n} рынков, {tps} тик/с, {bookhz} стак/с"
+    );
 
     let _ = tx.send(FeedMsg::Status(ConnStatus::Ready));
     // Синт-биржа (код 200) — координатор изберёт это ядро провайдером (одно на «биржу»).
@@ -89,9 +105,24 @@ pub fn run(_server: &ServerConfig, tx: &FeedTx, cmd_rx: &Receiver<CoreCmd>) -> a
             last_tick = Instant::now();
             for (i, m) in markets.iter().enumerate() {
                 price[i] *= 1.0 + (rng.unit() - 0.5) * 0.0004;
-                let side = if rng.unit() < 0.5 { Side::Buy } else { Side::Sell };
-                let tick = Tick { time_ms: now_ms(), price: price[i] as f32, side };
-                if tx.send(FeedMsg::Ticks { market: m.clone(), ticks: vec![tick] }).is_err() {
+                let side = if rng.unit() < 0.5 {
+                    Side::Buy
+                } else {
+                    Side::Sell
+                };
+                let tick = Tick {
+                    time_ms: now_ms(),
+                    price: price[i] as f32,
+                    qty: (rng.unit() * 10.0 + 0.25) as f32,
+                    side,
+                };
+                if tx
+                    .send(FeedMsg::Ticks {
+                        market: m.clone(),
+                        ticks: vec![tick],
+                    })
+                    .is_err()
+                {
                     return Ok(());
                 }
             }
@@ -104,10 +135,22 @@ pub fn run(_server: &ServerConfig, tx: &FeedTx, cmd_rx: &Receiver<CoreCmd>) -> a
                 let mut asks = Vec::with_capacity(depth);
                 for k in 0..depth {
                     let off = (k as f64 + 1.0) * mid * 0.0001;
-                    bids.push(Level { price: (mid - off) as f32, qty: (rng.unit() * 10.0 + 1.0) as f32 });
-                    asks.push(Level { price: (mid + off) as f32, qty: (rng.unit() * 10.0 + 1.0) as f32 });
+                    bids.push(Level {
+                        price: (mid - off) as f32,
+                        qty: (rng.unit() * 10.0 + 1.0) as f32,
+                    });
+                    asks.push(Level {
+                        price: (mid + off) as f32,
+                        qty: (rng.unit() * 10.0 + 1.0) as f32,
+                    });
                 }
-                if tx.send(FeedMsg::OrderBook { market: m.clone(), book: OrderBook { bids, asks } }).is_err() {
+                if tx
+                    .send(FeedMsg::OrderBook {
+                        market: m.clone(),
+                        book: OrderBook { bids, asks },
+                    })
+                    .is_err()
+                {
                     return Ok(());
                 }
             }

@@ -3,9 +3,9 @@
 
 use aes_gcm::aead::Aead;
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
-use anyhow::{anyhow, Context};
-use base64::engine::general_purpose::STANDARD as B64;
+use anyhow::{Context, anyhow};
 use base64::Engine;
+use base64::engine::general_purpose::STANDARD as B64;
 
 const KEYRING_SERVICE: &str = "moon-terminal";
 const KEYRING_USER: &str = "config-key-v1";
@@ -13,8 +13,7 @@ const NONCE_LEN: usize = 12;
 
 /// Достаёт 32-байтовый ключ из OS keyring; при первом запуске генерирует и сохраняет.
 fn data_key() -> anyhow::Result<[u8; 32]> {
-    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER)
-        .context("keyring entry")?;
+    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER).context("keyring entry")?;
     match entry.get_password() {
         Ok(b64) => {
             let bytes = B64.decode(b64).context("decode keyring key")?;

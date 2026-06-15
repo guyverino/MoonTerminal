@@ -10,9 +10,9 @@
 use std::time::Instant;
 
 use gpui::{
-    canvas, div, fill, point, prelude::*, px, rgb, size, App, Application, Bounds, Context,
-    MouseMoveEvent, Pixels, Point, Render, SharedString, TextRun, TitlebarOptions,
-    Window, WindowBounds, WindowOptions,
+    App, Application, Bounds, Context, MouseMoveEvent, Pixels, Point, Render, SharedString,
+    TextRun, TitlebarOptions, Window, WindowBounds, WindowOptions, canvas, div, fill, point,
+    prelude::*, px, rgb, size,
 };
 
 struct Proto {
@@ -28,21 +28,37 @@ struct Proto {
 
 impl Proto {
     fn new() -> Self {
-        let n: usize = std::env::var("CHART_N").ok().and_then(|s| s.parse().ok()).unwrap_or(3000);
-        let panes: usize = std::env::var("CHART_PANES").ok().and_then(|s| s.parse().ok()).unwrap_or(1);
+        let n: usize = std::env::var("CHART_N")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(3000);
+        let panes: usize = std::env::var("CHART_PANES")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1);
         // Детерминированный random-walk (LCG), чтобы не тянуть rand.
         let mut seed: u64 = 0x1234_5678_9abc_def0;
         let mut v = 0.5f32;
         let mut trades = Vec::with_capacity(n);
         for _ in 0..n {
-            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             let r = ((seed >> 33) as f32 / (1u64 << 31) as f32) - 1.0; // -1..1
             v = (v + r * 0.02).clamp(0.02, 0.98);
             let is_buy = (seed >> 17) & 1 == 0;
             trades.push((v, is_buy));
         }
         eprintln!("chart_proto: N={n} трейдов (крестики), {panes} граф(а/ов)");
-        Self { trades, panes, cursor: None, frame: 0, frames_since_log: 0, last_log: Instant::now(), fps: 0.0 }
+        Self {
+            trades,
+            panes,
+            cursor: None,
+            frame: 0,
+            frames_since_log: 0,
+            last_log: Instant::now(),
+            fps: 0.0,
+        }
     }
 }
 
@@ -57,8 +73,18 @@ impl Render for Proto {
         let dt = self.last_log.elapsed();
         if dt.as_secs_f32() >= 1.0 {
             self.fps = self.frames_since_log as f32 / dt.as_secs_f32();
-            log::info!("chart_proto FPS={:.1} (N={}, panes={})", self.fps, self.trades.len(), self.panes);
-            eprintln!("chart_proto FPS={:.1} (N={}, panes={})", self.fps, self.trades.len(), self.panes);
+            log::info!(
+                "chart_proto FPS={:.1} (N={}, panes={})",
+                self.fps,
+                self.trades.len(),
+                self.panes
+            );
+            eprintln!(
+                "chart_proto FPS={:.1} (N={}, panes={})",
+                self.fps,
+                self.trades.len(),
+                self.panes
+            );
             self.frames_since_log = 0;
             self.last_log = Instant::now();
         }
@@ -131,11 +157,17 @@ fn draw(
             } else {
                 // 2 quad'а — крестик «+».
                 window.paint_quad(fill(
-                    Bounds::new(point(px(x - R), px(y - TH * 0.5)), size(px(2.0 * R), px(TH))),
+                    Bounds::new(
+                        point(px(x - R), px(y - TH * 0.5)),
+                        size(px(2.0 * R), px(TH)),
+                    ),
                     col,
                 ));
                 window.paint_quad(fill(
-                    Bounds::new(point(px(x - TH * 0.5), px(y - R)), size(px(TH), px(2.0 * R))),
+                    Bounds::new(
+                        point(px(x - TH * 0.5), px(y - R)),
+                        size(px(TH), px(2.0 * R)),
+                    ),
                     col,
                 ));
             }
@@ -167,8 +199,17 @@ fn draw(
     // FPS-плашка (текст).
     let text = SharedString::from(format!("FPS {fps:.0}  N {n}  panes {panes}"));
     let font = window.text_style().font();
-    let run = TextRun { len: text.len(), font, color: rgb(0xffffff).into(), background_color: None, underline: None, strikethrough: None };
-    let line = window.text_system().shape_line(text, px(14.0), &[run], None);
+    let run = TextRun {
+        len: text.len(),
+        font,
+        color: rgb(0xffffff).into(),
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    let line = window
+        .text_system()
+        .shape_line(text, px(14.0), &[run], None);
     let _ = line.paint(point(px(left + 8.0), px(top + 6.0)), px(18.0), window, cx);
 }
 
@@ -177,9 +218,16 @@ fn main() {
     Application::new().run(|cx: &mut App| {
         cx.open_window(
             WindowOptions {
-                titlebar: Some(TitlebarOptions { title: Some("chart_proto".into()), ..Default::default() }),
+                titlebar: Some(TitlebarOptions {
+                    title: Some("chart_proto".into()),
+                    ..Default::default()
+                }),
                 focus: true,
-                window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, size(px(1100.0), px(700.0)), cx))),
+                window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                    None,
+                    size(px(1100.0), px(700.0)),
+                    cx,
+                ))),
                 ..Default::default()
             },
             |_window, cx| cx.new(|_| Proto::new()),

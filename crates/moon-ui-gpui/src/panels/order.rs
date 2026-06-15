@@ -2,14 +2,16 @@
 //! Действия пока заглушки-лог; форму ввода/реальные ордера прикрутим позже.
 
 use gpui::*;
-use moon_palette::{v_flex, MoonButton, MoonButtonSize, MoonButtonVariant, Panel, PanelEvent};
+use moon_palette::{MoonButton, MoonButtonSize, MoonButtonVariant, Panel, PanelEvent, v_flex};
 
 pub struct OrderPanel {
     focus: FocusHandle,
 }
 impl OrderPanel {
     pub fn new(cx: &mut Context<Self>) -> Self {
-        Self { focus: cx.focus_handle() }
+        Self {
+            focus: cx.focus_handle(),
+        }
     }
 }
 impl EventEmitter<PanelEvent> for OrderPanel {}
@@ -34,10 +36,34 @@ impl Render for OrderPanel {
             .p_3()
             .gap_2()
             .track_focus(&self.focus)
-            .child(action("buy", "BUY", MoonButtonVariant::Green, false, || log::info!("BUY")))
-            .child(action("sell", "SELL", MoonButtonVariant::OutlineRed, false, || log::info!("SELL")))
-            .child(action("cancel", "Cancel Buy", MoonButtonVariant::Amber, false, || log::info!("Cancel")))
-            .child(action("panic", "PANIC SELL", MoonButtonVariant::Danger, true, || log::info!("PANIC")))
+            .child(action(
+                "buy",
+                "BUY",
+                MoonButtonVariant::Green,
+                false,
+                || log::info!("BUY"),
+            ))
+            .child(action(
+                "sell",
+                "SELL",
+                MoonButtonVariant::OutlineRed,
+                false,
+                || log::info!("SELL"),
+            ))
+            .child(action(
+                "cancel",
+                "Cancel Buy",
+                MoonButtonVariant::Amber,
+                false,
+                || log::info!("Cancel"),
+            ))
+            .child(action(
+                "panic",
+                "PANIC SELL",
+                MoonButtonVariant::Danger,
+                true,
+                || log::info!("PANIC"),
+            ))
     }
 }
 

@@ -37,7 +37,12 @@ pub struct Container {
 
 impl Container {
     pub fn new(kind: ContainerKind) -> Self {
-        Self { kind, panes: Vec::new(), mode: Mode::Fullscreen(0), scale: None }
+        Self {
+            kind,
+            panes: Vec::new(),
+            mode: Mode::Fullscreen(0),
+            scale: None,
+        }
     }
 
     fn new_view(&self, epoch_ms: f64) -> ChartView {
@@ -83,17 +88,30 @@ impl Container {
     }
 
     /// AddToChart-детект: найти/добавить панель монеты, продлить TTL, режим тайл.
-    pub fn push_auto(&mut self, core: CoreId, market: &str, now_ms: f64, ttl_ms: f64, epoch_ms: f64) {
+    pub fn push_auto(
+        &mut self,
+        core: CoreId,
+        market: &str,
+        now_ms: f64,
+        ttl_ms: f64,
+        epoch_ms: f64,
+    ) {
         match self.find(core, market) {
             Some(i) => {
-                self.panes[i].source = PaneSource::AddToChart { born_ms: now_ms, ttl_ms };
+                self.panes[i].source = PaneSource::AddToChart {
+                    born_ms: now_ms,
+                    ttl_ms,
+                };
             }
             None => {
                 let view = self.new_view(epoch_ms);
                 self.panes.push(Pane {
                     core,
                     market: market.to_string(),
-                    source: PaneSource::AddToChart { born_ms: now_ms, ttl_ms },
+                    source: PaneSource::AddToChart {
+                        born_ms: now_ms,
+                        ttl_ms,
+                    },
                     view,
                 });
             }
@@ -158,7 +176,12 @@ impl Container {
                     .map(|k| {
                         (
                             k,
-                            Rect { x: content.x, y: content.y + h * k as f32, w: content.w, h },
+                            Rect {
+                                x: content.x,
+                                y: content.y + h * k as f32,
+                                w: content.w,
+                                h,
+                            },
                         )
                     })
                     .collect()

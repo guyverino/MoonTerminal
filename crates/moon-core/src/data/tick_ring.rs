@@ -12,6 +12,8 @@ pub struct TickInstance {
     pub price: f32,
     /// 0.0 = buy, 1.0 = sell.
     pub side: f32,
+    /// Абсолютный объём сделки.
+    pub qty: f32,
 }
 
 pub struct TickRing {
@@ -48,6 +50,7 @@ impl TickRing {
                     Side::Buy => 0.0,
                     Side::Sell => 1.0,
                 },
+                qty: t.qty.max(0.0),
             });
         }
         // примитивный ring: срезаем старое начало.

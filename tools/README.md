@@ -54,7 +54,7 @@ npm run tauri build            # → src-tauri/target/release/<exe>
 ### 2. Запуск с синт/стресс-нагрузкой
 ```powershell
 $env:MOON_SYNTH=1; $env:MOON_STRESS=1
-& .\target\release\moon-terminal.exe
+& .\target\release\moon-gpui.exe
 ```
 Дай окнам раскрыться: 10×10с ≈ **100 с** до полного рампа.
 **Не закрывай и не трогай окна** — это и есть измеряемая нагрузка; она держится, пока
@@ -63,7 +63,7 @@ $env:MOON_SYNTH=1; $env:MOON_STRESS=1
 ### 3. Замер (в другом окне терминала)
 ```powershell
 # Натив — один процесс. WarmupSec ≥ windows×interval, чтобы замер шёл ПОСЛЕ рампа.
-./tools/bench.ps1 -RootProcess moon-terminal -DurationSec 175 -WarmupSec 115 -Label native
+./tools/bench.ps1 -RootProcess moon-gpui -DurationSec 175 -WarmupSec 115 -Label native
 
 # Tauri — дерево процессов + кадры через PresentMon (GPU-счётчик для Tauri ненадёжен, см. ниже)
 ./tools/bench.ps1 -RootProcess <tauri-exe> -DurationSec 175 -WarmupSec 115 -Label tauri `

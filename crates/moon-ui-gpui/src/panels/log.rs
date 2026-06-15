@@ -9,13 +9,13 @@
 
 use gpui::*;
 use moon_palette::{
-    h_flex, v_flex, DockArea, MoonButton, MoonButtonSize, MoonButtonVariant, MoonCheckbox,
-    MoonCheckboxSize, MoonDropdown, MoonInput, MoonInputEvent, MoonInputState, MoonMenuItem,
-    MoonMenuSize, Panel, PanelEvent, PanelState, StyledExt,
+    DockArea, MoonButton, MoonButtonSize, MoonButtonVariant, MoonCheckbox, MoonCheckboxSize,
+    MoonDropdown, MoonInput, MoonInputEvent, MoonInputState, MoonMenuItem, MoonMenuSize, Panel,
+    PanelEvent, PanelState, StyledExt, h_flex, v_flex,
 };
 
 use crate::detached::DetachedSpec;
-use crate::{hex, Backend};
+use crate::{Backend, hex};
 use moon_core::applog::{self, LogLine};
 use moon_core::palette;
 use moon_core::session::{CoreId, CoreStore};
@@ -68,7 +68,12 @@ pub struct LogPanel {
 }
 
 impl LogPanel {
-    pub fn new(backend: Entity<Backend>, group: String, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        backend: Entity<Backend>,
+        group: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let query = cx.new(|cx| MoonInputState::new(window, cx).placeholder("Поиск..."));
         cx.subscribe(&query, |_t, _e, ev: &MoonInputEvent, cx| {
             if matches!(ev, MoonInputEvent::Change) {
@@ -109,10 +114,18 @@ impl LogPanel {
         let mut v = vec![
             LogSourceItem {
                 source: LogSource::Aggregate,
-                display: if scoped { "Лог группы".into() } else { "Все ядра".into() },
+                display: if scoped {
+                    "Лог группы".into()
+                } else {
+                    "Все ядра".into()
+                },
                 file_label: String::new(),
             },
-            LogSourceItem { source: LogSource::Local, display: "Локальный".into(), file_label: "app".into() },
+            LogSourceItem {
+                source: LogSource::Local,
+                display: "Локальный".into(),
+                file_label: "app".into(),
+            },
         ];
         for s in &b.config.servers {
             if scoped && s.group != self.group {
@@ -128,7 +141,11 @@ impl LogPanel {
     }
 
     fn file_label(&self, sources: &[LogSourceItem]) -> String {
-        sources.iter().find(|s| s.source == self.source).map(|s| s.file_label.clone()).unwrap_or_else(|| "app".into())
+        sources
+            .iter()
+            .find(|s| s.source == self.source)
+            .map(|s| s.file_label.clone())
+            .unwrap_or_else(|| "app".into())
     }
 
     /// Строки для текущего выбора (Live — из памяти/агрегат слиянием; Named — из файла).
@@ -138,7 +155,10 @@ impl LogPanel {
                 self.loaded_name = None;
                 match &self.source {
                     LogSource::Local => applog::snapshot(VIEW_LIMIT),
-                    LogSource::Core(id) => store.core(*id).map(|c| c.log_snapshot(VIEW_LIMIT)).unwrap_or_default(),
+                    LogSource::Core(id) => store
+                        .core(*id)
+                        .map(|c| c.log_snapshot(VIEW_LIMIT))
+                        .unwrap_or_default(),
                     LogSource::Aggregate => aggregate(store, sources),
                 }
             }
@@ -168,9 +188,16 @@ impl LogPanel {
 
     /// Комбобокс источника.
     fn source_combo(&self, sources: &[LogSourceItem], cx: &Context<Self>) -> impl IntoElement {
-        let cur = sources.iter().find(|s| s.source == self.source).map(|s| s.display.clone()).unwrap_or_else(|| "Локальный".into());
+        let cur = sources
+            .iter()
+            .find(|s| s.source == self.source)
+            .map(|s| s.display.clone())
+            .unwrap_or_else(|| "Локальный".into());
         let view = cx.entity();
-        let items: Vec<(LogSource, String)> = sources.iter().map(|s| (s.source.clone(), s.display.clone())).collect();
+        let items: Vec<(LogSource, String)> = sources
+            .iter()
+            .map(|s| (s.source.clone(), s.display.clone()))
+            .collect();
         MoonDropdown::new("log-source")
             .label(format!("{cur} ▾"))
             .trigger_variant(MoonButtonVariant::Soft)
@@ -198,14 +225,16 @@ impl LogPanel {
         };
         let label = self.file_label(sources);
         let view = cx.entity();
-        let mut items = vec![MoonMenuItem::with_key("lf-live", "Live (текущий)")
-            .selected(matches!(self.file, LogFile::Live))
-            .on_click({
-                let view = view.clone();
-                move |_, _, app| {
-                    view.update(app, |t, c| t.set_file(LogFile::Live, c));
-                }
-            })];
+        let mut items = vec![
+            MoonMenuItem::with_key("lf-live", "Live (текущий)")
+                .selected(matches!(self.file, LogFile::Live))
+                .on_click({
+                    let view = view.clone();
+                    move |_, _, app| {
+                        view.update(app, |t, c| t.set_file(LogFile::Live, c));
+                    }
+                }),
+        ];
         for f in applog::list_files(&label) {
             let selected = matches!(&self.file, LogFile::Named(name) if name == &f);
             let view = view.clone();
@@ -277,17 +306,45 @@ fn level_tag(level: log::Level) -> Option<(&'static str, u32)> {
 
 /// Рендер одной строки лога (время · [уровень] · источник · сообщение).
 fn log_row(line: &LogLine) -> AnyElement {
-    let time = line.ts.rsplit(' ').next().unwrap_or(line.ts.as_str()).to_string();
+    let time = line
+        .ts
+        .rsplit(' ')
+        .next()
+        .unwrap_or(line.ts.as_str())
+        .to_string();
     let flat = line.msg.replace('\n', " ⏎ ");
     let mut row = h_flex().w_full().gap_1().items_baseline().text_xs().px_1();
-    row = row.child(div().flex_none().text_color(rgb(hex(palette::TEXT_2))).child(time));
+    row = row.child(
+        div()
+            .flex_none()
+            .text_color(rgb(hex(palette::TEXT_2)))
+            .child(time),
+    );
     if let Some((tag, col)) = level_tag(line.level) {
-        row = row.child(div().flex_none().font_bold().text_color(rgb(col)).child(tag));
+        row = row.child(
+            div()
+                .flex_none()
+                .font_bold()
+                .text_color(rgb(col))
+                .child(tag),
+        );
     }
     if !line.target.is_empty() {
-        row = row.child(div().flex_none().text_color(rgb(hex(palette::TEXT_2))).child(line.target.clone()));
+        row = row.child(
+            div()
+                .flex_none()
+                .text_color(rgb(hex(palette::TEXT_2)))
+                .child(line.target.clone()),
+        );
     }
-    row.child(div().flex_1().min_w_0().text_color(rgb(hex(palette::TEXT_2))).child(flat)).into_any_element()
+    row.child(
+        div()
+            .flex_1()
+            .min_w_0()
+            .text_color(rgb(hex(palette::TEXT_2)))
+            .child(flat),
+    )
+    .into_any_element()
 }
 
 impl EventEmitter<PanelEvent> for LogPanel {}
@@ -306,32 +363,43 @@ impl Panel for LogPanel {
     fn dump(&self, _cx: &App) -> PanelState {
         crate::dock_persist::panel_state_with_group("Log", &self.group)
     }
-    fn on_added_to(&mut self, dock_area: WeakEntity<DockArea>, _window: &mut Window, _cx: &mut Context<Self>) {
+    fn on_added_to(
+        &mut self,
+        dock_area: WeakEntity<DockArea>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) {
         self.dock = Some(dock_area);
     }
-    fn toolbar_buttons(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> Option<Vec<AnyElement>> {
+    fn toolbar_buttons(
+        &mut self,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<Vec<AnyElement>> {
         let backend = self.backend.clone();
         let group = self.group.clone();
         let dock = self.dock.clone();
-        Some(vec![MoonButton::new("detach-log")
-            .ghost()
-            .size(MoonButtonSize::Action)
-            .label("⧉")
-            .on_click(move |_, window, app| {
-                if let Some(dock) = dock.as_ref().and_then(|d| d.upgrade()) {
-                    dock.update(app, |area, cx| {
-                        area.remove_panel_by_name("Log", window, cx);
+        Some(vec![
+            MoonButton::new("detach-log")
+                .ghost()
+                .size(MoonButtonSize::Action)
+                .label("⧉")
+                .on_click(move |_, window, app| {
+                    if let Some(dock) = dock.as_ref().and_then(|d| d.upgrade()) {
+                        dock.update(app, |area, cx| {
+                            area.remove_panel_by_name("Log", window, cx);
+                        });
+                    }
+                    let spec = DetachedSpec::new(group.clone(), "Log".to_string());
+                    crate::detached::spawn(app, &backend, &spec);
+                    backend.update(app, |b, _| {
+                        b.detached.push(spec);
+                        b.detached_dirty = true;
                     });
-                }
-                let spec = DetachedSpec::new(group.clone(), "Log".to_string());
-                crate::detached::spawn(app, &backend, &spec);
-                backend.update(app, |b, _| {
-                    b.detached.push(spec);
-                    b.detached_dirty = true;
-                });
-            })
-            .render()
-            .into_any_element()])
+                })
+                .render()
+                .into_any_element(),
+        ])
     }
 }
 
@@ -363,15 +431,33 @@ impl Render for LogPanel {
         let is_agg = matches!(self.source, LogSource::Aggregate);
 
         // ── Панель управления ──
-        let mut controls = h_flex().w_full().flex_wrap().gap_2().items_center().px_2().py_1();
+        let mut controls = h_flex()
+            .w_full()
+            .flex_wrap()
+            .gap_2()
+            .items_center()
+            .px_2()
+            .py_1();
         controls = controls.child(self.source_combo(&sources, cx));
         if !is_agg {
             controls = controls
-                .child(div().text_xs().text_color(rgb(hex(palette::TEXT_2))).child("Файл"))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(rgb(hex(palette::TEXT_2)))
+                        .child("Файл"),
+                )
                 .child(self.file_combo(&sources, cx));
         }
         controls = controls
-            .child(div().w(px(180.0)).child(MoonInput::new("log-query").state(&self.query).small().cleanable(true)))
+            .child(
+                div().w(px(180.0)).child(
+                    MoonInput::new("log-query")
+                        .state(&self.query)
+                        .small()
+                        .cleanable(true),
+                ),
+            )
             .child(
                 MoonCheckbox::new("log-errors-only")
                     .label("Только ошибки")
@@ -392,8 +478,20 @@ impl Render for LogPanel {
         // ── Список (виртуализирован, к низу) ──
         let weak = cx.entity().downgrade();
         let body: AnyElement = if self.lines.is_empty() {
-            let msg = if total == 0 { "Лог пуст" } else { "Нет строк по фильтру" };
-            div().flex_1().w_full().flex().items_center().justify_center().text_color(rgb(hex(palette::TEXT_2))).child(msg).into_any_element()
+            let msg = if total == 0 {
+                "Лог пуст"
+            } else {
+                "Нет строк по фильтру"
+            };
+            div()
+                .flex_1()
+                .w_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_color(rgb(hex(palette::TEXT_2)))
+                .child(msg)
+                .into_any_element()
         } else {
             let list_el = list(self.list.clone(), move |ix, _w, app| {
                 weak.upgrade()
@@ -401,7 +499,12 @@ impl Render for LogPanel {
                     .unwrap_or_else(|| div().into_any_element())
             })
             .size_full();
-            div().flex_1().w_full().min_h_0().child(list_el).into_any_element()
+            div()
+                .flex_1()
+                .w_full()
+                .min_h_0()
+                .child(list_el)
+                .into_any_element()
         };
 
         v_flex()
@@ -413,4 +516,3 @@ impl Render for LogPanel {
             .child(body)
     }
 }
-

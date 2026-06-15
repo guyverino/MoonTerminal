@@ -21,6 +21,6 @@ pub use chart::ChartPanel;
 pub use detects::DetectsPanel;
 pub use log::LogPanel;
 pub use order::OrderPanel;
-pub use orders::{count_orders, OrdersPanel};
+pub use orders::{OrdersPanel, count_orders};
 pub use report::ReportPanel;
 pub use stub::StubPanel;
