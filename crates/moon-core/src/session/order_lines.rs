@@ -7,7 +7,7 @@
 //! линии = время создания ордера, конец = время закрытия (или живой правый край).
 //! Это уникальный источник старта/узлов/конца для маркеров и отрезков (рисует чарт).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::feed::{OrderRow, OrderTrace};
@@ -28,8 +28,10 @@ pub enum LineKind {
     PendingCond = 6,
 }
 
-/// Safety-cap хранения ордеров на ядро (бережём память при «всю сессию»).
-const STORE_CAP: usize = 4000;
+/// Кап кольца ЗАКРЫТЫХ ордеров на ядро (= верх слайдера `max_closed_orders`): свежие
+/// толкаем в хвост, старейшие выпадают из головы сами — без сорта и прун-скана.
+/// Открытые НЕ капаются (живут пока активны). Единственный кап на закрытые.
+const CLOSED_RING_CAP: usize = 5000;
 
 /// Грейс перед пометкой ордера закрытым после исчезновения из снимка, мс. Снимок
 /// ордеров может кратко прийти пустым/частичным (реконнект, churn подписки) — без
@@ -186,6 +188,9 @@ impl RetainedOrder {
 #[derive(Default)]
 pub struct OrderLineStore {
     orders: HashMap<u64, RetainedOrder>,
+    /// Кольцо uid ЗАКРЫТЫХ в порядке закрытия — единственный кап на закрытые,
+    /// без сорта/прун-скана: пришёл новый закрытый → в хвост, переполнено → из головы.
+    closed_ring: VecDeque<u64>,
     /// Растёт при реальном изменении геометрии (новый ордер/узел/закрытие/liq).
     pub rev: u64,
     seq_counter: u64,
@@ -273,18 +278,20 @@ impl OrderLineStore {
 
         // Исчезли из снимка дольше грейса → закрыты (грейс гасит мигание на
         // кратком пустом/частичном снимке при реконнекте/churn подписки).
+        let mut newly_closed = Vec::new();
         for (uid, ord) in self.orders.iter_mut() {
             if !seen.contains(uid)
                 && ord.closed_ms.is_none()
                 && now_ms - ord.last_seen_ms > CLOSE_GRACE_MS
             {
                 ord.closed_ms = Some(ord.last_seen_ms);
+                newly_closed.push(*uid);
                 changed = true;
             }
         }
 
-        if self.orders.len() > STORE_CAP {
-            self.prune();
+        for uid in newly_closed {
+            self.remember_closed(uid);
             changed = true;
         }
         if changed {
@@ -292,21 +299,20 @@ impl OrderLineStore {
         }
     }
 
-    /// Срезает старейшие ЗАКРЫТЫЕ ордера сверх safety-cap.
-    fn prune(&mut self) {
-        let mut closed: Vec<(u64, u64)> = self
-            .orders
-            .iter()
-            .filter(|(_, o)| o.closed_ms.is_some())
-            .map(|(uid, o)| (o.seq, *uid))
-            .collect();
-        let over = self.orders.len().saturating_sub(STORE_CAP);
-        if over == 0 || closed.is_empty() {
-            return;
-        }
-        closed.sort_unstable();
-        for (_, uid) in closed.into_iter().take(over) {
-            self.orders.remove(&uid);
+    /// Запоминает закрытый uid и срезает старейшие закрытые сверх safety-cap.
+    fn remember_closed(&mut self, uid: u64) {
+        self.closed_ring.push_back(uid);
+        while self.closed_ring.len() > CLOSED_RING_CAP {
+            let Some(old_uid) = self.closed_ring.pop_front() else {
+                break;
+            };
+            if self
+                .orders
+                .get(&old_uid)
+                .is_some_and(|order| order.closed_ms.is_some())
+            {
+                self.orders.remove(&old_uid);
+            }
         }
     }
 
