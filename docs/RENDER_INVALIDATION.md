@@ -206,3 +206,72 @@ GAP-5 особенно: при перетаскивании ордера (ког
 5. **Источник правды один.** Не держи второй кэш того же; инвалидируй ровно по событию-причине.
 6. Сверяйся с MoonBot `04_chart_render-*.final-01.md` §1 (флаги) и §5 (фигуры) — там модель
    выверена практикой; расхождение нашего кода с ней = почти всегда наш баг, а не «улучшение».
+
+---
+
+## 7. Реестр observe/гейтов + ИЗМЕРЕННЫЕ частоты (диаг)
+
+ВСЕ места, где UI подписан на `backend`, и их гейты. **Гейт = условие, при котором вью
+само-нотифается** (`cx.notify()`). Где гейта нет — вью перерисовывается на каждый backend-notify.
+
+| Вью | Файл | Гейт | Исключение/частота |
+|---|---|---|---|
+| **ChartPanel (Main/fast)** | [chart.rs](../crates/moon-ui-gpui/src/panels/chart.rs) | `data_signature` + троттл **≥250мс** | **НЕТ `raf`**. Скролл — 60-Гц prepare-задача (`new()`) + own-pass по vsync (форк), БЕЗ notify. Оси/хром освежает общий backend-пульс |
+| **ChartPanel (AddToChart)** | [chart.rs](../crates/moon-ui-gpui/src/panels/chart.rs) | `data_signature` + троттл **≥1с** | фон/мультичарт, нет задачи; скролл по observe + present |
+| **OrdersPanel** | [orders.rs](../crates/moon-ui-gpui/src/panels/orders.rs) | `orders_sig`(эпоха/статус) ИЛИ 1с (цены) | **ИСКЛЮЧЕНИЕ: НЕ ЧАЩЕ 250мс** — ордерные ивенты летят часто, глаз не различит → коалесцируем до 4 Гц |
+| **LogPanel** | [log.rs:85](../crates/moon-ui-gpui/src/panels/log.rs) | `log_sig` сменился | — |
+| **DetectsPanel** | [detects.rs:60](../crates/moon-ui-gpui/src/panels/detects.rs) | свой sig | — |
+| **ReportPanel** | [report.rs:119](../crates/moon-ui-gpui/src/panels/report.rs) | `generation` сменился | — |
+| **Shell** | [main.rs](../crates/moon-ui-gpui/src/main.rs) | **троттл ≥250мс** (`last_notify`) | показывает диагностику (fps/тики/cpu) — ≤4 Гц человеку хватает |
+| **DetachedWindow** | [detached.rs:128](../crates/moon-ui-gpui/src/detached.rs) | **НЕТ** | тонкий хост |
+| **ChartTabs** | [chart_tabs.rs:69](../crates/moon-ui-gpui/src/chart_tabs.rs) | **НЕТ** | содержит чарт |
+| **StrategiesView** | [strategies/mod.rs:112](../crates/moon-ui-gpui/src/strategies/mod.rs) | **НЕТ** | only-when-open |
+| **SettingsView** | [settings/mod.rs:221](../crates/moon-ui-gpui/src/settings/mod.rs) | **НЕТ** | only-when-open |
+
+**Источник backend-notify (ГЛАВНЫЙ рычаг):** дренаж-цикл [main.rs](../crates/moon-ui-gpui/src/main.rs),
+`notify_due = tick % 16` → **≤4 Гц (256мс)**, единый UI-пульс, И только когда `drain()->bool` показал
+приход данных (causal-гейт: рынок молчит → нет холостых top-down перерисовок). Данные дренятся 60 Гц,
+но `cx.notify()` бэкенда — редкий и по факту изменения. Синхронизирует ВСЕ backend-зависимые
+пробуждения хрома в один кадр (см. инсайт ниже). Это пожарный кап top-down сцепки, не замена
+view-caching (отдельная задача в moon-palette).
+
+### ИЗМЕРЕНО счётчиками (`diag.rs`, монитор 240 Гц, fast-чарт в follow)
+```
+ДО фикса:    orders_render=240  shell_render=240  chart_render=240  chart_raf=240
+после raf-кила: orders_render=13  chart_raf=0   (диско монитор-рейта убито, но >4 Гц)
++ единый пульс: orders_render=2-4 shell_render=2-4 chart_render=2-4 backend_notify=2-4 chart_raf=0
+```
+**Инсайт (доказан замером, не догадкой):** гейт ОТДЕЛЬНОЙ вьюхи (Shell/Orders/chart) против top-down
+рендера БЕССИЛЕН — GPUI перерисовывает дерево СВЕРХУ, минуя само-гейт листа (видели: гейтнули Shell
+10→3, а `orders_render` остался 13, т.к. дерево дёргали ДРУГИЕ источники). Любой `cx.notify()` любой
+вьюхи метит дёрти весь путь до корня → `draw_roots` перерисовывает ВСЁ поддерево (Orders встроена
+через `into_any_element`, GPUI её НЕ переиспользует). Поэтому лечится НЕ листовыми гейтами, а
+**редким пульсом у ИСТОЧНИКА** (backend-notify ~4 Гц): все пробуждения хрома коалесцируются в один
+кадр. Листовые гейты остаются как контракт «буди свой срез» (на случай отдельных быстрых источников).
+
+### ✅ GAP-7 (корневой) — ЗАКРЫТ
+Было: чарту нужен present каждый vsync (own-pass скролл), он добивался этого через
+`request_animation_frame`, который перерисовывал GPUI-дерево (а не только презентил) на refresh
+монитора (240 Гц) = диско Orders. **Фикс (реализован):**
+1. **ФОРК** (ZedFork, локальный патч) — **opt-in continuous-present, PR-grade, кроссплатформенный**:
+   новый `Window::request_continuous_presentation() -> Subscription` ([gpui/src/window.rs]). Держишь
+   гайд → счётчик `continuous_presentation > 0` → общее замыкание `request_frame` (одно на все
+   платформы) OR-ит его в `needs_present` → окно презентит каждый кадр БЕЗ дёрти вьюх. GPUI `present()`
+   → `platform.draw(cached_scene)` → `run_gpu_passes`: own-pass перерисовывается, GPUI-элементы — НЕТ.
+   **Кроссплатформенно по построению** (НЕ «любой active pass», а явный opt-in — иначе upstream завернёт
+   по батарее): счётчик в platform-agnostic `gpui::Window`, а каждый frame-драйвер гонит то самое
+   замыкание per-frame — Windows vsync-поток, macOS `CVDisplayLink` (пока active), Linux X11 calloop
+   refresh-таймер, Wayland `wl_callback`-цикл (самоподдержка через present→commit). Per-platform кода
+   НОЛЬ. Прежний хак (`directx_renderer.has_active_gpu_pass()` + `events.rs require_presentation`) убран.
+   _Windows frame-pacing (WM_GPUI_VSYNC_TICK, waitable swapchain) — ОТДЕЛЬНЫЙ пласт форка, в этот PR не входит._
+2. **Чарт** ([chart.rs](../crates/moon-ui-gpui/src/panels/chart.rs)): убран `request_animation_frame`;
+   живой край двигает 60-Гц prepare-задача (`follow_edge(now)`); гайд берётся в render на live-follow
+   и дропается на паузе (present → on-demand, батарея). Скролл гладкий БЕЗ notify.
+3. **Источник** ([main.rs](../crates/moon-ui-gpui/src/main.rs)): backend-notify → ~4 Гц единый пульс.
+
+Итог (замерено): `orders_render: 240 → ~4/s` (≥250мс, требование юзера), `chart_task_prep ~59/с`
+(полные 60 Гц скролла — guard-форма освободила main-поток лучше прежнего хака). `chart_raf=0`.
+**Остаточная архитектурная сцепка:** Orders всё ещё перерисовывается top-down (не кэш-вью). Пока её
+держат на ≤4 Гц пульсом — ОК. Полная развязка (per-panel view-caching, чтобы Orders рисовалась ТОЛЬКО
+по своему гейту независимо от хрома) — отдельная задача в moon-palette (DockArea встраивает панели
+не как кэш-вью). Тогда пульс можно поднять, не задевая Orders.
