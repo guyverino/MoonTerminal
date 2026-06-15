@@ -32,7 +32,7 @@ use std::cell::RefCell;
 use std::ffi::c_void;
 use std::rc::Rc;
 
-use gpui::{GpuBackend, GpuPhase, RawGpuAccess, Subscription, Window};
+use gpui::{GpuBackend, GpuPhase, RawGpuAccess, Subscription, Window, WindowId};
 use moon_chart::axes::AxisSnapshot;
 use moon_chart::paint::now_unix_ms;
 use moon_chart::view::Rect;
@@ -144,7 +144,9 @@ pub struct ChartEngine {
     /// Левый-верхний угол слота чарта В ОКНЕ (девайс-px). own-pass рисует в backbuffer ОКНА,
     /// поэтому координаты слоёв = origin слота + локальные, а cv_resolution = размер backbuffer.
     origin: (f32, f32),
-    pass_registration_attempted: bool,
+    /// Окно, на котором сейчас зарегистрирован own-pass (None — нигде). Сменилось
+    /// (открепление вкладки / переезд в другое окно) → перерегистрируем на текущем.
+    pass_window: Option<WindowId>,
     pass_subscription: Option<Subscription>,
 }
 
@@ -172,7 +174,7 @@ impl ChartEngine {
             w: 1024,
             h: 576,
             origin: (0.0, 0.0),
-            pass_registration_attempted: false,
+            pass_window: None,
             pass_subscription: None,
         }
     }
@@ -180,9 +182,14 @@ impl ChartEngine {
     /// Регистрирует own-pass ОДИН раз: callback рисует все активные панели
     /// (combo + слои) их own-pass в backbuffer GPUI ПОД сценой. Зовётся из `Render` (есть окно).
     pub fn register_pass(&mut self, window: &mut Window) {
-        if self.pass_registration_attempted {
+        let wid = window.window_handle().window_id();
+        if self.pass_window == Some(wid) && self.pass_subscription.is_some() {
             return;
         }
+        // Окно сменилось (открепление / смена вкладки) — снять старый pas со старого
+        // окна (drop Subscription) перед регистрацией на текущем, иначе он остаётся
+        // висеть на старом окне и рисует туда (BUG-1: рисует в исходной вкладке).
+        self.pass_subscription = None;
         let state = self.state.clone();
         // UnderScene — правильный финальный слой: GPUI-хром, попапы, меню и тултипы должны
         // быть поверх графика. Chart host/content в MoonPalette держатся на NoFill, обычные
@@ -298,12 +305,22 @@ impl ChartEngine {
         match pass {
             Ok(subscription) => {
                 self.pass_subscription = Some(subscription);
+                self.pass_window = Some(wid);
             }
             Err(err) => {
+                self.pass_window = None;
                 log::warn!("chart own-pass registration failed: {err:#}");
             }
         }
-        self.pass_registration_attempted = true;
+    }
+
+    /// Снять own-pass с окна (панель ушла со сцены: неактивная вкладка / переезд).
+    /// Drop `Subscription` = снятие pas'а с того окна, где он был зарегистрирован.
+    /// Без этого осиротевший pas рисует протухшие панели поверх активного чарта
+    /// (BUG-2: застывший кадр чужой вкладки).
+    pub fn unregister_pass(&mut self) {
+        self.pass_subscription = None;
+        self.pass_window = None;
     }
 
     /// Размер слота чарта (девайс-px). Combo сам пересоздаёт битмап при смене размера.

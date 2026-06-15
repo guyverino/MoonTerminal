@@ -35,6 +35,9 @@ pub struct ChartTabs {
     main: Entity<ChartPanel>,
     /// AddToChart-вкладки (номер, ядро, панель), отсортированы по (номер, ядро).
     add: Vec<(u32, Option<CoreId>, Entity<ChartPanel>)>,
+    /// Откреплённые в своё ОС-окно вкладки — держим Entity, чтобы при закрытии окна
+    /// вернуть панель в стрип (repin) и чтобы новые детекты этого номера шли в неё.
+    detached: Vec<(u32, Option<CoreId>, Entity<ChartPanel>)>,
     /// Активная вкладка.
     active: Tab,
     /// Per-core курсор учтённых AddToChart-детектов.
@@ -71,6 +74,7 @@ impl ChartTabs {
             theme,
             main,
             add: Vec::new(),
+            detached: Vec::new(),
             active: Tab::Main,
             add_seq: HashMap::new(),
             focus: cx.focus_handle(),
@@ -142,6 +146,11 @@ impl ChartTabs {
                 .add
                 .iter()
                 .find(|(num, c, _)| *num == n && *c == key_core)
+                .or_else(|| {
+                    self.detached
+                        .iter()
+                        .find(|(num, c, _)| *num == n && *c == key_core)
+                })
             {
                 tab.update(cx, |p, _| p.add_coin(core, &market, ttl));
             } else {
@@ -176,9 +185,13 @@ impl ChartTabs {
             return;
         };
         let (_, _, panel) = self.add.remove(pos);
+        // Держим панель (не теряем): при закрытии окна вернём в стрип.
+        self.detached.push((n, core, panel.clone()));
         if self.active == tab {
             self.active = Tab::Main;
         }
+        // Снять own-pass с главного окна — на своём окне он перерегистрируется сам.
+        panel.update(cx, |p, _| p.unregister_pass());
         let opts = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(Bounds {
                 origin: point(px(200.0), px(160.0)),
@@ -190,9 +203,26 @@ impl ChartTabs {
             }),
             ..Default::default()
         };
-        cx.open_window(opts, |window, cx| {
+        // Хост-вид окна откреп: его release (закрытие окна) → репин панели в стрип.
+        let host = cx.new(|_| DetachedChartHost {
+            panel: panel.clone(),
+        });
+        cx.observe_release(&host, move |this, _host, cx| {
+            if let Some(p) = this
+                .detached
+                .iter()
+                .position(|(num, c, _)| *num == n && *c == core)
+            {
+                let (num, c, pnl) = this.detached.remove(p);
+                this.add.push((num, c, pnl));
+                this.add.sort_by_key(|(num, c, _)| (*num, c.unwrap_or(0)));
+                cx.notify();
+            }
+        })
+        .detach();
+        cx.open_window(opts, move |window, cx| {
             cx.new(|cx| {
-                Root::new(panel.clone(), window, cx).background_policy(MoonBackgroundPolicy::NoFill)
+                Root::new(host.clone(), window, cx).background_policy(MoonBackgroundPolicy::NoFill)
             })
         })
         .ok();
@@ -230,6 +260,25 @@ impl ChartTabs {
             None => n.to_string(),
         }
     }
+
+    /// Снять own-pass у НЕактивных вкладок: их панели не рендерятся (их render не
+    /// зовётся), и без снятия их pas остаётся на окне и рисует застывший чарт поверх
+    /// активного (BUG-2). Активная вкладка регистрирует pas в собственном render.
+    fn sync_inactive_passes(&self, cx: &mut Context<Self>) {
+        let active = self.active;
+        let mut inactive: Vec<Entity<ChartPanel>> = Vec::new();
+        if !matches!(active, Tab::Main) {
+            inactive.push(self.main.clone());
+        }
+        for (n, c, panel) in &self.add {
+            if Tab::Add(*n, *c) != active {
+                inactive.push(panel.clone());
+            }
+        }
+        for p in inactive {
+            p.update(cx, |panel, _| panel.unregister_pass());
+        }
+    }
 }
 
 impl EventEmitter<PanelEvent> for ChartTabs {}
@@ -258,6 +307,7 @@ impl Render for ChartTabs {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.handle_open_request(cx);
         self.ingest(window, cx);
+        self.sync_inactive_passes(cx);
 
         // Снимок вкладок — чтобы callbacks не держали borrow self.add.
         let mut tabs: Vec<(Tab, String, usize, bool)> =
@@ -336,5 +386,17 @@ impl Render for ChartTabs {
             .size_full()
             .child(strip)
             .child(div().flex_1().w_full().child(self.active_panel()))
+    }
+}
+
+/// Хост-вид окна откреплённой чарт-вкладки: рендерит панель; его release (закрытие
+/// окна) ChartTabs ловит через `observe_release` → возвращает панель в стрип.
+struct DetachedChartHost {
+    panel: Entity<ChartPanel>,
+}
+
+impl Render for DetachedChartHost {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div().size_full().child(self.panel.clone())
     }
 }

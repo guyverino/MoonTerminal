@@ -190,6 +190,12 @@ impl ChartPanel {
         self.chart.pane_count()
     }
 
+    /// Снять own-pass этой панели с окна — для НЕактивных вкладок (их render не
+    /// зовётся, и без снятия их pas рисует застывший чарт поверх активного).
+    pub fn unregister_pass(&mut self) {
+        self.chart.unregister_pass();
+    }
+
     /// AddToChart: добавить монету авто-панелью (Tiled-мультичарт) с TTL.
     pub fn add_coin(&mut self, core: CoreId, market: &str, ttl_ms: f64) {
         self.chart.push_auto(core, market, ttl_ms, now_unix_ms());
