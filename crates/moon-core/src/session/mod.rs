@@ -120,10 +120,13 @@ impl SessionManager {
 
     /// Дренирует все каналы ядер. Аккаунтные сообщения → CoreStore; рыночные →
     /// MarketStore (по ядру-источнику, т.е. провайдеру); Identity → core_key.
-    /// Зовётся раз в кадр перед `set_open`.
-    pub fn drain(&mut self) {
+    /// Зовётся раз в кадр перед `set_open`. Возвращает true, если применил хоть одно
+    /// сообщение — вызывающий будит окна только тогда (а не на каждый пустой тик).
+    pub fn drain(&mut self) -> bool {
+        let mut any = false;
         for sess in &self.sessions {
             while let Ok(msg) = sess.handle.rx.try_recv() {
+                any = true;
                 match msg {
                     FeedMsg::Identity(ex) => {
                         self.core_key.insert(sess.id, ex);
@@ -150,6 +153,7 @@ impl SessionManager {
                 }
             }
         }
+        any
     }
 
     /// Снимок статусов подключения всех ядер (id → статус) — для бейджей в окне

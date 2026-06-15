@@ -50,14 +50,22 @@ impl OrderBookModel {
     pub fn update(&mut self, book: &OrderBook) {
         self.raw.clear();
 
-        // Копии, отсортированные от лучшей цены наружу.
-        let mut bids = book.bids.clone();
-        bids.sort_by(|a, b| b.price.total_cmp(&a.price)); // убывание
-        let mut asks = book.asks.clone();
-        asks.sort_by(|a, b| a.price.total_cmp(&b.price)); // возрастание
+        // Книга приходит от биржи уже отсортированной (биды по убыванию, аски по
+        // возрастанию) и порядок сохраняется через wire→parse→feed (moonproto не
+        // пересортировывает). `push_side` считает span по соседу и ТРЕБУЕТ этот
+        // порядок — страхуемся debug-проверкой, но в релизе не сортируем заново
+        // (это была чистая лишняя работа на UI-потоке 20 раз/сек) и не клонируем.
+        debug_assert!(
+            book.bids.windows(2).all(|w| w[0].price >= w[1].price),
+            "bids must arrive descending"
+        );
+        debug_assert!(
+            book.asks.windows(2).all(|w| w[0].price <= w[1].price),
+            "asks must arrive ascending"
+        );
 
-        push_side(&mut self.raw, &bids, false);
-        push_side(&mut self.raw, &asks, true);
+        push_side(&mut self.raw, &book.bids, false);
+        push_side(&mut self.raw, &book.asks, true);
     }
 
     /// Строит GPU-инстансы, нормируя длину баров по максимуму среди уровней

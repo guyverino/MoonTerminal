@@ -814,45 +814,59 @@ fn main() -> anyhow::Result<()> {
         cx.spawn(async move |cx| {
             // gpui (свежий): AsyncApp::update инфэллибл (возвращает R, не Result) — без `?`.
             let executor = cx.update(|cx| cx.background_executor().clone());
+            // Дренаж данных — ~60 Гц (под present): фид кладёт тики/стакан каждые ~8мс,
+            // и при дренаже раз в 100мс живой скролл шёл ступеньками 10 Гц. Тяжёлая
+            // координация (reconcile_providers, метрики, сохранения) остаётся на ~100мс
+            // (каждый 6-й тик) — её незачем гонять 60 раз/сек.
+            let mut tick: u32 = 0;
             loop {
-                executor.timer(Duration::from_millis(100)).await;
+                executor.timer(Duration::from_millis(16)).await;
+                tick = tick.wrapping_add(1);
+                let coord = tick % 6 == 0;
                 // gpui (свежий): AsyncApp::update инфэллибл; при закрытии приложения
                 // спавн-задача отменяется самим gpui (future дропается на await ниже).
                 cx.update(|cx| {
                     // Сессия/метрики/реконнект — внутри backend.update; запросы
                     // «показать группу» забираем наружу (нужен &mut App для окон).
                     let show_reqs = drain_backend.update(cx, |b, cx| {
-                        b.session.drain();
-                        // Каждый кадр (как egui app/mod.rs): reconcile_providers
-                        // избирает провайдера/биржу + держит подписку на desired-рынки.
-                        // subscribe_all_trades провайдера = ретейн всех трейдов биржи
-                        // (десятки ГБ — by-design, ради мгновенного открытия монеты;
-                        // дедуп держит 1 провайдера/биржу).
-                        b.session.set_open(&b.desired);
-                        b.snap = b.metrics.sample(Instant::now());
-                        // Реконнект ядер по кнопке ↻ (порт egui take_actions.reconnect).
-                        let recon: Vec<CoreId> = b.reconnect_request.drain(..).collect();
-                        for id in recon {
-                            b.session
-                                .reconnect(id, &b.config, b.reports.as_ref().map(|h| &h.tx));
+                        let drained = b.session.drain();
+                        let mut reqs = Vec::new();
+                        if coord {
+                            // reconcile_providers избирает провайдера/биржу + держит
+                            // подписку на desired-рынки. subscribe_all_trades провайдера =
+                            // ретейн всех трейдов биржи (десятки ГБ — by-design, ради
+                            // мгновенного открытия монеты; дедуп держит 1 провайдера/биржу).
+                            b.session.set_open(&b.desired);
+                            b.snap = b.metrics.sample(Instant::now());
+                            // Реконнект ядер по кнопке ↻ (порт egui take_actions.reconnect).
+                            let recon: Vec<CoreId> = b.reconnect_request.drain(..).collect();
+                            for id in recon {
+                                b.session
+                                    .reconnect(id, &b.config, b.reports.as_ref().map(|h| &h.tx));
+                            }
+                            // Дебаунс-сохранение раскладки окон (≤10/с).
+                            if b.layout_dirty {
+                                b.layout.save();
+                                b.layout_dirty = false;
+                            }
+                            // Дебаунс-сохранение раскладки доков (docks.json).
+                            if b.dock_dirty {
+                                dock_persist::save_all(&b.dock_states);
+                                b.dock_dirty = false;
+                            }
+                            // Дебаунс-сохранение откреплённых окон (detached.json).
+                            if b.detached_dirty {
+                                detached::save_all(&b.detached);
+                                b.detached_dirty = false;
+                            }
+                            reqs = std::mem::take(&mut b.show_group_request);
                         }
-                        // Дебаунс-сохранение раскладки окон (≤10/с).
-                        if b.layout_dirty {
-                            b.layout.save();
-                            b.layout_dirty = false;
+                        // Будим окна только когда есть новые данные или прошла координация
+                        // (обновились метрики/статусы) — не молотим observe на пустой тик.
+                        if drained || coord {
+                            cx.notify();
                         }
-                        // Дебаунс-сохранение раскладки доков (docks.json).
-                        if b.dock_dirty {
-                            dock_persist::save_all(&b.dock_states);
-                            b.dock_dirty = false;
-                        }
-                        // Дебаунс-сохранение откреплённых окон (detached.json).
-                        if b.detached_dirty {
-                            detached::save_all(&b.detached);
-                            b.detached_dirty = false;
-                        }
-                        cx.notify();
-                        std::mem::take(&mut b.show_group_request)
+                        reqs
                     });
                     // Открыть/сфокусировать окна по запросам 👁.
                     for g in show_reqs {

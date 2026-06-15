@@ -191,6 +191,10 @@ pub struct OrderLineStore {
     /// Кольцо uid ЗАКРЫТЫХ в порядке закрытия — единственный кап на закрытые,
     /// без сорта/прун-скана: пришёл новый закрытый → в хвост, переполнено → из головы.
     closed_ring: VecDeque<u64>,
+    /// Кэш диапазона цен buy/sell открытых ордеров по рынку (для авто-Y). Пересобирается
+    /// ТОЛЬКО при изменении ордеров (вместе с rev), а не каждый prepare — buy_sell_range
+    /// раньше сканировал все ордера ядра 60 раз/сек на каждую панель.
+    buy_sell_ranges: HashMap<String, (f32, f32)>,
     /// Растёт при реальном изменении геометрии (новый ордер/узел/закрытие/liq).
     pub rev: u64,
     seq_counter: u64,
@@ -296,6 +300,28 @@ impl OrderLineStore {
         }
         if changed {
             self.rev = self.rev.wrapping_add(1);
+            self.rebuild_buy_sell_ranges();
+        }
+    }
+
+    /// Пересобирает кэш buy/sell-диапазонов по рынкам из текущих открытых ордеров.
+    /// Зовётся только при реальном изменении (`changed`) — цены линий мутируют лишь в
+    /// `update`, поэтому кэш всегда свежий, но скан O(ордера) идёт 4 Гц, не 60.
+    fn rebuild_buy_sell_ranges(&mut self) {
+        self.buy_sell_ranges.clear();
+        for o in self.orders.values() {
+            if o.closed_ms.is_some() {
+                continue;
+            }
+            for idx in [LineKind::Buy as usize, LineKind::Sell as usize] {
+                if let Some(p) = o.lines[idx].current_price() {
+                    if p.is_finite() && p > 0.0 {
+                        let e = self.buy_sell_ranges.entry(o.market.clone()).or_insert((p, p));
+                        e.0 = e.0.min(p);
+                        e.1 = e.1.max(p);
+                    }
+                }
+            }
         }
     }
 
@@ -355,24 +381,8 @@ impl OrderLineStore {
 
     /// Диапазон цен (min,max) текущих линий BUY и SELL открытых (не закрытых)
     /// ордеров рынка — для авто-масштаба Y. ТОЛЬКО buy/sell (не стопы/liq/прочее).
+    /// Готовый кэш (`rebuild_buy_sell_ranges` при изменении ордеров), не скан per-prepare.
     pub fn buy_sell_range(&self, market: &str) -> Option<(f32, f32)> {
-        let mut lo = f32::MAX;
-        let mut hi = f32::MIN;
-        let mut any = false;
-        for o in self.iter_market(market) {
-            if o.closed_ms.is_some() {
-                continue;
-            }
-            for idx in [LineKind::Buy as usize, LineKind::Sell as usize] {
-                if let Some(p) = o.lines[idx].current_price() {
-                    if p.is_finite() && p > 0.0 {
-                        lo = lo.min(p);
-                        hi = hi.max(p);
-                        any = true;
-                    }
-                }
-            }
-        }
-        any.then_some((lo, hi))
+        self.buy_sell_ranges.get(market).copied()
     }
 }

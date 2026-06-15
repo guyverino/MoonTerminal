@@ -313,19 +313,20 @@ impl Render for ChartPanel {
         if cadence_due || data_changed || geometry_changed || view_changed {
             let b = self.backend.read(cx);
             self.chart.prepare(&b.session, ppp);
-            self.input.pane_rects = self
-                .chart
-                .axis_panes(0)
-                .into_iter()
-                .map(|(idx, rect, _)| (idx, rect))
-                .collect();
             self.last_prepared_data_sig = self.data_sig;
             self.last_prepared_dev = self.chart_dev;
             self.last_prepared_bounds = self.chart_bounds;
             self.view_dirty = false;
         }
 
+        // axis_panes (раскладка панелей + снимок) считаем ОДИН раз за кадр и переиспользуем
+        // и для hit-теста ввода (pane_rects), и для отрисовки осей — раньше layout панелей
+        // гонялся дважды (внутри гейта prepare ради pane_rects + здесь ради отрисовки).
         let axis_panes = self.chart.axis_panes(axes::local_offset_sec());
+        self.input.pane_rects = axis_panes
+            .iter()
+            .map(|(idx, rect, _)| (*idx, *rect))
+            .collect();
         let cross = self.chart.crosshair_style();
         let cursor_dev = self.input.cursor;
         let hovered = self.input.hovered_pane;
