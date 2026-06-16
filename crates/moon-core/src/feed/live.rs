@@ -307,6 +307,19 @@ pub fn run(
         // детекты и отчёты — только из потока событий, по флагам сервера.
         let events = client.drain_events();
         let want_log = server.feed.log;
+        // detect-diag: один раз за процесс — состояние серверных флагов фида. Если
+        // `feed.detects=false`, ветка `Event::Detect` ниже вообще не работает → корень
+        // «нет детектов» виден сразу, без догадок. (env MOON_DETECT_DIAG, off by default.)
+        {
+            use std::sync::OnceLock;
+            static FLAGS_ONCE: OnceLock<()> = OnceLock::new();
+            if crate::detect_diag::enabled() && FLAGS_ONCE.set(()).is_ok() {
+                crate::detect_diag::line(&format!(
+                    "[live] flags: feed.detects={} feed.reports={} feed.log={}",
+                    server.feed.detects, server.feed.reports, want_log
+                ));
+            }
+        }
         if server.feed.detects || (server.feed.reports && reports.is_some()) || want_log {
             let mut detects: Vec<DetectRow> = Vec::new();
             let mut logs: Vec<CoreLogLine> = Vec::new();
@@ -369,6 +382,16 @@ pub fn run(
                 if tx.send(FeedMsg::ServerLog(logs)).is_err() {
                     break;
                 }
+            }
+            // detect-diag: сколько Event::Detect реально надренажено и сколько из них с
+            // AddToChart>0. raw>0 но with_chart=0 → стратегия без AddToChart (вкладки и не
+            // будет — это не баг чарта). raw=0 при flags.detects=true → сервер не шлёт детекты.
+            if server.feed.detects && !detects.is_empty() {
+                let raw = detects.len();
+                let with_chart = detects.iter().filter(|d| d.add_to_chart > 0).count();
+                crate::detect_diag::line(&format!(
+                    "[live] drained detects raw={raw} add_to_chart>0={with_chart}"
+                ));
             }
             if !detects.is_empty() && tx.send(FeedMsg::Detects(detects)).is_err() {
                 break;

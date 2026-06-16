@@ -719,12 +719,10 @@ pub(crate) fn spawn_group_window(
             return;
         }
     }
-    // Фокус-монета группы: первое активное ядро группы + его настроенный рынок.
-    let focus: Option<(CoreId, String)> = cfg
-        .servers
-        .iter()
-        .find(|s| s.active && cfg.group(&s.group).active && s.group == group)
-        .map(|s| (s.id, s.market.clone()));
+    // Main при загрузке — ПУСТОЙ (только брендовое лого, без графика): монета на Main
+    // открывается по действию пользователя (дабл-клик по детекту → open_market), а не
+    // авто-подхватом фокус-монеты. Закрыть монету на Main можно угловым ✕ → снова лого.
+    let focus: Option<(CoreId, String)> = None;
     let win_bounds = match layout.groups.get(&group) {
         Some(g) => Bounds {
             origin: point(px(g.x as f32), px(g.y as f32)),
@@ -878,6 +876,27 @@ fn main() -> anyhow::Result<()> {
 
         // Фабрики панелей для восстановления раскладки доков (PanelRegistry — глобален).
         dock_persist::register_panels(cx, backend.clone(), epoch);
+
+        // Закрытие ГЛАВНОГО (группового) окна = полный выход: убираем закрытое окно из
+        // group_windows, и если групповых окон не осталось — quit (закроет и откреплённые
+        // чарт-окна). Детач-чарт окна сами quit не вызывают (их id нет в group_windows).
+        let quit_backend = backend.clone();
+        cx.on_window_closed(move |app, closed_id| {
+            let quit = quit_backend.update(app, |b, _| {
+                let was_group = b
+                    .group_windows
+                    .values()
+                    .any(|h| h.window_id() == closed_id);
+                if was_group {
+                    b.group_windows.retain(|_, h| h.window_id() != closed_id);
+                }
+                was_group && b.group_windows.is_empty()
+            });
+            if quit {
+                app.quit();
+            }
+        })
+        .detach();
 
         // Дренаж сессий + метрики раз в 100мс на UI-потоке → notify окон.
         let drain_backend = backend.clone();

@@ -13,7 +13,10 @@ use super::gpu::{
 };
 pub use super::types::BackgroundParams;
 
-const BACKGROUND_PNG: &[u8] = include_bytes!("../../../../assets/img/3Dlogo_s01.png");
+/// Пер-панельный водяной знак в плоте (off по умолчанию: CHART_PHOTO_BACKGROUND_ENABLED).
+pub const BACKGROUND_3DLOGO_PNG: &[u8] = include_bytes!("../../../../assets/img/3Dlogo_s01.png");
+/// Брендовый сплэш — полно-оконная подложка под панелями (убирает белый фон жёлоба/пустот).
+pub const SPLASH_PNG: &[u8] = include_bytes!("../../../../assets/img/splash-cold-glow.png");
 const BACKGROUND_HLSL: &str = include_str!("shaders/background.hlsl");
 
 struct BackgroundPipe {
@@ -29,13 +32,15 @@ struct BackgroundPipe {
 pub struct BackgroundLayer {
     pipe: Option<BackgroundPipe>,
     device_ptr: *mut c_void,
+    png: &'static [u8],
 }
 
 impl BackgroundLayer {
-    pub fn new() -> Self {
+    pub fn new(png: &'static [u8]) -> Self {
         Self {
             pipe: None,
             device_ptr: std::ptr::null_mut(),
+            png,
         }
     }
 
@@ -58,7 +63,7 @@ impl BackgroundLayer {
             self.device_ptr = gpu.device;
         }
         if self.pipe.is_none() {
-            self.pipe = Some(Self::create_pipe(device));
+            self.pipe = Some(Self::create_pipe(device, self.png));
         }
         let pipe = self.pipe.as_ref().unwrap();
         update_dynamic(context, &pipe.cb, &[*params]);
@@ -78,8 +83,8 @@ impl BackgroundLayer {
         }
     }
 
-    fn create_pipe(device: &ID3D11Device) -> BackgroundPipe {
-        let image = image::load_from_memory(BACKGROUND_PNG)
+    fn create_pipe(device: &ID3D11Device, png: &[u8]) -> BackgroundPipe {
+        let image = image::load_from_memory(png)
             .expect("embedded chart background must decode")
             .to_rgba8();
         let img_w = image.width();

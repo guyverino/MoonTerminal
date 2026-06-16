@@ -11,6 +11,7 @@
 pub mod applog;
 pub mod config;
 pub mod data;
+pub mod detect_diag;
 pub mod db;
 pub mod feed;
 pub mod market;

@@ -86,6 +86,13 @@ impl CoreData {
             }
             FeedMsg::Detects(detects) => {
                 if !detects.is_empty() {
+                    // detect-diag: дошли до стора (CoreData) и бампаем detects_rev — этот rev
+                    // дальше гейтит ChartTabs::ingest через chart_tabs_sig. (env MOON_DETECT_DIAG.)
+                    crate::detect_diag::line(&format!(
+                        "[store] +{} detects → rev={}",
+                        detects.len(),
+                        self.detects_rev.wrapping_add(1)
+                    ));
                     self.detects.extend(detects);
                     // Кольцо: держим только последние MAX_DETECTS.
                     if self.detects.len() > MAX_DETECTS {

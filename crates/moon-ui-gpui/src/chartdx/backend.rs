@@ -14,7 +14,10 @@ use super::wgpu_backend::WgpuLayers;
 
 #[cfg(windows)]
 use super::{
-    background::BackgroundLayer, combo::ComboLayer, grid::GridLayer, orderbook::OrderBookLayer,
+    background::{BACKGROUND_3DLOGO_PNG, BackgroundLayer},
+    combo::ComboLayer,
+    grid::GridLayer,
+    orderbook::OrderBookLayer,
     userdata::UserDataLayer,
 };
 
@@ -44,7 +47,7 @@ impl PlatformLayers {
     pub fn new() -> Self {
         Self {
             #[cfg(windows)]
-            background: BackgroundLayer::new(),
+            background: BackgroundLayer::new(BACKGROUND_3DLOGO_PNG),
             #[cfg(windows)]
             combo: ComboLayer::new(),
             #[cfg(windows)]

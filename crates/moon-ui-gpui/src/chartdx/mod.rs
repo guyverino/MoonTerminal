@@ -48,6 +48,15 @@ use types::{BackgroundParams, BookStyle, ChartViewGpu, GridParams, cover_uv};
 
 const CHART_PHOTO_BACKGROUND_ENABLED: bool = false;
 
+/// Аспект (w/h) брендового сплэша `assets/img/splash-cold-glow.png` (1280×720) для cover-fit
+/// полно-оконной подложки.
+#[cfg(windows)]
+const SPLASH_ASPECT: f32 = 1280.0 / 720.0;
+/// Непрозрачность сплэша поверх тёмного `theme.bg` (1.0 = чистая картинка). Подложка всё равно
+/// видна лишь в жёлобе/пустотах — плоты рисуются поверх в своём scissor.
+#[cfg(windows)]
+const WINDOW_BG_OPACITY: f32 = 1.0;
+
 /// sRGB [u8;3] → [f32;4] (alpha 1) для cbuffer-цветов (шейдер переводит в linear).
 fn rgb4(c: [u8; 3]) -> [f32; 4] {
     [
@@ -175,6 +184,19 @@ struct RenderState {
     scissor_rs: Option<ID3D11RasterizerState>,
     #[cfg(windows)]
     scissor_dev: *mut c_void,
+    /// Полно-оконная брендовая подложка (сплэш): рисуется ПЕРВЫМ слоем own-pass на ВЕСЬ
+    /// backbuffer (без scissor) под панелями — закрывает белый незакрашенный фон (жёлоб цены,
+    /// шкала времени, пустоты, первый кадр). Плоты рисуются поверх в своём scissor.
+    #[cfg(windows)]
+    window_bg: background::BackgroundLayer,
+    /// Цвет тёмной базы (= `rgb4(theme.bg)`), обновляется в `prepare`. Заливает ВСЁ окно
+    /// (убирает белый незакрашенный фон), лого рисуется поверх только в слоте чарта.
+    #[cfg(windows)]
+    window_bg_color: [f32; 4],
+    /// Прямоугольник СЛОТА чарта в окне (девайс-px: origin.x, origin.y, w, h) — в него
+    /// вписывается брендовое лого (cover-fit), как контейнер «здесь появятся графики».
+    #[cfg(windows)]
+    window_bg_dst: [f32; 4],
 }
 
 pub struct ChartEngine {
@@ -213,6 +235,12 @@ impl ChartEngine {
                 scissor_rs: None,
                 #[cfg(windows)]
                 scissor_dev: std::ptr::null_mut(),
+                #[cfg(windows)]
+                window_bg: background::BackgroundLayer::new(background::SPLASH_PNG),
+                #[cfg(windows)]
+                window_bg_color: rgb4(theme.bg),
+                #[cfg(windows)]
+                window_bg_dst: [0.0, 0.0, 0.0, 0.0],
             })),
             epoch,
             theme,
@@ -268,6 +296,38 @@ impl ChartEngine {
                         let Some((device, context, rtv)) = gpu::borrow_d3d(gpu) else {
                             return Ok(());
                         };
+                        // Подложка ПОД панелями (весь backbuffer, БЕЗ scissor — ставим ниже):
+                        // (1) тёмная база на ВСЁ окно (opacity 0 → чистый theme.bg) — убирает
+                        // белый незакрашенный фон (жёлоб/шкала/пустоты/первый кадр);
+                        // (2) брендовое лого, ВПИСАННОЕ в слот чарта (cover-fit) — «контейнер,
+                        // где появятся графики». Плоты/панели рисуются поверх.
+                        {
+                            let res = [gpu.width as f32, gpu.height as f32];
+                            let base = BackgroundParams {
+                                dst: [0.0, 0.0, res[0], res[1]],
+                                resolution: res,
+                                uv_off: [0.0, 0.0],
+                                uv_scale: [1.0, 1.0],
+                                opacity: 0.0,
+                                _pad: 0.0,
+                                bg: st.window_bg_color,
+                            };
+                            st.window_bg.render(&base, &device, &context, &rtv, gpu);
+                            let d = st.window_bg_dst;
+                            if d[2] > 0.0 && d[3] > 0.0 {
+                                let (uv_off, uv_scale) = cover_uv(d[2], d[3], SPLASH_ASPECT);
+                                let logo = BackgroundParams {
+                                    dst: d,
+                                    resolution: res,
+                                    uv_off,
+                                    uv_scale,
+                                    opacity: WINDOW_BG_OPACITY,
+                                    _pad: 0.0,
+                                    bg: st.window_bg_color,
+                                };
+                                st.window_bg.render(&logo, &device, &context, &rtv, gpu);
+                            }
+                        }
                         // Scissor own-pass (lazy + device-lost guard). GPUI рисует сцену с ScissorEnable=false,
                         // а наши слои стакана/ордеров позиционируются по ЦЕНЕ и эмитят уровни ВНЕ видимого окна
                         // (build_instances отдаёт всю книгу) → без обрезки бары уезжают за плот, на тулбар/шкалы.
@@ -427,6 +487,12 @@ impl ChartEngine {
         let now = now_unix_ms();
         let res = [self.w as f32, self.h as f32];
         let mut st = self.state.borrow_mut();
+        #[cfg(windows)]
+        {
+            st.window_bg_color = rgb4(self.theme.bg);
+            // Слот чарта в окне (девайс-px): origin слота + его размер — в него вписываем лого.
+            st.window_bg_dst = [self.origin.0, self.origin.1, self.w as f32, self.h as f32];
+        }
         st.panes
             .resize_with(self.container.panes.len(), PaneRender::new);
         for pr in &mut st.panes {

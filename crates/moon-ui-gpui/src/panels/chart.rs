@@ -336,6 +336,27 @@ impl ChartPanel {
         self.arm_ttl_timer(cx);
     }
 
+    /// Закрыть панель-монету крестиком: убрать из мультичарта + отписаться от стакана
+    /// (убрать (core, market) из `desired`, если ни одна оставшаяся панель этого чарта его не
+    /// держит — трейды биржи идут оптом, снимаем именно стакан через `set_open`-дифф).
+    fn remove_pane(&mut self, idx: usize, cx: &mut Context<Self>) {
+        let Some((core, market)) = self.chart.container.remove_pane(idx) else {
+            return;
+        };
+        self.view_dirty = true;
+        if !self.chart.container.uses_market(core, &market) {
+            self.backend.update(cx, |b, bcx| {
+                let before = b.desired.len();
+                b.desired
+                    .retain(|(c, m)| !(*c == core && m.as_str() == market.as_str()));
+                if b.desired.len() != before {
+                    bcx.notify();
+                }
+            });
+        }
+        cx.notify();
+    }
+
     fn next_ttl_delay(&self, now_ms: f64) -> Option<Duration> {
         self.chart
             .next_ttl_deadline_ms()
@@ -474,7 +495,12 @@ impl Render for ChartPanel {
         // present к on-demand (батарея). render зовётся на смену follow (notify ввода/настроек) +
         // по backend-пульсу, так что переключение ловится вовремя.
         let win_id = window.window_handle().window_id();
-        if self.fast && self.chart.follow() {
+        // Гладкий скролл (continuous-present: own-pass двигает живой край каждый vsync) держим
+        // когда чарт в live-follow И ЛИБО это Main (fast — всегда гладко/быстро), ЛИБО ОКНО
+        // ЧАРТА АКТИВНО (юзер смотрит — тоже гладко, даже если курсор стоит). Неактивное окно →
+        // guard дропается → перерисовка к backend-пульсу (~4 Гц) — экономия (батарея/фон).
+        let smooth = self.chart.follow() && (self.fast || window.is_window_active());
+        if smooth {
             if self.present_guard_window != Some(win_id) {
                 self.present_guard = Some(window.request_continuous_presentation());
                 self.present_guard_window = Some(win_id);
@@ -520,6 +546,13 @@ impl Render for ChartPanel {
         let cross = self.chart.crosshair_style();
         let cursor_dev = self.input.cursor;
         let hovered = self.input.hovered_pane;
+        // Угловой ✕ закрытия монеты — на КАЖДОЙ панели (и Main, и AddToChart-мультичарт):
+        // закрыл монету на Main → вернулись к лого. Позиция из раскладки панелей (девайс-px →
+        // лог.px слота); собираем ДО canvas, который забирает axis_panes по move.
+        let close_btns: Vec<(usize, f32, f32)> = axis_panes
+            .iter()
+            .map(|(idx, rect, _)| (*idx, (rect.x + rect.w) / ppp, rect.y / ppp))
+            .collect();
 
         div()
             .id("chart-slot")
@@ -762,5 +795,30 @@ impl Render for ChartPanel {
                 .absolute()
                 .size_full()
             })
+            .children(close_btns.into_iter().map(|(idx, right, top)| {
+                div()
+                    .absolute()
+                    .left(px(right - 18.0))
+                    .top(px(top + 3.0))
+                    .w(px(15.0))
+                    .h(px(15.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(3.0))
+                    .text_size(px(11.0))
+                    .text_color(rgba(0xC8CCD0FF))
+                    .bg(rgba(0x00000059))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(rgba(0xE04848CC)).text_color(rgb(0xFFFFFF)))
+                    .child("×")
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _e: &MouseDownEvent, _w, cx| {
+                            this.remove_pane(idx, cx);
+                            cx.stop_propagation();
+                        }),
+                    )
+            }))
     }
 }

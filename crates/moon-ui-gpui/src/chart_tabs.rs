@@ -9,13 +9,18 @@ use std::rc::Rc;
 
 use gpui::*;
 use moon_palette::{
-    MoonBackgroundPolicy, MoonTabItem, MoonTabStrip, Panel, PanelEvent, PanelState, Root, v_flex,
+    MoonBackgroundPolicy, MoonRect, MoonTabItem, MoonTabStrip, Panel, PanelEvent, PanelState, Root,
+    v_flex,
 };
 
 use crate::Backend;
 use crate::panels::ChartPanel;
 use moon_core::config::ChartTheme;
 use moon_core::session::CoreId;
+
+/// Высота полоски чарт-вкладок (px). Табы в MoonTabStrip — h=28 + подчёркивание; 30 даёт
+/// ровный ряд. Резервируется в layout сверху, и в неё же кладутся bounds стрипа.
+const CHART_TAB_STRIP_H: f32 = 30.0;
 
 /// Идентичность вкладки чарта. Main — фуллскрин; Add(номер, ядро) — AddToChart-вкладка
 /// (ядро задано при `charts_split_by_core`, иначе None — общая на номер). Порт egui
@@ -165,6 +170,14 @@ impl ChartTabs {
         if fresh.is_empty() {
             return;
         }
+        // detect-diag: AddToChart-детекты дошли до UI этой группы. fresh — сколько монет
+        // на добавление в этом проходе. (env MOON_DETECT_DIAG, off by default.)
+        moon_core::detect_diag::line(&format!(
+            "[ingest] group={} split={split} fresh={} existing_tabs={}",
+            self.group,
+            fresh.len(),
+            self.add.len()
+        ));
         let (epoch, theme, backend) = (self.epoch, self.theme.clone(), self.backend.clone());
         for (n, core, market, ttl) in fresh {
             let key_core = if split { Some(core) } else { None };
@@ -200,6 +213,10 @@ impl ChartTabs {
                 self.add.push((n, key_core, panel));
                 // Порядок вкладок: по (номер, ядро) — как egui sort_by_key.
                 self.add.sort_by_key(|(num, c, _)| (*num, c.unwrap_or(0)));
+                moon_core::detect_diag::line(&format!(
+                    "[ingest] NEW tab n={n} core={key_core:?} (total_tabs={})",
+                    self.add.len()
+                ));
                 // active НЕ меняем — не уводим пользователя на новую вкладку.
             }
         }
@@ -399,9 +416,15 @@ impl Render for ChartTabs {
             })
             .collect::<Vec<_>>();
         let view = cx.entity();
+        // MoonTabStrip рисует ВСЕ табы абсолютно и режет по `overflow_hidden` ПО СВОИМ
+        // bounds. Без явных bounds его root схлопывается в 0×0 → полоска невидима, а чарт
+        // (flex_1 ниже) забирает всю высоту (ровно баг «график есть, вкладок нет»). Даём
+        // ширину окна (контейнер ниже обрежет до ширины панели) и фикс. высоту полосы.
+        let strip_w = f32::from(window.viewport_size().width).max(1.0);
         let strip = MoonTabStrip::new("chart-tabs-strip")
             .padding_left(8.0)
             .gap(4.0)
+            .bounds(MoonRect::new(0.0, 0.0, strip_w, CHART_TAB_STRIP_H))
             .items(items)
             .on_click({
                 let tab_keys = tab_keys.clone();
@@ -446,7 +469,14 @@ impl Render for ChartTabs {
 
         v_flex()
             .size_full()
-            .child(strip)
+            .child(
+                div()
+                    .h(px(CHART_TAB_STRIP_H))
+                    .w_full()
+                    .relative()
+                    .overflow_hidden()
+                    .child(strip),
+            )
             .child(div().flex_1().w_full().child(self.active_panel()))
     }
 }

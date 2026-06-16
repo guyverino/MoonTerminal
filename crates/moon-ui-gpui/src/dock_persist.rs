@@ -15,7 +15,6 @@ use gpui::*;
 use moon_palette::{DockAreaState, PanelInfo, PanelState, register_panel};
 
 use moon_core::config::paths;
-use moon_core::session::CoreId;
 
 use crate::Backend;
 use crate::chart_tabs::ChartTabs;
@@ -73,15 +72,6 @@ pub fn panel_state_with_group(panel_name: &str, group: &str) -> PanelState {
 
 /// Фокус-монета группы (первое активное ядро группы + его рынок) — та же логика,
 /// что в `main()` при первичном открытии окон; нужна Main-чарту при реконструкции.
-fn focus_for(backend: &Entity<Backend>, group: &str, cx: &App) -> Option<(CoreId, String)> {
-    let b = backend.read(cx);
-    b.config
-        .servers
-        .iter()
-        .find(|s| s.active && b.config.group(&s.group).active && s.group == group)
-        .map(|s| (s.id, s.market.clone()))
-}
-
 /// Зарегистрировать фабрики всех панелей-доков в глобальном `PanelRegistry`.
 /// Вызывается один раз на старте (после создания `backend`). `backend`/`epoch`
 /// захватываются в замыкания; группа и пр. читаются из `PanelState` при восстановлении.
@@ -92,9 +82,10 @@ pub fn register_panels(cx: &mut App, backend: Entity<Backend>, epoch: f64) {
         register_panel(cx, "ChartTabs", move |_state, info, window, cx| {
             let group = group_of(info);
             let theme = backend.read(cx).config.theme.clone();
-            let focus = focus_for(&backend, &group, cx);
             let backend = backend.clone();
-            Rc::new(cx.new(|cx| ChartTabs::new(backend, group, focus, epoch, theme, window, cx)))
+            // Main стартует ПУСТЫМ (только лого): фокус-монета не авто-открывается. Монета на
+            // Main появляется по дабл-клику/детекту (open_market). См. spawn_group_window.
+            Rc::new(cx.new(|cx| ChartTabs::new(backend, group, None, epoch, theme, window, cx)))
         });
     }
     // Лента детектов: группа из state.

@@ -149,13 +149,23 @@ impl Container {
             .min_by(|a, b| a.total_cmp(b))
     }
 
-    /// Удалить панель (закрытие крестиком — подключится в UI-обработчике позже).
-    #[allow(dead_code)]
-    pub fn remove(&mut self, idx: usize) {
-        if idx < self.panes.len() {
-            self.panes.remove(idx);
-            self.clamp_focus();
+    /// Удалить панель (закрытие крестиком в UI). Возвращает её (core, market) — для решения
+    /// об отписке от стакана. None — индекс вне диапазона.
+    pub fn remove_pane(&mut self, idx: usize) -> Option<(CoreId, String)> {
+        if idx >= self.panes.len() {
+            return None;
         }
+        let p = self.panes.remove(idx);
+        self.clamp_focus();
+        Some((p.core, p.market))
+    }
+
+    /// Использует ли ещё какая-то панель этот (core, market) — чтобы не отписаться от стакана,
+    /// который нужен другой панели этого же чарта.
+    pub fn uses_market(&self, core: CoreId, market: &str) -> bool {
+        self.panes
+            .iter()
+            .any(|p| p.core == core && p.market == market)
     }
 
     fn clamp_focus(&mut self) {
