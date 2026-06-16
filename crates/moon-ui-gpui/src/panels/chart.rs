@@ -52,7 +52,6 @@ fn chart_present_rate_hz() -> f32 {
 struct ChartSettingsSig {
     theme: ChartTheme,
     orders: OrdersStyle,
-    scale: Option<f32>,
     follow: bool,
 }
 
@@ -61,7 +60,6 @@ fn chart_settings_sig(backend: &Backend) -> ChartSettingsSig {
     ChartSettingsSig {
         theme: effective.theme.clone(),
         orders: effective.orders.clone(),
-        scale: backend.price_scale,
         follow: backend.follow,
     }
 }
@@ -75,6 +73,9 @@ pub struct ChartPanel {
     chart_bounds: Option<Bounds<Pixels>>,
     input: input::ChartInput,
     market: Option<String>,
+    /// Масштаб цены ЭТОЙ вкладки (None = Авто). Теперь ПО-ВКЛАДОЧНЫЙ (не глобальный): правится
+    /// своим регулятором (тулбар активной вкладки / шапка выносного окна), применяется в render.
+    scale: Option<f32>,
     /// Номер AddToChart-вкладки (None = Main).
     num: Option<u32>,
     /// Сигнатура рыночных данных прошлого кадра — нотифаим только при реальном приходе данных.
@@ -215,6 +216,7 @@ impl ChartPanel {
             chart_bounds: None,
             input: input::ChartInput::default(),
             market,
+            scale: None,
             num: None,
             data_sig: 0,
             settings_sig,
@@ -248,14 +250,14 @@ impl ChartPanel {
         cx.notify();
     }
 
-    /// AddToChart-вкладка №`num` (наполняется детектами через add_coin).
+    /// AddToChart-вкладка №`num` (наполняется детектами через add_coin). Без `window`: панель
+    /// строится из данных, окно ей не нужно (важно для отложенного восстановления откреп-окон).
     pub fn new_addto(
         backend: Entity<Backend>,
         num: u32,
         core: Option<CoreId>,
         epoch: f64,
         theme: ChartTheme,
-        _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let chart = ChartEngine::new_kind(epoch, theme, ContainerKind::Chart { num, core });
@@ -294,6 +296,7 @@ impl ChartPanel {
             chart_bounds: None,
             input: input::ChartInput::default(),
             market: None,
+            scale: None,
             num: Some(num),
             data_sig: 0,
             settings_sig,
@@ -318,6 +321,20 @@ impl ChartPanel {
         self.chart.pane_count()
     }
 
+    /// Масштаб цены ЭТОЙ вкладки (для дропдауна шапки выносного окна и синка тулбара).
+    pub fn scale(&self) -> Option<f32> {
+        self.scale
+    }
+
+    /// Поставить масштаб ЭТОЙ вкладки (None=Авто). Применяется в render через `set_scale` движка.
+    pub fn set_scale(&mut self, pct: Option<f32>, cx: &mut Context<Self>) {
+        if self.scale != pct {
+            self.scale = pct;
+            self.view_dirty = true;
+            cx.notify();
+        }
+    }
+
     /// Снять own-pass этой панели с окна — для НЕактивных вкладок (их render не
     /// зовётся, и без снятия их pas рисует застывший чарт поверх активного).
     pub fn unregister_pass(&mut self) {
@@ -334,6 +351,10 @@ impl ChartPanel {
         self.chart.push_auto(core, market, ttl_ms, now_unix_ms());
         self.view_dirty = true;
         self.arm_ttl_timer(cx);
+        // ВАЖНО: notify самой панели. Для вкладки в стрипе её перерисовывает render ChartTabs,
+        // но ОТКРЕПЛЁННАЯ панель живёт в своём окне — без notify оно не перерисуется и новая
+        // монета не появится (баг «детект пришёл, а графика в откреп-окне нет»).
+        cx.notify();
     }
 
     /// Закрыть панель-монету крестиком: убрать из мультичарта + отписаться от стакана
@@ -354,6 +375,25 @@ impl ChartPanel {
                 }
             });
         }
+        cx.notify();
+    }
+
+    /// Закрыть ВСЕ монеты этого чарта (кнопка «закрыть все графики» в выносном окне) +
+    /// отписаться от их стаканов.
+    pub fn close_all_panes(&mut self, cx: &mut Context<Self>) {
+        let removed = self.chart.container.clear_panes();
+        if removed.is_empty() {
+            return;
+        }
+        self.view_dirty = true;
+        self.backend.update(cx, |b, bcx| {
+            let before = b.desired.len();
+            b.desired
+                .retain(|(c, m)| !removed.iter().any(|(rc, rm)| rc == c && rm == m));
+            if b.desired.len() != before {
+                bcx.notify();
+            }
+        });
         cx.notify();
     }
 
@@ -470,19 +510,16 @@ impl Render for ChartPanel {
             .map(|b| (f32::from(b.origin.x) * ppp, f32::from(b.origin.y) * ppp))
             .unwrap_or((0.0, 0.0));
         self.chart.set_origin(ox, oy);
-        let (theme, orders_style, scale, follow) = {
+        let (theme, orders_style, follow) = {
             let b = self.backend.read(cx);
             let eff = b.preview.as_ref().unwrap_or(&b.config);
-            (
-                eff.theme.clone(),
-                eff.orders.clone(),
-                b.price_scale,
-                b.follow,
-            )
+            (eff.theme.clone(), eff.orders.clone(), b.follow)
         };
+        // Масштаб — ПО-ВКЛАДОЧНЫЙ: берём self.scale (его правят set_scale из тулбара активной
+        // вкладки / шапки выносного окна), а не глобальный backend.price_scale.
         let settings_changed = self.chart.set_theme(theme)
             | self.chart.set_orders(orders_style)
-            | self.chart.set_scale(scale)
+            | self.chart.set_scale(self.scale)
             | self.chart.set_follow(follow, now_unix_ms());
         if settings_changed {
             self.view_dirty = true;

@@ -335,13 +335,14 @@ impl ChartView {
             };
             let target_range = match (self.auto_price, visible, target_center) {
                 (true, Some((lo, hi)), Some(c)) if live => {
-                    // В live держим последнюю цену в центре и симметрично расширяем
-                    // range, чтобы ни хвосты тиков, ни price lines не обрезались.
+                    // В live держим последнюю цену в центре и симметрично расширяем range,
+                    // чтобы ни хвосты тиков, ни ордерные линии не обрезались. ×1.20 = поле
+                    // ~10% по краям (линии не впритирку к верх/низ).
                     let half = (c - lo).max(hi - c).max(c.abs() * 0.0005 + 1e-6);
-                    Some(half * 2.0 * 1.10)
+                    Some(half * 2.0 * 1.20)
                 }
                 (true, Some((lo, hi)), Some(c)) => {
-                    Some((hi - lo).abs().max(c.abs() * 0.0005 + 1e-6) * 1.10)
+                    Some((hi - lo).abs().max(c.abs() * 0.0005 + 1e-6) * 1.20)
                 }
                 (true, None, Some(c)) => Some((c.abs() * 0.001).max(1e-6)),
                 (false, _, Some(c)) => Some((c.abs() * self.scale_percent).max(1e-6)),

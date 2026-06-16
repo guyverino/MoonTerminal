@@ -168,6 +168,19 @@ impl Container {
             .any(|p| p.core == core && p.market == market)
     }
 
+    /// Закрыть ВСЕ панели (кнопка «закрыть все графики» в выносном окне). Возвращает их
+    /// (core, market) — для отписки от стаканов.
+    pub fn clear_panes(&mut self) -> Vec<(CoreId, String)> {
+        let out = self
+            .panes
+            .iter()
+            .map(|p| (p.core, p.market.clone()))
+            .collect();
+        self.panes.clear();
+        self.clamp_focus();
+        out
+    }
+
     fn clamp_focus(&mut self) {
         if let Mode::Fullscreen(i) = &mut self.mode {
             *i = (*i).min(self.panes.len().saturating_sub(1));

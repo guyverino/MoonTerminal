@@ -573,8 +573,13 @@ impl ChartEngine {
                 .store()
                 .core(pane.core)
                 .and_then(|core_st| core_st.order_lines.buy_sell_range(&pane.market));
-            let visible_price = union_range(tick_price, order_price);
             let last_price = data.and_then(|d| d.last_price);
+            // Авто-Y вмещает тики + выставленные ордера (buy/sell) + ТЕКУЩУЮ ЦЕНУ; поле по краям
+            // (чтобы линии не были впритирку) даёт update_y (см. множитель там).
+            let visible_price = union_range(
+                union_range(tick_price, order_price),
+                last_price.map(|p| (p, p)),
+            );
             pane.view.update_y(now, plot_h, visible_price, last_price);
             // own-pass рисует в backbuffer ОКНА → bounds в координатах окна (origin слота +
             // локальные). resolution тут placeholder — реальный backbuffer ставит callback.

@@ -6,14 +6,16 @@
 
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::time::Duration;
 
 use gpui::*;
 use moon_palette::{
-    MoonBackgroundPolicy, MoonRect, MoonTabItem, MoonTabStrip, Panel, PanelEvent, PanelState, Root,
-    v_flex,
+    MoonBackgroundPolicy, MoonPalette, MoonRect, MoonTabItem, MoonTabStrip, Panel, PanelEvent,
+    PanelState, Root, h_flex, v_flex,
 };
 
 use crate::Backend;
+use crate::chart_persist;
 use crate::panels::ChartPanel;
 use moon_core::config::ChartTheme;
 use moon_core::session::CoreId;
@@ -45,11 +47,21 @@ pub struct ChartTabs {
     detached: Vec<(u32, Option<CoreId>, Entity<ChartPanel>)>,
     /// Активная вкладка.
     active: Tab,
+    /// Сколько монет на вкладке (num, core) пользователь уже «видел» (был на ней активен).
+    /// Бейдж = pane_count - seen (новые с момента ухода). На активной вкладке seen догоняет
+    /// pane_count → бейджа нет. Уходишь → seen заморожен → новые детекты растят бейдж.
+    seen: HashMap<(u32, Option<CoreId>), usize>,
     /// Per-core курсор учтённых AddToChart-детектов.
     add_seq: HashMap<CoreId, u64>,
     /// Сигнатура входов, которые реально меняют tab-strip: AddToChart-детекты,
     /// split-настройка и явный запрос открыть монету на Main.
     last_sig: u64,
+    /// Последняя виденная `price_scale_rev` тулбара — применяем масштаб к АКТИВНОЙ панели
+    /// только когда rev вырос (юзер выбрал), иначе синхроним показ масштаба активной вкладки.
+    last_scale_rev: u64,
+    /// Откреп-вкладки на восстановление при загрузке (из charts.json): создаём их пустыми и
+    /// открываем окна на ПЕРВОМ render (не в конструкторе окна группы — нельзя вложенно).
+    restore_pending: Vec<(u32, Option<CoreId>, chart_persist::WinGeom, Option<f32>)>,
     focus: FocusHandle,
 }
 
@@ -74,6 +86,24 @@ impl ChartTabs {
             )
         });
         let initial_sig = chart_tabs_sig(backend.read(cx), &group);
+        // Из charts.json: масштаб Main (num=0) и список откреп-вкладок этой группы на
+        // восстановление (создадим пустыми на первом render → ждут детект).
+        let (main_scale, restore_pending): (Option<f32>, Vec<_>) = {
+            let specs = &backend.read(cx).chart_specs;
+            let main_scale = specs
+                .iter()
+                .find(|s| s.group == group && s.num == 0)
+                .and_then(|s| s.scale);
+            let pending = specs
+                .iter()
+                .filter(|s| s.group == group && s.num >= 1 && s.detached.is_some())
+                .map(|s| (s.num, s.core, s.detached.unwrap(), s.scale))
+                .collect();
+            (main_scale, pending)
+        };
+        if main_scale.is_some() {
+            main.update(cx, |p, pcx| p.set_scale(main_scale, pcx));
+        }
         cx.observe(&backend, |this, backend, cx| {
             let sig = chart_tabs_sig(backend.read(cx), &this.group);
             if sig != this.last_sig {
@@ -91,8 +121,11 @@ impl ChartTabs {
             add: Vec::new(),
             detached: Vec::new(),
             active: Tab::Main,
+            seen: HashMap::new(),
             add_seq: HashMap::new(),
             last_sig: initial_sig,
+            last_scale_rev: 0,
+            restore_pending,
             focus: cx.focus_handle(),
         }
     }
@@ -130,7 +163,7 @@ impl ChartTabs {
     /// Ингест AddToChart-детектов (add_to_chart>0) → создать/наполнить вкладку.
     /// Ключ вкладки — (номер, ядро) при `charts_split_by_core`, иначе (номер, None).
     /// БЕЗ авто-перехода: active не трогаем (порт «не уводить на чарт при детекте»).
-    fn ingest(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn ingest(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         let (split, fresh, cursors): (bool, Vec<(u32, CoreId, String, f64)>, Vec<(CoreId, u64)>) = {
             let b = self.backend.read(cx);
             let split = b.config.charts_split_by_core;
@@ -186,6 +219,10 @@ impl ChartTabs {
                     b.desired.push((core, market.clone()));
                 }
             });
+            let in_detached = self
+                .detached
+                .iter()
+                .any(|(num, c, _)| *num == n && *c == key_core);
             if let Some((_, _, tab)) = self
                 .add
                 .iter()
@@ -196,19 +233,27 @@ impl ChartTabs {
                         .find(|(num, c, _)| *num == n && *c == key_core)
                 })
             {
+                if in_detached {
+                    moon_core::detect_diag::line(&format!(
+                        "[ingest] +coin n={n} core={key_core:?} market={market} → DETACHED-окно"
+                    ));
+                }
                 tab.update(cx, |p, pcx| p.add_coin(core, &market, ttl, pcx));
             } else {
                 let panel = cx.new(|cx| {
-                    ChartPanel::new_addto(
-                        backend.clone(),
-                        n,
-                        key_core,
-                        epoch,
-                        theme.clone(),
-                        window,
-                        cx,
-                    )
+                    ChartPanel::new_addto(backend.clone(), n, key_core, epoch, theme.clone(), cx)
                 });
+                // Восстановить сохранённый масштаб этой вкладки (charts.json), если был.
+                let saved_scale = self
+                    .backend
+                    .read(cx)
+                    .chart_specs
+                    .iter()
+                    .find(|s| s.group == self.group && s.num == n && s.core == key_core)
+                    .and_then(|s| s.scale);
+                if saved_scale.is_some() {
+                    panel.update(cx, |p, pcx| p.set_scale(saved_scale, pcx));
+                }
                 panel.update(cx, |p, pcx| p.add_coin(core, &market, ttl, pcx));
                 self.add.push((n, key_core, panel));
                 // Порядок вкладок: по (номер, ядро) — как egui sort_by_key.
@@ -233,48 +278,215 @@ impl ChartTabs {
             return;
         };
         let (_, _, panel) = self.add.remove(pos);
-        // Держим панель (не теряем): при закрытии окна вернём в стрип.
-        self.detached.push((n, core, panel.clone()));
         if self.active == tab {
             self.active = Tab::Main;
         }
-        // Снять own-pass с главного окна — на своём окне он перерегистрируется сам.
+        // Геометрия: сохранённая (если уже откреплялась) или дефолт-каскад.
+        let geom = self
+            .spec_geom(cx, n, core)
+            .unwrap_or(chart_persist::WinGeom {
+                x: 200,
+                y: 160,
+                w: 900,
+                h: 620,
+            });
+        // Пометить вкладку откреплённой в charts.json (восстановится окном на след. запуске).
+        self.upsert_spec(cx, n, core, |s| s.detached = Some(geom));
+        moon_core::detect_diag::line(&format!(
+            "[detach] n={n} core={core:?} → detached=Some({},{},{},{})",
+            geom.x, geom.y, geom.w, geom.h
+        ));
+        self.open_chart_window(n, core, panel, geom, false, cx);
+        cx.notify();
+    }
+
+    /// Открыть ОС-окно откреп-вкладки (общий код detach и восстановления при загрузке). Панель
+    /// держим в `detached` (ingest наполняет её по num/core), own-pass снимаем с главного окна.
+    /// Хост (`DetachedChartHost`) сам пишет геометрию и просит репин по закрытию. Окно трекаем
+    /// по группе (закрытие окна группы закроет его — main.rs on_window_closed).
+    fn open_chart_window(
+        &mut self,
+        n: u32,
+        core: Option<CoreId>,
+        panel: Entity<ChartPanel>,
+        geom: chart_persist::WinGeom,
+        restored: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.detached.push((n, core, panel.clone()));
         panel.update(cx, |p, _| p.unregister_pass());
+        // КРИТИЧНО для мультимонитора: без display_id окно создаётся на PRIMARY, и если
+        // сохранённые bounds вне primary — gpui откатывается на default_bounds() (центр + дефолт-
+        // размер). Поэтому ищем монитор, СОДЕРЖАЩИЙ сохранённую точку, и передаём его display_id —
+        // тогда bounds валидны для него и окно встаёт точно (см. retrieve_window_placement).
+        let origin = point(px(geom.x as f32), px(geom.y as f32));
+        let display_id = cx
+            .displays()
+            .into_iter()
+            .find(|d| d.bounds().contains(&origin))
+            .map(|d| d.id());
         let opts = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(Bounds {
-                origin: point(px(200.0), px(160.0)),
-                size: size(px(900.0), px(620.0)),
+                origin,
+                size: size(px(geom.w as f32), px(geom.h as f32)),
             })),
+            display_id,
             titlebar: Some(TitlebarOptions {
                 title: Some(format!("MoonTerminal — Чарт {n}").into()),
                 ..Default::default()
             }),
             ..Default::default()
         };
-        // Хост-вид окна откреп: его release (закрытие окна) → репин панели в стрип.
-        let host = cx.new(|_| DetachedChartHost {
-            panel: panel.clone(),
+        let backend = self.backend.clone();
+        let group = self.group.clone();
+        let opened = cx.open_window(opts, move |window, cx| {
+            let host = cx.new(|cx| {
+                DetachedChartHost::new(panel, backend, group, n, core, restored, window, cx)
+            });
+            cx.new(|cx| Root::new(host, window, cx).background_policy(MoonBackgroundPolicy::NoFill))
         });
-        cx.observe_release(&host, move |this, _host, cx| {
-            if let Some(p) = this
+        if let Ok(handle) = opened {
+            let group = self.group.clone();
+            self.backend.update(cx, |b, _| {
+                b.detached_chart_windows.push((group, handle));
+            });
+        }
+    }
+
+    /// Геометрия сохранённого откреп-окна вкладки (если есть в charts.json).
+    fn spec_geom(
+        &self,
+        cx: &App,
+        num: u32,
+        core: Option<CoreId>,
+    ) -> Option<chart_persist::WinGeom> {
+        self.backend
+            .read(cx)
+            .chart_specs
+            .iter()
+            .find(|s| s.group == self.group && s.num == num && s.core == core)
+            .and_then(|s| s.detached)
+    }
+
+    /// Найти/создать спеку вкладки (group/num/core), применить мутатор, пометить dirty.
+    fn upsert_spec(
+        &self,
+        cx: &mut Context<Self>,
+        num: u32,
+        core: Option<CoreId>,
+        f: impl FnOnce(&mut chart_persist::ChartTabSpec),
+    ) {
+        let group = self.group.clone();
+        self.backend.update(cx, |b, _| {
+            if let Some(s) = b
+                .chart_specs
+                .iter_mut()
+                .find(|s| s.group == group && s.num == num && s.core == core)
+            {
+                f(s);
+            } else {
+                let mut s = chart_persist::ChartTabSpec {
+                    group,
+                    num,
+                    core,
+                    scale: None,
+                    detached: None,
+                };
+                f(&mut s);
+                b.chart_specs.push(s);
+            }
+            b.chart_specs_dirty = true;
+        });
+    }
+
+    /// Дренаж репина откреп-вкладок: хост закрыли (пользователь) → панель detached→add, спека
+    /// → НЕ откреплена. Зовётся из render. (На выходе приложения запрос не обработается → спека
+    /// остаётся откреплённой → окно восстановится на след. запуске — как у detached.rs.)
+    fn drain_chart_repin(&mut self, cx: &mut Context<Self>) {
+        // На выходе из приложения НЕ репиним: закрытие откреп-окон при quit не должно сбрасывать
+        // detached (иначе окна не восстановятся). Финальный сейв уже сделан в on_app_quit.
+        if self.backend.read(cx).quitting {
+            return;
+        }
+        let group = self.group.clone();
+        let reqs: Vec<(u32, Option<CoreId>)> = self.backend.update(cx, |b, _| {
+            let mut out = Vec::new();
+            b.chart_repin_request.retain(|(g, n, c)| {
+                if *g == group {
+                    out.push((*n, *c));
+                    false
+                } else {
+                    true
+                }
+            });
+            out
+        });
+        for (n, core) in reqs {
+            if let Some(p) = self
                 .detached
                 .iter()
                 .position(|(num, c, _)| *num == n && *c == core)
             {
-                let (num, c, pnl) = this.detached.remove(p);
-                this.add.push((num, c, pnl));
-                this.add.sort_by_key(|(num, c, _)| (*num, c.unwrap_or(0)));
-                cx.notify();
+                let (num, c, pnl) = self.detached.remove(p);
+                self.add.push((num, c, pnl));
+                self.add.sort_by_key(|(num, c, _)| (*num, c.unwrap_or(0)));
             }
-        })
-        .detach();
-        cx.open_window(opts, move |window, cx| {
-            cx.new(|cx| {
-                Root::new(host.clone(), window, cx).background_policy(MoonBackgroundPolicy::NoFill)
-            })
-        })
-        .ok();
-        cx.notify();
+            self.upsert_spec(cx, n, core, |s| s.detached = None);
+            moon_core::detect_diag::line(&format!(
+                "[repin] n={n} core={core:?} → detached=None (окно закрыли/репин)"
+            ));
+            cx.notify();
+        }
+    }
+
+    /// Сохранить масштаб каждой вкладки в charts.json (upsert при изменении). Main = num 0.
+    fn persist_scales(&self, cx: &mut Context<Self>) {
+        let mut items: Vec<(u32, Option<CoreId>, Option<f32>)> =
+            vec![(0, None, self.main.read(cx).scale())];
+        for (n, c, p) in &self.add {
+            items.push((*n, *c, p.read(cx).scale()));
+        }
+        for (n, c, p) in &self.detached {
+            items.push((*n, *c, p.read(cx).scale()));
+        }
+        for (num, core, scale) in items {
+            let (cur, exists) = {
+                let specs = &self.backend.read(cx).chart_specs;
+                let found = specs
+                    .iter()
+                    .find(|s| s.group == self.group && s.num == num && s.core == core);
+                (found.and_then(|s| s.scale), found.is_some())
+            };
+            if cur != scale && (scale.is_some() || exists) {
+                self.upsert_spec(cx, num, core, move |s| s.scale = scale);
+            }
+        }
+    }
+
+    /// Восстановить отложенные откреп-окна (charts.json). Открывать ОС-окна В render НЕЛЬЗЯ
+    /// (рушит element-арену gpui: «ArenaRef after Arena was cleared»). Откладываем через
+    /// `cx.defer` — закрытие выполнится ПОСЛЕ цикла рендера, когда открытие окон безопасно.
+    fn restore_detached(&mut self, cx: &mut Context<Self>) {
+        if self.restore_pending.is_empty() {
+            return;
+        }
+        let pending = std::mem::take(&mut self.restore_pending);
+        let this = cx.entity();
+        cx.defer(move |app| {
+            this.update(app, |this, cx| {
+                let (epoch, theme) = (this.epoch, this.theme.clone());
+                for (n, core, geom, scale) in pending {
+                    let backend = this.backend.clone();
+                    let panel = cx
+                        .new(|c| ChartPanel::new_addto(backend, n, core, epoch, theme.clone(), c));
+                    if scale.is_some() {
+                        panel.update(cx, |p, pcx| p.set_scale(scale, pcx));
+                    }
+                    this.open_chart_window(n, core, panel, geom, true, cx);
+                }
+                cx.notify();
+            });
+        });
     }
 
     /// Активная панель (Main или AddToChart) для показа.
@@ -385,32 +597,72 @@ impl Render for ChartTabs {
         self.handle_open_request(cx);
         self.ingest(window, cx);
         self.sync_inactive_passes(cx);
+        // Откреп-вкладки: вернуть закрытые в стрип (репин) + восстановить сохранённые окна
+        // (charts.json) на первом render — пустыми, ждут детект.
+        self.drain_chart_repin(cx);
+        self.restore_detached(cx);
+        // Бейджи = непрочитанные С МОМЕНТА УХОДА: на АКТИВНОЙ вкладке seen догоняет pane_count
+        // (бейджа нет — ты смотришь). Ушёл → seen заморожен → новые монеты растят бейдж только
+        // этой вкладки (а не всех открытых). Прибраться от закрытых вкладок: чистим seen.
+        if let Tab::Add(n, c) = self.active {
+            if let Some((_, _, panel)) = self.add.iter().find(|(num, cc, _)| *num == n && *cc == c) {
+                let cnt = panel.read(cx).pane_count();
+                self.seen.insert((n, c), cnt);
+            }
+        }
+        // Масштаб ПО-ВКЛАДОЧНЫЙ: тулбар окна правит масштаб АКТИВНОЙ вкладки. rev вырос (юзер
+        // выбрал) → применяем к активной панели; иначе синхроним backend.price_scale = масштаб
+        // активной панели (чтобы тулбар показывал масштаб именно её).
+        {
+            let (rev, want) = {
+                let b = self.backend.read(cx);
+                (b.price_scale_rev, b.price_scale)
+            };
+            let active = self.active_panel();
+            if rev != self.last_scale_rev {
+                self.last_scale_rev = rev;
+                active.update(cx, |p, pcx| p.set_scale(want, pcx));
+            } else {
+                let cur = active.read(cx).scale();
+                self.backend.update(cx, |b, _| {
+                    if b.price_scale != cur {
+                        b.price_scale = cur;
+                    }
+                });
+            }
+        }
+        // Сохранить масштаб каждой вкладки в charts.json (upsert при изменении).
+        self.persist_scales(cx);
 
-        // Снимок вкладок — чтобы callbacks не держали borrow self.add.
-        let mut tabs: Vec<(Tab, String, usize, bool)> =
-            vec![(Tab::Main, "Main".to_string(), 0, false)];
+        // Снимок вкладок — чтобы callbacks не держали borrow self.add. (Tab, label, count для
+        // ширины, unread для бейджа, detachable.)
+        let mut tabs: Vec<(Tab, String, usize, usize, bool)> =
+            vec![(Tab::Main, "Main".to_string(), 0, 0, false)];
         tabs.extend(self.add.iter().map(|(n, core, panel)| {
+            let count = panel.read(cx).pane_count();
+            let seen = self.seen.get(&(*n, *core)).copied().unwrap_or(0);
             (
                 Tab::Add(*n, *core),
                 self.add_label(*n, *core, cx),
-                panel.read(cx).pane_count(),
+                count,
+                count.saturating_sub(seen),
                 true,
             )
         }));
-        let tab_keys = Rc::new(tabs.iter().map(|(tab, _, _, _)| *tab).collect::<Vec<_>>());
+        let tab_keys = Rc::new(tabs.iter().map(|(tab, _, _, _, _)| *tab).collect::<Vec<_>>());
         let items = tabs
             .iter()
-            .map(|(tab, label, count, detachable)| {
+            .map(|(tab, label, _count, unread, detachable)| {
                 let width = (label.chars().count() as f32 * 7.0
-                    + if *count > 1 { 38.0 } else { 28.0 }
+                    + if *unread > 0 { 38.0 } else { 28.0 }
                     + if *detachable { 20.0 } else { 0.0 })
                 .clamp(72.0, 168.0);
                 let mut item = MoonTabItem::new(label.clone())
                     .width(width)
                     .selected(self.active == *tab)
                     .closable(*detachable);
-                if *count > 1 {
-                    item = item.badge(count.to_string());
+                if *unread > 0 {
+                    item = item.badge(unread.to_string());
                 }
                 item
             })
@@ -481,14 +733,156 @@ impl Render for ChartTabs {
     }
 }
 
-/// Хост-вид окна откреплённой чарт-вкладки: рендерит панель; его release (закрытие
-/// окна) ChartTabs ловит через `observe_release` → возвращает панель в стрип.
+/// Хост-вид окна откреплённой чарт-вкладки: шапка (масштаб + «закрыть все графики») + панель.
+/// Сам пишет геометрию окна в charts.json (`observe_window_bounds`) и просит репин по закрытию
+/// (`on_release` → `chart_repin_request`, дренит ChartTabs).
 struct DetachedChartHost {
     panel: Entity<ChartPanel>,
+    backend: Entity<Backend>,
+    group: String,
+    num: u32,
+    core: Option<CoreId>,
+    /// Можно ли сохранять геометрию из `observe_window_bounds`. У ВОССТАНОВЛЕННОГО окна сперва
+    /// false: авто-размещение gpui на не-primary DPI читается со сдвигом ×scale, и пересохранять
+    /// его НЕЛЬЗЯ (иначе позиция уезжает с каждым запуском). Армируется через ~1.5с — дальше
+    /// пишем только реальные перемещения пользователя. У свежего детача — сразу true.
+    persist_armed: bool,
+}
+
+impl DetachedChartHost {
+    fn new(
+        panel: Entity<ChartPanel>,
+        backend: Entity<Backend>,
+        group: String,
+        num: u32,
+        core: Option<CoreId>,
+        restored: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        // Геометрия окна (causal bounds event) → charts.json («то же место» при загрузке).
+        cx.observe_window_bounds(window, |this, window, cx| {
+            this.persist_geometry(window, cx);
+        })
+        .detach();
+        // Восстановленное окно: НЕ сохранять авто-геометрию размещения (см. persist_armed) —
+        // армируем через 1.5с, к этому моменту gpui устаканил окно.
+        if restored {
+            cx.spawn(async move |this, cx| {
+                let executor = cx.update(|cx| cx.background_executor().clone());
+                executor.timer(Duration::from_millis(1500)).await;
+                let _ = cx.update(|cx| this.update(cx, |this, _| this.persist_armed = true));
+            })
+            .detach();
+        }
+        // Закрытие окна → репин в стрип (дренит ChartTabs). На выходе приложения запрос не
+        // обработается → спека остаётся откреплённой → окно восстановится на след. запуске.
+        let (g, n, c) = (group.clone(), num, core);
+        cx.on_release(move |this, app| {
+            this.backend.update(app, |b, _| {
+                b.chart_repin_request.push((g.clone(), n, c));
+            });
+        })
+        .detach();
+        Self {
+            panel,
+            backend,
+            group,
+            num,
+            core,
+            persist_armed: !restored,
+        }
+    }
+
+    fn persist_geometry(&mut self, window: &Window, cx: &mut Context<Self>) {
+        // У восстановленного окна сохранение пока заглушено (см. persist_armed): не даём авто-
+        // размещению gpui (со сдвигом ×scale на не-primary DPI) перезаписать сохранённую позицию.
+        if !self.persist_armed {
+            return;
+        }
+        let wb = window.window_bounds();
+        let WindowBounds::Windowed(b) = wb else {
+            moon_core::detect_diag::line(&format!(
+                "[geom] n={} НЕ Windowed ({:?}) → геометрия не сохранена",
+                self.num,
+                std::mem::discriminant(&wb)
+            ));
+            return;
+        };
+        let geom = chart_persist::WinGeom {
+            x: f32::from(b.origin.x) as i32,
+            y: f32::from(b.origin.y) as i32,
+            w: f32::from(b.size.width) as u32,
+            h: f32::from(b.size.height) as u32,
+        };
+        let (group, num, core) = (self.group.clone(), self.num, self.core);
+        let found = self.backend.update(cx, |bk, _| {
+            if let Some(s) = bk
+                .chart_specs
+                .iter_mut()
+                .find(|s| s.group == group && s.num == num && s.core == core)
+            {
+                let cur = s.detached.map(|g| (g.x, g.y, g.w, g.h));
+                if cur != Some((geom.x, geom.y, geom.w, geom.h)) {
+                    s.detached = Some(geom);
+                    bk.chart_specs_dirty = true;
+                }
+                true
+            } else {
+                false
+            }
+        });
+        moon_core::detect_diag::line(&format!(
+            "[geom] n={num} core={core:?} → x={} y={} w={} h={} (spec_found={found})",
+            geom.x, geom.y, geom.w, geom.h
+        ));
+    }
 }
 
 impl Render for DetachedChartHost {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div().size_full().child(self.panel.clone())
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let p = MoonPalette::active(cx);
+        // Масштаб — СВОЙ у этой панели (по-вкладочно), правится прямо в неё.
+        let scale = self.panel.read(cx).scale();
+        let panel = self.panel.clone();
+        // Шапка — ТОЛЬКО у выносных окон вкладок (в основном доке её нет): масштаб слева,
+        // «закрыть все графики» справа.
+        v_flex()
+            .size_full()
+            .child(
+                h_flex()
+                    .h(px(34.0))
+                    .w_full()
+                    .items_center()
+                    .gap(px(8.0))
+                    .px(px(8.0))
+                    .bg(rgba(0x121416E6))
+                    .child(crate::controls::scale_dropdown_for_panel(
+                        scale,
+                        self.panel.clone(),
+                        p,
+                    ))
+                    .child(div().flex_1())
+                    .child(
+                        div()
+                            .id("detached-close-all")
+                            .px(px(8.0))
+                            .h(px(22.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(3.0))
+                            .text_size(px(11.0))
+                            .text_color(rgba(0xC8CCD0FF))
+                            .bg(rgba(0x00000059))
+                            .cursor_pointer()
+                            .hover(|s| s.bg(rgba(0xE04848CC)).text_color(rgb(0xFFFFFF)))
+                            .child("Закрыть все графики")
+                            .on_mouse_down(MouseButton::Left, move |_e, _w, app| {
+                                panel.update(app, |p, cx| p.close_all_panes(cx));
+                            }),
+                    ),
+            )
+            .child(div().flex_1().w_full().child(self.panel.clone()))
     }
 }

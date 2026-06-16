@@ -15,6 +15,7 @@
 //! Чарт/dock/таблицы/настройки — следующие этапы.
 
 mod axes;
+mod chart_persist;
 mod chart_tabs;
 mod chartdx;
 mod controls;
@@ -119,9 +120,13 @@ struct Backend {
     /// DockEvent::LayoutChanged (дебаунс тем же таймером). Пишется в docks.json.
     dock_states: HashMap<String, DockAreaState>,
     dock_dirty: bool,
-    /// Масштаб цены (Y) тулбара: None = «Авто». Правит `ScalePanel`, применяет
-    /// `ChartPanel` ко всем графикам. Порт egui `OrderControls`/тулбара.
+    /// Масштаб цены (Y) АКТИВНОГО чарта окна: None = «Авто». Теперь МАСШТАБ ПО-ВКЛАДОЧНЫЙ —
+    /// это поле = «масштаб активной вкладки» (ChartTabs синхронит для показа в тулбаре; тулбар
+    /// при выборе бампает `price_scale_rev` → ChartTabs применяет к активной панели).
     price_scale: Option<f32>,
+    /// Ревизия запроса масштаба из тулбара: ++ при выборе в дропдауне. ChartTabs применяет
+    /// `price_scale` к АКТИВНОЙ панели, когда rev вырос (а не каждый кадр).
+    price_scale_rev: u64,
     /// Live-follow тулбара: true = вид бежит за «сейчас», false = пауза (заморозка).
     follow: bool,
     /// Запросы реконнекта ядра (кнопка ↻ в «Подключениях») — дренаж зовёт
@@ -143,6 +148,20 @@ struct Backend {
     /// Запросы «вернуть панель в док» (закрыли окно открепления) — (группа, panel_name).
     /// Дренит `Shell` своей группы: добавляет панель в свой `DockArea` + убирает спеку.
     repin_request: Vec<(String, String)>,
+    /// Запросы «вернуть чарт-вкладку в стрип» (закрыли окно откреп-вкладки) —
+    /// (группа, номер, ядро). Дренит `ChartTabs` своей группы: панель detached→add.
+    chart_repin_request: Vec<(String, u32, Option<CoreId>)>,
+    /// Откреплённые в ОС-окна чарт-вкладки, по группе (группа → handle окна). Закрытие
+    /// окна группы закрывает принадлежащие ей откреп-чарты; при закрытии самого откреп-окна
+    /// чистится по window_id. (Отдельно от `detached` — то про dock-панели, это про чарты.)
+    detached_chart_windows: Vec<(String, WindowHandle<Root>)>,
+    /// Персист чарт-вкладок (масштаб по вкладке + геометрия откреп-окон) — charts.json.
+    /// Дебаунс-сейв делает дренаж по `chart_specs_dirty`. См. `chart_persist`.
+    chart_specs: Vec<chart_persist::ChartTabSpec>,
+    chart_specs_dirty: bool,
+    /// Приложение завершается (on_app_quit). На выходе закрытие откреп-окон НЕ должно репинить
+    /// их (иначе detached сбросится в None и не восстановится) — дренаж репина это проверяет.
+    quitting: bool,
 }
 
 /// Оболочка одной группы (= одно ОС-окно): header + единый `DockArea` + статус.
@@ -863,6 +882,7 @@ fn main() -> anyhow::Result<()> {
             dock_states,
             dock_dirty: false,
             price_scale: None,
+            price_scale_rev: 0,
             follow: true,
             reconnect_request: Vec::new(),
             show_group_request: Vec::new(),
@@ -872,6 +892,11 @@ fn main() -> anyhow::Result<()> {
             detached,
             detached_dirty: false,
             repin_request: Vec::new(),
+            chart_repin_request: Vec::new(),
+            detached_chart_windows: Vec::new(),
+            chart_specs: chart_persist::load_all(),
+            chart_specs_dirty: false,
+            quitting: false,
         });
 
         // Фабрики панелей для восстановления раскладки доков (PanelRegistry — глобален).
@@ -882,19 +907,57 @@ fn main() -> anyhow::Result<()> {
         // чарт-окна). Детач-чарт окна сами quit не вызывают (их id нет в group_windows).
         let quit_backend = backend.clone();
         cx.on_window_closed(move |app, closed_id| {
-            let quit = quit_backend.update(app, |b, _| {
-                let was_group = b
+            // Возвращаем (откреп-окна_на_закрытие, надо_ли_выйти).
+            let (to_close, quit) = quit_backend.update(app, |b, _| {
+                // Это окно группы? (его group, если да)
+                let group = b
                     .group_windows
-                    .values()
-                    .any(|h| h.window_id() == closed_id);
-                if was_group {
-                    b.group_windows.retain(|_, h| h.window_id() != closed_id);
+                    .iter()
+                    .find(|(_, h)| h.window_id() == closed_id)
+                    .map(|(g, _)| g.clone());
+                if let Some(group) = group {
+                    b.group_windows.remove(&group);
+                    if b.group_windows.is_empty() {
+                        // Последнее окно группы → полный выход (quit закроет всё, вкл. откреп).
+                        return (Vec::new(), true);
+                    }
+                    // Иначе закрыть откреп-чарты ИМЕННО этой группы.
+                    let close: Vec<WindowHandle<Root>> = b
+                        .detached_chart_windows
+                        .iter()
+                        .filter(|(g, _)| *g == group)
+                        .map(|(_, h)| *h)
+                        .collect();
+                    b.detached_chart_windows.retain(|(g, _)| *g != group);
+                    (close, false)
+                } else {
+                    // Закрыли откреп-чарт-окно (или иное) — вычистить из трекинга.
+                    b.detached_chart_windows
+                        .retain(|(_, h)| h.window_id() != closed_id);
+                    (Vec::new(), false)
                 }
-                was_group && b.group_windows.is_empty()
             });
+            for h in to_close {
+                h.update(app, |_, window, _| window.remove_window()).ok();
+            }
             if quit {
                 app.quit();
             }
+        })
+        .detach();
+
+        // На выходе из приложения: пометить quitting и СРАЗУ сохранить charts.json. На старте
+        // quit окна ещё не снесены → detached=Some; без этого закрытие откреп-окон при выходе
+        // репинит их (detached→None) и они не восстанавливаются. quitting также глушит дренаж
+        // репина (drain_chart_repin), чтобы он не сбросил detached.
+        let app_quit_backend = backend.clone();
+        cx.on_app_quit(move |cx| {
+            moon_core::detect_diag::line("[quit] on_app_quit → сохраняю charts.json");
+            app_quit_backend.update(cx, |b, _| {
+                b.quitting = true;
+                chart_persist::save_all(&b.chart_specs);
+            });
+            async move {}
         })
         .detach();
 
@@ -918,7 +981,7 @@ fn main() -> anyhow::Result<()> {
                 executor.timer(Duration::from_millis(16)).await;
                 tick = tick.wrapping_add(1);
                 let coord = tick % 6 == 0;
-                // UI-пульс ≤4 Гц (256мс) И ТОЛЬКО когда данные реально менялись (causal). backend-
+                // UI-пульс ≤6 Гц (160мс) И ТОЛЬКО когда данные реально менялись (causal). backend-
                 // notify будит ВСЕХ обзёрверов, а GPUI-рендер идёт top-down → один notify
                 // перерисовывает ВСЮ сцену (Shell+тяжёлый Orders+все панели), сколько бы гейтов на
                 // отдельных вьюхах ни стояло. Поэтому: редкий пульс у ИСТОЧНИКА (синхронизирует все
@@ -926,7 +989,7 @@ fn main() -> anyhow::Result<()> {
                 // Гладкость чарта — от 60-Гц prepare-задачи + own-pass (vsync), НЕ от этого notify.
                 // (Полная развязка = view-caching панелей в moon-palette — отдельная задача; до неё
                 // 4-Гц пульс это пожарный кап top-down сцепки, см. ЕБАНИНА Пример 5 / RENDER_INVALIDATION §7.)
-                let notify_due = tick % 16 == 0;
+                let notify_due = tick % 10 == 0;
                 // gpui (свежий): AsyncApp::update инфэллибл; при закрытии приложения
                 // спавн-задача отменяется самим gpui (future дропается на await ниже).
                 cx.update(|cx| {
@@ -965,6 +1028,11 @@ fn main() -> anyhow::Result<()> {
                             if b.detached_dirty {
                                 detached::save_all(&b.detached);
                                 b.detached_dirty = false;
+                            }
+                            // Дебаунс-сохранение чарт-вкладок (charts.json: масштаб + откреп-геометрия).
+                            if b.chart_specs_dirty {
+                                chart_persist::save_all(&b.chart_specs);
+                                b.chart_specs_dirty = false;
                             }
                             reqs = std::mem::take(&mut b.show_group_request);
                         }

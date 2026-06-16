@@ -47,6 +47,12 @@ pub fn detached_path() -> PathBuf {
     exe_dir().join("detached.json")
 }
 
+/// Состояние чарт-вкладок (масштаб по вкладке + геометрия откреп-окон вкладок) — JSON рядом
+/// с exe. На старте откреп-вкладки восстанавливаются пустыми (только лого), ждут детект.
+pub fn charts_path() -> PathBuf {
+    exe_dir().join("charts.json")
+}
+
 /// SQLite-БД с отчётами по закрытым ордерам (`ClosedSellOrderReport`).
 pub fn reports_db_path() -> PathBuf {
     exe_dir().join("reports.sqlite")

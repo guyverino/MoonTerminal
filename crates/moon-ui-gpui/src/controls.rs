@@ -106,7 +106,11 @@ fn scale_label(scale: Option<f32>) -> &'static str {
         .unwrap_or("Авто")
 }
 
-fn scale_dropdown(scale: Option<f32>, backend: Entity<Backend>, p: MoonPalette) -> impl IntoElement {
+pub(crate) fn scale_dropdown(
+    scale: Option<f32>,
+    backend: Entity<Backend>,
+    p: MoonPalette,
+) -> impl IntoElement {
     let selected_label = scale_label(scale);
     let mut items = Vec::with_capacity(SCALES.len());
     for (label, pct) in SCALES {
@@ -117,16 +121,57 @@ fn scale_dropdown(scale: Option<f32>, backend: Entity<Backend>, p: MoonPalette) 
                 .checked(scale == pct)
                 .on_click(move |_, _, cx| {
                     backend.update(cx, |b, bcx| {
-                        if b.price_scale != pct {
-                            b.price_scale = pct;
-                            bcx.notify();
-                        }
+                        // Масштаб ПО-ВКЛАДОЧНЫЙ: тулбар лишь запрашивает (++rev) — ChartTabs
+                        // применит к АКТИВНОЙ панели. price_scale тут = желаемое значение.
+                        b.price_scale = pct;
+                        b.price_scale_rev = b.price_scale_rev.wrapping_add(1);
+                        bcx.notify();
                     });
                 }),
         );
     }
 
     MoonDropdown::new("toolbar-scale-dropdown")
+        .trigger_width(112.0)
+        .trigger_variant(MoonButtonVariant::Neutral)
+        .trigger_size(MoonButtonSize::Toolbar)
+        .menu_width(116.0)
+        .menu_size(MoonMenuSize::Compact)
+        .segment(
+            MoonButtonSegment::new("МАСШТАБ")
+                .color(p.text_muted)
+                .weight(400.0),
+        )
+        .segment(
+            MoonButtonSegment::new(selected_label)
+                .color(p.text)
+                .weight(500.0),
+        )
+        .items(items)
+}
+
+/// Дропдаун масштаба, привязанный к КОНКРЕТНОЙ панели чарта (шапка выносного окна): пишет
+/// масштаб прямо в эту панель (`set_scale`), а не в глобальный backend.
+pub(crate) fn scale_dropdown_for_panel(
+    scale: Option<f32>,
+    panel: Entity<crate::panels::ChartPanel>,
+    p: MoonPalette,
+) -> impl IntoElement {
+    let selected_label = scale_label(scale);
+    let mut items = Vec::with_capacity(SCALES.len());
+    for (label, pct) in SCALES {
+        let panel = panel.clone();
+        items.push(
+            MoonMenuItem::with_key(format!("scale-panel-{label}"), label)
+                .selected(scale == pct)
+                .checked(scale == pct)
+                .on_click(move |_, _, cx| {
+                    panel.update(cx, |pl, pcx| pl.set_scale(pct, pcx));
+                }),
+        );
+    }
+
+    MoonDropdown::new("detached-scale-dropdown")
         .trigger_width(112.0)
         .trigger_variant(MoonButtonVariant::Neutral)
         .trigger_size(MoonButtonSize::Toolbar)
