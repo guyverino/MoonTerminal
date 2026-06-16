@@ -6,7 +6,6 @@
 
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::time::Duration;
 
 use gpui::*;
 use moon_palette::{
@@ -765,16 +764,11 @@ impl DetachedChartHost {
             this.persist_geometry(window, cx);
         })
         .detach();
-        // Восстановленное окно: НЕ сохранять авто-геометрию размещения (см. persist_armed) —
-        // армируем через 1.5с, к этому моменту gpui устаканил окно.
-        if restored {
-            cx.spawn(async move |this, cx| {
-                let executor = cx.update(|cx| cx.background_executor().clone());
-                executor.timer(Duration::from_millis(1500)).await;
-                let _ = cx.update(|cx| this.update(cx, |this, _| this.persist_armed = true));
-            })
-            .detach();
-        }
+        // Восстановленное окно: НИКОГДА не пересохраняем геометрию автоматически. gpui на
+        // не-primary DPI читает позицию со сдвигом ×scale (баг размещения, см. заметку для
+        // gpui/ZedFork), и если её сохранить — на след. запуске окно уезжает ещё → улетает за
+        // экран → дефолт (компаундинг). Поэтому сохранённую позицию НЕ трогаем: рестор кладёт
+        // окно на исходное место и держит стабильно. (Свежий детач — persist_armed=true.)
         // Закрытие окна → репин в стрип (дренит ChartTabs). На выходе приложения запрос не
         // обработается → спека остаётся откреплённой → окно восстановится на след. запуске.
         let (g, n, c) = (group.clone(), num, core);
