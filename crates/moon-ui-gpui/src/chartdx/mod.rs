@@ -123,6 +123,9 @@ struct PaneRender {
     cached_tick_price: Option<(f32, f32)>,
     /// Видима в этом кадре (рисуем) — ставится в `prepare`.
     active: bool,
+    /// CPU/base inputs changed and D3D prepare must upload/bake resident resources before draw.
+    /// Cursor-only presents leave this false.
+    gpu_prepare_dirty: bool,
 }
 
 impl PaneRender {
@@ -151,6 +154,7 @@ impl PaneRender {
             scan_cam_px: i64::MIN,
             cached_tick_price: None,
             active: false,
+            gpu_prepare_dirty: true,
         }
     }
 
@@ -176,6 +180,7 @@ impl PaneRender {
         let right_rel = target_px as f32 * inv_ppm;
         self.view.view_time0 = right_rel + window_ms * self.right_margin_frac - window_ms;
         self.view.pad = self.view.view_time0 + (area_w + glass_w) * inv_ppm;
+        self.gpu_prepare_dirty = true;
         true
     }
 }
@@ -187,6 +192,7 @@ struct RenderState {
     /// CPU-side dirty flag для `GpuCanvasDriver::frame`: `prepare()` обновил resident state,
     /// значит следующий platform tick должен презентить кадр даже без GPUI dirty.
     needs_present: bool,
+    last_gpu_prepare_generation: u64,
     /// Левый верхний угол chart slot в backbuffer. Cursor приходит из UI в локальных
     /// device-px слота, а own-pass рисует в координатах окна.
     slot_origin: [f32; 2],
@@ -355,6 +361,14 @@ impl RenderState {
             return Ok(());
         }
 
+        let generation = gpu.device_generation();
+        if self.last_gpu_prepare_generation != generation {
+            self.last_gpu_prepare_generation = generation;
+            for pr in &mut self.panes {
+                pr.gpu_prepare_dirty = true;
+            }
+        }
+
         match gpu.backend() {
             #[cfg(windows)]
             GpuBackend::D3d11 => {
@@ -363,21 +377,23 @@ impl RenderState {
                 };
                 let res = [width as f32, height as f32];
                 for pr in &mut self.panes {
-                    if pr.active {
-                        pr.view.resolution = res;
-                        pr.grid_params.resolution = res;
-                        pr.cursor_params.resolution = res;
-                        pr.orderbook_view.resolution = res;
-                        crate::diag::bump(&crate::diag::CHART_GPU_PREPARE);
-                        pr.layers.prepare_d3d(
-                            &pr.view,
-                            &pr.orderbook_view,
-                            &pr.book_style,
-                            &device,
-                            &context,
-                            gpu,
-                        );
+                    if !pr.active || !pr.gpu_prepare_dirty {
+                        continue;
                     }
+                    let mut view = pr.view;
+                    let mut orderbook_view = pr.orderbook_view;
+                    view.resolution = res;
+                    orderbook_view.resolution = res;
+                    crate::diag::bump(&crate::diag::CHART_GPU_PREPARE);
+                    pr.layers.prepare_d3d(
+                        &view,
+                        &orderbook_view,
+                        &pr.book_style,
+                        &device,
+                        &context,
+                        gpu,
+                    );
+                    pr.gpu_prepare_dirty = false;
                 }
                 Ok(())
             }
@@ -438,15 +454,21 @@ impl RenderState {
                 let prev_rs = unsafe { context.RSGetState().ok() };
                 for pr in &mut self.panes {
                     if pr.active {
-                        pr.view.resolution = res;
-                        pr.grid_params.resolution = res;
-                        pr.cursor_params.resolution = res;
-                        pr.orderbook_view.resolution = res;
+                        let mut view = pr.view;
+                        let mut background_params = pr.background_params;
+                        let mut grid_params = pr.grid_params;
+                        let mut cursor_params = pr.cursor_params;
+                        let mut orderbook_view = pr.orderbook_view;
+                        view.resolution = res;
+                        background_params.resolution = res;
+                        grid_params.resolution = res;
+                        cursor_params.resolution = res;
+                        orderbook_view.resolution = res;
                         let panel_clip = [
-                            pr.view.bounds[0],
-                            pr.view.bounds[1],
-                            pr.orderbook_view.bounds[0] + pr.orderbook_view.bounds[2],
-                            pr.view.bounds[1] + pr.view.bounds[3],
+                            view.bounds[0],
+                            view.bounds[1],
+                            orderbook_view.bounds[0] + orderbook_view.bounds[2],
+                            view.bounds[1] + view.bounds[3],
                         ];
                         gpu::set_scissor(
                             &context,
@@ -457,11 +479,11 @@ impl RenderState {
                             panel_clip[3],
                         );
                         pr.layers.render_d3d(
-                            &pr.view,
-                            &pr.background_params,
-                            &pr.grid_params,
-                            &pr.cursor_params,
-                            &pr.orderbook_view,
+                            &view,
+                            &background_params,
+                            &grid_params,
+                            &cursor_params,
+                            &orderbook_view,
                             &pr.book_style,
                             &device,
                             &context,
@@ -481,16 +503,22 @@ impl RenderState {
                 let res = [width as f32, height as f32];
                 for pr in &mut self.panes {
                     if pr.active {
-                        pr.view.resolution = res;
-                        pr.grid_params.resolution = res;
-                        pr.cursor_params.resolution = res;
-                        pr.orderbook_view.resolution = res;
+                        let mut view = pr.view;
+                        let mut background_params = pr.background_params;
+                        let mut grid_params = pr.grid_params;
+                        let mut cursor_params = pr.cursor_params;
+                        let mut orderbook_view = pr.orderbook_view;
+                        view.resolution = res;
+                        background_params.resolution = res;
+                        grid_params.resolution = res;
+                        cursor_params.resolution = res;
+                        orderbook_view.resolution = res;
                         pr.layers.render_wgpu(
-                            &pr.view,
-                            &pr.background_params,
-                            &pr.grid_params,
-                            &pr.cursor_params,
-                            &pr.orderbook_view,
+                            &view,
+                            &background_params,
+                            &grid_params,
+                            &cursor_params,
+                            &orderbook_view,
                             &pr.book_style,
                             gpu,
                         )?;
@@ -503,16 +531,22 @@ impl RenderState {
                 let res = [width as f32, height as f32];
                 for pr in &mut self.panes {
                     if pr.active {
-                        pr.view.resolution = res;
-                        pr.grid_params.resolution = res;
-                        pr.cursor_params.resolution = res;
-                        pr.orderbook_view.resolution = res;
+                        let mut view = pr.view;
+                        let mut background_params = pr.background_params;
+                        let mut grid_params = pr.grid_params;
+                        let mut cursor_params = pr.cursor_params;
+                        let mut orderbook_view = pr.orderbook_view;
+                        view.resolution = res;
+                        background_params.resolution = res;
+                        grid_params.resolution = res;
+                        cursor_params.resolution = res;
+                        orderbook_view.resolution = res;
                         pr.layers.render_metal(
-                            &pr.view,
-                            &pr.background_params,
-                            &pr.grid_params,
-                            &pr.cursor_params,
-                            &pr.orderbook_view,
+                            &view,
+                            &background_params,
+                            &grid_params,
+                            &cursor_params,
+                            &orderbook_view,
                             &pr.book_style,
                             gpu,
                         )?;
@@ -552,6 +586,7 @@ impl ChartEngine {
         let state = Rc::new(RefCell::new(RenderState {
             panes: Vec::new(),
             needs_present: true,
+            last_gpu_prepare_generation: 0,
             slot_origin: [0.0, 0.0],
             cursor: None,
             cursor_color: {
@@ -636,11 +671,24 @@ impl ChartEngine {
         let now = now_unix_ms();
         let res = [self.w as f32, self.h as f32];
         let mut st = self.state.borrow_mut();
+        let mut pixels_changed = false;
         #[cfg(windows)]
         {
-            st.window_bg_color = rgb4(self.theme.bg);
+            let next_bg_color = rgb4(self.theme.bg);
+            if st.window_bg_color != next_bg_color {
+                st.window_bg_color = next_bg_color;
+                pixels_changed = true;
+            }
             // Слот чарта в окне (девайс-px): origin слота + его размер — в него вписываем лого.
-            st.window_bg_dst = [self.origin.0, self.origin.1, self.w as f32, self.h as f32];
+            let next_bg_dst = [self.origin.0, self.origin.1, self.w as f32, self.h as f32];
+            if st.window_bg_dst != next_bg_dst {
+                st.window_bg_dst = next_bg_dst;
+                pixels_changed = true;
+            }
+        }
+        let was_active: Vec<bool> = st.panes.iter().map(|pane| pane.active).collect();
+        if st.panes.len() != self.container.panes.len() {
+            pixels_changed = true;
         }
         st.panes
             .resize_with(self.container.panes.len(), PaneRender::new);
@@ -650,11 +698,16 @@ impl ChartEngine {
         for (idx, rect) in &layout {
             let pane = &mut self.container.panes[*idx];
             let pr = &mut st.panes[*idx];
+            if !was_active.get(*idx).copied().unwrap_or(false) {
+                pixels_changed = true;
+                pr.gpu_prepare_dirty = true;
+            }
             // sync идентичности: панель на этом индексе сменила монету → сбросить GPU-состояние.
             if pr.core != Some(pane.core) || pr.market != pane.market {
                 *pr = PaneRender::new();
                 pr.core = Some(pane.core);
                 pr.market = pane.market.clone();
+                pixels_changed = true;
             }
             // device-lost: combo инкрементит device_gen при пересоздании device (в своём
             // render). Стакан/userdata тоже зануляют буферы при смене device, но их
@@ -666,6 +719,8 @@ impl ChartEngine {
             if device_lost {
                 pr.last_book_rev = u64::MAX;
                 pr.last_orders_rev = u64::MAX;
+                pr.gpu_prepare_dirty = true;
+                pixels_changed = true;
             }
             // Жёлоба шкал (физ. px): слева цена, снизу время. Подписи рисует GPUI (axes::draw);
             // own-pass рисует ВНУТРИ chart_area. Зона стакана справа добавится с OrderBook-слоем.
@@ -738,7 +793,12 @@ impl ChartEngine {
                 w: chart_area.w,
                 h: chart_area.h,
             };
-            pr.view = view::view_gpu(&pane.view, area_win, res);
+            let next_view = view::view_gpu(&pane.view, area_win, res);
+            if pr.view != next_view {
+                pr.view = next_view;
+                pr.gpu_prepare_dirty = true;
+                pixels_changed = true;
+            }
             // Камера X для `gpu_canvas.frame()` (он двигает живой край на vblank, целопиксельно).
             // Синхронизируем пиксель-позицию с тем, что prepare только что поставил (follow_edge
             // уже квантован) — callback продолжит ровно отсюда, без скачка назад/вперёд.
@@ -754,7 +814,7 @@ impl ChartEngine {
             } else {
                 0.0
             };
-            pr.background_params = BackgroundParams {
+            let next_background_params = BackgroundParams {
                 dst: pr.view.bounds,
                 resolution: res,
                 uv_off: bg_uv_off,
@@ -763,9 +823,13 @@ impl ChartEngine {
                 _pad: 0.0,
                 bg: rgb4(self.theme.bg),
             };
+            if pr.background_params != next_background_params {
+                pr.background_params = next_background_params;
+                pixels_changed = true;
+            }
             // Сетка: СТАТИЧНЫЕ вертикали (6 делений, как подписи времени) + горизонтали по цене
             // (шаг = nice_interval, совпадает с подписями цены). resolution ставит callback.
-            pr.grid_params = GridParams {
+            let next_grid_params = GridParams {
                 bounds: pr.view.bounds,
                 resolution: res,
                 n_vert: 6.0,
@@ -780,6 +844,10 @@ impl ChartEngine {
                 bg: rgb4(self.theme.bg),
                 grid_col: rgb4(self.theme.grid),
             };
+            if pr.grid_params != next_grid_params {
+                pr.grid_params = next_grid_params;
+                pixels_changed = true;
+            }
             // Стакан: своя зона справа. Та же ценовая шкала (price_to_px/view_price0), но
             // viewport = glass_area. Уровни нормируются по видимому ценовому окну render_center±range/2.
             let glass_win = Rect {
@@ -788,12 +856,22 @@ impl ChartEngine {
                 w: glass_area.w,
                 h: glass_area.h,
             };
-            pr.orderbook_view = view::view_gpu(&pane.view, glass_win, res);
-            pr.book_style = BookStyle {
+            let next_orderbook_view = view::view_gpu(&pane.view, glass_win, res);
+            if pr.orderbook_view != next_orderbook_view {
+                pr.orderbook_view = next_orderbook_view;
+                pr.gpu_prepare_dirty = true;
+                pixels_changed = true;
+            }
+            let next_book_style = BookStyle {
                 book_bg: rgb4(self.theme.book_bg),
                 bid: rgb4(self.theme.book_bid),
                 ask: rgb4(self.theme.book_ask),
             };
+            if pr.book_style != next_book_style {
+                pr.book_style = next_book_style;
+                pr.gpu_prepare_dirty = true;
+                pixels_changed = true;
+            }
             if let Some(d) = data {
                 let half = pane.view.render_range.max(1e-9) * 0.5;
                 let (lo, hi) = (
@@ -808,18 +886,25 @@ impl ChartEngine {
                     pr.last_book_rev = d.book_rev;
                     pr.last_book_lo = lo;
                     pr.last_book_hi = hi;
+                    pr.gpu_prepare_dirty = true;
+                    pixels_changed = true;
                 }
             } else if pr.last_book_rev != u64::MAX {
                 pr.layers.set_orderbook(Vec::new());
                 pr.last_book_rev = u64::MAX;
                 pr.last_book_lo = f32::NAN;
                 pr.last_book_hi = f32::NAN;
+                pr.gpu_prepare_dirty = true;
+                pixels_changed = true;
             }
             // Ордера юзера (UserData): геометрия лестниц/линий/маркеров из ретейн-стора ядра.
             // Активные линии тянутся до правого края plot (через стакан) → edge_rel. Координаты
             // логические (time_rel/price), трансформ в шейдере — тот же chart_area (pr.view).
             let edge_rel = view_time0 + (chart_area.w + glass_w) / pane.view.px_per_ms.max(1e-6);
-            pr.view.pad = edge_rel;
+            if pr.view.pad != edge_rel {
+                pr.view.pad = edge_rel;
+                pixels_changed = true;
+            }
             if let Some(core_st) = session.store().core(pane.core) {
                 if pr.last_orders_rev != core_st.orders_rev {
                     let mut hlines = Vec::new();
@@ -842,10 +927,14 @@ impl ChartEngine {
                     );
                     pr.layers.set_userdata(&zones, &hlines, &segs, &markers);
                     pr.last_orders_rev = core_st.orders_rev;
+                    pr.gpu_prepare_dirty = true;
+                    pixels_changed = true;
                 }
             } else if pr.last_orders_rev != u64::MAX {
                 pr.layers.set_userdata(&[], &[], &[], &[]);
                 pr.last_orders_rev = u64::MAX;
+                pr.gpu_prepare_dirty = true;
+                pixels_changed = true;
             }
             // Trades в combo: combo адресует тики АБСОЛЮТНЫМ индексом (total_pushed), а не
             // позицией в кольце. Поэтому сдвиг головы (drop старых тиков при переполнении)
@@ -858,6 +947,8 @@ impl ChartEngine {
                     pr.layers
                         .set_price_lines(d.last_line.points(), d.mark_line.points());
                     pr.last_price_lines_rev = d.price_lines_rev;
+                    pr.gpu_prepare_dirty = true;
+                    pixels_changed = true;
                 }
                 let total = d.ring.total_pushed();
                 let avail_from = d.ring.dropped();
@@ -867,20 +958,41 @@ impl ChartEngine {
                         .set_price_lines(d.last_line.points(), d.mark_line.points());
                     pr.last_price_lines_rev = d.price_lines_rev;
                     pr.last_total = total;
+                    pr.gpu_prepare_dirty = true;
+                    pixels_changed = true;
                 } else if total > pr.last_total {
                     pr.layers
                         .append_combo(&view::collect_since(&d.ring, pr.last_total));
                     pr.last_total = total;
+                    pr.gpu_prepare_dirty = true;
+                    pixels_changed = true;
                 }
             } else if pr.last_price_lines_rev != u64::MAX {
                 pr.layers.set_price_lines(&[], &[]);
                 pr.last_price_lines_rev = u64::MAX;
+                pr.gpu_prepare_dirty = true;
+                pixels_changed = true;
             }
             pr.last_device_gen = device_gen;
             pr.active = true;
         }
+        for (idx, was_active) in was_active.into_iter().enumerate() {
+            if was_active && !st.panes.get(idx).is_some_and(|pr| pr.active) {
+                pixels_changed = true;
+            }
+        }
+        let prev_cursor_params: Vec<CursorParams> =
+            st.panes.iter().map(|pr| pr.cursor_params).collect();
         st.sync_cursor_params();
-        st.needs_present = true;
+        let cursor_changed = st.cursor.is_some()
+            && st
+                .panes
+                .iter()
+                .zip(prev_cursor_params.iter())
+                .any(|(pr, prev)| pr.cursor_params != *prev);
+        if pixels_changed || cursor_changed {
+            st.needs_present = true;
+        }
     }
 
     // ── Настройки (порт из старого chart.rs::ChartGpu) ───────────────────────────
