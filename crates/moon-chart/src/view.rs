@@ -83,6 +83,9 @@ pub struct ChartView {
     last_phase_area_w: f32,
     last_phase_present_hz: f32,
     phase_default_px_per_ms: f32,
+    /// Время прошлого `update_y` (unix мс) — для нормировки Y-сглаживания по реальному
+    /// dt, а не "за кадр" (иначе скорость авто-Y зависела бы от частоты подготовки).
+    last_update_ms: f64,
 }
 
 impl ChartView {
@@ -107,6 +110,7 @@ impl ChartView {
             last_phase_area_w: f32::NAN,
             last_phase_present_hz: f32::NAN,
             phase_default_px_per_ms: 0.0,
+            last_update_ms: 0.0,
         }
     }
 
@@ -158,8 +162,19 @@ impl ChartView {
     /// egui-mesh cache (Stage 2b/2c), а не пропуском кадров.
     pub fn follow_edge(&mut self, edge_ms: f64, now_ms: f64) {
         if self.is_live(now_ms) {
-            self.right_time_ms = edge_ms;
+            self.right_time_ms = self.quantize_edge_ms(edge_ms);
         }
+    }
+
+    /// Снап правого края на ЦЕЛЫЙ пиксель (аналог MoonBot `NowPhase`): между кадрами
+    /// меняется только целое число пикселей, поэтому тонкие элементы (кресты трейдов,
+    /// линии ордеров, last/mark) не дрожат субпиксельно. Контринтуитивно, но дискретный
+    /// шаг = гладко для чёткого 2D (на 60+ Гц шаг в 1 px глаз не ловит). ТУ ЖЕ формулу
+    /// применяет own-pass callback, двигая камеру на каждый present (см. chartdx).
+    pub fn quantize_edge_ms(&self, edge_ms: f64) -> f64 {
+        let ppm = self.px_per_ms.max(1e-9) as f64;
+        let rel = edge_ms - self.epoch_ms;
+        (rel * ppm).round() / ppm + self.epoch_ms
     }
 
     /// Немедленный возврат к лайву (кнопка Live): к «сейчас».
@@ -298,6 +313,19 @@ impl ChartView {
         last_price: Option<f32>,
     ) {
         let live = self.is_live(now_ms);
+        // Сглаживание Y по РЕАЛЬНОМУ dt, а не "за кадр": prepare теперь тикает с плавающей
+        // частотой (камеру двигает own-pass на vblank, данные — реже), и константа "доля за
+        // кадр" давала бы разную скорость авто-зума/центровки на разных машинах. Переводим
+        // per-frame-коэффициенты к фактическому интервалу: f = 1 - (1-base)^(dt/16.67мс).
+        let dt_ms = if self.last_update_ms > 0.0 {
+            (now_ms - self.last_update_ms).clamp(1.0, 250.0)
+        } else {
+            1000.0 / 60.0
+        };
+        self.last_update_ms = now_ms;
+        let frame_ref = 1000.0 / 60.0;
+        let auto_lerp = (1.0 - (1.0 - AUTO_LERP as f64).powf(dt_ms / frame_ref)) as f32;
+        let tick_lerp = (1.0 - (1.0 - TICK_LERP as f64).powf(dt_ms / frame_ref)) as f32;
         if !self.manual_price {
             let visible_mid = visible.map(|(lo, hi)| (lo + hi) * 0.5);
             let target_center = if live {
@@ -322,7 +350,7 @@ impl ChartView {
 
             if let Some(r) = target_range {
                 if live && self.auto_price && self.center_price != 0.0 && self.price_range > 0.0 {
-                    self.price_range += (r - self.price_range) * AUTO_LERP;
+                    self.price_range += (r - self.price_range) * auto_lerp;
                 } else {
                     self.price_range = r;
                 }
@@ -334,7 +362,7 @@ impl ChartView {
                 } else if self.price_range > 1e-9 {
                     let drift = (c - self.center_price).abs() / self.price_range;
                     if drift > CENTER_BUFFER {
-                        self.center_price += (c - self.center_price) * TICK_LERP;
+                        self.center_price += (c - self.center_price) * tick_lerp;
                     }
                 }
             }

@@ -33,6 +33,12 @@ diag_counters!(
     BACKEND_NOTIFY    => "backend_notify",
     CHART_PREPARE     => "chart_prepare",
     CHART_TASK_PREP   => "chart_task_prep",
+    // own-pass present (реальная частота показа чарта) — раньше СЛЕПАЯ зона: present-rate
+    // не измерялся вообще. CHART_CAM_STEP = сколько present'ов реально сдвинули камеру на
+    // ≥1 пиксель ("рабочие" кадры). Соотношение CAM_STEP/PRESENT = экономия пиксельного
+    // рубильника (адаптивна к зуму: на мелком масштабе почти все кадры пропускаются).
+    CHART_PRESENT     => "chart_present",
+    CHART_CAM_STEP    => "chart_cam_step",
     ORDERS_OBS_FIRE   => "orders_obs_fire",
     ORDERS_OBS_NOTIFY => "orders_obs_notify",
     SHELL_OBS_FIRE    => "shell_obs_fire",

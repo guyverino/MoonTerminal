@@ -368,7 +368,7 @@ impl StrategiesView {
             .unwrap_or_default();
         let next = append_snippet(&current, snippet);
         if let Some(state) = state {
-            state.update(cx, |state, cx| state.set_value(next, cx));
+            state.update(cx, |state, cx| state.sync_value(next, cx));
         }
     }
 

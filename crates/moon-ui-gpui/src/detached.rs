@@ -79,6 +79,11 @@ fn panel_title(name: &str) -> &'static str {
     }
 }
 
+/// True for panels that can be moved into a detached OS window.
+pub fn supports_panel(name: &str) -> bool {
+    matches!(name, "Orders" | "Assets" | "Log" | "Report")
+}
+
 /// Свежий экземпляр dock-панели по `panel_name` как `Rc<dyn PanelView>` — для репина
 /// (вернуть в док) и как контент окна открепления.
 pub fn build_panel(

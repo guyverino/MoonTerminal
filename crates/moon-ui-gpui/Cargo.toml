@@ -25,7 +25,7 @@ bytemuck = { version = "1", features = ["derive"] }
 # Local path overrides live in the workspace .cargo/config.toml.
 gpui = { git = "https://github.com/Moonbot-Tech/ZedFork", rev = "ffa53b323ce6294ea13395cabeb1abe59c0baece" }
 gpui_platform = { git = "https://github.com/Moonbot-Tech/ZedFork", rev = "ffa53b323ce6294ea13395cabeb1abe59c0baece", features = ["font-kit", "wayland", "x11"] }
-moon-palette = { git = "https://github.com/Moonbot-Tech/moon-ui", rev = "81c3e3f2fa1f5e29ad034c5de0e771bfd769d57a" }
+moon-palette = { git = "https://github.com/Moonbot-Tech/MoonPalette", rev = "f38e31f349c0e69c0995217c84eb5dbbd171bb5b" }
 
 anyhow = "1"
 log = "0.4"

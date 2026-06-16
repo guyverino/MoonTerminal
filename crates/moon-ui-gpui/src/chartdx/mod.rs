@@ -90,6 +90,18 @@ struct PaneRender {
     last_book_hi: f32,
     /// Последняя ревизия ордеров, по которой залит userdata-буфер.
     last_orders_rev: u64,
+    /// Камера X для own-pass: эпоха времени, поле справа (доля «будущего»), флаг follow и
+    /// последняя КВАНТОВАННАЯ пиксель-позиция правого края. Callback двигает камеру по этим
+    /// полям на каждый present (vblank, целопиксельно) — живой скролл без отдельного таймера.
+    epoch_ms: f64,
+    right_margin_frac: f32,
+    follow: bool,
+    last_edge_px: i64,
+    /// Кэш дорогого авто-Y скана (min/max видимых тиков) + входы, при которых он валиден:
+    /// пиксель-позиция камеры и total тиков. Пересканируем лишь при их смене (рубильник).
+    scan_cam_px: i64,
+    scan_total: u64,
+    cached_tick_price: Option<(f32, f32)>,
     /// Видима в этом кадре (рисуем) — ставится в `prepare`.
     active: bool,
 }
@@ -112,8 +124,40 @@ impl PaneRender {
             last_book_lo: f32::NAN,
             last_book_hi: f32::NAN,
             last_orders_rev: u64::MAX,
+            epoch_ms: 0.0,
+            right_margin_frac: 0.10,
+            follow: false,
+            last_edge_px: i64::MIN,
+            scan_cam_px: i64::MIN,
+            scan_total: u64::MAX,
+            cached_tick_price: None,
             active: false,
         }
+    }
+
+    /// Пиксельный рубильник камеры (follow по X). Двигаем правый край по `now_ms` ТОЛЬКО
+    /// когда «сейчас» уехало на ≥1 ЦЕЛЫЙ пиксель (MoonBot `round(Now/FdtScale)`): между
+    /// пикселями кадр попиксельно идентичен → present переказывает его без работы. Целый
+    /// шаг убирает субпиксельное дрожание; вызов на каждый present даёт гладкость на vblank.
+    /// True — камера реально сдвинулась (для счётчика «рабочих» кадров).
+    fn advance_camera(&mut self, now_ms: f64) -> bool {
+        if !self.follow || !(self.view.time_to_px > 0.0) {
+            return false;
+        }
+        let ppm = self.view.time_to_px;
+        let target_px = ((now_ms - self.epoch_ms) * ppm as f64).round() as i64;
+        if target_px == self.last_edge_px {
+            return false;
+        }
+        self.last_edge_px = target_px;
+        let inv_ppm = 1.0 / ppm.max(1e-6);
+        let area_w = self.view.bounds[2];
+        let glass_w = self.orderbook_view.bounds[2];
+        let window_ms = area_w * inv_ppm;
+        let right_rel = target_px as f32 * inv_ppm;
+        self.view.view_time0 = right_rel + window_ms * self.right_margin_frac - window_ms;
+        self.view.pad = self.view.view_time0 + (area_w + glass_w) * inv_ppm;
+        true
     }
 }
 
@@ -204,11 +248,22 @@ impl ChartEngine {
         let pass = window.add_gpu_pass(
             GpuPhase::UnderScene,
             Box::new(move |gpu: &RawGpuAccess| {
+                // Свёрнуто/скрыто (нет backbuffer) — презентить нечего; НЕ считаем present,
+                // чтобы present_seq не рос и 60-Гц задача спала. NB: перекрытое-но-не-свёрнутое
+                // окно на Windows DWM всё ещё композитит (width != 0, ради thumbnail/Alt-Tab) —
+                // известное ограничение платформы; macOS/Wayland честно дают present=0 (стоп
+                // display-link/frame-callback при occlusion).
+                if gpu.width == 0 || gpu.height == 0 {
+                    return Ok(());
+                }
                 let mut st = state.borrow_mut();
                 // Отметить РЕАЛЬНЫЙ present (этот callback зовётся только когда окно презентит).
-                // 60-Гц prepare-задача движет край, лишь когда этот счётчик вырос → она матчит
+                // 60-Гц prepare-задача доливает данные, лишь когда этот счётчик вырос → она матчит
                 // фактический present-rate и спит при occluded-окне (нет present → нет инкремента).
                 st.present_seq = st.present_seq.wrapping_add(1);
+                crate::diag::bump(&crate::diag::CHART_PRESENT);
+                // Время для пиксельного рубильника камеры (двигаем край на КАЖДЫЙ present).
+                let now_ms = now_unix_ms();
                 match gpu.backend {
                     #[cfg(windows)]
                     GpuBackend::D3D11 => {
@@ -233,6 +288,11 @@ impl ChartEngine {
                                 pr.view.resolution = res;
                                 pr.grid_params.resolution = res;
                                 pr.orderbook_view.resolution = res;
+                                // Двигаем живой край (камеру) на ЭТОТ present — целопиксельно,
+                                // только при смене пикселя (между ними кадр идентичен → пропуск).
+                                if pr.advance_camera(now_ms) {
+                                    crate::diag::bump(&crate::diag::CHART_CAM_STEP);
+                                }
                                 // Обрезка к зоне панели = плот (chart_area) + стакан (glass). Жёлоб цены слева
                                 // и шкала времени снизу — ВНЕ scissor, подписи GPUI там выживают.
                                 let panel_clip = [
@@ -277,6 +337,9 @@ impl ChartEngine {
                                 pr.view.resolution = res;
                                 pr.grid_params.resolution = res;
                                 pr.orderbook_view.resolution = res;
+                                if pr.advance_camera(now_ms) {
+                                    crate::diag::bump(&crate::diag::CHART_CAM_STEP);
+                                }
                                 pr.layers.render_wgpu(
                                     &pr.view,
                                     &pr.background_params,
@@ -297,6 +360,9 @@ impl ChartEngine {
                                 pr.view.resolution = res;
                                 pr.grid_params.resolution = res;
                                 pr.orderbook_view.resolution = res;
+                                if pr.advance_camera(now_ms) {
+                                    crate::diag::bump(&crate::diag::CHART_CAM_STEP);
+                                }
                                 pr.layers.render_metal(
                                     &pr.view,
                                     &pr.background_params,
@@ -413,15 +479,29 @@ impl ChartEngine {
             pane.view.follow_edge(now, now);
             let (view_time0, window_ms) = pane.view.visible_x(chart_area.w);
             let data = session.market_view(pane.core, &pane.market);
-            let (cstart, ccount) = match data {
-                Some(d) => {
-                    let margin = pane.view.marker_half_px / pane.view.px_per_ms.max(1e-6);
-                    d.ring
-                        .visible_range(view_time0 - margin, view_time0 + window_ms + margin)
-                }
-                None => (0, 0),
-            };
-            let tick_price = data.and_then(|d| d.ring.price_range_in(cstart, ccount));
+            // Авто-Y скан min/max видимого окна — ДОРОГО (проход по видимым тикам). Рубильник
+            // (MoonBot-урок): пересканируем ТОЛЬКО когда окно сдвинулось на ЦЕЛЫЙ пиксель ИЛИ
+            // пришли новые тики; иначе берём прошлый результат. Адаптивно к зуму: на мелком
+            // масштабе / паузе почти все кадры берут кэш, скан не гоняется.
+            let cam_px = ((pane.view.right_time_ms - pane.view.epoch_ms)
+                * pane.view.px_per_ms.max(1e-9) as f64)
+                .round() as i64;
+            let total = data.map(|d| d.ring.total_pushed()).unwrap_or(0);
+            if device_lost || cam_px != pr.scan_cam_px || total != pr.scan_total {
+                pr.cached_tick_price = match data {
+                    Some(d) => {
+                        let margin = pane.view.marker_half_px / pane.view.px_per_ms.max(1e-6);
+                        let (cstart, ccount) = d
+                            .ring
+                            .visible_range(view_time0 - margin, view_time0 + window_ms + margin);
+                        d.ring.price_range_in(cstart, ccount)
+                    }
+                    None => None,
+                };
+                pr.scan_cam_px = cam_px;
+                pr.scan_total = total;
+            }
+            let tick_price = pr.cached_tick_price;
             let order_price = session
                 .store()
                 .core(pane.core)
@@ -438,6 +518,15 @@ impl ChartEngine {
                 h: chart_area.h,
             };
             pr.view = view::view_gpu(&pane.view, area_win, res);
+            // Камера X для own-pass callback (он двигает живой край на vblank, целопиксельно).
+            // Синхронизируем пиксель-позицию с тем, что prepare только что поставил (follow_edge
+            // уже квантован) — callback продолжит ровно отсюда, без скачка назад/вперёд.
+            pr.epoch_ms = pane.view.epoch_ms;
+            pr.right_margin_frac = pane.view.right_margin_frac;
+            pr.follow = pane.view.follow;
+            pr.last_edge_px = ((pane.view.right_time_ms - pane.view.epoch_ms)
+                * pane.view.px_per_ms.max(1e-9) as f64)
+                .round() as i64;
             let (bg_uv_off, bg_uv_scale) = cover_uv(chart_area.w, chart_area.h, 1.0);
             let background_opacity = if CHART_PHOTO_BACKGROUND_ENABLED {
                 self.theme.background_opacity.clamp(0.0, 1.0)

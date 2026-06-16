@@ -72,7 +72,7 @@ pub(super) fn hsla_u8(h: Hsla) -> [u8; 3] {
 /// подпись и текущее значение. Инлайн, на высоту одного ряда (как на стенде).
 pub(super) fn slider_row(label: &str, st: &Entity<MoonSliderState>, cx: &App) -> impl IntoElement {
     let p = MoonPalette::active(cx);
-    let val = st.read(cx).value();
+    let val = st.read(cx).value().end();
     h_flex()
         .w_full()
         .min_h(px(28.0))

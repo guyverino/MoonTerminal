@@ -171,29 +171,25 @@ impl DetectsPanel {
         self.items.len() != before
     }
 
-    fn next_prune_delay(&self, now_ms: f64) -> Option<Duration> {
-        self.items
-            .iter()
-            .map(|it| it.born_ms + it.ttl_ms - now_ms)
-            .min_by(|a, b| a.total_cmp(b))
-            .map(|ms| Duration::from_millis(ms.max(1.0).ceil() as u64))
-    }
-
+    /// 1-Гц тик ПОКА есть детекты: обновляет обратный отсчёт («Ns») по СВОИМ часам и
+    /// убирает истёкшие. Раньше отсчёт перерисовывался только по приходу данных (backend-
+    /// пульс) — это «время сцеплено с данными»: на тихой/отключённой группе цифры замирали,
+    /// а кнопка просто исчезала в конце. Время — по часам, не по приходу тиков. Тик сам
+    /// гаснет, когда детектов нет (не плодим таймер вхолостую — executor.timer недёшев).
     fn arm_prune_timer(&mut self, cx: &mut Context<Self>) {
-        if self.prune_timer_armed {
+        if self.prune_timer_armed || self.items.is_empty() {
             return;
         }
-        let Some(delay) = self.next_prune_delay(now_unix_ms()) else {
-            return;
-        };
         self.prune_timer_armed = true;
         cx.spawn(async move |this, cx| {
             let executor = cx.update(|cx| cx.background_executor().clone());
-            executor.timer(delay).await;
+            executor.timer(Duration::from_millis(1000)).await;
             let alive = cx.update(|cx| {
                 this.update(cx, |this, cx| {
                     this.prune_timer_armed = false;
-                    if this.prune(now_unix_ms()) {
+                    this.prune(now_unix_ms());
+                    // Перерисовать отсчёт / отразить пропажу истёкших, пока есть что показывать.
+                    if !this.items.is_empty() {
                         cx.notify();
                     }
                     this.arm_prune_timer(cx);

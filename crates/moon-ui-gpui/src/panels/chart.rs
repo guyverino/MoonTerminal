@@ -151,11 +151,12 @@ impl ChartPanel {
                 executor.timer(std::time::Duration::from_millis(16)).await;
                 let alive = cx.update(|cx| {
                     this.update(cx, |this, cx| {
-                        // Двигаем край, только если: (1) держим guard (fast-чарт виден + live-
-                        // follow; скрытая вкладка/пауза дропают его) И (2) с прошлого раза был
-                        // РЕАЛЬНЫЙ present (present_seq вырос). (2) глушит задачу при occluded-окне
-                        // (macOS CVDisplayLink стоп → present=0) и матчит present-rate (Windows
-                        // inactive 30fps → 30 prep/с, а не 60 вхолостую).
+                        // Камеру (живой край) двигает own-pass callback на КАЖДЫЙ present
+                        // (vblank, целопиксельно) — гладкость без таймера. Задаче остаётся лишь
+                        // ДОЛИТЬ новые тики/стакан/ордера в resident-слои; делаем это, лишь пока
+                        // (1) держим guard (fast-чарт виден + live-follow; пауза/скрытие дропают)
+                        // И (2) был реальный present (present_seq вырос) — (2) глушит задачу при
+                        // occluded-окне (macOS present=0; Windows свёрнут width=0 → present_seq стоит).
                         let seq = this.chart.present_seq();
                         if this.present_guard.is_some() && seq != this.last_present_seq {
                             this.last_present_seq = seq;

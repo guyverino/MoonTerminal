@@ -158,6 +158,7 @@ struct Shell {
     /// Троттл observe-notify бэкенда: Shell-рендер обновляет лишь статус-бар (tick/book/cpu/
     /// fps), его дёргать чаще ~4 Гц человеку незачем, а он тащит top-down тяжёлый Orders.
     last_notify: Option<Instant>,
+    pending_detach: Vec<String>,
 }
 
 impl Shell {
@@ -299,7 +300,10 @@ impl Shell {
 
         // Любое изменение раскладки доков (drag/split/resize/detach) → дамп в backend,
         // сохранение дебаунсит дренаж-таймер (docks.json). Порт персиста раскладки.
-        cx.subscribe(&dock, |this, dock, _event: &DockEvent, cx| {
+        cx.subscribe(&dock, |this, dock, event: &DockEvent, cx| {
+            if let DockEvent::DetachRequested { panel_name } = event {
+                this.pending_detach.push(panel_name.to_string());
+            }
             let state = dock.read(cx).dump(cx);
             let group = this.group.clone();
             this.backend.update(cx, |b, _| {
@@ -316,6 +320,7 @@ impl Shell {
             last_frame: None,
             fps: 0.0,
             last_notify: None,
+            pending_detach: Vec::new(),
         }
     }
 }
@@ -352,6 +357,28 @@ impl Render for Shell {
                     .retain(|s| !(s.group == group && s.panel == panel_name));
                 b.detached_dirty = true;
             });
+        }
+
+        let detaches = std::mem::take(&mut self.pending_detach);
+        for panel_name in detaches {
+            let group = self.group.clone();
+            if detached::supports_panel(&panel_name) {
+                self.dock.update(cx, |area, cx| {
+                    area.remove_panel_by_name(&panel_name, window, cx);
+                });
+                let spec = detached::DetachedSpec::new(group, panel_name);
+                detached::spawn(cx, &self.backend, &spec);
+                self.backend.update(cx, |b, _| {
+                    if !b
+                        .detached
+                        .iter()
+                        .any(|s| s.group == spec.group && s.panel == spec.panel)
+                    {
+                        b.detached.push(spec);
+                        b.detached_dirty = true;
+                    }
+                });
+            }
         }
 
         // Снять геометрию окна → раскладка (save дебаунсит дренаж-таймер).

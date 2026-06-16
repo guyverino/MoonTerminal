@@ -78,7 +78,7 @@ fn ord_slider(
         let MoonSliderEvent::Change(f) = ev else {
             return;
         };
-        let f = *f;
+        let f = f.end();
         this.backend.update(cx, |b, cx| {
             if let Some(p) = b.preview.as_mut() {
                 if get(&p.orders) != f {
