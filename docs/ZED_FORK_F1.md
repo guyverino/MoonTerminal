@@ -37,9 +37,15 @@ cursor_draw
 
 Открыто:
 
-- Runtime `MOON_RENDER_DIAG=1` ещё должен подтвердить частоты на живом окне:
-  `base_blit/cursor_draw` растут на mousemove, а `combo_draw/book_draw/user_draw`
-  и `orders_render/shell_render` не улетают в monitor/mouse rate.
+- Runtime `MOON_RENDER_DIAG=1` подтвердил DX11 cursor-only delta на программно
+  открытом активном market pane (`MOON_RENDER_DIAG_OPEN_FIRST_MARKET=1`).
+  Для отделения live-scroll от mousemove запускался также
+  `MOON_RENDER_DIAG_PAUSE_AFTER_OPEN=1`: без движения мыши live-data path давал
+  `base_bake/chart_gpu_prepare/combo_draw ≈21/s`, во время движения мыши
+  `cursor_draw ≈58/s`, `chart_present ≈59/s`, но
+  `base_bake/chart_gpu_prepare/combo_draw` остались на том же уровне (`≈22.5/s`).
+  Вывод: mousemove добавляет cursor overlay + present, но не поднимает full-stack
+  redraw.
 - Readout chips всё ещё GPUI throttled path (`notify_cursor_readout_if_due`),
   не native overlay.
 - Metal/wgpu path пока direct-draw stack on present. Он компилируется, но не
@@ -206,7 +212,8 @@ always:
 Current gap:
 
 - Metal/wgpu paths still direct-draw the stack on every present.
-- Runtime counters must still prove DX11 behaves as intended under real mousemove.
+- Runtime counters proved the DX11 base-cache part under automated high-rate
+  pointer/present storm; cursor overlay still needs a run with an active market pane.
 
 Why this is bad:
 
@@ -437,12 +444,10 @@ Before saying this is fixed:
       `render_base_d3d` / `render_cursor_d3d`.
 - [x] DX11 cursor-only code path skips `chart_gpu_prepare` unless
       `gpu_prepare_dirty` is set.
-- [ ] Runtime: pure mousemove does not raise `chart_gpu_prepare` as full
-      per-pane prepare work after base cache exists.
-- [ ] Runtime: pure mousemove does not raise `combo_draw`, `orderbook_draw`,
-      `userdata_draw` after base cache exists.
-- [ ] Runtime: pure mousemove raises only `base_blit` + `cursor_draw`
-      / readout overlay.
+- [x] Runtime with active market pane: high-rate mousemove raises
+      `cursor_draw` / `base_blit` / `chart_present`, while
+      `chart_gpu_prepare`, `combo_draw`, `orderbook_draw`, `userdata_draw`
+      stay at the live-data baseline instead of jumping to mouse frequency.
 - [x] Code-level: old single-mousemove -> `present_seq` -> 16ms task ->
       next present loop is removed.
 - [ ] Runtime: a single mousemove does not start a continuous-present loop.
@@ -465,6 +470,20 @@ Windows:
 - `cargo build -p moon-ui-gpui --bin moon-gpui --target x86_64-pc-windows-msvc`
 - `cargo test -p moon-ui-gpui --test theme_contract --target x86_64-pc-windows-msvc`
 - public-resolution check without local `.cargo/config.toml` / local lockfile.
+- `MOON_RENDER_DIAG=1` automated pointer run over an empty Main window:
+  `chart_gpu_prepare=0`, `bg_draw=0`, `grid_draw=0`, `combo_draw=0`,
+  `orderbook_draw=0`, `userdata_draw=0`, while `base_blit` followed chart
+  presents (up to `base_blit=167/s` in the high-rate second). This proves the
+  DX11 base-cache/full-stack split for the window-level present path, but not
+  cursor overlay over a real chart.
+- `MOON_RENDER_DIAG=1 MOON_RENDER_DIAG_OPEN_FIRST_MARKET=1
+  MOON_RENDER_DIAG_PAUSE_AFTER_OPEN=1` automated pointer run over a real chart:
+  baseline with cursor idle was
+  `base_bake=21.0/s chart_gpu_prepare=21.0/s combo_draw=21.0/s
+  chart_present=24.4/s`; during high-rate mousemove it became
+  `cursor_draw=58.1/s base_bake=22.5/s chart_gpu_prepare=22.5/s
+  combo_draw=22.5/s chart_present=58.6/s`. This proves mousemove adds cursor
+  overlay/present, not full-stack redraw.
 
 Linux VPS:
 

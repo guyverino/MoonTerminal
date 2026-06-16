@@ -112,6 +112,10 @@ struct Backend {
     /// Ревизия `open_request`: нужна, чтобы ChartTabs просыпался по конкретному
     /// запросу открытия, а не по страховочному backend-render.
     open_request_rev: u64,
+    /// Диагностический автозапуск графика для runtime-счётчиков. Off по умолчанию;
+    /// включается только env `MOON_RENDER_DIAG_OPEN_FIRST_MARKET`.
+    diag_open_first_market: bool,
+    diag_open_done: bool,
     /// Раскладка окон (геометрия по группам) — load на старте, save на изменении
     /// (дебаунс через дренаж-таймер). Порт egui WindowLayout/layout.toml.
     layout: WindowLayout,
@@ -162,6 +166,48 @@ struct Backend {
     /// Приложение завершается (on_app_quit). На выходе закрытие откреп-окон НЕ должно репинить
     /// их (иначе detached сбросится в None и не восстановится) — дренаж репина это проверяет.
     quitting: bool,
+}
+
+impl Backend {
+    fn maybe_diag_open_first_market(&mut self, cx: &mut Context<Self>) {
+        if !self.diag_open_first_market || self.diag_open_done || self.open_request.is_some() {
+            return;
+        }
+        if self.group_windows.is_empty() {
+            return;
+        }
+
+        let candidate = self.config.servers.iter().find_map(|server| {
+            let market = server.market.trim();
+            let session_exists = self
+                .session
+                .sessions()
+                .iter()
+                .any(|session| session.id == server.id && session.group == server.group);
+            (server.active
+                && server.show_window
+                && self.config.group(&server.group).active
+                && self.group_windows.contains_key(&server.group)
+                && !market.is_empty()
+                && session_exists)
+                .then(|| (server.id, market.to_string(), server.name.clone()))
+        });
+
+        let Some((core, market, name)) = candidate else {
+            self.diag_open_done = true;
+            log::warn!("diag auto-open: no active visible server with default market");
+            return;
+        };
+
+        self.diag_open_done = true;
+        self.open_request = Some((core, market.clone()));
+        self.open_request_rev = self.open_request_rev.wrapping_add(1);
+        if std::env::var_os("MOON_RENDER_DIAG_PAUSE_AFTER_OPEN").is_some() {
+            self.follow = false;
+        }
+        log::info!("diag auto-open: core={core} name={name} market={market}");
+        cx.notify();
+    }
 }
 
 /// Оболочка одной группы (= одно ОС-окно): header + единый `DockArea` + статус.
@@ -910,6 +956,9 @@ fn main() -> anyhow::Result<()> {
             preview: None,
             open_request: None,
             open_request_rev: 0,
+            diag_open_first_market: std::env::var_os("MOON_RENDER_DIAG_OPEN_FIRST_MARKET")
+                .is_some(),
+            diag_open_done: false,
             layout: layout.clone(),
             layout_dirty: false,
             dock_states,
@@ -1033,6 +1082,7 @@ fn main() -> anyhow::Result<()> {
                         // частого GPUI notify. drain()->bool = «пришли ли сообщения с фида»; копим до
                         // следующего notify (causal-гейт пульса, см. коммент у notify_due).
                         dirty_since_notify |= b.session.drain();
+                        b.maybe_diag_open_first_market(cx);
                         let mut reqs = Vec::new();
                         if coord {
                             // reconcile_providers избирает провайдера/биржу + держит
@@ -1044,8 +1094,11 @@ fn main() -> anyhow::Result<()> {
                             // Реконнект ядер по кнопке ↻ (порт egui take_actions.reconnect).
                             let recon: Vec<CoreId> = b.reconnect_request.drain(..).collect();
                             for id in recon {
-                                b.session
-                                    .reconnect(id, &b.config, b.reports.as_ref().map(|h| &h.tx));
+                                b.session.reconnect(
+                                    id,
+                                    &b.config,
+                                    b.reports.as_ref().map(|h| &h.tx),
+                                );
                             }
                             // Дебаунс-сохранение раскладки окон (≤10/с).
                             if b.layout_dirty {
