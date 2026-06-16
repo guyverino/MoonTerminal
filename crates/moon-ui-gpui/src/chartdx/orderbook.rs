@@ -1,22 +1,27 @@
 //! Слой стакана (OrderBook): СВОЯ зона справа (не временной ряд, без combo). Фон зоны +
-//! кумулятивные бары глубины + линии уровней. Инстансы (`LevelInstance`) считаются на CPU
-//! (`book.build_instances`, нормировка по видимому окну) и заливаются целиком при изменении
-//! книги/окна. Порт moon-chart glass-слоя на DX11.
+//! кумулятивные бары глубины + линии уровней ЗАПЕКАЮТСЯ в офскрин-текстуру `BookTex` (наш
+//! аналог MoonBot `bmGlass`) и блитятся каждый present. Перепечатка текстуры — ТОЛЬКО при
+//! смене уровней/Y-трансформа, НЕ каждый кадр: на статике и mouse-move стакан = дешёвый
+//! блит готовой текстуры, а не повторная отрисовка сотен баров инстансами 240 раз/с.
 
 use std::ffi::c_void;
 
 use gpui::RawGpuAccess;
 use moon_core::data::LevelInstance;
+use moon_chart::paint::now_unix_ms;
 use windows::Win32::Graphics::Direct3D::D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
 use windows::Win32::Graphics::Direct3D11::*;
+use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC};
 
 use super::gpu::{
-    ChartViewGpu, create_alpha_blend, create_dynamic_cb, create_srv, create_structured,
-    full_viewport, make_ps, make_vs, update_dynamic,
+    BlitParams, ChartViewGpu, create_alpha_blend, create_dynamic_cb, create_point_sampler,
+    create_srv, create_structured, full_viewport, make_ps, make_vs, set_scissor_rect,
+    update_dynamic,
 };
 pub use super::types::BookStyle;
 
 const BARS_HLSL: &str = include_str!("shaders/bars.hlsl");
+const BLIT_HLSL: &str = include_str!("shaders/blit.hlsl");
 const CAP: u32 = 1 << 12; // уровней стакана (с запасом; реально сотни)
 
 struct BookPipe {
@@ -31,8 +36,33 @@ struct BookPipe {
     style_cb: ID3D11Buffer,
 }
 
+/// Офскрин-битмап стакана (наш `bmGlass`): запечённые фон+бары + признак валидности и Y-входы,
+/// при которых текстура валидна. Размер = зона стакана (glass_area). Стакан не скроллит по X
+/// (зона фиксирована), поэтому блит 1:1, без UV-пана — проще combo.
+struct BookTex {
+    _tex: ID3D11Texture2D, // RAII: держит текстуру (rtv/srv ссылаются)
+    rtv: ID3D11RenderTargetView,
+    srv: ID3D11ShaderResourceView,
+    tex_w: u32,
+    tex_h: u32,
+    blit_vs: ID3D11VertexShader,
+    blit_fs: ID3D11PixelShader,
+    blit_cb: ID3D11Buffer,
+    sampler: ID3D11SamplerState,
+    last_price_to_px: f32,
+    last_view_price0: f32,
+    last_style: BookStyle,
+    /// Текстура хоть раз отрисована (первый bake обязателен — иначе чёрный стакан).
+    baked: bool,
+    /// Входы сменились с прошлого bake → нужен ре-bake (троттлится 200мс).
+    dirty: bool,
+    /// Время прошлого bake (unix мс) — троттл ре-bake до ~5 Гц (MoonBot bmGlass: 200мс).
+    last_bake_ms: f64,
+}
+
 pub struct OrderBookLayer {
     pipe: Option<BookPipe>,
+    tex: Option<BookTex>,
     count: u32,
     pending: Option<Vec<LevelInstance>>,
     device_ptr: *mut c_void,
@@ -42,19 +72,22 @@ impl OrderBookLayer {
     pub fn new() -> Self {
         Self {
             pipe: None,
+            tex: None,
             count: 0,
             pending: None,
             device_ptr: std::ptr::null_mut(),
         }
     }
 
-    /// Залить уровни стакана (целиком). Зовётся при изменении книги/окна.
+    /// Залить уровни стакана (целиком). Зовётся при изменении книги/окна → инвалидирует кэш.
     pub fn set(&mut self, levels: Vec<LevelInstance>) {
         self.pending = Some(levels);
     }
 
-    /// Рисует фон зоны + бары. `view` — трансформ ЗОНЫ СТАКАНА (viewport = glass_area),
-    /// resolution ставит вызывающий. `style` — цвета (тема).
+    /// Блитит закэшированный стакан в зону `view.bounds`; перепекает текстуру лишь при смене
+    /// уровней или Y-трансформа. `panel_clip` — scissor панели: восстанавливаем его для блита
+    /// и для слоёв ПОСЛЕ нас (bake временно ставит scissor самой текстуры).
+    #[allow(clippy::too_many_arguments)]
     pub fn render(
         &mut self,
         view: &ChartViewGpu,
@@ -63,22 +96,27 @@ impl OrderBookLayer {
         context: &ID3D11DeviceContext,
         rtv: &ID3D11RenderTargetView,
         gpu: &RawGpuAccess,
+        panel_clip: [f32; 4],
     ) {
-        if view.bounds[2] <= 0.0 || view.bounds[3] <= 0.0 {
+        let bw = view.bounds[2];
+        let bh = view.bounds[3];
+        if bw <= 0.0 || bh <= 0.0 {
             return;
         }
-        // device-lost: пересоздать pipe; count=0 — буфер пересоздаётся пустым (prepare зальёт
-        // уровни заново этим же кадром через set()/pending, инвариант: новый device = 0 валидных).
+        // device-lost: пересоздать pipe и текстуру; count=0 (prepare зальёт уровни заново).
         if self.device_ptr != gpu.device {
             self.pipe = None;
+            self.tex = None;
             self.count = 0;
             self.device_ptr = gpu.device;
         }
         if self.pipe.is_none() {
             self.pipe = Some(Self::create_pipe(device));
         }
-        let pipe = self.pipe.as_ref().unwrap();
+        // Применить новые уровни (если пришли) → инвалидировать кэш текстуры.
+        let mut levels_changed = false;
         if let Some(levels) = self.pending.take() {
+            let pipe = self.pipe.as_ref().unwrap();
             let data: &[LevelInstance] = if levels.len() as u32 > CAP {
                 &levels[..CAP as usize]
             } else {
@@ -88,29 +126,124 @@ impl OrderBookLayer {
                 update_dynamic(context, &pipe.buffer, data);
             }
             self.count = data.len() as u32;
+            levels_changed = true;
         }
-        update_dynamic(context, &pipe.view_cb, &[*view]);
-        update_dynamic(context, &pipe.style_cb, &[*style]);
+
+        let tex_w = bw.round().max(1.0) as u32;
+        let tex_h = bh.round().max(1.0) as u32;
+        let need_new = self
+            .tex
+            .as_ref()
+            .map_or(true, |t| t.tex_w != tex_w || t.tex_h != tex_h);
+        if need_new {
+            self.tex = Some(Self::create_tex(device, tex_w, tex_h));
+        }
+
+        let pipe = self.pipe.as_ref().unwrap();
+        let count = self.count;
+        let tex = self.tex.as_mut().unwrap();
+        // Стакан позиционируется по ЦЕНЕ → смена Y-трансформа (price_to_px/view_price0) делает
+        // картинку другой. Плюс смена уровней. Только это инвалидирует кэш.
+        if levels_changed
+            || tex.last_price_to_px != view.price_to_px
+            || tex.last_view_price0 != view.view_price0
+            || *style != tex.last_style
+        {
+            tex.dirty = true;
+        }
+
+        // BAKE: фон+бары в текстуру (texture-local view). Первый раз — обязательно (иначе чёрный
+        // стакан); далее — лишь когда входы сменились И прошло ≥200мс с прошлого bake (троттл
+        // ~5 Гц, как MoonBot bmGlass: книга шлёт ~20 Гц, но глазу столько не нужно — между bake
+        // блитим готовую текстуру). Y-сдвиг редкий (~1/с, гистерезис) → на глаз не страдает.
+        let now_ms = now_unix_ms();
+        if !tex.baked || (tex.dirty && now_ms - tex.last_bake_ms >= 200.0) {
+            crate::diag::bump(&crate::diag::CHART_BOOK_BAKE);
+            // bake-view: зона = весь битмап [0,0,tex_w,tex_h], Y-трансформ тот же.
+            let bake_view = ChartViewGpu {
+                bounds: [0.0, 0.0, tex_w as f32, tex_h as f32],
+                resolution: [tex_w as f32, tex_h as f32],
+                time_to_px: view.time_to_px,
+                view_time0: view.view_time0,
+                price_to_px: view.price_to_px,
+                view_price0: view.view_price0,
+                marker_half: view.marker_half,
+                pad: 0.0,
+                volume_buy_inv: 0.0,
+                volume_sell_inv: 0.0,
+                volume_alpha: 0.0,
+                _pad2: 0.0,
+            };
+            update_dynamic(context, &pipe.view_cb, &[bake_view]);
+            update_dynamic(context, &pipe.style_cb, &[*style]);
+            let tex_vp = D3D11_VIEWPORT {
+                TopLeftX: 0.0,
+                TopLeftY: 0.0,
+                Width: tex_w as f32,
+                Height: tex_h as f32,
+                MinDepth: 0.0,
+                MaxDepth: 1.0,
+            };
+            unsafe {
+                context.OMSetRenderTargets(Some(&[Some(tex.rtv.clone())]), None);
+                context.RSSetViewports(Some(&[tex_vp]));
+                set_scissor_rect(context, 0.0, 0.0, tex_w as f32, tex_h as f32);
+                context.ClearRenderTargetView(&tex.rtv, &[0.0, 0.0, 0.0, 0.0]);
+                context.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+                context.VSSetConstantBuffers(0, Some(&[Some(pipe.view_cb.clone())]));
+                context.VSSetConstantBuffers(1, Some(&[Some(pipe.style_cb.clone())]));
+                context.PSSetConstantBuffers(1, Some(&[Some(pipe.style_cb.clone())]));
+                context.OMSetBlendState(&pipe.blend, None, 0xFFFFFFFF);
+                // Фон зоны (всегда, даже при пустой книге) — opaque book_bg.
+                context.VSSetShader(&pipe.bg_vs, None);
+                context.PSSetShader(&pipe.bg_ps, None);
+                context.Draw(6, 0);
+                // Бары/линии уровней.
+                if count > 0 {
+                    context.VSSetShaderResources(1, Some(&[Some(pipe.srv.clone())]));
+                    context.VSSetShader(&pipe.bars_vs, None);
+                    context.PSSetShader(&pipe.bars_ps, None);
+                    context.DrawInstanced(6, count, 0, 0);
+                }
+            }
+            tex.last_price_to_px = view.price_to_px;
+            tex.last_view_price0 = view.view_price0;
+            tex.last_style = *style;
+            tex.baked = true;
+            tex.dirty = false;
+            tex.last_bake_ms = now_ms;
+        }
+
+        // BLIT: готовая текстура → зона стакана backbuffer (1:1, full UV). Scissor = panel_clip
+        // (восстанавливаем после bake-scissor — иначе userdata-слой после нас обрежется к зоне).
+        let bp = BlitParams {
+            dst: view.bounds,
+            resolution: view.resolution,
+            uv_off: [0.0, 0.0],
+            uv_scale: [1.0, 1.0],
+            pad: [0.0, 0.0],
+        };
+        update_dynamic(context, &tex.blit_cb, &[bp]);
         let vp = full_viewport(gpu);
         unsafe {
             context.OMSetRenderTargets(Some(&[Some(rtv.clone())]), None);
             context.RSSetViewports(Some(&[vp]));
+            set_scissor_rect(
+                context,
+                panel_clip[0],
+                panel_clip[1],
+                panel_clip[2],
+                panel_clip[3],
+            );
             context.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-            context.VSSetConstantBuffers(0, Some(&[Some(pipe.view_cb.clone())]));
-            context.VSSetConstantBuffers(1, Some(&[Some(pipe.style_cb.clone())]));
-            context.PSSetConstantBuffers(1, Some(&[Some(pipe.style_cb.clone())]));
+            context.VSSetShader(&tex.blit_vs, None);
+            context.PSSetShader(&tex.blit_fs, None);
+            context.VSSetConstantBuffers(0, Some(&[Some(tex.blit_cb.clone())]));
+            context.PSSetConstantBuffers(0, Some(&[Some(tex.blit_cb.clone())]));
+            context.PSSetShaderResources(0, Some(&[Some(tex.srv.clone())]));
+            context.PSSetSamplers(0, Some(&[Some(tex.sampler.clone())]));
             context.OMSetBlendState(&pipe.blend, None, 0xFFFFFFFF);
-            // Фон зоны (всегда, даже при пустой книге).
-            context.VSSetShader(&pipe.bg_vs, None);
-            context.PSSetShader(&pipe.bg_ps, None);
             context.Draw(6, 0);
-            // Бары/линии уровней.
-            if self.count > 0 {
-                context.VSSetShaderResources(1, Some(&[Some(pipe.srv.clone())]));
-                context.VSSetShader(&pipe.bars_vs, None);
-                context.PSSetShader(&pipe.bars_ps, None);
-                context.DrawInstanced(6, self.count, 0, 0);
-            }
         }
     }
 
@@ -134,6 +267,64 @@ impl OrderBookLayer {
             srv,
             view_cb,
             style_cb,
+        }
+    }
+
+    fn create_tex(device: &ID3D11Device, tex_w: u32, tex_h: u32) -> BookTex {
+        let desc = D3D11_TEXTURE2D_DESC {
+            Width: tex_w,
+            Height: tex_h,
+            MipLevels: 1,
+            ArraySize: 1,
+            Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
+            Usage: D3D11_USAGE_DEFAULT,
+            BindFlags: (D3D11_BIND_RENDER_TARGET.0 | D3D11_BIND_SHADER_RESOURCE.0) as u32,
+            CPUAccessFlags: 0,
+            MiscFlags: 0,
+        };
+        let tex = unsafe {
+            let mut o = None;
+            device.CreateTexture2D(&desc, None, Some(&mut o)).unwrap();
+            o.unwrap()
+        };
+        let rtv = unsafe {
+            let mut o = None;
+            device
+                .CreateRenderTargetView(&tex, None, Some(&mut o))
+                .unwrap();
+            o.unwrap()
+        };
+        let srv = unsafe {
+            let mut o = None;
+            device
+                .CreateShaderResourceView(&tex, None, Some(&mut o))
+                .unwrap();
+            o.unwrap()
+        };
+        let blit_vs = make_vs(device, BLIT_HLSL, "blit_vertex");
+        let blit_fs = make_ps(device, BLIT_HLSL, "blit_fragment");
+        let blit_cb = create_dynamic_cb(device, std::mem::size_of::<BlitParams>() as u32);
+        let sampler = create_point_sampler(device);
+        BookTex {
+            _tex: tex,
+            rtv,
+            srv,
+            tex_w,
+            tex_h,
+            blit_vs,
+            blit_fs,
+            blit_cb,
+            sampler,
+            last_price_to_px: f32::NAN,
+            last_view_price0: f32::NAN,
+            last_style: BookStyle::default(),
+            baked: false,
+            dirty: false,
+            last_bake_ms: 0.0,
         }
     }
 }

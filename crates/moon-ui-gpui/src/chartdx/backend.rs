@@ -154,13 +154,19 @@ impl PlatformLayers {
         gpu: &gpui::RawGpuAccess,
         panel_clip: [f32; 4],
     ) {
+        // Послойные DRAW-счётчики (чокпоинт, мандат AGENTS.md): раз на present на каждый слой.
+        crate::diag::bump(&crate::diag::CHART_BG_DRAW);
         self.background
             .render(background_params, device, context, rtv, gpu);
+        crate::diag::bump(&crate::diag::CHART_GRID_DRAW);
         self.grid.render(grid_params, device, context, rtv, gpu);
+        crate::diag::bump(&crate::diag::CHART_COMBO_DRAW);
         self.combo
             .render(view, device, context, rtv, gpu, panel_clip);
+        crate::diag::bump(&crate::diag::CHART_BOOK_DRAW);
         self.orderbook
-            .render(orderbook_view, book_style, device, context, rtv, gpu);
+            .render(orderbook_view, book_style, device, context, rtv, gpu, panel_clip);
+        crate::diag::bump(&crate::diag::CHART_USER_DRAW);
         self.userdata.render(view, device, context, rtv, gpu);
     }
 

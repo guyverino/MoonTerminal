@@ -81,7 +81,7 @@ pub struct GridParams {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+#[derive(Clone, Copy, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct BookStyle {
     pub book_bg: [f32; 4],
     pub bid: [f32; 4],

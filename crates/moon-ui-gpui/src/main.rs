@@ -158,6 +158,12 @@ struct Shell {
     /// Троттл observe-notify бэкенда: Shell-рендер обновляет лишь статус-бар (tick/book/cpu/
     /// fps), его дёргать чаще ~4 Гц человеку незачем, а он тащит top-down тяжёлый Orders.
     last_notify: Option<Instant>,
+    /// Прошлое виденное значение follow (Live/Пауза). Смена = клик юзера → отражаем кнопку
+    /// тулбара мгновенно, мимо 250мс-троттла (иначе Live↔Пауза «залипает» до ¼с).
+    last_follow: bool,
+    /// Прошлое виденное значение масштаба. Это тоже клик юзера, а не фоновая телеметрия:
+    /// тулбар должен менять подпись сразу, даже при троттле Shell observe.
+    last_price_scale: Option<f32>,
     pending_detach: Vec<String>,
 }
 
@@ -283,13 +289,26 @@ impl Shell {
         // Header/статус-бар читают backend; но это GPUI-перерисовка top-down → тащит тяжёлый
         // Orders. Данные статуса (tick/book/cpu/fps) меняются ≤10 Гц, человеку хватает ≤4 Гц.
         // Троттлим notify до ≥250мс (Пример 5: не будить всю сцену общим молотком на каждый тик).
-        cx.observe(&backend, |this, _backend, cx| {
+        cx.observe(&backend, |this, backend, cx| {
             crate::diag::bump(&crate::diag::SHELL_OBS_FIRE);
             let now = Instant::now();
-            let due = this
-                .last_notify
-                .map(|t| now.duration_since(t).as_millis() >= 250)
-                .unwrap_or(true);
+            // Follow/Live и Scale меняются по КЛИКУ юзера — отражаем мгновенно,
+            // мимо 250мс-троттла.
+            // Прочее (tick/book/cpu/fps) меняется само и человеку хватает ≤4 Гц → троттлим.
+            let (follow, price_scale) = {
+                let b = backend.read(cx);
+                (b.follow, b.price_scale)
+            };
+            let follow_changed = follow != this.last_follow;
+            let scale_changed = price_scale != this.last_price_scale;
+            this.last_follow = follow;
+            this.last_price_scale = price_scale;
+            let due = follow_changed
+                || scale_changed
+                || this
+                    .last_notify
+                    .map(|t| now.duration_since(t).as_millis() >= 250)
+                    .unwrap_or(true);
             if due {
                 this.last_notify = Some(now);
                 crate::diag::bump(&crate::diag::SHELL_OBS_NOTIFY);
@@ -320,6 +339,8 @@ impl Shell {
             last_frame: None,
             fps: 0.0,
             last_notify: None,
+            last_follow: true,
+            last_price_scale: None,
             pending_detach: Vec::new(),
         }
     }

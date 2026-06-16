@@ -108,6 +108,8 @@ pub struct OrdersPanel {
     /// Время последней перерисовки (unix мс) — пол 250мс: ордерные ивенты летят часто,
     /// глаз всё равно не успеет, поэтому таблицу обновляем НЕ ЧАЩЕ 4 Гц. Исключение-гейт.
     last_notify_ms: f64,
+    /// Армирован ли 1-Гц тик колонки «Age» (возраст ордера живёт по часам, не по данным).
+    age_timer_armed: bool,
     dock: Option<WeakEntity<DockArea>>,
     focus: FocusHandle,
 }
@@ -136,18 +138,53 @@ impl OrdersPanel {
                 crate::diag::bump(&crate::diag::ORDERS_OBS_NOTIFY);
                 cx.notify();
             }
+            // Появились ордера → завести Age-тик (идемпотентно; гаснет сам, когда их нет).
+            this.arm_age_timer(cx);
         })
         .detach();
-        Self {
+        let mut this = Self {
             backend,
             group,
             view: OrdersViewState::default(),
             last_sig: 0,
             last_sec: 0,
             last_notify_ms: 0.0,
+            age_timer_armed: false,
             dock: None,
             focus: cx.focus_handle(),
+        };
+        this.arm_age_timer(cx);
+        this
+    }
+
+    /// 1-Гц тик для колонки «Age» (возраст ордера): живёт по СВОИМ часам, а не по приходу
+    /// данных. На молчащем рынке backend-пульса нет → без этого Age замирал бы. Тикает лишь
+    /// пока в группе есть ордера; гаснет, когда их нет (не плодим таймер вхолостую).
+    fn arm_age_timer(&mut self, cx: &mut Context<Self>) {
+        if self.age_timer_armed || count_orders(self.backend.read(cx), &self.group) == 0 {
+            return;
         }
+        self.age_timer_armed = true;
+        cx.spawn(async move |this, cx| {
+            let executor = cx.update(|cx| cx.background_executor().clone());
+            executor
+                .timer(std::time::Duration::from_millis(1000))
+                .await;
+            let alive = cx.update(|cx| {
+                this.update(cx, |this, cx| {
+                    this.age_timer_armed = false;
+                    if count_orders(this.backend.read(cx), &this.group) > 0 {
+                        cx.notify();
+                        this.arm_age_timer(cx);
+                    }
+                })
+                .is_ok()
+            });
+            if !alive {
+                return;
+            }
+        })
+        .detach();
     }
 
     /// Открытые ордера ядер группы (с именем ядра и quote) — порт `collect_orders`.

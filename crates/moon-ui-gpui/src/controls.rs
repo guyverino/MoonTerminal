@@ -6,8 +6,8 @@
 use gpui::*;
 
 use moon_palette::{
-    MoonAccent, MoonButton, MoonButtonSegment, MoonButtonSize, MoonButtonVariant, MoonPalette,
-    MoonPopover, MoonPopoverPlacement, MoonSegmentItem, MoonSegmentedControl, h_flex, v_flex,
+    MoonAccent, MoonButton, MoonButtonSegment, MoonButtonSize, MoonButtonVariant, MoonDropdown,
+    MoonMenuItem, MoonMenuSize, MoonPalette, MoonSegmentItem, MoonSegmentedControl, h_flex,
 };
 
 use crate::{Backend, design};
@@ -16,13 +16,13 @@ use crate::{Backend, design};
 pub const TOOLBAR_H: f32 = design::TOOLBAR_H;
 
 /// Пресеты масштаба цены (Y) — 1:1 с egui `dock/controls.rs::SCALES`. `None` = «Авто».
-const SCALES: [(&str, Option<f32>, f32); 6] = [
-    ("Авто", None, 48.0),
-    ("50%", Some(0.50), 44.0),
-    ("20%", Some(0.20), 44.0),
-    ("10%", Some(0.10), 44.0),
-    ("5%", Some(0.05), 38.0),
-    ("2%", Some(0.02), 38.0),
+const SCALES: [(&str, Option<f32>); 6] = [
+    ("Авто", None),
+    ("50%", Some(0.50)),
+    ("20%", Some(0.20)),
+    ("10%", Some(0.10)),
+    ("5%", Some(0.05)),
+    ("2%", Some(0.02)),
 ];
 
 /// Подписи полосок `size` / `sell` (как на стенде).
@@ -98,46 +98,23 @@ fn sell_strip() -> impl IntoElement {
         .render()
 }
 
-fn scale_button(label: &'static str, selected: bool, width: f32) -> MoonButton {
-    MoonButton::new(format!("scale-{label}"))
-        .width(width)
-        .variant(if selected {
-            MoonButtonVariant::Amber
-        } else {
-            MoonButtonVariant::Soft
-        })
-        .size(MoonButtonSize::Toolbar)
-        .selected(selected)
-        .label(label)
-}
-
 fn scale_label(scale: Option<f32>) -> &'static str {
     SCALES
         .iter()
-        .find(|(_, value, _)| *value == scale)
-        .map(|(label, _, _)| *label)
+        .find(|(_, value)| *value == scale)
+        .map(|(label, _)| *label)
         .unwrap_or("Авто")
 }
 
-fn scale_popover(scale: Option<f32>, backend: Entity<Backend>, p: MoonPalette) -> impl IntoElement {
+fn scale_dropdown(scale: Option<f32>, backend: Entity<Backend>, p: MoonPalette) -> impl IntoElement {
     let selected_label = scale_label(scale);
-    let trigger = MoonButton::new("toolbar-scale-trigger")
-        .width(112.0)
-        .variant(MoonButtonVariant::Neutral)
-        .size(MoonButtonSize::Toolbar)
-        .segment(
-            MoonButtonSegment::new("МАСШТАБ")
-                .color(p.text_muted)
-                .weight(400.0),
-        )
-        .text_segment(selected_label, p.text, 500.0)
-        .render();
-
-    let mut menu = v_flex().gap(px(4.0));
-    for (label, pct, _) in SCALES {
+    let mut items = Vec::with_capacity(SCALES.len());
+    for (label, pct) in SCALES {
         let backend = backend.clone();
-        menu = menu.child(
-            scale_button(label, scale == pct, 104.0)
+        items.push(
+            MoonMenuItem::with_key(format!("scale-{label}"), label)
+                .selected(scale == pct)
+                .checked(scale == pct)
                 .on_click(move |_, _, cx| {
                     backend.update(cx, |b, bcx| {
                         if b.price_scale != pct {
@@ -145,17 +122,27 @@ fn scale_popover(scale: Option<f32>, backend: Entity<Backend>, p: MoonPalette) -
                             bcx.notify();
                         }
                     });
-                })
-                .render(),
+                }),
         );
     }
 
-    MoonPopover::new("toolbar-scale-popover")
-        .placement(MoonPopoverPlacement::BottomEnd)
-        .width(116.0)
-        .close_on_content_click(true)
-        .trigger(trigger)
-        .content(menu)
+    MoonDropdown::new("toolbar-scale-dropdown")
+        .trigger_width(112.0)
+        .trigger_variant(MoonButtonVariant::Neutral)
+        .trigger_size(MoonButtonSize::Toolbar)
+        .menu_width(116.0)
+        .menu_size(MoonMenuSize::Compact)
+        .segment(
+            MoonButtonSegment::new("МАСШТАБ")
+                .color(p.text_muted)
+                .weight(400.0),
+        )
+        .segment(
+            MoonButtonSegment::new(selected_label)
+                .color(p.text)
+                .weight(500.0),
+        )
+        .items(items)
 }
 
 /// Полоса тулбара: рисуется как обычный child `Shell` (между шапкой и доком), не dock-панель.
@@ -189,7 +176,7 @@ pub fn toolbar(backend: &Entity<Backend>, cx: &App) -> impl IntoElement {
         .child(strip_label("sell", p))
         .child(sell_strip())
         .child(divider(p))
-        .child(scale_popover(scale, backend.clone(), p));
+        .child(scale_dropdown(scale, backend.clone(), p));
 
     let backend = backend.clone();
     row.child(

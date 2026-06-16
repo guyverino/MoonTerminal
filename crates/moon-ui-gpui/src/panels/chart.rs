@@ -15,7 +15,7 @@ use crate::chartdx::ChartEngine;
 use crate::{Backend, axes, input};
 use moon_chart::container::ContainerKind;
 use moon_chart::paint::now_unix_ms;
-use moon_core::config::ChartTheme;
+use moon_core::config::{ChartTheme, OrdersStyle};
 use moon_core::session::CoreId;
 
 #[cfg(windows)]
@@ -48,6 +48,24 @@ fn chart_present_rate_hz() -> f32 {
     refresh as f32
 }
 
+#[derive(Clone, PartialEq)]
+struct ChartSettingsSig {
+    theme: ChartTheme,
+    orders: OrdersStyle,
+    scale: Option<f32>,
+    follow: bool,
+}
+
+fn chart_settings_sig(backend: &Backend) -> ChartSettingsSig {
+    let effective = backend.preview.as_ref().unwrap_or(&backend.config);
+    ChartSettingsSig {
+        theme: effective.theme.clone(),
+        orders: effective.orders.clone(),
+        scale: backend.price_scale,
+        follow: backend.follow,
+    }
+}
+
 pub struct ChartPanel {
     backend: Entity<Backend>,
     chart: ChartEngine,
@@ -61,6 +79,10 @@ pub struct ChartPanel {
     num: Option<u32>,
     /// Сигнатура рыночных данных прошлого кадра — нотифаим только при реальном приходе данных.
     data_sig: u64,
+    /// UI-настройки, которые применяются в render. После включения cached dock-панелей
+    /// top-down Shell render больше не будит ChartPanel, поэтому изменения должны нотифаить
+    /// саму панель.
+    settings_sig: ChartSettingsSig,
     /// FastChart: true → плавный кадр по vsync (фокусный чарт); false → адаптивно (по приходу
     /// данных через observe, фон/мультичарт). Main=true, AddToChart=false (правится из тулбара позже).
     fast: bool,
@@ -110,12 +132,25 @@ impl ChartPanel {
                 }
             });
         }
-        // Пере-рендер ТОЛЬКО при приходе данных (сигнатура). Time-based TTL панелей
-        // обслуживает локальный one-shot timer, не backend data observe.
+        let settings_sig = {
+            let b = backend.read(cx);
+            chart_settings_sig(&b)
+        };
+        // Пере-рендер при приходе данных (сигнатура) или изменении UI-настроек чарта.
+        // Time-based TTL панелей обслуживает локальный one-shot timer, не backend data observe.
         cx.observe(&backend, |this, backend, cx| {
             crate::diag::bump(&crate::diag::CHART_OBS_FIRE);
             let now = now_unix_ms();
-            let sig = this.chart.data_signature(&backend.read(cx).session);
+            let (sig, settings_sig) = {
+                let b = backend.read(cx);
+                (this.chart.data_signature(&b.session), chart_settings_sig(&b))
+            };
+            if settings_sig != this.settings_sig {
+                this.settings_sig = settings_sig;
+                this.view_dirty = true;
+                crate::diag::bump(&crate::diag::CHART_OBS_NOTIFY);
+                cx.notify();
+            }
             if sig != this.data_sig {
                 this.data_sig = sig;
                 // Троттл notify. Данные own-pass рисует сам по present (форк), notify нужен лишь
@@ -182,6 +217,7 @@ impl ChartPanel {
             market,
             num: None,
             data_sig: 0,
+            settings_sig,
             fast: true,
             fast_frame_skip: 0,
             last_prepared_data_sig: u64::MAX,
@@ -223,9 +259,22 @@ impl ChartPanel {
         cx: &mut Context<Self>,
     ) -> Self {
         let chart = ChartEngine::new_kind(epoch, theme, ContainerKind::Chart { num, core });
+        let settings_sig = {
+            let b = backend.read(cx);
+            chart_settings_sig(&b)
+        };
         cx.observe(&backend, |this, backend, cx| {
             let now = now_unix_ms();
-            let sig = this.chart.data_signature(&backend.read(cx).session);
+            let (sig, settings_sig) = {
+                let b = backend.read(cx);
+                (this.chart.data_signature(&b.session), chart_settings_sig(&b))
+            };
+            if settings_sig != this.settings_sig {
+                this.settings_sig = settings_sig;
+                this.view_dirty = true;
+                crate::diag::bump(&crate::diag::CHART_OBS_NOTIFY);
+                cx.notify();
+            }
             if sig != this.data_sig {
                 this.data_sig = sig;
                 // AddToChart — фоновый/мультичарт: notify (а с ним top-down перерисовка Orders)
@@ -247,6 +296,7 @@ impl ChartPanel {
             market: None,
             num: Some(num),
             data_sig: 0,
+            settings_sig,
             fast: false,
             fast_frame_skip: 0,
             last_prepared_data_sig: u64::MAX,

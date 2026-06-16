@@ -39,6 +39,17 @@ diag_counters!(
     // рубильника (адаптивна к зуму: на мелком масштабе почти все кадры пропускаются).
     CHART_PRESENT     => "chart_present",
     CHART_CAM_STEP    => "chart_cam_step",
+    // ПОСЛОЙНЫЕ счётчики own-pass (мандат AGENTS.md «UI Render Diagnostics»): own-pass ВНЕ
+    // GPUI-рендера → считаем руками в одной точке-чокпоинте (backend::render_d3d). *_DRAW =
+    // отрисовка/блит слоя (раз на present); *_BAKE = перепекание текстуры-кэша (combo/стакан),
+    // должно быть РЕДКО (по приходу данных/смене вида). BAKE ≈ DRAW = кэш не работает.
+    CHART_BG_DRAW     => "bg_draw",
+    CHART_GRID_DRAW   => "grid_draw",
+    CHART_COMBO_DRAW  => "combo_draw",
+    CHART_COMBO_BAKE  => "combo_bake",
+    CHART_BOOK_DRAW   => "orderbook_draw",
+    CHART_BOOK_BAKE   => "orderbook_bake",
+    CHART_USER_DRAW   => "userdata_draw",
     ORDERS_OBS_FIRE   => "orders_obs_fire",
     ORDERS_OBS_NOTIFY => "orders_obs_notify",
     SHELL_OBS_FIRE    => "shell_obs_fire",

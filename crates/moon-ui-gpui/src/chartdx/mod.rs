@@ -97,10 +97,9 @@ struct PaneRender {
     right_margin_frac: f32,
     follow: bool,
     last_edge_px: i64,
-    /// Кэш дорогого авто-Y скана (min/max видимых тиков) + входы, при которых он валиден:
-    /// пиксель-позиция камеры и total тиков. Пересканируем лишь при их смене (рубильник).
+    /// Кэш дорогого авто-Y скана (min/max видимых тиков) + пиксель-позиция камеры, при которой
+    /// он валиден. Пересканируем лишь на пиксель-кроссе (рубильник, см. prepare).
     scan_cam_px: i64,
-    scan_total: u64,
     cached_tick_price: Option<(f32, f32)>,
     /// Видима в этом кадре (рисуем) — ставится в `prepare`.
     active: bool,
@@ -129,7 +128,6 @@ impl PaneRender {
             follow: false,
             last_edge_px: i64::MIN,
             scan_cam_px: i64::MIN,
-            scan_total: u64::MAX,
             cached_tick_price: None,
             active: false,
         }
@@ -480,14 +478,18 @@ impl ChartEngine {
             let (view_time0, window_ms) = pane.view.visible_x(chart_area.w);
             let data = session.market_view(pane.core, &pane.market);
             // Авто-Y скан min/max видимого окна — ДОРОГО (проход по видимым тикам). Рубильник
-            // (MoonBot-урок): пересканируем ТОЛЬКО когда окно сдвинулось на ЦЕЛЫЙ пиксель ИЛИ
-            // пришли новые тики; иначе берём прошлый результат. Адаптивно к зуму: на мелком
-            // масштабе / паузе почти все кадры берут кэш, скан не гоняется.
+            // (пункт 2 аудита) Гейтим скан ТОЛЬКО по пиксель-кроссу камеры, НЕ по приходу тиков.
+            // Было `|| total != scan_total` — а total растёт КАЖДЫЙ тик, т.е. на живом рынке
+            // условие всегда истинно → скан гонялся каждый prepare (мёртвый рубильник). Новый
+            // тик лишь добавляется в combo (дёшево); полный скан min/max видимого окна нужен,
+            // лишь когда окно реально сдвинулось на ≥1 пиксель (или зум/пан/device-lost). Авто-Y
+            // сглажен (EMA+гистерезис в update_y), поэтому лаг ≤1 пикселя времени на новый
+            // экстремум незаметен. Адаптивно к зуму: zoom-in → пиксель-кроссы чаще, но тиков в
+            // окне меньше (скан дёшев); zoom-out → скан почти не гоняется.
             let cam_px = ((pane.view.right_time_ms - pane.view.epoch_ms)
                 * pane.view.px_per_ms.max(1e-9) as f64)
                 .round() as i64;
-            let total = data.map(|d| d.ring.total_pushed()).unwrap_or(0);
-            if device_lost || cam_px != pr.scan_cam_px || total != pr.scan_total {
+            if device_lost || cam_px != pr.scan_cam_px {
                 pr.cached_tick_price = match data {
                     Some(d) => {
                         let margin = pane.view.marker_half_px / pane.view.px_per_ms.max(1e-6);
@@ -499,7 +501,6 @@ impl ChartEngine {
                     None => None,
                 };
                 pr.scan_cam_px = cam_px;
-                pr.scan_total = total;
             }
             let tick_price = pr.cached_tick_price;
             let order_price = session

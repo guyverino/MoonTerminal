@@ -257,6 +257,7 @@ impl ComboLayer {
             context.VSSetConstantBuffers(0, Some(&[Some(pipe.view_cb.clone())]));
             context.OMSetBlendState(&pipe.blend, None, 0xFFFFFFFF);
             if need_full {
+                crate::diag::bump(&crate::diag::CHART_COMBO_BAKE);
                 tex.bake_t0 = bake_t0;
                 u_left_px = (view.view_time0 - tex.bake_t0) * ttp;
                 // ПРОЗРАЧНЫЙ фон битмапа: только кресты непрозрачны → при блите (alpha) сетка/фон
