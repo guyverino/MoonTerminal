@@ -22,7 +22,8 @@ image = "0.25"
 bytemuck = { version = "1", features = ["derive"] }
 
 # GPUI source identity must stay single across terminal and MoonPalette.
-# Local path overrides live in the workspace .cargo/config.toml.
+# Public builds intentionally follow our integration branches; local path
+# overrides live in the workspace .cargo/config.toml.
 gpui = { git = "https://github.com/Moonbot-Tech/ZedFork", branch = "master" }
 gpui_platform = { git = "https://github.com/Moonbot-Tech/ZedFork", branch = "master", features = ["font-kit", "wayland", "x11"] }
 moon-palette = { git = "https://github.com/Moonbot-Tech/MoonPalette", branch = "main" }

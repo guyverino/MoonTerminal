@@ -8,7 +8,7 @@
 
 Кросс-десктопный трейдинговый терминал для ядер **MoonBot**: график тиков + стакан,
 рисуемые **own-pass DX11** прямо в backbuffer **GPUI** (без wgpu-readback), оболочка на
-**GPUI / moon-ui**, поток данных через **MoonProtoBeta**.
+**GPUI / MoonPalette**, поток данных через **MoonProtoBeta**.
 
 Единственный бинарь — `moon-gpui` (`crates/moon-ui-gpui`). Старый egui/winit-бинарь
 `moon-terminal` и wgpu-движок удалены (рисование переведено на own-pass DX11); историю
@@ -28,13 +28,13 @@ crates/
   moon-core      backend: feed/session/market/coordinator/config/db/data/metrics (UI-агностик)
   moon-chart     чарт-математика/геометрия (wgpu-free): view (зум/пан/Y), axes, transform,
                  build_order_geometry, типы инстансов, константы. Данные рисует own-pass.
-  moon-ui-gpui   бинарь `moon-gpui`: GPUI-оболочка (moon-ui) + own-pass DX11 рендер
+  moon-ui-gpui   бинарь `moon-gpui`: GPUI-оболочка (MoonPalette) + own-pass DX11 рендер
                  чарта (src/chartdx/) поверх moon-core.
 ```
 
 Внешние GitHub-зависимости:
 **GPUI** (форк `Moonbot-Tech/ZedFork` — raw GPU-pass hook ещё не в upstream) и
-**moon-ui** (`Moonbot-Tech/moon-ui`, библиотека компонентов с `MoonBackgroundPolicy::NoFill`).
+**MoonPalette** (`Moonbot-Tech/MoonPalette`, библиотека компонентов с `MoonBackgroundPolicy::NoFill`).
 
 ## Запуск
 
@@ -45,7 +45,7 @@ GPUI, DirectX/DWrite/DComp и наш `chartdx` GPU-pass. GNU-таргет (`*-wi
 - **Rust** с MSVC standard library для `x86_64-pc-windows-msvc`.
 - **Visual Studio Build Tools 2022**, компонент *«Разработка на C++ для настольных систем»*
   — даёт `link.exe`, `lib.exe`, `ml64.exe` и Windows SDK. Полная Visual Studio не нужна.
-- Доступ к GitHub-зависимостям `Moonbot-Tech/ZedFork` и `Moonbot-Tech/moon-ui`.
+- Доступ к GitHub-зависимостям `Moonbot-Tech/ZedFork` и `Moonbot-Tech/MoonPalette`.
 
 ```powershell
 cd MoonTerminal

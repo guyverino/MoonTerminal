@@ -30,8 +30,9 @@ opt-level = 3
 # Канонический источник GPUI для всего Moon-стека — Moonbot-Tech/ZedFork, ветка `master`.
 # MoonPalette тоже пинит gpui на ZedFork branch=master, поэтому терминал ОБЯЗАН использовать
 # тот же спек `{git, branch="master"}` (а не `{git, rev}`) — иначе Cargo считает их разными
-# источниками и собирает две несовместимые копии GPUI. Тянется прямо из репо (Cargo.lock
-# gitignored → каждая сборка берёт текущий master); локальный .cargo path-override больше не нужен.
+# источниками и собирает две несовместимые копии GPUI. Каждый push в
+# ZedFork/MoonPalette/MoonTerminal обязан сохранять сборку всего стека.
+# Локальные path overrides живут только в ignored .cargo/config.toml.
 [patch."https://github.com/zed-industries/zed"]
 gpui = { git = "https://github.com/Moonbot-Tech/ZedFork", branch = "master" }
 gpui_platform = { git = "https://github.com/Moonbot-Tech/ZedFork", branch = "master" }
