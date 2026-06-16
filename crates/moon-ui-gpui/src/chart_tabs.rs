@@ -338,9 +338,22 @@ impl ChartTabs {
         };
         let backend = self.backend.clone();
         let group = self.group.clone();
+        // Для восстановленного окна — сохранённый логический размер, чтобы скорректировать
+        // DPICHANGED-сжатие на первом render (см. DetachedChartHost.restore_size).
+        let restore_size = restored.then(|| size(px(geom.w as f32), px(geom.h as f32)));
         let opened = cx.open_window(opts, move |window, cx| {
             let host = cx.new(|cx| {
-                DetachedChartHost::new(panel, backend, group, n, core, restored, window, cx)
+                DetachedChartHost::new(
+                    panel,
+                    backend,
+                    group,
+                    n,
+                    core,
+                    restored,
+                    restore_size,
+                    window,
+                    cx,
+                )
             });
             cx.new(|cx| Root::new(host, window, cx).background_policy(MoonBackgroundPolicy::NoFill))
         });
@@ -746,6 +759,10 @@ struct DetachedChartHost {
     /// его НЕЛЬЗЯ (иначе позиция уезжает с каждым запуском). Армируется через ~1.5с — дальше
     /// пишем только реальные перемещения пользователя. У свежего детача — сразу true.
     persist_armed: bool,
+    /// Логический размер для коррекции на ПЕРВОМ render восстановленного окна: gpui создаёт окно
+    /// на primary, и `WM_DPICHANGED` при переезде на монитор с другим DPI пере-масштабирует
+    /// РАЗМЕР (позиция уже верная) → форсим сохранённый логический размер один раз. None у детача.
+    restore_size: Option<Size<Pixels>>,
 }
 
 impl DetachedChartHost {
@@ -756,6 +773,7 @@ impl DetachedChartHost {
         num: u32,
         core: Option<CoreId>,
         restored: bool,
+        restore_size: Option<Size<Pixels>>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -785,6 +803,7 @@ impl DetachedChartHost {
             num,
             core,
             persist_armed: !restored,
+            restore_size,
         }
     }
 
@@ -834,7 +853,12 @@ impl DetachedChartHost {
 }
 
 impl Render for DetachedChartHost {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Коррекция размера восстановленного окна (один раз): окно уже на целевом мониторе с
+        // верным scale → форсим сохранённый логический размер, перебивая DPICHANGED-сжатие.
+        if let Some(sz) = self.restore_size.take() {
+            window.resize(sz);
+        }
         let p = MoonPalette::active(cx);
         // Масштаб — СВОЙ у этой панели (по-вкладочно), правится прямо в неё.
         let scale = self.panel.read(cx).scale();

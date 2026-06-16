@@ -274,6 +274,10 @@ impl ChartEngine {
         let pass = window.add_gpu_pass(
             GpuPhase::UnderScene,
             Box::new(move |gpu: &RawGpuAccess| {
+                // own-pass зовётся из рендерера форка в no-unwind контексте: любая паника тут =
+                // process abort (0xc0000409), без сообщения в GUI-stderr. Ловим её — кадр
+                // пропускаем, причину пишем в лог (видно в logs/*.log и detect_diag).
+                let __ownpass = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 // Свёрнуто/скрыто (нет backbuffer) — презентить нечего; НЕ считаем present,
                 // чтобы present_seq не рос и 60-Гц задача спала. NB: перекрытое-но-не-свёрнутое
                 // окно на Windows DWM всё ещё композитит (width != 0, ради thumbnail/Alt-Tab) —
@@ -434,6 +438,20 @@ impl ChartEngine {
                         Ok(())
                     }
                     _ => Ok(()),
+                }
+                }));
+                match __ownpass {
+                    Ok(r) => r,
+                    Err(e) => {
+                        let msg = e
+                            .downcast_ref::<&str>()
+                            .copied()
+                            .or_else(|| e.downcast_ref::<String>().map(|s| s.as_str()))
+                            .unwrap_or("<non-string panic>");
+                        log::error!("chart own-pass PANIC (кадр пропущен): {msg}");
+                        moon_core::detect_diag::line(&format!("[ownpass] PANIC: {msg}"));
+                        Ok(())
+                    }
                 }
             }),
         );

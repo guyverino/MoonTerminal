@@ -835,6 +835,39 @@ fn main() -> anyhow::Result<()> {
         eprintln!("не удалось установить логгер: {e}");
     }
 
+    // Паник-хук: GUI-приложение без консоли → stderr с сообщением паники теряется (и при
+    // panic=abort это выглядит как нативный краш 0xc0000409 в ucrtbase). Пишем место+сообщение
+    // паники в `panic.log` (cwd) и в общий лог ДО аборта — чтобы видеть точный source-локейшн.
+    {
+        let default_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            let loc = info
+                .location()
+                .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+                .unwrap_or_else(|| "?".into());
+            let payload = info
+                .payload()
+                .downcast_ref::<&str>()
+                .copied()
+                .or_else(|| info.payload().downcast_ref::<String>().map(|s| s.as_str()))
+                .unwrap_or("<non-string>");
+            // Бэктрейс (force — без RUST_BACKTRACE): location у clamp-паник = внутренность core,
+            // а нам нужен ВЫЗЫВАЮЩИЙ кадр в нашем коде.
+            let bt = std::backtrace::Backtrace::force_capture();
+            let line = format!("PANIC at {loc}: {payload}\n--- backtrace ---\n{bt}\n--- end ---");
+            log::error!("PANIC at {loc}: {payload}");
+            use std::io::Write;
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open("panic.log")
+            {
+                let _ = writeln!(f, "{line}");
+            }
+            default_hook(info);
+        }));
+    }
+
     let cfg = AppConfig::load()?;
     // Файловый лог: режим из конфига + одноразовая чистка старых файлов при старте.
     moon_core::applog::set_file_logging(cfg.log_to_file, cfg.log_retention_days);
