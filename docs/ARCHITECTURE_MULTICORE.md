@@ -7,7 +7,7 @@
 Режим один — **live** (синтетики нет).
 
 > UI — порт egui-версии на GPUI (модули помечены «порт egui …»). Старый egui-бинарь и
-> wgpu-движок чарта удалены; переход — `docs/REFACTOR_RENDER.md`, рендер-план — `RENDER_PLAN.md`.
+> wgpu-движок чарта удалены; переход — `docs/REFACTOR_RENDER.md`, рендер-план — `docs-internal/RENDER_PLAN.md` (внутр., вне публичного репо).
 
 ---
 
@@ -143,7 +143,7 @@ GPUI App ── окно-группа (GPUI Window) = own-pass чарт (chartdx
 - **Тема** едет в шейдеры cbuffer'ами (sRGB → linear в шейдере).
 - **device-lost guard**: при пересоздании device GPUI слои сбрасывают ресурсы и перезаливают историю.
 - Перерисовка: фокусный чарт — по vsync (`request_animation_frame`); фоновые/мультичарт — по
-  сигнатуре данных (`data_signature`). Детали и недоделки (версий-гейты и пр.) — `RENDER_PLAN.md`.
+  сигнатуре данных (`data_signature`). Детали и недоделки (версий-гейты и пр.) — `docs-internal/RENDER_PLAN.md` (внутр., вне публичного репо).
 
 ---
 
@@ -197,6 +197,6 @@ GPUI App ── окно-группа (GPUI Window) = own-pass чарт (chartdx
 
 - **Рендер чарта**: версий-гейты, авто-Y по ордерам, зум-к-курсору/аккумуляция колеса, серверная
   трасса ордеров (вместо реконструкции), PriceLines/Volume/Background/ChartObj, удаление избыточного
-  own-pass крестика. Полный план и баги — `RENDER_PLAN.md`.
+  own-pass крестика. Полный план и баги — `docs-internal/RENDER_PLAN.md` (внутр., вне публичного репо).
 - **Торговля**: кнопки BUY/SELL/Panic/Cancel пока логируют; реальные команды через `client` + guard-ы.
 - **i18n** GPUI-оболочки (сейчас строки в коде).

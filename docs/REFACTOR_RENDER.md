@@ -1,7 +1,7 @@
 # Рефакторинг рисования: было → стало
 
 Что изменилось в рисовании чарта (и в репозитории) против состояния ДО начала работ.
-Кратко, по сути. Деталь плана недоделок — `RENDER_PLAN.md`.
+Кратко, по сути. Деталь плана недоделок — `docs-internal/RENDER_PLAN.md` (внутр., вне публичного репо).
 
 Проверка: `cargo check -p moon-ui-gpui` проходит 2026-06-15 через MSVC `vcvars64` после MoonTerminal-правок
 и адаптации к PR-grade GPUI hook (`Subscription` + callback `Result`, без `set_present_sync_interval`).
@@ -63,7 +63,7 @@ GPU↔CPU столл) → теперь его рисует **own-pass DX11 пр�
   вместо 3-сек hold, anchor zoom под курсором, дискретный wheel, Y-scale snap, дефолтный smooth-scale
   под фактический present-rate.
 
-## Незакрытое (см. `RENDER_PLAN.md`)
+## Незакрытое (см. `docs-internal/RENDER_PLAN.md` (внутр., вне публичного репо))
 
 Открыто/отложено теперь не “базовые баги”, а внешние контракты и поздняя оптимизация:
 визуальный live-GUI прогон, phase staggering + UI-toggle fast/slow, per-figure culling для будущих

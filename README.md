@@ -92,7 +92,7 @@ GPUI App ── окно-группа = own-pass чарт (chartdx DX11, UnderSc
 
 UI **никогда** не зовёт moonproto напрямую — только читает `FeedMsg` из канала и шлёт `CoreCmd`.
 Бэкенд и дедуп — [docs/ARCHITECTURE_MULTICORE.md](docs/ARCHITECTURE_MULTICORE.md). Рендер чарта —
-[docs/RENDER_PLAN.md](docs/RENDER_PLAN.md), переход на own-pass — [docs/REFACTOR_RENDER.md](docs/REFACTOR_RENDER.md).
+[docs/REFACTOR_RENDER.md](docs/REFACTOR_RENDER.md) и [docs/RENDER_INVALIDATION.md](docs/RENDER_INVALIDATION.md).
 
 ## Статус
 
@@ -100,7 +100,7 @@ UI **никогда** не зовёт moonproto напрямую — тольк�
 GPUI-оболочка на `moon-ui`, own-pass DX11 рендер чарта под generic GPUI GPU-pass hook,
 без wgpu-readback.
 
-Текущий render/fork статус ведётся в [docs/RENDER_PLAN.md](docs/RENDER_PLAN.md).
+Детальный render/fork-план ведётся во внутренних заметках (вне публичного репо).
 
 ---
 

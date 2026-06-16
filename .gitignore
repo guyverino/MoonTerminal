@@ -19,3 +19,8 @@ render_diag.log
 # только на этом компе, в публичный репо НЕ уходят. Публичными остаются только
 # чисто архитектурные docs/ (RENDER_INVALIDATION, REFACTOR_RENDER, ARCHITECTURE_MULTICORE).
 /docs-internal/
+# Внутренние агент-инструкции и рабочие заметки — на диске остаются (агент их читает
+# локально), но в публичный репо НЕ коммитятся. Удалены из истории (filter-repo).
+/CLAUDE.md
+/AGENTS.md
+/DisQuestions
