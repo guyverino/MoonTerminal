@@ -8,6 +8,8 @@
 
 mod backend;
 #[cfg(windows)]
+mod base;
+#[cfg(windows)]
 pub mod background;
 #[cfg(windows)]
 pub mod combo;
@@ -192,6 +194,8 @@ struct RenderState {
     /// CPU-side dirty flag для `GpuCanvasDriver::frame`: `prepare()` обновил resident state,
     /// значит следующий platform tick должен презентить кадр даже без GPUI dirty.
     needs_present: bool,
+    /// Full chart base changed. Cursor-only frames must leave this false and reuse base cache.
+    base_dirty: bool,
     last_gpu_prepare_generation: u64,
     /// Левый верхний угол chart slot в backbuffer. Cursor приходит из UI в локальных
     /// device-px слота, а own-pass рисует в координатах окна.
@@ -218,6 +222,8 @@ struct RenderState {
     /// вписывается брендовое лого (cover-fit), как контейнер «здесь появятся графики».
     #[cfg(windows)]
     window_bg_dst: [f32; 4],
+    #[cfg(windows)]
+    base_cache: base::BaseCache,
 }
 
 #[derive(Clone)]
@@ -274,6 +280,8 @@ impl RenderState {
         let next = [x, y];
         if self.slot_origin != next {
             self.slot_origin = next;
+            self.base_dirty = true;
+            self.needs_present = true;
             self.sync_cursor_params();
             if self.cursor.is_some() {
                 self.needs_present = true;
@@ -343,6 +351,7 @@ impl RenderState {
         for pr in &mut self.panes {
             if pr.active && pr.advance_camera(now_ms) {
                 crate::diag::bump(&crate::diag::CHART_CAM_STEP);
+                self.base_dirty = true;
                 wants_present = true;
             }
         }
@@ -364,6 +373,7 @@ impl RenderState {
         let generation = gpu.device_generation();
         if self.last_gpu_prepare_generation != generation {
             self.last_gpu_prepare_generation = generation;
+            self.base_dirty = true;
             for pr in &mut self.panes {
                 pr.gpu_prepare_dirty = true;
             }
@@ -452,46 +462,105 @@ impl RenderState {
                 }
                 let scissor_rs = self.scissor_rs.clone().unwrap();
                 let prev_rs = unsafe { context.RSGetState().ok() };
-                for pr in &mut self.panes {
-                    if pr.active {
-                        let mut view = pr.view;
-                        let mut background_params = pr.background_params;
-                        let mut grid_params = pr.grid_params;
-                        let mut cursor_params = pr.cursor_params;
-                        let mut orderbook_view = pr.orderbook_view;
-                        view.resolution = res;
-                        background_params.resolution = res;
-                        grid_params.resolution = res;
-                        cursor_params.resolution = res;
-                        orderbook_view.resolution = res;
-                        let panel_clip = [
-                            view.bounds[0],
-                            view.bounds[1],
-                            orderbook_view.bounds[0] + orderbook_view.bounds[2],
-                            view.bounds[1] + view.bounds[3],
-                        ];
-                        gpu::set_scissor(
-                            &context,
-                            &scissor_rs,
-                            panel_clip[0],
-                            panel_clip[1],
-                            panel_clip[2],
-                            panel_clip[3],
-                        );
-                        pr.layers.render_d3d(
-                            &view,
-                            &background_params,
-                            &grid_params,
-                            &cursor_params,
-                            &orderbook_view,
-                            &pr.book_style,
-                            &device,
-                            &context,
-                            &rtv,
-                            gpu,
-                            panel_clip,
-                        );
+
+                if self.base_dirty || self.base_cache.needs_rebuild(gpu) {
+                    let base_rtv = self.base_cache.begin_rebuild(&device, &context, gpu)?;
+                    let base = BackgroundParams {
+                        dst: [0.0, 0.0, res[0], res[1]],
+                        resolution: res,
+                        uv_off: [0.0, 0.0],
+                        uv_scale: [1.0, 1.0],
+                        opacity: 0.0,
+                        _pad: 0.0,
+                        bg: self.window_bg_color,
+                    };
+                    self.window_bg
+                        .render(&base, &device, &context, &base_rtv, gpu);
+                    let d = self.window_bg_dst;
+                    if d[2] > 0.0 && d[3] > 0.0 {
+                        let (uv_off, uv_scale) = cover_uv(d[2], d[3], SPLASH_ASPECT);
+                        let logo = BackgroundParams {
+                            dst: d,
+                            resolution: res,
+                            uv_off,
+                            uv_scale,
+                            opacity: WINDOW_BG_OPACITY,
+                            _pad: 0.0,
+                            bg: self.window_bg_color,
+                        };
+                        self.window_bg
+                            .render(&logo, &device, &context, &base_rtv, gpu);
                     }
+
+                    for pr in &mut self.panes {
+                        if pr.active {
+                            let mut view = pr.view;
+                            let mut background_params = pr.background_params;
+                            let mut grid_params = pr.grid_params;
+                            let mut orderbook_view = pr.orderbook_view;
+                            view.resolution = res;
+                            background_params.resolution = res;
+                            grid_params.resolution = res;
+                            orderbook_view.resolution = res;
+                            let panel_clip = [
+                                view.bounds[0],
+                                view.bounds[1],
+                                orderbook_view.bounds[0] + orderbook_view.bounds[2],
+                                view.bounds[1] + view.bounds[3],
+                            ];
+                            gpu::set_scissor(
+                                &context,
+                                &scissor_rs,
+                                panel_clip[0],
+                                panel_clip[1],
+                                panel_clip[2],
+                                panel_clip[3],
+                            );
+                            pr.layers.render_base_d3d(
+                                &view,
+                                &background_params,
+                                &grid_params,
+                                &orderbook_view,
+                                &pr.book_style,
+                                &device,
+                                &context,
+                                &base_rtv,
+                                gpu,
+                                panel_clip,
+                            );
+                        }
+                    }
+                    self.base_dirty = false;
+                }
+
+                self.base_cache.blit_to(&context, &rtv, gpu);
+
+                for pr in &mut self.panes {
+                    if !pr.active {
+                        continue;
+                    }
+                    let mut cursor_params = pr.cursor_params;
+                    let mut view = pr.view;
+                    let mut orderbook_view = pr.orderbook_view;
+                    cursor_params.resolution = res;
+                    view.resolution = res;
+                    orderbook_view.resolution = res;
+                    let panel_clip = [
+                        view.bounds[0],
+                        view.bounds[1],
+                        orderbook_view.bounds[0] + orderbook_view.bounds[2],
+                        view.bounds[1] + view.bounds[3],
+                    ];
+                    gpu::set_scissor(
+                        &context,
+                        &scissor_rs,
+                        panel_clip[0],
+                        panel_clip[1],
+                        panel_clip[2],
+                        panel_clip[3],
+                    );
+                    pr.layers
+                        .render_cursor_d3d(&cursor_params, &device, &context, &rtv, gpu);
                 }
                 unsafe {
                     context.RSSetState(prev_rs.as_ref());
@@ -586,6 +655,7 @@ impl ChartEngine {
         let state = Rc::new(RefCell::new(RenderState {
             panes: Vec::new(),
             needs_present: true,
+            base_dirty: true,
             last_gpu_prepare_generation: 0,
             slot_origin: [0.0, 0.0],
             cursor: None,
@@ -605,6 +675,8 @@ impl ChartEngine {
             window_bg_color: rgb4(theme.bg),
             #[cfg(windows)]
             window_bg_dst: [0.0, 0.0, 0.0, 0.0],
+            #[cfg(windows)]
+            base_cache: base::BaseCache::new(),
         }));
         let canvas = GpuCanvasHandle::new(ChartCanvasDriver {
             state: state.clone(),
@@ -990,6 +1062,9 @@ impl ChartEngine {
                 .iter()
                 .zip(prev_cursor_params.iter())
                 .any(|(pr, prev)| pr.cursor_params != *prev);
+        if pixels_changed {
+            st.base_dirty = true;
+        }
         if pixels_changed || cursor_changed {
             st.needs_present = true;
         }

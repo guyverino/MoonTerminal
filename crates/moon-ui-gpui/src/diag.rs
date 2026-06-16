@@ -46,6 +46,8 @@ diag_counters!(
     CHART_BG_DRAW     => "bg_draw",
     CHART_GRID_DRAW   => "grid_draw",
     CHART_CURSOR_DRAW => "cursor_draw",
+    CHART_BASE_BAKE   => "base_bake",
+    CHART_BASE_BLIT   => "base_blit",
     CHART_COMBO_DRAW  => "combo_draw",
     CHART_COMBO_BAKE  => "combo_bake",
     CHART_BOOK_DRAW   => "orderbook_draw",

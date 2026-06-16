@@ -167,12 +167,11 @@ impl PlatformLayers {
     }
 
     #[cfg(windows)]
-    pub fn render_d3d(
+    pub fn render_base_d3d(
         &mut self,
         view: &ChartViewGpu,
         background_params: &BackgroundParams,
         grid_params: &GridParams,
-        cursor_params: &CursorParams,
         orderbook_view: &ChartViewGpu,
         _book_style: &BookStyle,
         device: &ID3D11Device,
@@ -194,6 +193,17 @@ impl PlatformLayers {
             .render(orderbook_view, context, rtv, gpu, panel_clip);
         crate::diag::bump(&crate::diag::CHART_USER_DRAW);
         self.userdata.render(view, context, rtv, gpu);
+    }
+
+    #[cfg(windows)]
+    pub fn render_cursor_d3d(
+        &mut self,
+        cursor_params: &CursorParams,
+        device: &ID3D11Device,
+        context: &ID3D11DeviceContext,
+        rtv: &ID3D11RenderTargetView,
+        gpu: &gpui::RawGpuAccess,
+    ) {
         if cursor_params.enabled > 0.0 {
             crate::diag::bump(&crate::diag::CHART_CURSOR_DRAW);
         }
