@@ -609,6 +609,22 @@ if cached scene has visible gpu_canvas:
 
 This is an app-side decision clock. It is not a compositor frame callback.
 
+Implementation note for the current Zed snapshot:
+
+```text
+WaylandWindowStatePtr::frame() requests surface.frame(...) before invoking
+the request-frame callback.
+
+WaylandWindow::completed_frame() commits the surface when renderer did not
+present a buffer.
+```
+
+That existing no-buffer commit path satisfies the fallback requirement for
+skip-present `gpu_canvas` ticks: skipped GPU frames still complete the Wayland
+frame callback cycle without clearing/drawing/presenting a GPU buffer. If an
+upstream version removes this behavior, add the explicit calloop timer fallback
+above instead of relying on compositor callbacks without commits.
+
 ## Presentability
 
 `GpuFrameInfo.presentable` must be accurate enough to avoid work when a frame
