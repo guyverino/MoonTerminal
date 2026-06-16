@@ -1,5 +1,9 @@
 fn main() {
     println!("cargo:rerun-if-changed=../../assets/icons/0.png");
+    println!("cargo:rustc-check-cfg=cfg(moon_profile_debug)");
+    if std::env::var("PROFILE").is_ok_and(|profile| profile == "debug") {
+        println!("cargo:rustc-cfg=moon_profile_debug");
+    }
 
     #[cfg(windows)]
     if let Err(err) = embed_exe_icon() {

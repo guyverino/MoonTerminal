@@ -39,14 +39,14 @@ use gpui::*;
 
 use chart_tabs::ChartTabs;
 use dock_persist::DOCK_VERSION;
-use panels::{DetectsPanel, LogPanel, OrderPanel, OrdersPanel, ReportPanel, StubPanel};
+use panels::{ChartPanel, DetectsPanel, LogPanel, OrderPanel, OrdersPanel, ReportPanel, StubPanel};
 
 use moon_palette::MoonRect;
 use moon_palette::{
     DockArea, DockAreaState, DockEvent, DockItem, DockPlacement, MoonBackgroundPolicy, MoonPalette,
-    MoonStatusBar, MoonStatusIndicator, MoonStatusItem, MoonTheme, MoonThemeConfig,
-    MoonTooltipView, MoonWindowChrome, MoonWindowChromeButton, PanelView, Root,
-    init as init_moon_palette, v_flex,
+    MoonButton, MoonButtonSize, MoonButtonVariant, MoonStatusBar, MoonStatusIndicator,
+    MoonStatusItem, MoonTheme, MoonThemeConfig, MoonTooltipView, MoonWindowChrome,
+    MoonWindowChromeButton, PanelView, Root, h_flex, init as init_moon_palette, v_flex,
 };
 
 use moon_core::config::{AppConfig, GroupLayout, WindowLayout};
@@ -159,6 +159,10 @@ struct Backend {
     /// окна группы закрывает принадлежащие ей откреп-чарты; при закрытии самого откреп-окна
     /// чистится по window_id. (Отдельно от `detached` — то про dock-панели, это про чарты.)
     detached_chart_windows: Vec<(String, WindowHandle<Root>)>,
+    #[cfg(any(debug_assertions, moon_profile_debug, feature = "debug-tools"))]
+    debug_window: Option<WindowHandle<Root>>,
+    #[cfg(any(debug_assertions, moon_profile_debug, feature = "debug-tools"))]
+    debug_chart_windows: Vec<WindowHandle<Root>>,
     /// Персист чарт-вкладок (масштаб по вкладке + геометрия откреп-окон) — charts.json.
     /// Дебаунс-сейв делает дренаж по `chart_specs_dirty`. См. `chart_persist`.
     chart_specs: Vec<chart_persist::ChartTabSpec>,
@@ -671,6 +675,7 @@ impl Shell {
             .id("status-bar-host")
             .w_full()
             .h(px(design::STATUS_H))
+            .relative()
             .child(
                 MoonStatusBar::new("status-bar")
                     .indicator(
@@ -739,6 +744,28 @@ impl Shell {
                     .right_item(MoonStatusItem::new("moonbot.pro").color(p.blue))
                     .render(),
             );
+        #[cfg(any(debug_assertions, moon_profile_debug, feature = "debug-tools"))]
+        {
+            let backend = self.backend.clone();
+            host = host.child(
+                div()
+                    .id("debug-status-open")
+                    .absolute()
+                    .right(px(82.0))
+                    .top(px(3.0))
+                    .px(px(6.0))
+                    .h(px(16.0))
+                    .rounded(px(3.0))
+                    .cursor_pointer()
+                    .font_family(design::mono())
+                    .text_size(px(10.0))
+                    .text_color(rgb(p.amber))
+                    .bg(rgba(0x00000044))
+                    .hover(|s| s.bg(rgba(0x2A2520EE)).text_color(rgb(0xF7C663)))
+                    .on_click(move |_, _, cx| open_debug_perf_window(cx, backend.clone()))
+                    .child("debug"),
+            );
+        }
         if !down_text.is_empty() {
             host = host.tooltip(move |_window, cx| {
                 cx.new(|_| MoonTooltipView::new(down_text.clone()).max_width(420.0))
@@ -746,6 +773,281 @@ impl Shell {
             });
         }
         host
+    }
+}
+
+#[cfg(any(debug_assertions, moon_profile_debug, feature = "debug-tools"))]
+struct DebugPerfWindow {
+    backend: Entity<Backend>,
+    focus: FocusHandle,
+}
+
+#[cfg(any(debug_assertions, moon_profile_debug, feature = "debug-tools"))]
+impl DebugPerfWindow {
+    fn new(backend: Entity<Backend>, cx: &mut Context<Self>) -> Self {
+        cx.observe(&backend, |_, _, cx| cx.notify()).detach();
+        Self {
+            backend,
+            focus: cx.focus_handle(),
+        }
+    }
+
+    fn stat_row(label: &'static str, value: impl Into<String>, p: MoonPalette) -> impl IntoElement {
+        h_flex()
+            .w_full()
+            .gap(px(8.0))
+            .child(
+                div()
+                    .w(px(150.0))
+                    .text_color(rgb(p.text_muted))
+                    .child(label),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .font_family(design::mono())
+                    .text_color(rgb(p.text_soft))
+                    .child(value.into()),
+            )
+    }
+}
+
+#[cfg(any(debug_assertions, moon_profile_debug, feature = "debug-tools"))]
+impl Focusable for DebugPerfWindow {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus.clone()
+    }
+}
+
+#[cfg(any(debug_assertions, moon_profile_debug, feature = "debug-tools"))]
+impl Render for DebugPerfWindow {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let p = MoonPalette::active(cx);
+        let (ready, total, snap, desired, group_windows, detached_chart_windows, debug_windows) = {
+            let b = self.backend.read(cx);
+            let store = b.session.store();
+            let mut ready = 0;
+            let mut total = 0;
+            for s in b.session.sessions() {
+                total += 1;
+                if store
+                    .core(s.id)
+                    .is_some_and(|core| core.status == ConnStatus::Ready)
+                {
+                    ready += 1;
+                }
+            }
+            (
+                ready,
+                total,
+                b.snap,
+                b.desired.len(),
+                b.group_windows.len(),
+                b.detached_chart_windows.len(),
+                b.debug_chart_windows.len(),
+            )
+        };
+        let diag_tail = latest_render_diag_line();
+        let cwd = std::env::current_dir()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|e| format!("<cwd error: {e}>"));
+        let backend = self.backend.clone();
+
+        v_flex()
+            .id("debug-perf-window")
+            .size_full()
+            .track_focus(&self.focus)
+            .gap(px(8.0))
+            .p_4()
+            .bg(rgb(p.shell))
+            .text_size(px(12.0))
+            .text_color(rgb(p.text))
+            .child(
+                h_flex()
+                    .w_full()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .font_family(design::mono())
+                            .text_size(px(13.0))
+                            .text_color(rgb(p.amber))
+                            .child("MoonTerminal debug stats"),
+                    )
+                    .child(
+                        MoonButton::new("debug-open-10-btc")
+                            .width(230.0)
+                            .variant(MoonButtonVariant::Neutral)
+                            .size(MoonButtonSize::Toolbar)
+                            .label("Открыть 10 BTC графиков")
+                            .on_click(move |_, _, cx| {
+                                spawn_debug_btc_chart_windows(cx, backend.clone());
+                            })
+                            .render(),
+                    ),
+            )
+            .child(Self::stat_row(
+                "connections",
+                format!("{ready}/{total} ready"),
+                p,
+            ))
+            .child(Self::stat_row(
+                "cpu",
+                format!(
+                    "process {:.1}% / system {:.1}%",
+                    snap.cpu_process, snap.cpu_system
+                ),
+                p,
+            ))
+            .child(Self::stat_row(
+                "ram",
+                format!("{:.0} MB ({:+.1} MB/5s)", snap.mem_mb, snap.mem_delta_mb),
+                p,
+            ))
+            .child(Self::stat_row("desired markets", desired.to_string(), p))
+            .child(Self::stat_row("group windows", group_windows.to_string(), p))
+            .child(Self::stat_row(
+                "chart windows",
+                format!("{detached_chart_windows} detached / {debug_windows} debug"),
+                p,
+            ))
+            .child(Self::stat_row("cwd", cwd, p))
+            .child(Self::stat_row(
+                "render diag",
+                if std::env::var_os("MOON_RENDER_DIAG").is_some() {
+                    "MOON_RENDER_DIAG=on"
+                } else {
+                    "MOON_RENDER_DIAG=off"
+                },
+                p,
+            ))
+            .child(
+                v_flex()
+                    .w_full()
+                    .gap(px(4.0))
+                    .mt(px(4.0))
+                    .child(div().text_color(rgb(p.text_muted)).child("last render_diag.log line"))
+                    .child(
+                        div()
+                            .w_full()
+                            .p_2()
+                            .rounded(px(4.0))
+                            .bg(rgba(0x00000055))
+                            .font_family(design::mono())
+                            .text_size(px(10.5))
+                            .text_color(rgb(p.text_soft))
+                            .child(diag_tail),
+                    ),
+            )
+    }
+}
+
+#[cfg(any(debug_assertions, moon_profile_debug, feature = "debug-tools"))]
+fn latest_render_diag_line() -> String {
+    let path = std::path::Path::new("render_diag.log");
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return "render_diag.log not found in current working directory".to_string();
+    };
+    text.lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("<empty render_diag.log>")
+        .to_string()
+}
+
+#[cfg(any(debug_assertions, moon_profile_debug, feature = "debug-tools"))]
+fn open_debug_perf_window(cx: &mut App, backend: Entity<Backend>) {
+    if let Some(handle) = backend.read(cx).debug_window {
+        if handle
+            .update(cx, |_, window, _| window.activate_window())
+            .is_ok()
+        {
+            return;
+        }
+    }
+
+    let opts = WindowOptions {
+        window_bounds: Some(WindowBounds::Windowed(Bounds {
+            origin: point(px(140.0), px(140.0)),
+            size: size(px(720.0), px(420.0)),
+        })),
+        titlebar: Some(TitlebarOptions {
+            title: Some("MoonTerminal Debug".into()),
+            ..Default::default()
+        }),
+        app_id: Some("MoonTerminal.Debug".to_string()),
+        window_min_size: Some(size(px(560.0), px(320.0))),
+        ..Default::default()
+    };
+    let b = backend.clone();
+    if let Ok(handle) = cx.open_window(opts, move |window, cx| {
+        let view = cx.new(|cx| DebugPerfWindow::new(b, cx));
+        cx.new(|cx| Root::new(view, window, cx).background_policy(MoonBackgroundPolicy::NoFill))
+    }) {
+        backend.update(cx, |bk, _| {
+            bk.debug_window = Some(handle);
+        });
+    }
+}
+
+#[cfg(any(debug_assertions, moon_profile_debug, feature = "debug-tools"))]
+fn spawn_debug_btc_chart_windows(cx: &mut App, backend: Entity<Backend>) {
+    const DEBUG_MARKET: &str = "BTCUSDT";
+    let Some((core, group, epoch, theme)) = ({
+        let b = backend.read(cx);
+        b.session
+            .sessions()
+            .first()
+            .map(|s| (s.id, s.group.clone(), b.epoch, b.config.theme.clone()))
+    }) else {
+        log::warn!("debug charts: no live sessions; cannot open {DEBUG_MARKET}");
+        return;
+    };
+
+    let mut opened = Vec::new();
+    for i in 0..10 {
+        let backend_for_panel = backend.clone();
+        let market = DEBUG_MARKET.to_string();
+        let theme = theme.clone();
+        let opts = WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(Bounds {
+                origin: point(px(90.0 + i as f32 * 24.0), px(90.0 + i as f32 * 24.0)),
+                size: size(px(920.0), px(560.0)),
+            })),
+            titlebar: Some(TitlebarOptions {
+                title: Some(format!("MoonTerminal Debug BTC {}", i + 1).into()),
+                ..Default::default()
+            }),
+            app_id: Some("MoonTerminal.Debug.Chart".to_string()),
+            window_min_size: Some(size(px(520.0), px(340.0))),
+            ..Default::default()
+        };
+        let opened_window = cx.open_window(opts, move |window, cx| {
+            let panel = cx.new(|cx| {
+                ChartPanel::new(
+                    backend_for_panel,
+                    Some((core, market)),
+                    epoch,
+                    theme,
+                    window,
+                    cx,
+                )
+            });
+            cx.new(|cx| Root::new(panel, window, cx).background_policy(MoonBackgroundPolicy::NoFill))
+        });
+        match opened_window {
+            Ok(handle) => opened.push(handle),
+            Err(error) => log::warn!("debug charts: failed to open chart {}: {error}", i + 1),
+        }
+    }
+
+    if !opened.is_empty() {
+        backend.update(cx, |b, bcx| {
+            b.debug_chart_windows.extend(opened.iter().copied());
+            b.detached_chart_windows
+                .extend(opened.into_iter().map(|handle| (group.clone(), handle)));
+            bcx.notify();
+        });
     }
 }
 
@@ -976,6 +1278,10 @@ fn main() -> anyhow::Result<()> {
             repin_request: Vec::new(),
             chart_repin_request: Vec::new(),
             detached_chart_windows: Vec::new(),
+            #[cfg(any(debug_assertions, moon_profile_debug, feature = "debug-tools"))]
+            debug_window: None,
+            #[cfg(any(debug_assertions, moon_profile_debug, feature = "debug-tools"))]
+            debug_chart_windows: Vec::new(),
             chart_specs: chart_persist::load_all(),
             chart_specs_dirty: false,
             quitting: false,
@@ -1016,6 +1322,17 @@ fn main() -> anyhow::Result<()> {
                     // Закрыли откреп-чарт-окно (или иное) — вычистить из трекинга.
                     b.detached_chart_windows
                         .retain(|(_, h)| h.window_id() != closed_id);
+                    #[cfg(any(debug_assertions, moon_profile_debug, feature = "debug-tools"))]
+                    {
+                        if b.debug_window
+                            .as_ref()
+                            .is_some_and(|h| h.window_id() == closed_id)
+                        {
+                            b.debug_window = None;
+                        }
+                        b.debug_chart_windows
+                            .retain(|h| h.window_id() != closed_id);
+                    }
                     (Vec::new(), false)
                 }
             });

@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2024"
 description = "MoonTerminal GPUI shell over moon-core; UI migration target is MoonPalette."
 
+[features]
+debug-tools = []
+
 [[bin]]
 name = "moon-gpui"
 path = "src/main.rs"
