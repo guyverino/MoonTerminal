@@ -1019,7 +1019,7 @@ fn main() -> anyhow::Result<()> {
                 // перерисовывает ВСЮ сцену (Shell+тяжёлый Orders+все панели), сколько бы гейтов на
                 // отдельных вьюхах ни стояло. Поэтому: редкий пульс у ИСТОЧНИКА (синхронизирует все
                 // пробуждения хрома, ≤4 Гц — юзер: ордера ≥250мс) + гейт по факту прихода данных.
-                // Гладкость чарта — от 60-Гц prepare-задачи + own-pass (vsync), НЕ от этого notify.
+                // Гладкость чарта — от `gpu_canvas.frame()` на platform tick, НЕ от этого notify.
                 // (Полная развязка = view-caching панелей в moon-palette — отдельная задача; до неё
                 // 4-Гц пульс это пожарный кап top-down сцепки, см. ЕБАНИНА Пример 5 / RENDER_INVALIDATION §7.)
                 let notify_due = tick % 10 == 0;
@@ -1029,8 +1029,8 @@ fn main() -> anyhow::Result<()> {
                     // Сессия/метрики/реконнект — внутри backend.update; запросы
                     // «показать группу» забираем наружу (нужен &mut App для окон).
                     let show_reqs = drain_backend.update(cx, |b, cx| {
-                        // Данные дренятся ~60 Гц (чарт читает store в 60-Гц prepare-задаче, НЕ по
-                        // этому notify). drain()->bool = «пришли ли сообщения с фида»; копим до
+                        // Данные дренятся ~60 Гц; visible chart data pump готовит GPU state без
+                        // частого GPUI notify. drain()->bool = «пришли ли сообщения с фида»; копим до
                         // следующего notify (causal-гейт пульса, см. коммент у notify_due).
                         dirty_since_notify |= b.session.drain();
                         let mut reqs = Vec::new();

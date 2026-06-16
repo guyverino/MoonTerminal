@@ -33,14 +33,13 @@ diag_counters!(
     BACKEND_NOTIFY    => "backend_notify",
     CHART_PREPARE     => "chart_prepare",
     CHART_GPU_PREPARE => "chart_gpu_prepare",
-    CHART_TASK_PREP   => "chart_task_prep",
-    // own-pass present (реальная частота показа чарта) — раньше СЛЕПАЯ зона: present-rate
+    // gpu_canvas present (реальная частота показа чарта) — раньше СЛЕПАЯ зона: present-rate
     // не измерялся вообще. CHART_CAM_STEP = сколько present'ов реально сдвинули камеру на
     // ≥1 пиксель ("рабочие" кадры). Соотношение CAM_STEP/PRESENT = экономия пиксельного
     // рубильника (адаптивна к зуму: на мелком масштабе почти все кадры пропускаются).
     CHART_PRESENT     => "chart_present",
     CHART_CAM_STEP    => "chart_cam_step",
-    // ПОСЛОЙНЫЕ счётчики own-pass (мандат AGENTS.md «UI Render Diagnostics»): own-pass ВНЕ
+    // ПОСЛОЙНЫЕ счётчики gpu_canvas (мандат AGENTS.md «UI Render Diagnostics»): canvas ВНЕ
     // GPUI-рендера → считаем руками в одной точке-чокпоинте (backend::render_d3d). *_DRAW =
     // отрисовка/блит слоя (раз на present); *_BAKE = перепекание текстуры-кэша (combo/стакан),
     // должно быть РЕДКО (по приходу данных/смене вида). BAKE ≈ DRAW = кэш не работает.

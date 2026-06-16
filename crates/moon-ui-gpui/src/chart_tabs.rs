@@ -300,7 +300,8 @@ impl ChartTabs {
     }
 
     /// Открыть ОС-окно откреп-вкладки (общий код detach и восстановления при загрузке). Панель
-    /// держим в `detached` (ingest наполняет её по num/core), own-pass снимаем с главного окна.
+    /// держим в `detached` (ingest наполняет её по num/core); `gpu_canvas` переезжает вместе
+    /// с GPUI scene окна.
     /// Хост (`DetachedChartHost`) сам пишет геометрию и просит репин по закрытию. Окно трекаем
     /// по группе (закрытие окна группы закроет его — main.rs on_window_closed).
     fn open_chart_window(
@@ -313,7 +314,7 @@ impl ChartTabs {
         cx: &mut Context<Self>,
     ) {
         self.detached.push((n, core, panel.clone()));
-        panel.update(cx, |p, _| p.unregister_pass());
+        panel.update(cx, |p, _| p.set_scene_visible(false));
         // КРИТИЧНО для мультимонитора: без display_id окно создаётся на PRIMARY, и если
         // сохранённые bounds вне primary — gpui откатывается на default_bounds() (центр + дефолт-
         // размер). Поэтому ищем монитор, СОДЕРЖАЩИЙ сохранённую точку, и передаём его display_id —
@@ -533,22 +534,18 @@ impl ChartTabs {
         }
     }
 
-    /// Снять own-pass у НЕактивных вкладок: их панели не рендерятся (их render не
-    /// зовётся), и без снятия их pas остаётся на окне и рисует застывший чарт поверх
-    /// активного (BUG-2). Активная вкладка регистрирует pas в собственном render.
-    fn sync_inactive_passes(&self, cx: &mut Context<Self>) {
+    /// Неактивные вкладки отсутствуют в текущей GPUI scene, значит их chart data observe не должен
+    /// гонять CPU prepare. Активная/откреплённая панель сама выставит visible=true в своём render.
+    fn sync_inactive_chart_visibility(&self, cx: &mut Context<Self>) {
         let active = self.active;
-        let mut inactive: Vec<Entity<ChartPanel>> = Vec::new();
         if !matches!(active, Tab::Main) {
-            inactive.push(self.main.clone());
+            self.main
+                .update(cx, |panel, _| panel.set_scene_visible(false));
         }
         for (n, c, panel) in &self.add {
             if Tab::Add(*n, *c) != active {
-                inactive.push(panel.clone());
+                panel.update(cx, |panel, _| panel.set_scene_visible(false));
             }
-        }
-        for p in inactive {
-            p.update(cx, |panel, _| panel.unregister_pass());
         }
     }
 }
@@ -608,7 +605,7 @@ impl Render for ChartTabs {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.handle_open_request(cx);
         self.ingest(window, cx);
-        self.sync_inactive_passes(cx);
+        self.sync_inactive_chart_visibility(cx);
         // Откреп-вкладки: вернуть закрытые в стрип (репин) + восстановить сохранённые окна
         // (charts.json) на первом render — пустыми, ждут детект.
         self.drain_chart_repin(cx);

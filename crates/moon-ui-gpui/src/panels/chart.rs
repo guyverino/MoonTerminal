@@ -2,8 +2,8 @@
 //! ввод + GPUI-оверлей осей. Как Dock-панель — отцепляется в окно. Монета — из
 //! focus и `Backend.open_request`.
 //!
-//! Рендер: `ChartEngine.register_pass` ставит own-pass ПОД сценой (рисует combo/слои в
-//! backbuffer GPUI без readback), `prepare` каждый кадр обновляет вид и заливает новые тики.
+//! Рендер: `ChartEngine.canvas()` отдаёт GPUI `gpu_canvas` ПОД сценой (рисует combo/слои в
+//! backbuffer GPUI без readback), `prepare` обновляет вид и заливает новые тики.
 //! Текст осей — GPUI-оверлей ПОВЕРХ; перекрестие — native chartdx cursor layer без GPUI notify.
 
 use std::time::Duration;
@@ -87,19 +87,20 @@ pub struct ChartPanel {
     /// FastChart: true → плавный кадр по vsync (фокусный чарт); false → адаптивно (по приходу
     /// данных через observe, фон/мультичарт). Main=true, AddToChart=false (правится из тулбара позже).
     fast: bool,
+    /// Панель реально присутствует в GPUI scene этого окна. Скрытые вкладки не должны гонять
+    /// CPU prepare по data observe: их `gpu_canvas` всё равно не будет опрошен/нарисован.
+    scene_visible: bool,
     fast_frame_skip: u32,
+    last_axis_notify_data_sig: u64,
     last_prepared_data_sig: u64,
     last_prepared_dev: (u32, u32),
     last_prepared_bounds: Option<Bounds<Pixels>>,
     view_dirty: bool,
     last_adaptive_notify_ms: f64,
     last_cursor_readout_notify_ms: f64,
-    /// Последний scale_factor окна (ставится в render). Нужен 60-Гц prepare-задаче, у
-    /// которой нет window — DPI меняется редко, между сменами берём запомненный.
+    /// Последний scale_factor окна (ставится в render). Нужен data prepare path, у которого
+    /// нет window — DPI меняется редко, между сменами берём запомненный.
     last_ppp: f32,
-    /// Последний виденный задачей present_seq `gpu_canvas`. Задача доливает новые данные лишь
-    /// после реального draw/present, поэтому спит при hidden/occluded/paused кадрах.
-    last_present_seq: u64,
     /// One-shot timer до ближайшего истечения AddToChart TTL. Это time-based dirty,
     /// поэтому он не должен зависеть от backend data observe.
     ttl_timer_armed: bool,
@@ -148,54 +149,25 @@ impl ChartPanel {
                 crate::diag::bump(&crate::diag::CHART_OBS_NOTIFY);
                 cx.notify();
             }
-            if sig != this.data_sig {
-                this.data_sig = sig;
-                // Троттл notify. Данные own-pass рисует сам по present (форк), notify нужен лишь
-                // для GPUI-оверлея осей, а он идёт top-down → дёргает Orders. Поэтому ≤4 Гц для
-                // fast (≥250мс) и ≤1 Гц для addto. Для fast при live-follow реальный notify даёт
-                // 60-Гц prepare-задача (тоже ≥250мс через
-                // общий last_adaptive_notify_ms); этот источник работает на паузе, когда задача спит.
-                let floor = if this.fast { 250.0 } else { 1000.0 };
-                if now - this.last_adaptive_notify_ms >= floor {
-                    this.last_adaptive_notify_ms = now;
-                    crate::diag::bump(&crate::diag::CHART_OBS_NOTIFY);
-                    cx.notify();
-                }
+            if sig != this.data_sig || (this.scene_visible && sig != this.last_prepared_data_sig) {
+                this.prepare_observed_data(sig, cx);
+            }
+            // Троттл notify. Данные gpu_canvas рисует сам по present (форк), notify нужен лишь
+            // для GPUI-оверлея осей, а он идёт top-down → дёргает Orders. Поэтому ≤4 Гц для
+            // fast (≥250мс) и ≤1 Гц для addto. GPU data/state уже подготовлены выше/в data pump
+            // без GPUI dirty; notify здесь только для редкого текста осей.
+            let floor = if this.fast { 250.0 } else { 1000.0 };
+            if sig != this.last_axis_notify_data_sig
+                && now - this.last_adaptive_notify_ms >= floor
+            {
+                this.last_axis_notify_data_sig = sig;
+                this.last_adaptive_notify_ms = now;
+                crate::diag::bump(&crate::diag::CHART_OBS_NOTIFY);
+                cx.notify();
             }
         })
         .detach();
-        // 60-Гц prepare БЕЗ перерисовки GPUI-дерева и БЕЗ notify: доливает новые тики/стакан/ордера
-        // в resident-слои. Живой край двигает `GpuCanvasDriver::frame()` на platform tick и сам
-        // просит present только на pixel-cross/data-dirty. Раньше гладкость давал
-        // request_animation_frame/continuous-present, метивший дёрти весь путь до Shell →
-        // top-down перерисовка Orders на refresh монитора (диско).
-        // Задача доливает данные только после реального draw canvas-а (`present_seq` вырос):
-        // hidden/occluded окно не презентит → seq стоит → задача спит.
-        cx.spawn(async move |this, cx| {
-            // gpui (свежий): AsyncApp::update инфэллибл (возвращает R, не Result).
-            let executor = cx.update(|cx| cx.background_executor().clone());
-            loop {
-                executor.timer(std::time::Duration::from_millis(16)).await;
-                let alive = cx.update(|cx| {
-                    this.update(cx, |this, cx| {
-                        // Камеру двигает GpuCanvasDriver::frame(); здесь только доливаем данные
-                        // после реально нарисованного кадра.
-                        let seq = this.chart.present_seq();
-                        if seq != this.last_present_seq {
-                            this.last_present_seq = seq;
-                            crate::diag::bump(&crate::diag::CHART_TASK_PREP);
-                            let b = this.backend.read(cx);
-                            this.chart.prepare(&b.session, this.last_ppp);
-                        }
-                    })
-                    .is_ok()
-                });
-                if !alive {
-                    break;
-                }
-            }
-        })
-        .detach();
+        Self::spawn_visible_data_pump(cx);
         Self {
             backend,
             chart,
@@ -208,7 +180,9 @@ impl ChartPanel {
             data_sig: 0,
             settings_sig,
             fast: true,
+            scene_visible: false,
             fast_frame_skip: 0,
+            last_axis_notify_data_sig: u64::MAX,
             last_prepared_data_sig: u64::MAX,
             last_prepared_dev: (0, 0),
             last_prepared_bounds: None,
@@ -216,7 +190,6 @@ impl ChartPanel {
             last_adaptive_notify_ms: 0.0,
             last_cursor_readout_notify_ms: 0.0,
             last_ppp: 1.0,
-            last_present_seq: 0,
             ttl_timer_armed: false,
             focus: cx.focus_handle(),
         }
@@ -266,18 +239,23 @@ impl ChartPanel {
                 crate::diag::bump(&crate::diag::CHART_OBS_NOTIFY);
                 cx.notify();
             }
-            if sig != this.data_sig {
-                this.data_sig = sig;
-                // AddToChart — фоновый/мультичарт: notify (а с ним top-down перерисовка Orders)
-                // ≤1 Гц. Time-based prune делает локальный TTL timer.
-                if now - this.last_adaptive_notify_ms >= 1000.0 {
-                    this.last_adaptive_notify_ms = now;
-                    crate::diag::bump(&crate::diag::CHART_OBS_NOTIFY);
-                    cx.notify();
-                }
+            if sig != this.data_sig || (this.scene_visible && sig != this.last_prepared_data_sig) {
+                this.prepare_observed_data(sig, cx);
+            }
+            // AddToChart — фоновый/мультичарт: notify (а с ним top-down перерисовка Orders)
+            // ≤1 Гц. GPU data/state готовит data pump; time-based prune делает локальный TTL
+            // timer.
+            if sig != this.last_axis_notify_data_sig
+                && now - this.last_adaptive_notify_ms >= 1000.0
+            {
+                this.last_axis_notify_data_sig = sig;
+                this.last_adaptive_notify_ms = now;
+                crate::diag::bump(&crate::diag::CHART_OBS_NOTIFY);
+                cx.notify();
             }
         })
         .detach();
+        Self::spawn_visible_data_pump(cx);
         Self {
             backend,
             chart,
@@ -290,7 +268,9 @@ impl ChartPanel {
             data_sig: 0,
             settings_sig,
             fast: false,
+            scene_visible: false,
             fast_frame_skip: 0,
+            last_axis_notify_data_sig: u64::MAX,
             last_prepared_data_sig: u64::MAX,
             last_prepared_dev: (0, 0),
             last_prepared_bounds: None,
@@ -298,7 +278,6 @@ impl ChartPanel {
             last_adaptive_notify_ms: 0.0,
             last_cursor_readout_notify_ms: 0.0,
             last_ppp: 1.0,
-            last_present_seq: 0,
             ttl_timer_armed: false,
             focus: cx.focus_handle(),
         }
@@ -314,6 +293,58 @@ impl ChartPanel {
         self.scale
     }
 
+    /// Mark whether this panel is part of the currently rendered GPUI scene. This only gates
+    /// CPU-side data prepare; the `gpu_canvas` element lifetime is still owned by GPUI scene replay.
+    pub fn set_scene_visible(&mut self, visible: bool) {
+        self.scene_visible = visible;
+    }
+
+    fn spawn_visible_data_pump(cx: &mut Context<Self>) {
+        // Backend drains feed data every ~16ms, but its GPUI notify is intentionally capped
+        // (otherwise Shell/Orders render at chart refresh rate). This task keeps visible chart
+        // resident GPU state fresh without marking any GPUI view dirty.
+        cx.spawn(async move |this, cx| {
+            let executor = cx.update(|cx| cx.background_executor().clone());
+            loop {
+                executor.timer(Duration::from_millis(16)).await;
+                let alive = cx.update(|cx| {
+                    this.update(cx, |this, cx| this.prepare_current_data_if_visible(cx))
+                        .is_ok()
+                });
+                if !alive {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    fn prepare_observed_data(&mut self, sig: u64, cx: &mut Context<Self>) {
+        self.data_sig = sig;
+        if self.scene_visible {
+            self.prepare_current_data_if_visible(cx);
+        } else {
+            self.view_dirty = true;
+        }
+    }
+
+    fn prepare_current_data_if_visible(&mut self, cx: &mut Context<Self>) {
+        if !self.scene_visible {
+            return;
+        }
+        let b = self.backend.read(cx);
+        let sig = self.chart.data_signature(&b.session);
+        self.data_sig = sig;
+        if sig == self.last_prepared_data_sig {
+            return;
+        }
+        crate::diag::bump(&crate::diag::CHART_PREPARE);
+        self.chart.prepare(&b.session, self.last_ppp);
+        self.last_prepared_data_sig = sig;
+        self.last_prepared_dev = self.chart_dev;
+        self.last_prepared_bounds = self.chart_bounds;
+    }
+
     /// Поставить масштаб ЭТОЙ вкладки (None=Авто). Применяется в render через `set_scale` движка.
     pub fn set_scale(&mut self, pct: Option<f32>, cx: &mut Context<Self>) {
         if self.scale != pct {
@@ -321,12 +352,6 @@ impl ChartPanel {
             self.view_dirty = true;
             cx.notify();
         }
-    }
-
-    /// Снять own-pass этой панели с окна — для НЕактивных вкладок (их render не
-    /// зовётся, и без снятия их pas рисует застывший чарт поверх активного).
-    pub fn unregister_pass(&mut self) {
-        self.chart.unregister_pass();
     }
 
     /// AddToChart: добавить монету авто-панелью (Tiled-мультичарт) с TTL.
@@ -485,8 +510,9 @@ impl Panel for ChartPanel {
 impl Render for ChartPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::diag::bump(&crate::diag::CHART_RENDER);
+        self.scene_visible = true;
         let ppp = window.scale_factor();
-        // Запоминаем DPI для 60-Гц prepare-задачи (у неё нет window). DPI меняется редко.
+        // Запоминаем DPI для data prepare path (у него нет window). DPI меняется редко.
         self.last_ppp = ppp;
         let monitor_rate_hz = chart_present_rate_hz();
         let fast_divisor = (monitor_rate_hz / 60.0).round().max(1.0) as u32;
@@ -505,11 +531,17 @@ impl Render for ChartPanel {
             .map(|b| (f32::from(b.origin.x) * ppp, f32::from(b.origin.y) * ppp))
             .unwrap_or((0.0, 0.0));
         self.chart.set_origin(ox, oy);
-        let (theme, orders_style, follow) = {
+        let (theme, orders_style, follow, current_data_sig) = {
             let b = self.backend.read(cx);
             let eff = b.preview.as_ref().unwrap_or(&b.config);
-            (eff.theme.clone(), eff.orders.clone(), b.follow)
+            (
+                eff.theme.clone(),
+                eff.orders.clone(),
+                b.follow,
+                self.chart.data_signature(&b.session),
+            )
         };
+        self.data_sig = current_data_sig;
         // Масштаб — ПО-ВКЛАДОЧНЫЙ: берём self.scale (его правят set_scale из тулбара активной
         // вкладки / шапки выносного окна), а не глобальный backend.price_scale.
         let settings_changed = self.chart.set_theme(theme)
@@ -528,7 +560,7 @@ impl Render for ChartPanel {
             self.fast_frame_skip = 0;
             true
         };
-        let data_changed = self.data_sig != self.last_prepared_data_sig;
+        let data_changed = current_data_sig != self.last_prepared_data_sig;
         let geometry_changed = self.chart_dev != self.last_prepared_dev
             || self.chart_bounds != self.last_prepared_bounds;
         // Подготовка кадра: вид + заливка новых данных в resident layers. Для fast-чарта
@@ -538,8 +570,10 @@ impl Render for ChartPanel {
         if cadence_due || data_changed || geometry_changed || view_changed {
             crate::diag::bump(&crate::diag::CHART_PREPARE);
             let b = self.backend.read(cx);
+            let prepared_sig = self.chart.data_signature(&b.session);
+            self.data_sig = prepared_sig;
             self.chart.prepare(&b.session, ppp);
-            self.last_prepared_data_sig = self.data_sig;
+            self.last_prepared_data_sig = prepared_sig;
             self.last_prepared_dev = self.chart_dev;
             self.last_prepared_bounds = self.chart_bounds;
             self.view_dirty = false;

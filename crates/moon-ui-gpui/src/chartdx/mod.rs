@@ -1,4 +1,4 @@
-//! Own-pass DX11 рендер чарта (замена wgpu-offscreen+readback). Слои по природе данных
+//! Native `gpu_canvas` рендер чарта (замена wgpu-offscreen+readback). Слои по природе данных
 //! (см. `docs/RENDER_PLAN.md`): Combo (рыночная история) / OrderBook (срез) /
 //! UserData (мутирующее юзерское) + хром (Grid/Background) + native cursor; текст осей — в GPUI.
 //!
@@ -85,7 +85,7 @@ struct CursorState {
     local: [f32; 2],
 }
 
-/// GPU-состояние одной панели для own-pass callback — отделено от логики `Container`,
+/// GPU-состояние одной панели для `gpu_canvas` callbacks — отделено от логики `Container`,
 /// синхронизируется по индексу + идентичности (core, market) в `prepare`.
 struct PaneRender {
     core: Option<CoreId>,
@@ -180,19 +180,13 @@ impl PaneRender {
     }
 }
 
-/// Состояние рендера всех панелей — шарится с own-pass callback'ом (`Rc<RefCell>`,
-/// единственный поток UI: `prepare` и callback кадра не пересекаются по времени).
+/// Состояние рендера всех панелей — шарится с `gpu_canvas` callbacks (`Rc<RefCell>`,
+/// единственный поток UI: `prepare` и callbacks кадра не пересекаются по времени).
 struct RenderState {
     panes: Vec<PaneRender>,
     /// CPU-side dirty flag для `GpuCanvasDriver::frame`: `prepare()` обновил resident state,
     /// значит следующий platform tick должен презентить кадр даже без GPUI dirty.
     needs_present: bool,
-    /// Монотонный счётчик РЕАЛЬНЫХ present'ов own-pass (инкремент на каждый вызов callback'а).
-    /// 60-Гц prepare-задача движет край только когда счётчик вырос с прошлого раза — так она
-    /// матчит фактический present-rate и СПИТ, когда кадров нет (macOS occluded → CVDisplayLink
-    /// стоп → present=0; Windows inactive → 30fps вместо 60). Иначе задача молотила бы 60 Гц
-    /// вхолостую при guard'е, хотя картинки нет.
-    present_seq: u64,
     /// Левый верхний угол chart slot в backbuffer. Cursor приходит из UI в локальных
     /// device-px слота, а own-pass рисует в координатах окна.
     slot_origin: [f32; 2],
@@ -398,7 +392,6 @@ impl RenderState {
             return Ok(());
         }
 
-        self.present_seq = self.present_seq.wrapping_add(1);
         crate::diag::bump(&crate::diag::CHART_PRESENT);
 
         match gpu.backend() {
@@ -559,7 +552,6 @@ impl ChartEngine {
         let state = Rc::new(RefCell::new(RenderState {
             panes: Vec::new(),
             needs_present: true,
-            present_seq: 0,
             slot_origin: [0.0, 0.0],
             cursor: None,
             cursor_color: {
@@ -605,10 +597,6 @@ impl ChartEngine {
         gpui::gpu_canvas(self.canvas.clone())
     }
 
-    /// Старый lifecycle hook оставлен для вызывающего кода. С `gpu_canvas` ручной отписки нет:
-    /// canvas живёт ровно пока элемент присутствует в GPUI scene.
-    pub fn unregister_pass(&mut self) {}
-
     /// Размер слота чарта (девайс-px). Combo сам пересоздаёт битмап при смене размера.
     pub fn resize(&mut self, w: u32, h: u32) {
         self.w = w.max(1);
@@ -635,7 +623,7 @@ impl ChartEngine {
     }
 
     /// ПОДГОТОВКА кадра (вместо wgpu submit+readback): обновляет вид и данные слоёв каждой
-    /// видимой панели. НЕ рисует — рисование в own-pass callback (`register_pass`). Дёшево:
+    /// видимой панели. НЕ рисует — рисование делает `gpu_canvas.draw()`. Дёшево:
     /// математика вида + конверт новых тиков; тяжёлое (bake/blit) — на GPU в callback.
     pub fn prepare(&mut self, session: &SessionManager, ppp: f32) {
         let area = Rect {
@@ -751,7 +739,7 @@ impl ChartEngine {
                 h: chart_area.h,
             };
             pr.view = view::view_gpu(&pane.view, area_win, res);
-            // Камера X для own-pass callback (он двигает живой край на vblank, целопиксельно).
+            // Камера X для `gpu_canvas.frame()` (он двигает живой край на vblank, целопиксельно).
             // Синхронизируем пиксель-позицию с тем, что prepare только что поставил (follow_edge
             // уже квантован) — callback продолжит ровно отсюда, без скачка назад/вперёд.
             pr.epoch_ms = pane.view.epoch_ms;
@@ -961,13 +949,6 @@ impl ChartEngine {
 
     pub fn follow(&self) -> bool {
         self.follow
-    }
-
-    /// Счётчик реальных present'ов own-pass (растёт на каждый презентнутый кадр). 60-Гц
-    /// prepare-задача движет край, лишь когда он вырос с прошлого раза → не молотит при
-    /// occluded-окне (present=0). См. RenderState::present_seq.
-    pub fn present_seq(&self) -> u64 {
-        self.state.borrow().present_seq
     }
 
     pub fn sync_follow_from_views(&mut self) -> bool {
