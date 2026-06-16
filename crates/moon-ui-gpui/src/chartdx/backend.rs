@@ -5,7 +5,9 @@
 use moon_chart::layers::{LineInstance, MarkerInstance, SegInstance, ZoneInstance};
 use moon_core::data::{LevelInstance, PriceLinePoint};
 
-use super::types::{BackgroundParams, BookStyle, ChartCross, ChartViewGpu, GridParams};
+use super::types::{
+    BackgroundParams, BookStyle, ChartCross, ChartViewGpu, CursorParams, GridParams,
+};
 
 #[cfg(target_os = "macos")]
 use super::metal_backend::MetalLayers;
@@ -16,6 +18,7 @@ use super::wgpu_backend::WgpuLayers;
 use super::{
     background::{BACKGROUND_3DLOGO_PNG, BackgroundLayer},
     combo::ComboLayer,
+    cursor::CursorLayer,
     grid::GridLayer,
     orderbook::OrderBookLayer,
     userdata::UserDataLayer,
@@ -33,6 +36,8 @@ pub struct PlatformLayers {
     combo: ComboLayer,
     #[cfg(windows)]
     grid: GridLayer,
+    #[cfg(windows)]
+    cursor: CursorLayer,
     #[cfg(windows)]
     orderbook: OrderBookLayer,
     #[cfg(windows)]
@@ -52,6 +57,8 @@ impl PlatformLayers {
             combo: ComboLayer::new(),
             #[cfg(windows)]
             grid: GridLayer::new(),
+            #[cfg(windows)]
+            cursor: CursorLayer::new(),
             #[cfg(windows)]
             orderbook: OrderBookLayer::new(),
             #[cfg(windows)]
@@ -149,6 +156,7 @@ impl PlatformLayers {
         view: &ChartViewGpu,
         background_params: &BackgroundParams,
         grid_params: &GridParams,
+        cursor_params: &CursorParams,
         orderbook_view: &ChartViewGpu,
         book_style: &BookStyle,
         device: &ID3D11Device,
@@ -178,6 +186,11 @@ impl PlatformLayers {
         );
         crate::diag::bump(&crate::diag::CHART_USER_DRAW);
         self.userdata.render(view, device, context, rtv, gpu);
+        if cursor_params.enabled > 0.0 {
+            crate::diag::bump(&crate::diag::CHART_CURSOR_DRAW);
+        }
+        self.cursor
+            .render(cursor_params, device, context, rtv, gpu);
     }
 
     #[cfg(target_os = "linux")]
@@ -186,6 +199,7 @@ impl PlatformLayers {
         view: &ChartViewGpu,
         background_params: &BackgroundParams,
         grid_params: &GridParams,
+        cursor_params: &CursorParams,
         orderbook_view: &ChartViewGpu,
         book_style: &BookStyle,
         gpu: &gpui::RawGpuAccess,
@@ -194,6 +208,7 @@ impl PlatformLayers {
             view,
             background_params,
             grid_params,
+            cursor_params,
             orderbook_view,
             book_style,
             gpu,
@@ -206,6 +221,7 @@ impl PlatformLayers {
         view: &ChartViewGpu,
         background_params: &BackgroundParams,
         grid_params: &GridParams,
+        cursor_params: &CursorParams,
         orderbook_view: &ChartViewGpu,
         book_style: &BookStyle,
         gpu: &gpui::RawGpuAccess,
@@ -214,6 +230,7 @@ impl PlatformLayers {
             view,
             background_params,
             grid_params,
+            cursor_params,
             orderbook_view,
             book_style,
             gpu,

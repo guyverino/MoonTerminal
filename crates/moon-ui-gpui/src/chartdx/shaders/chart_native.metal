@@ -39,6 +39,16 @@ struct GridParams {
     float4 grid_col;
 };
 
+struct CursorParams {
+    float4 bounds;
+    float2 resolution;
+    float2 cursor;
+    float4 color;
+    float thickness;
+    float enabled;
+    float2 _pad;
+};
+
 struct BookStyle {
     float4 book_bg;
     float4 bid;
@@ -130,6 +140,35 @@ fragment float4 grid_fragment(GridOut in [[stage_in]], constant GridParams& gp [
     }
     float alpha = hit ? 1.0 : saturate(gp.bg_alpha);
     return float4(hit ? grid_col : bg, alpha);
+}
+
+struct CursorOut { float4 position [[position]]; float4 color; };
+
+vertex CursorOut cursor_vertex(uint vid [[vertex_id]], constant CursorParams& cp [[buffer(0)]]) {
+    uint which = vid / 6u;
+    uint corner_id = vid - which * 6u;
+    float x01 = (corner_id == 1u || corner_id == 4u || corner_id == 5u) ? 1.0 : 0.0;
+    float y01 = (corner_id == 2u || corner_id == 3u || corner_id == 5u) ? 1.0 : 0.0;
+    float thickness = max(cp.thickness, 1.0);
+    float half_t = thickness * 0.5;
+    float right = cp.bounds.x + cp.bounds.z;
+    float bottom = cp.bounds.y + cp.bounds.w;
+    bool vertical_ok = cp.enabled > 0.5 && cp.cursor.x >= cp.bounds.x && cp.cursor.x <= right;
+    bool horizontal_ok = cp.enabled > 0.5 && cp.cursor.y >= cp.bounds.y && cp.cursor.y <= bottom;
+    float4 dst;
+    if (which == 0u) {
+        dst = float4(round(cp.cursor.x) - half_t, cp.bounds.y, thickness, cp.bounds.w);
+        if (!vertical_ok) dst = float4(-10000.0, -10000.0, 1.0, 1.0);
+    } else {
+        dst = float4(cp.bounds.x, round(cp.cursor.y) - half_t, cp.bounds.z, thickness);
+        if (!horizontal_ok) dst = float4(-10000.0, -10000.0, 1.0, 1.0);
+    }
+    float2 px = dst.xy + float2(x01, y01) * dst.zw;
+    return { to_clip(px, cp.resolution), cp.color };
+}
+
+fragment float4 cursor_fragment(CursorOut in [[stage_in]]) {
+    return in.color;
 }
 
 struct CrossOut { float4 position [[position]]; float2 uv; uint side [[flat]]; };

@@ -14,8 +14,8 @@ use moon_core::data::{LevelInstance, PriceLinePoint};
 use std::ffi::c_void;
 
 use super::types::{
-    BackgroundParams, BookStyle, ChartCross, ChartViewGpu, GridParams, HLineGpu, MarkerGpu, SegGpu,
-    ZoneGpu,
+    BackgroundParams, BookStyle, ChartCross, ChartViewGpu, CursorParams, GridParams, HLineGpu,
+    MarkerGpu, SegGpu, ZoneGpu,
 };
 
 const SHADER: &str = include_str!("shaders/chart_native.metal");
@@ -90,6 +90,7 @@ impl BufferSlot {
 struct Pipelines {
     background: RenderPipelineState,
     grid: RenderPipelineState,
+    cursor: RenderPipelineState,
     crosses: RenderPipelineState,
     volume: RenderPipelineState,
     price_last: RenderPipelineState,
@@ -124,6 +125,7 @@ pub struct MetalLayers {
     volume_sell_max: f32,
     bg_uniform: BufferSlot,
     grid_uniform: BufferSlot,
+    cursor_uniform: BufferSlot,
     view_uniform: BufferSlot,
     book_style_uniform: BufferSlot,
     cross_buffer: BufferSlot,
@@ -155,6 +157,7 @@ impl MetalLayers {
             volume_sell_max: 1e-6,
             bg_uniform: BufferSlot::default(),
             grid_uniform: BufferSlot::default(),
+            cursor_uniform: BufferSlot::default(),
             view_uniform: BufferSlot::default(),
             book_style_uniform: BufferSlot::default(),
             cross_buffer: BufferSlot::default(),
@@ -212,6 +215,7 @@ impl MetalLayers {
         view: &ChartViewGpu,
         background_params: &BackgroundParams,
         grid_params: &GridParams,
+        cursor_params: &CursorParams,
         orderbook_view: &ChartViewGpu,
         book_style: &BookStyle,
         gpu: &RawGpuAccess,
@@ -227,7 +231,14 @@ impl MetalLayers {
             self.pipelines = Some(create_pipelines(device, pixel_format));
             self.background_texture = Some(create_background_texture(device));
         }
-        self.upload_common(device, view, background_params, grid_params, book_style);
+        self.upload_common(
+            device,
+            view,
+            background_params,
+            grid_params,
+            cursor_params,
+            book_style,
+        );
         let pipelines = self.pipelines.as_ref().unwrap();
         let bg = self.background_texture.as_ref().unwrap();
         let sc = scissor_rect(view, orderbook_view, gpu.width(), gpu.height());
@@ -295,6 +306,11 @@ impl MetalLayers {
             set_storage(encoder, 1, self.marker_buffer.buffer());
             draw(encoder, &pipelines.marker, 6, self.markers.len() as u64);
         }
+        if cursor_params.enabled > 0.0 {
+            crate::diag::bump(&crate::diag::CHART_CURSOR_DRAW);
+            set_uniform(encoder, 0, self.cursor_uniform.buffer());
+            draw(encoder, &pipelines.cursor, 12, 1);
+        }
         Ok(())
     }
 
@@ -304,6 +320,7 @@ impl MetalLayers {
         view: &ChartViewGpu,
         background_params: &BackgroundParams,
         grid_params: &GridParams,
+        cursor_params: &CursorParams,
         book_style: &BookStyle,
     ) {
         let mut view = *view;
@@ -314,6 +331,8 @@ impl MetalLayers {
             .write(device, "moon_chart_bg_uniform", &[*background_params]);
         self.grid_uniform
             .write(device, "moon_chart_grid_uniform", &[*grid_params]);
+        self.cursor_uniform
+            .write(device, "moon_chart_cursor_uniform", &[*cursor_params]);
         self.view_uniform
             .write(device, "moon_chart_view_uniform", &[view]);
         self.book_style_uniform
@@ -427,6 +446,13 @@ fn create_pipelines(device: &DeviceRef, pixel_format: MTLPixelFormat) -> Pipelin
             pixel_format,
             "grid_vertex",
             "grid_fragment",
+        ),
+        cursor: pipeline(
+            device,
+            &library,
+            pixel_format,
+            "cursor_vertex",
+            "cursor_fragment",
         ),
         crosses: pipeline(
             device,

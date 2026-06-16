@@ -10,11 +10,12 @@
 
 ---
 
-## 1. Кэш-паттерн «на mouse-move — готовый фон, без перерисовки»: график и стакан ДА, подписи осей НЕТ
+## 1. Кэш-паттерн «на mouse-move — готовый фон, без перерисовки»: график, стакан и курсор ДА; readout-текст осей НЕТ
 
-**Что проверялось (приказ):** сделано ли в коде так, чтобы график и стакан кэшировались в
+**Что проверялось :** сделано ли в коде так, чтобы график и стакан кэшировались в
 видеопамяти и при mouse-move использовались как готовый «фон» без перерисовки всего — включая
-подписи осей. **Вывод по коду: для тяжёлых GPU-слоёв — ДА; подписи осей из паттерна ВЫПАДАЮТ.**
+подписи осей. **Вывод по коду: для тяжёлых GPU-слоёв и самого крестика — ДА; readout-текст
+перекрестия пока не перенесён в native слой.**
 
 ### Доказано кодом — кэшируется (на move = блит, не пересборка):
 
@@ -35,22 +36,32 @@
 `chartdx/mod.rs:583` (orderbook — `book_rev`/`lo`/`hi`), `mod.rs:644-654` (combo — `total`).
 Mouse-move не меняет ни один из этих ключей.
 
-### Доказано кодом — НЕ кэшируется (дыра паттерна):
+**Курсор/крестик** — с 2026-06-17 вынесен в native chartdx layer:
+- `panels/chart.rs` `on_mouse_move` на cursor-only больше НЕ делает `cx.notify()`.
+- `ChartPanel::sync_native_cursor` пишет позицию в `ChartEngine`, а `RenderState::set_cursor`
+  ставит `needs_present`.
+- `chartdx/cursor.rs`, `native_cursor.wgsl`, `chart_native.metal` рисуют две линии в own-pass
+  на Windows/Mac/Linux. В `render_diag.log` должен появляться `cursor_draw`, но не
+  `chart_input_notify` на каждый mouse-move.
+- GPUI readout-плашки цены/времени оставлены, но обновляются через отдельный throttle
+  `chart_cursor_readout_notify` (≤4 Гц), без возврата к render storm.
 
-**Подписи осей** — ре-шейпятся (`shape_line`) на КАЖДЫЙ render, в т.ч. на mouse-move, без кэша:
+### Осталось НЕ кэшировано (дыра паттерна):
+
+**Readout-текст перекрестия / подписи осей** — при GPUI-render всё ещё шейпятся (`shape_line`) без кэша:
 - `axes.rs:52-77` (`label`) и `axes.rs:81-120` (`chip`) — оба зовут `ts.shape_line(...)` каждый вызов.
 - `axes.rs:202-220` цикл цен (~8-10 шейпов) + `axes.rs:235-249` цикл времени (7 шейпов).
-- `axes.rs:126` `draw` зовётся из `panels/chart.rs:758` (canvas-paint), по КАЖДОЙ панели каждый render.
-- `panels/chart.rs:698-704` `on_mouse_move` → `cx.notify()` на смену позиции курсора → render →
-  canvas-paint → `axes::draw` → re-shape ВСЕХ подписей шкал.
-- Текст подписей шкал на mouse-move НЕ меняется (вид тот же). Легитимно меняются только крестик и
-  2 readout-плашки под курсором (`axes.rs:252-309`). Значит ~17 шейпов шкал выброшены зря.
+- `axes::draw` по-прежнему зовётся из GPUI canvas overlay при обычном render панели, но текущий
+  `ChartPanel` передаёт `cursor_lines=false`, чтобы retained scene не держала stale GPUI-крест при
+  cursor-only GPU-present. Плашки readout обновляются редко.
+- Текст подписей шкал на mouse-move НЕ меняется (вид тот же). Следующий нормальный шаг —
+  native/GPU readout text или кэш shaped labels по ключу, без возврата `cx.notify()` на cursor-only.
 - Эталон для сверки: MoonBot держит `TextWidthInt`-кэш по строке (RENDER_INVALIDATION §4).
 
-**Что замерить:** на mouse-move над чартом в `render_diag.log` подтвердить `combo_bake≈0` и
-`orderbook_bake≈0` (кэши не пересобираются — паттерн «фон» работает для GPU-слоёв). Затем
-release-профиль стоимости `shape_line` за кадр на mouse-move × число панелей в Tiled-мультичарте —
-это и есть цена дыры.
+**Что замерить:** на mouse-move над чартом в `render_diag.log` подтвердить `chart_input_notify≈0`,
+`chart_cursor_readout_notify≤4/с`, `orders_render`/`shell_render` не растут до refresh-rate,
+`cursor_draw` идёт по движению, а `combo_bake≈0` и `orderbook_bake≈0`. Затем отдельно замерить
+стоимость `shape_line` на обычных render-событиях/drag/resize × число панелей в Tiled-мультичарте.
 
 **Открытые вопросы:** почему GPU-слои вынесены в VRAM-кэш с гейтами, а текст осей — нет? Достаточно
 ли кэша подписей по ключу (текст, размер, цвет)? Или разнести в render крестик (меняется на move) и

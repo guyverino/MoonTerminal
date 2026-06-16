@@ -8,12 +8,13 @@ use moon_chart::layers::{LineInstance, MarkerInstance, SegInstance, ZoneInstance
 use moon_core::data::{LevelInstance, PriceLinePoint};
 
 use super::types::{
-    BackgroundParams, BookStyle, ChartCross, ChartViewGpu, GridParams, HLineGpu, MarkerGpu, SegGpu,
-    ZoneGpu,
+    BackgroundParams, BookStyle, ChartCross, ChartViewGpu, CursorParams, GridParams, HLineGpu,
+    MarkerGpu, SegGpu, ZoneGpu,
 };
 
 const BACKGROUND_SHADER: &str = include_str!("shaders/native_background.wgsl");
 const GRID_SHADER: &str = include_str!("shaders/native_grid.wgsl");
+const CURSOR_SHADER: &str = include_str!("shaders/native_cursor.wgsl");
 const CROSSES_SHADER: &str = include_str!("shaders/native_crosses.wgsl");
 const PRICE_SHADER: &str = include_str!("shaders/native_price.wgsl");
 const BOOK_SHADER: &str = include_str!("shaders/native_book.wgsl");
@@ -92,10 +93,12 @@ impl BufferSlot {
 struct Pipelines {
     bg_layout: wgpu::BindGroupLayout,
     grid_layout: wgpu::BindGroupLayout,
+    cursor_layout: wgpu::BindGroupLayout,
     view_storage_layout: wgpu::BindGroupLayout,
     book_layout: wgpu::BindGroupLayout,
     background: wgpu::RenderPipeline,
     grid: wgpu::RenderPipeline,
+    cursor: wgpu::RenderPipeline,
     crosses: wgpu::RenderPipeline,
     volume: wgpu::RenderPipeline,
     price_last: wgpu::RenderPipeline,
@@ -131,6 +134,7 @@ pub struct WgpuLayers {
     volume_sell_max: f32,
     bg_uniform: BufferSlot,
     grid_uniform: BufferSlot,
+    cursor_uniform: BufferSlot,
     view_uniform: BufferSlot,
     book_style_uniform: BufferSlot,
     cross_buffer: BufferSlot,
@@ -162,6 +166,7 @@ impl WgpuLayers {
             volume_sell_max: 1e-6,
             bg_uniform: BufferSlot::default(),
             grid_uniform: BufferSlot::default(),
+            cursor_uniform: BufferSlot::default(),
             view_uniform: BufferSlot::default(),
             book_style_uniform: BufferSlot::default(),
             cross_buffer: BufferSlot::default(),
@@ -219,6 +224,7 @@ impl WgpuLayers {
         view: &ChartViewGpu,
         background_params: &BackgroundParams,
         grid_params: &GridParams,
+        cursor_params: &CursorParams,
         orderbook_view: &ChartViewGpu,
         book_style: &BookStyle,
         gpu: &RawGpuAccess,
@@ -238,6 +244,7 @@ impl WgpuLayers {
             view,
             background_params,
             grid_params,
+            cursor_params,
             book_style,
         );
         let pipelines = self.pipelines.as_ref().unwrap();
@@ -262,6 +269,8 @@ impl WgpuLayers {
             ],
         });
         let grid_bind = self.bind_uniform(device, &pipelines.grid_layout, &self.grid_uniform);
+        let cursor_bind =
+            self.bind_uniform(device, &pipelines.cursor_layout, &self.cursor_uniform);
         let cross_bind =
             self.bind_view_storage(device, &pipelines.view_storage_layout, &self.cross_buffer);
         let last_bind = self.bind_view_storage(
@@ -381,6 +390,10 @@ impl WgpuLayers {
                 self.markers.len() as u32,
             );
         }
+        if cursor_params.enabled > 0.0 {
+            crate::diag::bump(&crate::diag::CHART_CURSOR_DRAW);
+            draw_pipeline(pass, &pipelines.cursor, &cursor_bind, 12, 1);
+        }
         Ok(())
     }
 
@@ -391,6 +404,7 @@ impl WgpuLayers {
         view: &ChartViewGpu,
         background_params: &BackgroundParams,
         grid_params: &GridParams,
+        cursor_params: &CursorParams,
         book_style: &BookStyle,
     ) {
         let mut view = *view;
@@ -410,6 +424,13 @@ impl WgpuLayers {
             "moon_chart_grid_uniform",
             wgpu::BufferUsages::UNIFORM,
             &[*grid_params],
+        );
+        self.cursor_uniform.write(
+            device,
+            queue,
+            "moon_chart_cursor_uniform",
+            wgpu::BufferUsages::UNIFORM,
+            &[*cursor_params],
         );
         self.view_uniform.write(
             device,
@@ -606,6 +627,7 @@ fn scissor_rect(
 fn create_pipelines(device: &wgpu::Device, format: wgpu::TextureFormat) -> Pipelines {
     let background_shader = shader(device, "moon_chart_background_wgsl", BACKGROUND_SHADER);
     let grid_shader = shader(device, "moon_chart_grid_wgsl", GRID_SHADER);
+    let cursor_shader = shader(device, "moon_chart_cursor_wgsl", CURSOR_SHADER);
     let crosses_shader = shader(device, "moon_chart_crosses_wgsl", CROSSES_SHADER);
     let price_shader = shader(device, "moon_chart_price_wgsl", PRICE_SHADER);
     let book_shader = shader(device, "moon_chart_book_wgsl", BOOK_SHADER);
@@ -639,6 +661,10 @@ fn create_pipelines(device: &wgpu::Device, format: wgpu::TextureFormat) -> Pipel
         label: Some("moon_chart_grid_layout"),
         entries: &[uniform_entry(0, std::mem::size_of::<GridParams>())],
     });
+    let cursor_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("moon_chart_cursor_layout"),
+        entries: &[uniform_entry(0, std::mem::size_of::<CursorParams>())],
+    });
     let view_storage_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("moon_chart_view_storage_layout"),
         entries: &[
@@ -669,6 +695,14 @@ fn create_pipelines(device: &wgpu::Device, format: wgpu::TextureFormat) -> Pipel
         &grid_layout,
         "grid_vertex",
         "grid_fragment",
+    );
+    let cursor = pipeline(
+        device,
+        format,
+        &cursor_shader,
+        &cursor_layout,
+        "cursor_vertex",
+        "cursor_fragment",
     );
     let crosses = pipeline(
         device,
@@ -759,10 +793,12 @@ fn create_pipelines(device: &wgpu::Device, format: wgpu::TextureFormat) -> Pipel
     Pipelines {
         bg_layout,
         grid_layout,
+        cursor_layout,
         view_storage_layout,
         book_layout,
         background,
         grid,
+        cursor,
         crosses,
         volume,
         price_last,

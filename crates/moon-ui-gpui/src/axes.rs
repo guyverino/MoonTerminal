@@ -1,4 +1,4 @@
-//! Подписи осей чарта в GPUI: цена слева, время снизу + readout'ы перекрестия.
+//! Подписи осей чарта в GPUI: цена слева, время снизу + optional readout'ы перекрестия.
 //! Порт `src/chart/axes.rs` egui-версии 1:1 — та же геометрия и тик-математика
 //! (`moon_chart::axes`), но рисуем текстом GPUI поверх offscreen-картинки движка
 //! (canvas-оверлей, см. main.rs), а не egui-painter'ом. Координаты — логические
@@ -13,8 +13,8 @@ use moon_chart::{GLASS_ZONE_PX, PRICE_AXIS_W, TIME_AXIS_H};
 /// Размер шрифта подписей (логич. px) — как `theme::FONT_SIZE` egui-версии.
 const FONT_SIZE: f32 = 11.5;
 
-/// Стиль перекрестия из темы чарта (`ChartTheme`). Рисуем крест GPUI-оверлеем
-/// 1:1 с движковым cursor-слоем (см. moon-chart/shaders/cursor.wgsl).
+/// Стиль перекрестия из темы чарта (`ChartTheme`). Частый крест теперь рисует native
+/// chartdx cursor layer; этот стиль нужен для optional GPUI readout/cross legacy path.
 #[derive(Clone, Copy)]
 pub struct CrossStyle {
     pub color: [u8; 3],
@@ -121,7 +121,8 @@ fn chip(
 
 /// Рисует обе шкалы (+ readout'ы перекрестия при наличии курсора). `bounds` —
 /// слот чарта (лог. px окна), `ppp` — scale_factor, `cursor` — позиция курсора
-/// в лог. px окна (или None). Порт `axes::draw` egui-версии.
+/// в лог. px окна (или None). `cursor_lines=false` keeps only readout chips; native chartdx
+/// draws the high-frequency crosshair lines. Порт `axes::draw` egui-версии.
 #[allow(clippy::too_many_arguments)]
 pub fn draw(
     window: &mut Window,
@@ -129,6 +130,7 @@ pub fn draw(
     bounds: Bounds<Pixels>,
     snap: &AxisSnapshot,
     cursor: Option<Point<Pixels>>,
+    cursor_lines: bool,
     ppp: f32,
     cross: CrossStyle,
     palette: MoonPalette,
@@ -253,27 +255,29 @@ pub fn draw(
         let cx_px = f32::from(c.x);
         let cy_px = f32::from(c.y);
 
-        // Крест: вертикаль на всю высоту plot-зоны, горизонталь на всю ширину
-        // (чарт + стакан, без жёлобов).
-        let line = rgba3(cross.color, cross.alpha);
-        let lw = cross.thickness.max(1.0);
-        if cx_px >= plot_left && cx_px <= right {
-            window.paint_quad(fill(
-                Bounds::new(
-                    point(px(cx_px - lw * 0.5), px(plot_top)),
-                    gpui::size(px(lw), px(plot_bottom - plot_top)),
-                ),
-                line,
-            ));
-        }
-        if cy_px >= plot_top && cy_px <= plot_bottom {
-            window.paint_quad(fill(
-                Bounds::new(
-                    point(px(plot_left), px(cy_px - lw * 0.5)),
-                    gpui::size(px(right - plot_left), px(lw)),
-                ),
-                line,
-            ));
+        // Крестовые линии сейчас обычно рисует native chartdx layer. GPUI-ветка оставлена для
+        // legacy/диагностики; readout-плашки ниже могут обновляться реже, без ghost-линий.
+        if cursor_lines {
+            let line = rgba3(cross.color, cross.alpha);
+            let lw = cross.thickness.max(1.0);
+            if cx_px >= plot_left && cx_px <= right {
+                window.paint_quad(fill(
+                    Bounds::new(
+                        point(px(cx_px - lw * 0.5), px(plot_top)),
+                        gpui::size(px(lw), px(plot_bottom - plot_top)),
+                    ),
+                    line,
+                ));
+            }
+            if cy_px >= plot_top && cy_px <= plot_bottom {
+                window.paint_quad(fill(
+                    Bounds::new(
+                        point(px(plot_left), px(cy_px - lw * 0.5)),
+                        gpui::size(px(right - plot_left), px(lw)),
+                    ),
+                    line,
+                ));
+            }
         }
 
         // Время под вертикальной линией — плашкой в жёлобе времени.

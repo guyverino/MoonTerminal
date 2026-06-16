@@ -1,10 +1,10 @@
 //! Панель чарта (center DockArea): НАШ own-pass DX11 рендер (через generic-хук gpui) +
-//! ввод + GPUI-оверлей осей/курсора. Как Dock-панель — отцепляется в окно. Монета — из
+//! ввод + GPUI-оверлей осей. Как Dock-панель — отцепляется в окно. Монета — из
 //! focus и `Backend.open_request`.
 //!
 //! Рендер: `ChartEngine.register_pass` ставит own-pass ПОД сценой (рисует combo/слои в
 //! backbuffer GPUI без readback), `prepare` каждый кадр обновляет вид и заливает новые тики.
-//! Текст осей и перекрестие — GPUI-оверлей ПОВЕРХ (нативный текст, см. `docs/RENDER_PLAN.md`).
+//! Текст осей — GPUI-оверлей ПОВЕРХ; перекрестие — native chartdx cursor layer без GPUI notify.
 
 use std::time::Duration;
 
@@ -93,6 +93,7 @@ pub struct ChartPanel {
     last_prepared_bounds: Option<Bounds<Pixels>>,
     view_dirty: bool,
     last_adaptive_notify_ms: f64,
+    last_cursor_readout_notify_ms: f64,
     /// Последний scale_factor окна (ставится в render). Нужен 60-Гц prepare-задаче, у
     /// которой нет window — DPI меняется редко, между сменами берём запомненный.
     last_ppp: f32,
@@ -213,6 +214,7 @@ impl ChartPanel {
             last_prepared_bounds: None,
             view_dirty: true,
             last_adaptive_notify_ms: 0.0,
+            last_cursor_readout_notify_ms: 0.0,
             last_ppp: 1.0,
             last_present_seq: 0,
             ttl_timer_armed: false,
@@ -294,6 +296,7 @@ impl ChartPanel {
             last_prepared_bounds: None,
             view_dirty: true,
             last_adaptive_notify_ms: 0.0,
+            last_cursor_readout_notify_ms: 0.0,
             last_ppp: 1.0,
             last_present_seq: 0,
             ttl_timer_armed: false,
@@ -432,6 +435,23 @@ impl ChartPanel {
         Some(((lx * sf, ly * sf), within))
     }
 
+    fn sync_native_cursor(&mut self) -> bool {
+        let cursor = self
+            .input
+            .cursor
+            .and_then(|(x, y)| self.input.hovered_pane.map(|pane| (pane, x, y)));
+        self.chart.set_cursor(cursor)
+    }
+
+    fn notify_cursor_readout_if_due(&mut self, cx: &mut Context<Self>) {
+        let now = now_unix_ms();
+        if now - self.last_cursor_readout_notify_ms >= 250.0 {
+            self.last_cursor_readout_notify_ms = now;
+            crate::diag::bump(&crate::diag::CHART_CURSOR_READOUT_NOTIFY);
+            cx.notify();
+        }
+    }
+
     /// Подпись вкладки: «Чарт N» для AddToChart, иначе рынок открытой монеты, затем «Main».
     pub fn title_text(&self) -> String {
         if let Some(n) = self.num {
@@ -533,6 +553,7 @@ impl Render for ChartPanel {
             .iter()
             .map(|(idx, rect, _)| (*idx, *rect))
             .collect();
+        self.sync_native_cursor();
         let cross = self.chart.crosshair_style();
         let cursor_dev = self.input.cursor;
         let hovered = self.input.hovered_pane;
@@ -564,7 +585,9 @@ impl Render for ChartPanel {
                     ScrollDelta::Pixels(p) => f32::from(p.y) / 40.0,
                 };
                 this.input.last_ptr = pos;
+                this.input.cursor = if within { Some(pos) } else { None };
                 this.input.hovered_pane = this.input.pane_at(pos.0, pos.1);
+                this.sync_native_cursor();
                 let fb = this.chart_dev.0 as f32;
                 if this.input.wheel(
                     dy,
@@ -590,11 +613,13 @@ impl Render for ChartPanel {
                         return;
                     };
                     this.input.last_ptr = pos;
+                    this.input.cursor = if within { Some(pos) } else { None };
                     this.input.hovered_pane = if within {
                         this.input.pane_at(pos.0, pos.1)
                     } else {
                         None
                     };
+                    this.sync_native_cursor();
                     // На AddToChart-вкладках дабл-клик по ЧАРТУ → открыть монету на Main (fullscreen).
                     let allow_to_main = this.num.is_some();
                     let input_changed = this.input.mouse_button(
@@ -648,11 +673,13 @@ impl Render for ChartPanel {
                         return;
                     };
                     this.input.last_ptr = pos;
+                    this.input.cursor = if within { Some(pos) } else { None };
                     this.input.hovered_pane = if within {
                         this.input.pane_at(pos.0, pos.1)
                     } else {
                         None
                     };
+                    this.sync_native_cursor();
                     if this.input.mouse_button(
                         input::Btn::Right,
                         true,
@@ -716,12 +743,15 @@ impl Render for ChartPanel {
                 if dragging {
                     this.mark_input_changed(cx);
                 }
-                // Крестик и пан/зум — перерисовываемся на движение мыши (own-pass дёшев: combo
-                // блитит готовый битмап, оверлей крестика — нативный GPUI).
-                if dragging
-                    || prev_cursor != this.input.cursor
-                    || prev_hovered != this.input.hovered_pane
-                {
+                let cursor_changed = prev_cursor != this.input.cursor
+                    || prev_hovered != this.input.hovered_pane;
+                if cursor_changed {
+                    this.sync_native_cursor();
+                    this.notify_cursor_readout_if_due(cx);
+                }
+                // Drag меняет камеры/оси, поэтому нужен обычный GPUI notify. Cursor-only move
+                // уходит в chartdx native overlay через gpu_canvas без dirty всего дерева.
+                if dragging {
                     crate::diag::bump(&crate::diag::CHART_INPUT_NOTIFY);
                     cx.notify();
                 }
@@ -731,7 +761,8 @@ impl Render for ChartPanel {
                     let changed = this.input.cursor.take().is_some()
                         || this.input.hovered_pane.take().is_some();
                     if changed {
-                        crate::diag::bump(&crate::diag::CHART_INPUT_NOTIFY);
+                        this.sync_native_cursor();
+                        crate::diag::bump(&crate::diag::CHART_CURSOR_READOUT_NOTIFY);
                         cx.notify();
                     }
                 }
@@ -758,8 +789,9 @@ impl Render for ChartPanel {
                                 cx.notify();
                             });
                         }
-                        // Оси/перекрестие — ПО КАЖДОЙ панели (Tiled-мультичарт): свой
-                        // прямоугольник (девайс-px → лог.px окна) и снимок. Курсор — под мышью.
+                        // Оси — ПО КАЖДОЙ панели (Tiled-мультичарт): свой прямоугольник
+                        // (девайс-px → лог.px окна) и снимок. Cursor-lines native; здесь только
+                        // throttled readout chips.
                         let palette = MoonPalette::active(cx);
                         for (idx, rect, snap) in &axis_panes {
                             let sub = Bounds::new(
@@ -779,7 +811,7 @@ impl Render for ChartPanel {
                             } else {
                                 None
                             };
-                            axes::draw(window, cx, sub, snap, cursor, sf, cross, palette);
+                            axes::draw(window, cx, sub, snap, cursor, false, sf, cross, palette);
                         }
                     },
                 )

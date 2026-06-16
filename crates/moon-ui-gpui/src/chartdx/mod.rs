@@ -1,6 +1,6 @@
 //! Own-pass DX11 рендер чарта (замена wgpu-offscreen+readback). Слои по природе данных
 //! (см. `docs/RENDER_PLAN.md`): Combo (рыночная история) / OrderBook (срез) /
-//! UserData (мутирующее юзерское) + хром (Grid/Background) + текст/курсор поверх в GPUI.
+//! UserData (мутирующее юзерское) + хром (Grid/Background) + native cursor; текст осей — в GPUI.
 //!
 //! Доменная специфика чарта живёт ЗДЕСЬ (в терминале); форк gpui отдаёт только generic-хук
 //! `RawGpuAccess`. Файл на слой; здесь — оркестратор `ChartEngine`: prepare данных per pane
@@ -11,6 +11,8 @@ mod backend;
 pub mod background;
 #[cfg(windows)]
 pub mod combo;
+#[cfg(windows)]
+pub mod cursor;
 #[cfg(windows)]
 pub mod gpu;
 #[cfg(windows)]
@@ -46,7 +48,7 @@ use windows::Win32::Graphics::Direct3D11::ID3D11RasterizerState;
 use crate::axes::CrossStyle;
 use backend::PlatformLayers;
 use pane::{Container, ContainerKind, Mode};
-use types::{BackgroundParams, BookStyle, ChartViewGpu, GridParams, cover_uv};
+use types::{BackgroundParams, BookStyle, ChartViewGpu, CursorParams, GridParams, cover_uv};
 
 const CHART_PHOTO_BACKGROUND_ENABLED: bool = false;
 
@@ -77,6 +79,12 @@ fn union_range(a: Option<(f32, f32)>, b: Option<(f32, f32)>) -> Option<(f32, f32
     }
 }
 
+#[derive(Clone, Copy, PartialEq)]
+struct CursorState {
+    pane: usize,
+    local: [f32; 2],
+}
+
 /// GPU-состояние одной панели для own-pass callback — отделено от логики `Container`,
 /// синхронизируется по индексу + идентичности (core, market) в `prepare`.
 struct PaneRender {
@@ -86,6 +94,7 @@ struct PaneRender {
     layers: PlatformLayers,
     background_params: BackgroundParams,
     grid_params: GridParams,
+    cursor_params: CursorParams,
     orderbook_view: ChartViewGpu,
     book_style: BookStyle,
     /// Абсолютный индекс тиков (`total_pushed`), до которого combo уже залит. Сдвиг
@@ -125,6 +134,7 @@ impl PaneRender {
             layers: PlatformLayers::new(),
             background_params: BackgroundParams::default(),
             grid_params: GridParams::default(),
+            cursor_params: CursorParams::default(),
             orderbook_view: ChartViewGpu::default(),
             book_style: BookStyle::default(),
             last_total: u64::MAX,
@@ -183,6 +193,12 @@ struct RenderState {
     /// стоп → present=0; Windows inactive → 30fps вместо 60). Иначе задача молотила бы 60 Гц
     /// вхолостую при guard'е, хотя картинки нет.
     present_seq: u64,
+    /// Левый верхний угол chart slot в backbuffer. Cursor приходит из UI в локальных
+    /// device-px слота, а own-pass рисует в координатах окна.
+    slot_origin: [f32; 2],
+    cursor: Option<CursorState>,
+    cursor_color: [f32; 4],
+    cursor_thickness: f32,
     /// Scissor-растеризатор own-pass (lazy, пересоздаётся на смене device): клипует слои к
     /// зоне панели, чтобы стакан/ордера (позиционируются по ЦЕНЕ) не лезли за плот на тулбар/шкалы.
     #[cfg(windows)]
@@ -235,6 +251,69 @@ impl GpuCanvasDriver for ChartCanvasDriver {
 }
 
 impl RenderState {
+    fn set_slot_origin(&mut self, x: f32, y: f32) {
+        let next = [x, y];
+        if self.slot_origin != next {
+            self.slot_origin = next;
+            self.sync_cursor_params();
+            if self.cursor.is_some() {
+                self.needs_present = true;
+            }
+        }
+    }
+
+    fn set_cursor_style(&mut self, color: [f32; 4], thickness: f32) {
+        let thickness = thickness.max(1.0);
+        if self.cursor_color != color || self.cursor_thickness != thickness {
+            self.cursor_color = color;
+            self.cursor_thickness = thickness;
+            self.sync_cursor_params();
+            if self.cursor.is_some() {
+                self.needs_present = true;
+            }
+        }
+    }
+
+    fn set_cursor(&mut self, cursor: Option<CursorState>) -> bool {
+        if self.cursor == cursor {
+            return false;
+        }
+        self.cursor = cursor;
+        self.sync_cursor_params();
+        self.needs_present = true;
+        true
+    }
+
+    fn sync_cursor_params(&mut self) {
+        for (idx, pr) in self.panes.iter_mut().enumerate() {
+            let right = (pr.orderbook_view.bounds[0] + pr.orderbook_view.bounds[2])
+                .max(pr.view.bounds[0] + pr.view.bounds[2]);
+            let bounds = [
+                pr.view.bounds[0],
+                pr.view.bounds[1],
+                (right - pr.view.bounds[0]).max(1.0),
+                pr.view.bounds[3].max(1.0),
+            ];
+            let mut params = CursorParams {
+                bounds,
+                resolution: pr.view.resolution,
+                color: self.cursor_color,
+                thickness: self.cursor_thickness.max(1.0),
+                ..CursorParams::default()
+            };
+            if pr.active {
+                if let Some(cursor) = self.cursor.filter(|c| c.pane == idx) {
+                    params.cursor = [
+                        self.slot_origin[0] + cursor.local[0],
+                        self.slot_origin[1] + cursor.local[1],
+                    ];
+                    params.enabled = 1.0;
+                }
+            }
+            pr.cursor_params = params;
+        }
+    }
+
     fn frame(&mut self, info: GpuFrameInfo) -> GpuFrameDecision {
         if !info.presentable || info.bounds.is_empty() {
             return GpuFrameDecision::Skip;
@@ -312,6 +391,7 @@ impl RenderState {
                     if pr.active {
                         pr.view.resolution = res;
                         pr.grid_params.resolution = res;
+                        pr.cursor_params.resolution = res;
                         pr.orderbook_view.resolution = res;
                         let panel_clip = [
                             pr.view.bounds[0],
@@ -331,6 +411,7 @@ impl RenderState {
                             &pr.view,
                             &pr.background_params,
                             &pr.grid_params,
+                            &pr.cursor_params,
                             &pr.orderbook_view,
                             &pr.book_style,
                             &device,
@@ -353,11 +434,13 @@ impl RenderState {
                     if pr.active {
                         pr.view.resolution = res;
                         pr.grid_params.resolution = res;
+                        pr.cursor_params.resolution = res;
                         pr.orderbook_view.resolution = res;
                         pr.layers.render_wgpu(
                             &pr.view,
                             &pr.background_params,
                             &pr.grid_params,
+                            &pr.cursor_params,
                             &pr.orderbook_view,
                             &pr.book_style,
                             gpu,
@@ -373,11 +456,13 @@ impl RenderState {
                     if pr.active {
                         pr.view.resolution = res;
                         pr.grid_params.resolution = res;
+                        pr.cursor_params.resolution = res;
                         pr.orderbook_view.resolution = res;
                         pr.layers.render_metal(
                             &pr.view,
                             &pr.background_params,
                             &pr.grid_params,
+                            &pr.cursor_params,
                             &pr.orderbook_view,
                             &pr.book_style,
                             gpu,
@@ -419,6 +504,14 @@ impl ChartEngine {
             panes: Vec::new(),
             needs_present: true,
             present_seq: 0,
+            slot_origin: [0.0, 0.0],
+            cursor: None,
+            cursor_color: {
+                let mut c = rgb4(theme.cross);
+                c[3] = theme.cross_alpha;
+                c
+            },
+            cursor_thickness: theme.cross_thickness.max(1.0),
             #[cfg(windows)]
             scissor_rs: None,
             #[cfg(windows)]
@@ -469,10 +562,20 @@ impl ChartEngine {
     /// Левый-верхний угол слота чарта В ОКНЕ (девайс-px) — для координат own-pass в backbuffer.
     pub fn set_origin(&mut self, x: f32, y: f32) {
         self.origin = (x, y);
+        self.state.borrow_mut().set_slot_origin(x, y);
     }
 
     pub fn set_present_rate_hz(&mut self, hz: f32) {
         self.present_rate_hz = hz.max(1.0);
+    }
+
+    pub fn set_cursor(&mut self, cursor: Option<(usize, f32, f32)>) -> bool {
+        self.state
+            .borrow_mut()
+            .set_cursor(cursor.map(|(pane, x, y)| CursorState {
+                pane,
+                local: [x, y],
+            }))
     }
 
     /// ПОДГОТОВКА кадра (вместо wgpu submit+readback): обновляет вид и данные слоёв каждой
@@ -732,6 +835,7 @@ impl ChartEngine {
             pr.last_device_gen = device_gen;
             pr.active = true;
         }
+        st.sync_cursor_params();
         st.needs_present = true;
     }
 
@@ -739,6 +843,11 @@ impl ChartEngine {
 
     pub fn set_theme(&mut self, theme: ChartTheme) -> bool {
         if self.theme != theme {
+            let mut cursor_color = rgb4(theme.cross);
+            cursor_color[3] = theme.cross_alpha;
+            self.state
+                .borrow_mut()
+                .set_cursor_style(cursor_color, theme.cross_thickness);
             self.theme = theme;
             true
         } else {

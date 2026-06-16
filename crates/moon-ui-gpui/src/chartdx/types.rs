@@ -80,6 +80,20 @@ pub struct GridParams {
     pub grid_col: [f32; 4],
 }
 
+/// Native cursor/crosshair overlay. Coordinates are physical window pixels.
+#[repr(C)]
+#[derive(Clone, Copy, Default, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct CursorParams {
+    /// Combined chart+book area: x, y, w, h.
+    pub bounds: [f32; 4],
+    pub resolution: [f32; 2],
+    pub cursor: [f32; 2],
+    pub color: [f32; 4],
+    pub thickness: f32,
+    pub enabled: f32,
+    pub _pad: [f32; 2],
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct BookStyle {

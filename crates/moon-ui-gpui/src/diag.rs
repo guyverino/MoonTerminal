@@ -45,6 +45,7 @@ diag_counters!(
     // должно быть РЕДКО (по приходу данных/смене вида). BAKE ≈ DRAW = кэш не работает.
     CHART_BG_DRAW     => "bg_draw",
     CHART_GRID_DRAW   => "grid_draw",
+    CHART_CURSOR_DRAW => "cursor_draw",
     CHART_COMBO_DRAW  => "combo_draw",
     CHART_COMBO_BAKE  => "combo_bake",
     CHART_BOOK_DRAW   => "orderbook_draw",
@@ -59,6 +60,7 @@ diag_counters!(
     CHART_OPEN_NOTIFY => "chart_open_notify",
     CHART_TTL_NOTIFY  => "chart_ttl_notify",
     CHART_INPUT_NOTIFY => "chart_input_notify",
+    CHART_CURSOR_READOUT_NOTIFY => "chart_cursor_readout_notify",
     CHART_CANVAS_NOTIFY => "chart_canvas_notify",
 );
 
