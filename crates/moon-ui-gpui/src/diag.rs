@@ -32,6 +32,7 @@ diag_counters!(
     DETACHED_RENDER   => "detached_render",
     BACKEND_NOTIFY    => "backend_notify",
     CHART_PREPARE     => "chart_prepare",
+    CHART_GPU_PREPARE => "chart_gpu_prepare",
     CHART_TASK_PREP   => "chart_task_prep",
     // own-pass present (реальная частота показа чарта) — раньше СЛЕПАЯ зона: present-rate
     // не измерялся вообще. CHART_CAM_STEP = сколько present'ов реально сдвинули камеру на

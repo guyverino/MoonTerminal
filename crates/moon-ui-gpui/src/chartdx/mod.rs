@@ -230,6 +230,25 @@ impl GpuCanvasDriver for ChartCanvasDriver {
         self.state.borrow_mut().frame(info)
     }
 
+    fn prepare_gpu(&mut self, ctx: &mut gpui::GpuCanvasPrepareContext<'_>) -> anyhow::Result<()> {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.state.borrow_mut().prepare_gpu(&ctx.gpu)
+        }));
+        match result {
+            Ok(result) => result,
+            Err(e) => {
+                let msg = e
+                    .downcast_ref::<&str>()
+                    .copied()
+                    .or_else(|| e.downcast_ref::<String>().map(|s| s.as_str()))
+                    .unwrap_or("<non-string panic>");
+                log::error!("chart gpu_canvas prepare PANIC (кадр пропущен): {msg}");
+                moon_core::detect_diag::line(&format!("[gpu_canvas] prepare PANIC: {msg}"));
+                Ok(())
+            }
+        }
+    }
+
     fn draw(&mut self, ctx: &mut gpui::GpuCanvasDrawContext<'_>) -> anyhow::Result<()> {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.state.borrow_mut().draw_gpu(&ctx.gpu)
@@ -332,6 +351,43 @@ impl RenderState {
             GpuFrameDecision::RequestPresent
         } else {
             GpuFrameDecision::Skip
+        }
+    }
+
+    fn prepare_gpu(&mut self, gpu: &RawGpuAccess) -> anyhow::Result<()> {
+        let width = gpu.width();
+        let height = gpu.height();
+        if width == 0 || height == 0 {
+            return Ok(());
+        }
+
+        match gpu.backend() {
+            #[cfg(windows)]
+            GpuBackend::D3d11 => {
+                let Some((device, context, _rtv)) = gpu::borrow_d3d(gpu) else {
+                    anyhow::bail!("chart dx11 prepare received empty D3D11 raw gpu handles");
+                };
+                let res = [width as f32, height as f32];
+                for pr in &mut self.panes {
+                    if pr.active {
+                        pr.view.resolution = res;
+                        pr.grid_params.resolution = res;
+                        pr.cursor_params.resolution = res;
+                        pr.orderbook_view.resolution = res;
+                        crate::diag::bump(&crate::diag::CHART_GPU_PREPARE);
+                        pr.layers.prepare_d3d(
+                            &pr.view,
+                            &pr.orderbook_view,
+                            &pr.book_style,
+                            &device,
+                            &context,
+                            gpu,
+                        );
+                    }
+                }
+                Ok(())
+            }
+            _ => Ok(()),
         }
     }
 

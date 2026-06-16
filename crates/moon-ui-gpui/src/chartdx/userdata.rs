@@ -116,14 +116,11 @@ impl UserDataLayer {
         });
     }
 
-    /// Рисует ордера поверх данных. `view` — тот же chart_area-трансформ, что у combo
-    /// (линии тянутся в зону стакана; scissor не ставим — как у движка друга).
-    pub fn render(
+    /// Prepare phase: creates resources and uploads pending user geometry.
+    pub fn prepare(
         &mut self,
-        view: &ChartViewGpu,
         device: &ID3D11Device,
         context: &ID3D11DeviceContext,
-        rtv: &ID3D11RenderTargetView,
         gpu: &RawGpuAccess,
     ) {
         // device-lost: пересоздать pipe; счётчики 0 — буферы пересоздаются пустыми (prepare зальёт
@@ -147,9 +144,23 @@ impl UserDataLayer {
             self.seg_count = upload_capped(context, &pipe.seg_buf, &p.seg);
             self.mk_count = upload_capped(context, &pipe.mk_buf, &p.mk);
         }
+    }
+
+    /// Рисует ордера поверх данных. `view` — тот же chart_area-трансформ, что у combo
+    /// (линии тянутся в зону стакана; scissor не ставим — как у движка друга).
+    pub fn render(
+        &mut self,
+        view: &ChartViewGpu,
+        context: &ID3D11DeviceContext,
+        rtv: &ID3D11RenderTargetView,
+        gpu: &RawGpuAccess,
+    ) {
         if self.zone_count == 0 && self.hl_count == 0 && self.seg_count == 0 && self.mk_count == 0 {
             return;
         }
+        let Some(pipe) = self.pipe.as_ref() else {
+            return;
+        };
         update_dynamic(context, &pipe.view_cb, &[*view]);
         let vp = full_viewport(gpu);
         unsafe {

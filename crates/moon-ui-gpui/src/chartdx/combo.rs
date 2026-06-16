@@ -138,15 +138,14 @@ impl ComboLayer {
         }
     }
 
-    /// Рисует Combo в backbuffer хука (фаза UnderScene). `view` — трансформ ЭТОЙ панели.
-    pub fn render(
+    /// Prepare phase: uploads pending data and bakes/extends the offscreen combo texture.
+    /// This may switch render targets and must run from `GpuCanvasDriver::prepare_gpu`.
+    pub fn prepare(
         &mut self,
         view: &ChartViewGpu,
         device: &ID3D11Device,
         context: &ID3D11DeviceContext,
-        rtv: &ID3D11RenderTargetView,
         gpu: &RawGpuAccess,
-        panel_clip: [f32; 4],
     ) {
         // device-lost guard (P0-4): новый device → старые буферы/шейдеры/кольцо невалидны.
         // Сбрасываем ресурсы И счётчики кольца: пересозданный буфер пуст, а stale count заставил
@@ -175,19 +174,31 @@ impl ComboLayer {
         if self.count == 0 {
             return;
         }
-        self.render_combo(view, device, context, rtv, gpu, panel_clip);
+        self.prepare_combo(view, device, context);
     }
 
-    /// Combo: инкрементальный bake новых тиков в текстуру + блит видимого окна с UV-паном.
-    /// Полный re-bake при исчерпании 20%-запаса или невалидном битмапе (зум/resize/первый кадр).
-    fn render_combo(
+    /// Рисует Combo в backbuffer хука (фаза UnderScene). `prepare()` уже сделал upload/bake.
+    pub fn render(
         &mut self,
         view: &ChartViewGpu,
-        device: &ID3D11Device,
         context: &ID3D11DeviceContext,
         rtv: &ID3D11RenderTargetView,
         gpu: &RawGpuAccess,
         panel_clip: [f32; 4],
+    ) {
+        if self.count == 0 {
+            return;
+        }
+        self.blit_combo(view, context, rtv, gpu, panel_clip);
+    }
+
+    /// Combo: инкрементальный bake новых тиков в текстуру.
+    /// Полный re-bake при исчерпании 20%-запаса или невалидном битмапе (зум/resize/первый кадр).
+    fn prepare_combo(
+        &mut self,
+        view: &ChartViewGpu,
+        device: &ID3D11Device,
+        context: &ID3D11DeviceContext,
     ) {
         let bw = view.bounds[2];
         let bh = view.bounds[3];
@@ -216,7 +227,7 @@ impl ComboLayer {
             tex.valid = false;
         }
         let ttp = view.time_to_px;
-        let mut u_left_px = (view.view_time0 - tex.bake_t0) * ttp;
+        let u_left_px = (view.view_time0 - tex.bake_t0) * ttp;
         let need_full = !tex.valid || u_left_px < 0.0 || u_left_px > margin_px;
         let bake_t0 = if need_full {
             texel_aligned_time0(view.view_time0, ttp)
@@ -260,7 +271,6 @@ impl ComboLayer {
             if need_full {
                 crate::diag::bump(&crate::diag::CHART_COMBO_BAKE);
                 tex.bake_t0 = bake_t0;
-                u_left_px = (view.view_time0 - tex.bake_t0) * ttp;
                 // ПРОЗРАЧНЫЙ фон битмапа: только кресты непрозрачны → при блите (alpha) сетка/фон
                 // нижнего слоя (grid) просвечивают между крестами. Фон #131416 красит grid-слой.
                 context.ClearRenderTargetView(&tex.rtv, &[0.0, 0.0, 0.0, 0.0]);
@@ -305,9 +315,31 @@ impl ComboLayer {
                 tex.last_baked_head = self.head;
             }
         }
+    }
+
+    fn blit_combo(
+        &mut self,
+        view: &ChartViewGpu,
+        context: &ID3D11DeviceContext,
+        rtv: &ID3D11RenderTargetView,
+        gpu: &RawGpuAccess,
+        panel_clip: [f32; 4],
+    ) {
+        let bw = view.bounds[2];
+        let Some(pipe) = self.pipe.as_ref() else {
+            return;
+        };
+        let Some(tex) = self.tex.as_mut() else {
+            return;
+        };
+        if !tex.valid || bw <= 0.0 {
+            return;
+        }
         // Композит: блит видимого окна битмапа → чарт-область backbuffer (point-семпл).
         // UV-сдвиг держим в целых texel'ах: дробный сдвиг под point sampler даёт
         // полупиксельный flicker на live-scroll.
+        let u_left_px = (view.view_time0 - tex.bake_t0) * view.time_to_px;
+        let tex_w = tex.tex_w;
         let u_left_px = u_left_px.round().clamp(0.0, (tex_w as f32 - bw).max(0.0));
         let u_left = u_left_px / tex_w as f32;
         let u_span = bw / tex_w as f32;

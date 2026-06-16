@@ -151,6 +151,22 @@ impl PlatformLayers {
     }
 
     #[cfg(windows)]
+    pub fn prepare_d3d(
+        &mut self,
+        view: &ChartViewGpu,
+        orderbook_view: &ChartViewGpu,
+        book_style: &BookStyle,
+        device: &ID3D11Device,
+        context: &ID3D11DeviceContext,
+        gpu: &gpui::RawGpuAccess,
+    ) {
+        self.combo.prepare(view, device, context, gpu);
+        self.orderbook
+            .prepare(orderbook_view, book_style, device, context, gpu);
+        self.userdata.prepare(device, context, gpu);
+    }
+
+    #[cfg(windows)]
     pub fn render_d3d(
         &mut self,
         view: &ChartViewGpu,
@@ -158,7 +174,7 @@ impl PlatformLayers {
         grid_params: &GridParams,
         cursor_params: &CursorParams,
         orderbook_view: &ChartViewGpu,
-        book_style: &BookStyle,
+        _book_style: &BookStyle,
         device: &ID3D11Device,
         context: &ID3D11DeviceContext,
         rtv: &ID3D11RenderTargetView,
@@ -172,20 +188,12 @@ impl PlatformLayers {
         crate::diag::bump(&crate::diag::CHART_GRID_DRAW);
         self.grid.render(grid_params, device, context, rtv, gpu);
         crate::diag::bump(&crate::diag::CHART_COMBO_DRAW);
-        self.combo
-            .render(view, device, context, rtv, gpu, panel_clip);
+        self.combo.render(view, context, rtv, gpu, panel_clip);
         crate::diag::bump(&crate::diag::CHART_BOOK_DRAW);
-        self.orderbook.render(
-            orderbook_view,
-            book_style,
-            device,
-            context,
-            rtv,
-            gpu,
-            panel_clip,
-        );
+        self.orderbook
+            .render(orderbook_view, context, rtv, gpu, panel_clip);
         crate::diag::bump(&crate::diag::CHART_USER_DRAW);
-        self.userdata.render(view, device, context, rtv, gpu);
+        self.userdata.render(view, context, rtv, gpu);
         if cursor_params.enabled > 0.0 {
             crate::diag::bump(&crate::diag::CHART_CURSOR_DRAW);
         }

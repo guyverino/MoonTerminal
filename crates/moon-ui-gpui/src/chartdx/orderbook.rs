@@ -84,19 +84,15 @@ impl OrderBookLayer {
         self.pending = Some(levels);
     }
 
-    /// Блитит закэшированный стакан в зону `view.bounds`; перепекает текстуру лишь при смене
-    /// уровней или Y-трансформа. `panel_clip` — scissor панели: восстанавливаем его для блита
-    /// и для слоёв ПОСЛЕ нас (bake временно ставит scissor самой текстуры).
-    #[allow(clippy::too_many_arguments)]
-    pub fn render(
+    /// Prepare phase: uploads levels and bakes the offscreen book texture when due.
+    /// This may switch render targets and must run from `GpuCanvasDriver::prepare_gpu`.
+    pub fn prepare(
         &mut self,
         view: &ChartViewGpu,
         style: &BookStyle,
         device: &ID3D11Device,
         context: &ID3D11DeviceContext,
-        rtv: &ID3D11RenderTargetView,
         gpu: &RawGpuAccess,
-        panel_clip: [f32; 4],
     ) {
         let bw = view.bounds[2];
         let bh = view.bounds[3];
@@ -214,7 +210,27 @@ impl OrderBookLayer {
             tex.dirty = false;
             tex.last_bake_ms = now_ms;
         }
+    }
 
+    /// Блитит закэшированный стакан в зону `view.bounds`. `panel_clip` — scissor панели:
+    /// восстанавливаем его для слоёв ПОСЛЕ нас.
+    pub fn render(
+        &mut self,
+        view: &ChartViewGpu,
+        context: &ID3D11DeviceContext,
+        rtv: &ID3D11RenderTargetView,
+        gpu: &RawGpuAccess,
+        panel_clip: [f32; 4],
+    ) {
+        let Some(tex) = self.tex.as_ref() else {
+            return;
+        };
+        if !tex.baked || view.bounds[2] <= 0.0 || view.bounds[3] <= 0.0 {
+            return;
+        }
+        let Some(pipe) = self.pipe.as_ref() else {
+            return;
+        };
         // BLIT: готовая текстура → зона стакана backbuffer (1:1, full UV). Scissor = panel_clip
         // (восстанавливаем после bake-scissor — иначе userdata-слой после нас обрежется к зоне).
         let bp = BlitParams {
