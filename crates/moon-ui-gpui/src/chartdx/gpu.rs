@@ -245,10 +245,17 @@ pub fn full_viewport(gpu: &RawGpuAccess) -> D3D11_VIEWPORT {
     D3D11_VIEWPORT {
         TopLeftX: 0.0,
         TopLeftY: 0.0,
-        Width: gpu.width as f32,
-        Height: gpu.height as f32,
+        Width: gpu.width() as f32,
+        Height: gpu.height() as f32,
         MinDepth: 0.0,
         MaxDepth: 1.0,
+    }
+}
+
+pub fn d3d_device_ptr(gpu: &RawGpuAccess) -> *mut c_void {
+    match gpu {
+        RawGpuAccess::D3d11(access) => access.device,
+        _ => std::ptr::null_mut(),
     }
 }
 
@@ -258,6 +265,9 @@ pub fn full_viewport(gpu: &RawGpuAccess) -> D3D11_VIEWPORT {
 pub fn borrow_d3d(
     gpu: &RawGpuAccess,
 ) -> Option<(ID3D11Device, ID3D11DeviceContext, ID3D11RenderTargetView)> {
+    let RawGpuAccess::D3d11(gpu) = gpu else {
+        return None;
+    };
     unsafe {
         let device = ID3D11Device::from_raw_borrowed(&gpu.device)?.clone();
         let context = ID3D11DeviceContext::from_raw_borrowed(&gpu.context)?.clone();

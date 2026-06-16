@@ -14,7 +14,7 @@ use windows::Win32::Graphics::Direct3D11::*;
 
 use super::gpu::{
     ChartViewGpu, create_alpha_blend, create_dynamic_cb, create_srv, create_structured,
-    full_viewport, make_ps, make_vs, update_dynamic,
+    d3d_device_ptr, full_viewport, make_ps, make_vs, update_dynamic,
 };
 use super::types::{HLineGpu, MarkerGpu, SegGpu, ZoneGpu};
 
@@ -128,13 +128,14 @@ impl UserDataLayer {
     ) {
         // device-lost: пересоздать pipe; счётчики 0 — буферы пересоздаются пустыми (prepare зальёт
         // ордера заново этим же кадром через set()/pending, инвариант: новый device = 0 валидных).
-        if self.device_ptr != gpu.device {
+        let device_ptr = d3d_device_ptr(gpu);
+        if self.device_ptr != device_ptr {
             self.pipe = None;
             self.zone_count = 0;
             self.hl_count = 0;
             self.seg_count = 0;
             self.mk_count = 0;
-            self.device_ptr = gpu.device;
+            self.device_ptr = device_ptr;
         }
         if self.pipe.is_none() {
             self.pipe = Some(Self::create_pipe(device));

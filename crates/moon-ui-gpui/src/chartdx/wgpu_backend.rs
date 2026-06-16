@@ -223,11 +223,11 @@ impl WgpuLayers {
         book_style: &BookStyle,
         gpu: &RawGpuAccess,
     ) -> anyhow::Result<()> {
-        let Some((device, queue, encoder, target, format)) = (unsafe { borrow_wgpu(gpu) }) else {
-            return Ok(());
+        let Some((device, queue, pass, format)) = (unsafe { borrow_wgpu(gpu) }) else {
+            anyhow::bail!("chart wgpu draw received empty wgpu raw gpu handles");
         };
-        if self.device_generation != gpu.device_generation || self.format != Some(format) {
-            self.device_generation = gpu.device_generation;
+        if self.device_generation != gpu.device_generation() || self.format != Some(format) {
+            self.device_generation = gpu.device_generation();
             self.format = Some(format);
             self.pipelines = Some(create_pipelines(device, format));
             self.background_texture = Some(create_background_texture(device, queue));
@@ -301,29 +301,13 @@ impl WgpuLayers {
         let marker_bind =
             self.bind_view_storage(device, &pipelines.view_storage_layout, &self.marker_buffer);
 
-        let sc = scissor_rect(view, orderbook_view, gpu.width, gpu.height);
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("moon_chart_native_pass"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: target,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
+        let sc = scissor_rect(view, orderbook_view, gpu.width(), gpu.height());
         pass.set_scissor_rect(sc.0, sc.1, sc.2, sc.3);
-        draw_pipeline(&mut pass, &pipelines.background, &bg_bind, 6, 1);
-        draw_pipeline(&mut pass, &pipelines.grid, &grid_bind, 6, 1);
+        draw_pipeline(pass, &pipelines.background, &bg_bind, 6, 1);
+        draw_pipeline(pass, &pipelines.grid, &grid_bind, 6, 1);
         if !self.crosses.is_empty() {
             draw_pipeline(
-                &mut pass,
+                pass,
                 &pipelines.volume,
                 &cross_bind,
                 6,
@@ -332,7 +316,7 @@ impl WgpuLayers {
         }
         if self.last_line.len() > 1 {
             draw_pipeline(
-                &mut pass,
+                pass,
                 &pipelines.price_last,
                 &last_bind,
                 6,
@@ -341,7 +325,7 @@ impl WgpuLayers {
         }
         if self.mark_line.len() > 1 {
             draw_pipeline(
-                &mut pass,
+                pass,
                 &pipelines.price_mark,
                 &mark_bind,
                 6,
@@ -350,17 +334,17 @@ impl WgpuLayers {
         }
         if !self.crosses.is_empty() {
             draw_pipeline(
-                &mut pass,
+                pass,
                 &pipelines.crosses,
                 &cross_bind,
                 6,
                 self.crosses.len() as u32,
             );
         }
-        draw_pipeline(&mut pass, &pipelines.book_bg, &book_bind, 6, 1);
+        draw_pipeline(pass, &pipelines.book_bg, &book_bind, 6, 1);
         if !self.levels.is_empty() {
             draw_pipeline(
-                &mut pass,
+                pass,
                 &pipelines.book_bars,
                 &book_bind,
                 6,
@@ -369,7 +353,7 @@ impl WgpuLayers {
         }
         if !self.zones.is_empty() {
             draw_pipeline(
-                &mut pass,
+                pass,
                 &pipelines.zone,
                 &zone_bind,
                 6,
@@ -378,7 +362,7 @@ impl WgpuLayers {
         }
         if !self.hlines.is_empty() {
             draw_pipeline(
-                &mut pass,
+                pass,
                 &pipelines.hline,
                 &hline_bind,
                 6,
@@ -386,17 +370,11 @@ impl WgpuLayers {
             );
         }
         if !self.segs.is_empty() {
-            draw_pipeline(
-                &mut pass,
-                &pipelines.seg,
-                &seg_bind,
-                6,
-                self.segs.len() as u32,
-            );
+            draw_pipeline(pass, &pipelines.seg, &seg_bind, 6, self.segs.len() as u32);
         }
         if !self.markers.is_empty() {
             draw_pipeline(
-                &mut pass,
+                pass,
                 &pipelines.marker,
                 &marker_bind,
                 6,
@@ -587,24 +565,24 @@ unsafe fn borrow_wgpu<'a>(
 ) -> Option<(
     &'a wgpu::Device,
     &'a wgpu::Queue,
-    &'a mut wgpu::CommandEncoder,
-    &'a wgpu::TextureView,
+    &'a mut wgpu::RenderPass<'a>,
     wgpu::TextureFormat,
 )> {
+    let RawGpuAccess::Wgpu(gpu) = gpu else {
+        return None;
+    };
     if gpu.device.is_null()
-        || gpu.context.is_null()
-        || gpu.command_encoder.is_null()
-        || gpu.render_target.is_null()
-        || gpu.render_target_format_ptr.is_null()
+        || gpu.queue.is_null()
+        || gpu.render_pass.is_null()
+        || gpu.render_target_format.is_null()
     {
         return None;
     }
     Some((
         unsafe { &*(gpu.device as *const wgpu::Device) },
-        unsafe { &*(gpu.context as *const wgpu::Queue) },
-        unsafe { &mut *(gpu.command_encoder as *mut wgpu::CommandEncoder) },
-        unsafe { &*(gpu.render_target as *const wgpu::TextureView) },
-        unsafe { *(gpu.render_target_format_ptr as *const wgpu::TextureFormat) },
+        unsafe { &*(gpu.queue as *const wgpu::Queue) },
+        unsafe { &mut *(gpu.render_pass as *mut wgpu::RenderPass<'a>) },
+        unsafe { *(gpu.render_target_format as *const wgpu::TextureFormat) },
     ))
 }
 

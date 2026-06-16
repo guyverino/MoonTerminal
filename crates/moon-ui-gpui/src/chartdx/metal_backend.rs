@@ -217,12 +217,12 @@ impl MetalLayers {
         gpu: &RawGpuAccess,
     ) -> anyhow::Result<()> {
         let Some((device, encoder, pixel_format)) = (unsafe { borrow_metal(gpu) }) else {
-            return Ok(());
+            anyhow::bail!("chart Metal draw received empty Metal raw gpu handles");
         };
-        if self.device_generation != gpu.device_generation
+        if self.device_generation != gpu.device_generation()
             || self.pixel_format != Some(pixel_format)
         {
-            self.device_generation = gpu.device_generation;
+            self.device_generation = gpu.device_generation();
             self.pixel_format = Some(pixel_format);
             self.pipelines = Some(create_pipelines(device, pixel_format));
             self.background_texture = Some(create_background_texture(device));
@@ -230,7 +230,7 @@ impl MetalLayers {
         self.upload_common(device, view, background_params, grid_params, book_style);
         let pipelines = self.pipelines.as_ref().unwrap();
         let bg = self.background_texture.as_ref().unwrap();
-        let sc = scissor_rect(view, orderbook_view, gpu.width, gpu.height);
+        let sc = scissor_rect(view, orderbook_view, gpu.width(), gpu.height());
         encoder.set_scissor_rect(sc);
 
         set_uniform(encoder, 0, self.bg_uniform.buffer());
@@ -370,6 +370,9 @@ fn draw(
 unsafe fn borrow_metal<'a>(
     gpu: &RawGpuAccess,
 ) -> Option<(&'a DeviceRef, &'a RenderCommandEncoderRef, MTLPixelFormat)> {
+    let RawGpuAccess::Metal(gpu) = gpu else {
+        return None;
+    };
     if gpu.device.is_null() || gpu.command_encoder.is_null() || gpu.render_target_format == 0 {
         return None;
     }

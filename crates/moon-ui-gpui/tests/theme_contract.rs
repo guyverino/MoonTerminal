@@ -51,7 +51,7 @@ fn terminal_ui_uses_runtime_moon_palette_theme() {
 }
 
 #[test]
-fn chart_background_policy_keeps_gpu_pass_under_scene() {
+fn chart_background_policy_keeps_gpu_canvas_under_scene() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let chartdx = fs::read_to_string(root.join("chartdx").join("mod.rs")).unwrap();
     let chart_panel = fs::read_to_string(root.join("panels").join("chart.rs")).unwrap();
@@ -60,8 +60,10 @@ fn chart_background_policy_keeps_gpu_pass_under_scene() {
     let detached = fs::read_to_string(root.join("detached.rs")).unwrap();
 
     assert!(
-        chartdx.contains("GpuPhase::UnderScene"),
-        "chart GPU pass must stay under GPUI scene so popovers/tooltips/chrome render above it"
+        chartdx.contains("gpu_canvas(self.canvas.clone())")
+            && !chartdx.contains("add_gpu_pass")
+            && !chart_panel.contains("request_continuous_presentation"),
+        "chart must use element-scoped gpu_canvas, not old window-global pass/continuous present"
     );
     assert!(
         chart_panel.contains("fn background_policy(&self, _cx: &App) -> MoonBackgroundPolicy")

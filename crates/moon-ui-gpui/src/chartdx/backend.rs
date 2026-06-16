@@ -167,8 +167,15 @@ impl PlatformLayers {
         self.combo
             .render(view, device, context, rtv, gpu, panel_clip);
         crate::diag::bump(&crate::diag::CHART_BOOK_DRAW);
-        self.orderbook
-            .render(orderbook_view, book_style, device, context, rtv, gpu, panel_clip);
+        self.orderbook.render(
+            orderbook_view,
+            book_style,
+            device,
+            context,
+            rtv,
+            gpu,
+            panel_clip,
+        );
         crate::diag::bump(&crate::diag::CHART_USER_DRAW);
         self.userdata.render(view, device, context, rtv, gpu);
     }

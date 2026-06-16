@@ -4,7 +4,7 @@
 //!
 //! Доменная специфика чарта живёт ЗДЕСЬ (в терминале); форк gpui отдаёт только generic-хук
 //! `RawGpuAccess`. Файл на слой; здесь — оркестратор `ChartEngine`: prepare данных per pane
-//! (БЕЗ рисования) + регистрация own-pass, который и рисует в кадре GPUI.
+//! (БЕЗ рисования) + `gpu_canvas` element, который и рисует в кадре GPUI.
 
 mod backend;
 #[cfg(windows)]
@@ -32,7 +32,9 @@ use std::cell::RefCell;
 use std::ffi::c_void;
 use std::rc::Rc;
 
-use gpui::{GpuBackend, GpuPhase, RawGpuAccess, Subscription, Window, WindowId};
+use gpui::{
+    GpuBackend, GpuCanvasDriver, GpuCanvasHandle, GpuFrameDecision, GpuFrameInfo, RawGpuAccess,
+};
 use moon_chart::axes::AxisSnapshot;
 use moon_chart::paint::now_unix_ms;
 use moon_chart::view::Rect;
@@ -172,6 +174,9 @@ impl PaneRender {
 /// единственный поток UI: `prepare` и callback кадра не пересекаются по времени).
 struct RenderState {
     panes: Vec<PaneRender>,
+    /// CPU-side dirty flag для `GpuCanvasDriver::frame`: `prepare()` обновил resident state,
+    /// значит следующий platform tick должен презентить кадр даже без GPUI dirty.
+    needs_present: bool,
     /// Монотонный счётчик РЕАЛЬНЫХ present'ов own-pass (инкремент на каждый вызов callback'а).
     /// 60-Гц prepare-задача движет край только когда счётчик вырос с прошлого раза — так она
     /// матчит фактический present-rate и СПИТ, когда кадров нет (macOS occluded → CVDisplayLink
@@ -199,9 +204,197 @@ struct RenderState {
     window_bg_dst: [f32; 4],
 }
 
+#[derive(Clone)]
+struct ChartCanvasDriver {
+    state: Rc<RefCell<RenderState>>,
+}
+
+impl GpuCanvasDriver for ChartCanvasDriver {
+    fn frame(&mut self, info: GpuFrameInfo) -> GpuFrameDecision {
+        self.state.borrow_mut().frame(info)
+    }
+
+    fn draw(&mut self, ctx: &mut gpui::GpuCanvasDrawContext<'_>) -> anyhow::Result<()> {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.state.borrow_mut().draw_gpu(&ctx.gpu)
+        }));
+        match result {
+            Ok(result) => result,
+            Err(e) => {
+                let msg = e
+                    .downcast_ref::<&str>()
+                    .copied()
+                    .or_else(|| e.downcast_ref::<String>().map(|s| s.as_str()))
+                    .unwrap_or("<non-string panic>");
+                log::error!("chart gpu_canvas PANIC (кадр пропущен): {msg}");
+                moon_core::detect_diag::line(&format!("[gpu_canvas] PANIC: {msg}"));
+                Ok(())
+            }
+        }
+    }
+}
+
+impl RenderState {
+    fn frame(&mut self, info: GpuFrameInfo) -> GpuFrameDecision {
+        if !info.presentable || info.bounds.is_empty() {
+            return GpuFrameDecision::Skip;
+        }
+
+        let now_ms = now_unix_ms();
+        let mut wants_present = std::mem::take(&mut self.needs_present);
+        for pr in &mut self.panes {
+            if pr.active && pr.advance_camera(now_ms) {
+                crate::diag::bump(&crate::diag::CHART_CAM_STEP);
+                wants_present = true;
+            }
+        }
+
+        if wants_present {
+            GpuFrameDecision::RequestPresent
+        } else {
+            GpuFrameDecision::Skip
+        }
+    }
+
+    fn draw_gpu(&mut self, gpu: &RawGpuAccess) -> anyhow::Result<()> {
+        let width = gpu.width();
+        let height = gpu.height();
+        if width == 0 || height == 0 {
+            return Ok(());
+        }
+
+        self.present_seq = self.present_seq.wrapping_add(1);
+        crate::diag::bump(&crate::diag::CHART_PRESENT);
+
+        match gpu.backend() {
+            #[cfg(windows)]
+            GpuBackend::D3d11 => {
+                let RawGpuAccess::D3d11(d3d) = gpu else {
+                    anyhow::bail!("chart dx11 draw received non-D3D11 raw gpu access");
+                };
+                let Some((device, context, rtv)) = gpu::borrow_d3d(gpu) else {
+                    anyhow::bail!("chart dx11 draw received empty D3D11 raw gpu handles");
+                };
+
+                let res = [width as f32, height as f32];
+                let base = BackgroundParams {
+                    dst: [0.0, 0.0, res[0], res[1]],
+                    resolution: res,
+                    uv_off: [0.0, 0.0],
+                    uv_scale: [1.0, 1.0],
+                    opacity: 0.0,
+                    _pad: 0.0,
+                    bg: self.window_bg_color,
+                };
+                self.window_bg.render(&base, &device, &context, &rtv, gpu);
+                let d = self.window_bg_dst;
+                if d[2] > 0.0 && d[3] > 0.0 {
+                    let (uv_off, uv_scale) = cover_uv(d[2], d[3], SPLASH_ASPECT);
+                    let logo = BackgroundParams {
+                        dst: d,
+                        resolution: res,
+                        uv_off,
+                        uv_scale,
+                        opacity: WINDOW_BG_OPACITY,
+                        _pad: 0.0,
+                        bg: self.window_bg_color,
+                    };
+                    self.window_bg.render(&logo, &device, &context, &rtv, gpu);
+                }
+
+                if self.scissor_dev != d3d.device {
+                    self.scissor_rs = Some(gpu::create_scissor_rasterizer(&device));
+                    self.scissor_dev = d3d.device;
+                }
+                let scissor_rs = self.scissor_rs.clone().unwrap();
+                let prev_rs = unsafe { context.RSGetState().ok() };
+                for pr in &mut self.panes {
+                    if pr.active {
+                        pr.view.resolution = res;
+                        pr.grid_params.resolution = res;
+                        pr.orderbook_view.resolution = res;
+                        let panel_clip = [
+                            pr.view.bounds[0],
+                            pr.view.bounds[1],
+                            pr.orderbook_view.bounds[0] + pr.orderbook_view.bounds[2],
+                            pr.view.bounds[1] + pr.view.bounds[3],
+                        ];
+                        gpu::set_scissor(
+                            &context,
+                            &scissor_rs,
+                            panel_clip[0],
+                            panel_clip[1],
+                            panel_clip[2],
+                            panel_clip[3],
+                        );
+                        pr.layers.render_d3d(
+                            &pr.view,
+                            &pr.background_params,
+                            &pr.grid_params,
+                            &pr.orderbook_view,
+                            &pr.book_style,
+                            &device,
+                            &context,
+                            &rtv,
+                            gpu,
+                            panel_clip,
+                        );
+                    }
+                }
+                unsafe {
+                    context.RSSetState(prev_rs.as_ref());
+                }
+                Ok(())
+            }
+            #[cfg(target_os = "linux")]
+            GpuBackend::Wgpu => {
+                let res = [width as f32, height as f32];
+                for pr in &mut self.panes {
+                    if pr.active {
+                        pr.view.resolution = res;
+                        pr.grid_params.resolution = res;
+                        pr.orderbook_view.resolution = res;
+                        pr.layers.render_wgpu(
+                            &pr.view,
+                            &pr.background_params,
+                            &pr.grid_params,
+                            &pr.orderbook_view,
+                            &pr.book_style,
+                            gpu,
+                        )?;
+                    }
+                }
+                Ok(())
+            }
+            #[cfg(target_os = "macos")]
+            GpuBackend::Metal => {
+                let res = [width as f32, height as f32];
+                for pr in &mut self.panes {
+                    if pr.active {
+                        pr.view.resolution = res;
+                        pr.grid_params.resolution = res;
+                        pr.orderbook_view.resolution = res;
+                        pr.layers.render_metal(
+                            &pr.view,
+                            &pr.background_params,
+                            &pr.grid_params,
+                            &pr.orderbook_view,
+                            &pr.book_style,
+                            gpu,
+                        )?;
+                    }
+                }
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
 pub struct ChartEngine {
     pub container: Container,
     state: Rc<RefCell<RenderState>>,
+    canvas: GpuCanvasHandle,
     epoch: f64,
     theme: ChartTheme,
     orders: OrdersStyle,
@@ -214,10 +407,6 @@ pub struct ChartEngine {
     /// Левый-верхний угол слота чарта В ОКНЕ (девайс-px). own-pass рисует в backbuffer ОКНА,
     /// поэтому координаты слоёв = origin слота + локальные, а cv_resolution = размер backbuffer.
     origin: (f32, f32),
-    /// Окно, на котором сейчас зарегистрирован own-pass (None — нигде). Сменилось
-    /// (открепление вкладки / переезд в другое окно) → перерегистрируем на текущем.
-    pass_window: Option<WindowId>,
-    pass_subscription: Option<Subscription>,
 }
 
 impl ChartEngine {
@@ -226,22 +415,28 @@ impl ChartEngine {
     }
 
     pub fn new_kind(epoch: f64, theme: ChartTheme, kind: ContainerKind) -> Self {
+        let state = Rc::new(RefCell::new(RenderState {
+            panes: Vec::new(),
+            needs_present: true,
+            present_seq: 0,
+            #[cfg(windows)]
+            scissor_rs: None,
+            #[cfg(windows)]
+            scissor_dev: std::ptr::null_mut(),
+            #[cfg(windows)]
+            window_bg: background::BackgroundLayer::new(background::SPLASH_PNG),
+            #[cfg(windows)]
+            window_bg_color: rgb4(theme.bg),
+            #[cfg(windows)]
+            window_bg_dst: [0.0, 0.0, 0.0, 0.0],
+        }));
+        let canvas = GpuCanvasHandle::new(ChartCanvasDriver {
+            state: state.clone(),
+        });
         Self {
             container: Container::new(kind),
-            state: Rc::new(RefCell::new(RenderState {
-                panes: Vec::new(),
-                present_seq: 0,
-                #[cfg(windows)]
-                scissor_rs: None,
-                #[cfg(windows)]
-                scissor_dev: std::ptr::null_mut(),
-                #[cfg(windows)]
-                window_bg: background::BackgroundLayer::new(background::SPLASH_PNG),
-                #[cfg(windows)]
-                window_bg_color: rgb4(theme.bg),
-                #[cfg(windows)]
-                window_bg_dst: [0.0, 0.0, 0.0, 0.0],
-            })),
+            state,
+            canvas,
             epoch,
             theme,
             orders: OrdersStyle::default(),
@@ -251,230 +446,19 @@ impl ChartEngine {
             w: 1024,
             h: 576,
             origin: (0.0, 0.0),
-            pass_window: None,
-            pass_subscription: None,
         }
     }
 
-    /// Регистрирует own-pass ОДИН раз: callback рисует все активные панели
-    /// (combo + слои) их own-pass в backbuffer GPUI ПОД сценой. Зовётся из `Render` (есть окно).
-    pub fn register_pass(&mut self, window: &mut Window) {
-        let wid = window.window_handle().window_id();
-        if self.pass_window == Some(wid) && self.pass_subscription.is_some() {
-            return;
-        }
-        // Окно сменилось (открепление / смена вкладки) — снять старый pas со старого
-        // окна (drop Subscription) перед регистрацией на текущем, иначе он остаётся
-        // висеть на старом окне и рисует туда (BUG-1: рисует в исходной вкладке).
-        self.pass_subscription = None;
-        let state = self.state.clone();
-        // UnderScene — правильный финальный слой: GPUI-хром, попапы, меню и тултипы должны
-        // быть поверх графика. Chart host/content в MoonPalette держатся на NoFill, обычные
-        // панели — Opaque, поэтому фоновые quads не перекрывают plot area.
-        let pass = window.add_gpu_pass(
-            GpuPhase::UnderScene,
-            Box::new(move |gpu: &RawGpuAccess| {
-                // own-pass зовётся из рендерера форка в no-unwind контексте: любая паника тут =
-                // process abort (0xc0000409), без сообщения в GUI-stderr. Ловим её — кадр
-                // пропускаем, причину пишем в лог (видно в logs/*.log и detect_diag).
-                let __ownpass = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                // Свёрнуто/скрыто (нет backbuffer) — презентить нечего; НЕ считаем present,
-                // чтобы present_seq не рос и 60-Гц задача спала. NB: перекрытое-но-не-свёрнутое
-                // окно на Windows DWM всё ещё композитит (width != 0, ради thumbnail/Alt-Tab) —
-                // известное ограничение платформы; macOS/Wayland честно дают present=0 (стоп
-                // display-link/frame-callback при occlusion).
-                if gpu.width == 0 || gpu.height == 0 {
-                    return Ok(());
-                }
-                let mut st = state.borrow_mut();
-                // Отметить РЕАЛЬНЫЙ present (этот callback зовётся только когда окно презентит).
-                // 60-Гц prepare-задача доливает данные, лишь когда этот счётчик вырос → она матчит
-                // фактический present-rate и спит при occluded-окне (нет present → нет инкремента).
-                st.present_seq = st.present_seq.wrapping_add(1);
-                crate::diag::bump(&crate::diag::CHART_PRESENT);
-                // Время для пиксельного рубильника камеры (двигаем край на КАЖДЫЙ present).
-                let now_ms = now_unix_ms();
-                match gpu.backend {
-                    #[cfg(windows)]
-                    GpuBackend::D3D11 => {
-                        let Some((device, context, rtv)) = gpu::borrow_d3d(gpu) else {
-                            return Ok(());
-                        };
-                        // Подложка ПОД панелями (весь backbuffer, БЕЗ scissor — ставим ниже):
-                        // (1) тёмная база на ВСЁ окно (opacity 0 → чистый theme.bg) — убирает
-                        // белый незакрашенный фон (жёлоб/шкала/пустоты/первый кадр);
-                        // (2) брендовое лого, ВПИСАННОЕ в слот чарта (cover-fit) — «контейнер,
-                        // где появятся графики». Плоты/панели рисуются поверх.
-                        {
-                            let res = [gpu.width as f32, gpu.height as f32];
-                            let base = BackgroundParams {
-                                dst: [0.0, 0.0, res[0], res[1]],
-                                resolution: res,
-                                uv_off: [0.0, 0.0],
-                                uv_scale: [1.0, 1.0],
-                                opacity: 0.0,
-                                _pad: 0.0,
-                                bg: st.window_bg_color,
-                            };
-                            st.window_bg.render(&base, &device, &context, &rtv, gpu);
-                            let d = st.window_bg_dst;
-                            if d[2] > 0.0 && d[3] > 0.0 {
-                                let (uv_off, uv_scale) = cover_uv(d[2], d[3], SPLASH_ASPECT);
-                                let logo = BackgroundParams {
-                                    dst: d,
-                                    resolution: res,
-                                    uv_off,
-                                    uv_scale,
-                                    opacity: WINDOW_BG_OPACITY,
-                                    _pad: 0.0,
-                                    bg: st.window_bg_color,
-                                };
-                                st.window_bg.render(&logo, &device, &context, &rtv, gpu);
-                            }
-                        }
-                        // Scissor own-pass (lazy + device-lost guard). GPUI рисует сцену с ScissorEnable=false,
-                        // а наши слои стакана/ордеров позиционируются по ЦЕНЕ и эмитят уровни ВНЕ видимого окна
-                        // (build_instances отдаёт всю книгу) → без обрезки бары уезжают за плот, на тулбар/шкалы.
-                        // Ставим свой scissor-стейт, в конце возвращаем стейт GPUI (иначе следующий кадр сцена
-                        // GPUI унаследует наш scissor и обрежет UI).
-                        if st.scissor_dev != gpu.device {
-                            st.scissor_rs = Some(gpu::create_scissor_rasterizer(&device));
-                            st.scissor_dev = gpu.device;
-                        }
-                        let scissor_rs = st.scissor_rs.clone().unwrap();
-                        let prev_rs = unsafe { context.RSGetState().ok() };
-                        for pr in &mut st.panes {
-                            if pr.active {
-                                // cv_resolution = размер backbuffer окна (own-pass пишет в него напрямую).
-                                let res = [gpu.width as f32, gpu.height as f32];
-                                pr.view.resolution = res;
-                                pr.grid_params.resolution = res;
-                                pr.orderbook_view.resolution = res;
-                                // Двигаем живой край (камеру) на ЭТОТ present — целопиксельно,
-                                // только при смене пикселя (между ними кадр идентичен → пропуск).
-                                if pr.advance_camera(now_ms) {
-                                    crate::diag::bump(&crate::diag::CHART_CAM_STEP);
-                                }
-                                // Обрезка к зоне панели = плот (chart_area) + стакан (glass). Жёлоб цены слева
-                                // и шкала времени снизу — ВНЕ scissor, подписи GPUI там выживают.
-                                let panel_clip = [
-                                    pr.view.bounds[0],
-                                    pr.view.bounds[1],
-                                    pr.orderbook_view.bounds[0] + pr.orderbook_view.bounds[2],
-                                    pr.view.bounds[1] + pr.view.bounds[3],
-                                ];
-                                gpu::set_scissor(
-                                    &context,
-                                    &scissor_rs,
-                                    panel_clip[0],
-                                    panel_clip[1],
-                                    panel_clip[2],
-                                    panel_clip[3],
-                                );
-                                pr.layers.render_d3d(
-                                    &pr.view,
-                                    &pr.background_params,
-                                    &pr.grid_params,
-                                    &pr.orderbook_view,
-                                    &pr.book_style,
-                                    &device,
-                                    &context,
-                                    &rtv,
-                                    gpu,
-                                    panel_clip,
-                                );
-                            }
-                        }
-                        // Вернуть растеризатор GPUI (scissor off).
-                        unsafe {
-                            context.RSSetState(prev_rs.as_ref());
-                        }
-                        Ok(())
-                    }
-                    #[cfg(target_os = "linux")]
-                    GpuBackend::Wgpu => {
-                        for pr in &mut st.panes {
-                            if pr.active {
-                                let res = [gpu.width as f32, gpu.height as f32];
-                                pr.view.resolution = res;
-                                pr.grid_params.resolution = res;
-                                pr.orderbook_view.resolution = res;
-                                if pr.advance_camera(now_ms) {
-                                    crate::diag::bump(&crate::diag::CHART_CAM_STEP);
-                                }
-                                pr.layers.render_wgpu(
-                                    &pr.view,
-                                    &pr.background_params,
-                                    &pr.grid_params,
-                                    &pr.orderbook_view,
-                                    &pr.book_style,
-                                    gpu,
-                                )?;
-                            }
-                        }
-                        Ok(())
-                    }
-                    #[cfg(target_os = "macos")]
-                    GpuBackend::Metal => {
-                        for pr in &mut st.panes {
-                            if pr.active {
-                                let res = [gpu.width as f32, gpu.height as f32];
-                                pr.view.resolution = res;
-                                pr.grid_params.resolution = res;
-                                pr.orderbook_view.resolution = res;
-                                if pr.advance_camera(now_ms) {
-                                    crate::diag::bump(&crate::diag::CHART_CAM_STEP);
-                                }
-                                pr.layers.render_metal(
-                                    &pr.view,
-                                    &pr.background_params,
-                                    &pr.grid_params,
-                                    &pr.orderbook_view,
-                                    &pr.book_style,
-                                    gpu,
-                                )?;
-                            }
-                        }
-                        Ok(())
-                    }
-                    _ => Ok(()),
-                }
-                }));
-                match __ownpass {
-                    Ok(r) => r,
-                    Err(e) => {
-                        let msg = e
-                            .downcast_ref::<&str>()
-                            .copied()
-                            .or_else(|| e.downcast_ref::<String>().map(|s| s.as_str()))
-                            .unwrap_or("<non-string panic>");
-                        log::error!("chart own-pass PANIC (кадр пропущен): {msg}");
-                        moon_core::detect_diag::line(&format!("[ownpass] PANIC: {msg}"));
-                        Ok(())
-                    }
-                }
-            }),
-        );
-        match pass {
-            Ok(subscription) => {
-                self.pass_subscription = Some(subscription);
-                self.pass_window = Some(wid);
-            }
-            Err(err) => {
-                self.pass_window = None;
-                log::warn!("chart own-pass registration failed: {err:#}");
-            }
-        }
+    /// Обычный GPUI element, который владеет bounds/clip/lifetime через дерево.
+    /// В отличие от старого window-global pass, он сам исчезает при скрытии вкладки
+    /// и переезжает при detach вместе с `ChartPanel`.
+    pub fn canvas(&self) -> gpui::GpuCanvas {
+        gpui::gpu_canvas(self.canvas.clone())
     }
 
-    /// Снять own-pass с окна (панель ушла со сцены: неактивная вкладка / переезд).
-    /// Drop `Subscription` = снятие pas'а с того окна, где он был зарегистрирован.
-    /// Без этого осиротевший pas рисует протухшие панели поверх активного чарта
-    /// (BUG-2: застывший кадр чужой вкладки).
-    pub fn unregister_pass(&mut self) {
-        self.pass_subscription = None;
-        self.pass_window = None;
-    }
+    /// Старый lifecycle hook оставлен для вызывающего кода. С `gpu_canvas` ручной отписки нет:
+    /// canvas живёт ровно пока элемент присутствует в GPUI scene.
+    pub fn unregister_pass(&mut self) {}
 
     /// Размер слота чарта (девайс-px). Combo сам пересоздаёт битмап при смене размера.
     pub fn resize(&mut self, w: u32, h: u32) {
@@ -748,6 +732,7 @@ impl ChartEngine {
             pr.last_device_gen = device_gen;
             pr.active = true;
         }
+        st.needs_present = true;
     }
 
     // ── Настройки (порт из старого chart.rs::ChartGpu) ───────────────────────────

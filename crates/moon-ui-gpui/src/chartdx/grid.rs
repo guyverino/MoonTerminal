@@ -9,7 +9,8 @@ use windows::Win32::Graphics::Direct3D::D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
 use windows::Win32::Graphics::Direct3D11::*;
 
 use super::gpu::{
-    create_alpha_blend, create_dynamic_cb, full_viewport, make_ps, make_vs, update_dynamic,
+    create_alpha_blend, create_dynamic_cb, d3d_device_ptr, full_viewport, make_ps, make_vs,
+    update_dynamic,
 };
 pub use super::types::GridParams;
 
@@ -49,9 +50,10 @@ impl GridLayer {
             return;
         }
         // device-lost guard (как в combo).
-        if self.device_ptr != gpu.device {
+        let device_ptr = d3d_device_ptr(gpu);
+        if self.device_ptr != device_ptr {
             self.pipe = None;
-            self.device_ptr = gpu.device;
+            self.device_ptr = device_ptr;
         }
         if self.pipe.is_none() {
             self.pipe = Some(Self::create_pipe(device));

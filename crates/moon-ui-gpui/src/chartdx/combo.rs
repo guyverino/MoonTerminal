@@ -16,8 +16,8 @@ use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SA
 
 use super::gpu::{
     BlitParams, ChartCross, ChartViewGpu, create_alpha_blend, create_dynamic_cb,
-    create_point_sampler, create_srv, create_srv_range, create_structured, full_viewport,
-    ring_write_no_overwrite, set_scissor_rect, update_dynamic,
+    create_point_sampler, create_srv, create_srv_range, create_structured, d3d_device_ptr,
+    full_viewport, ring_write_no_overwrite, set_scissor_rect, update_dynamic,
 };
 
 /// Ёмкость кольца тиков (~131k, плотно под 100k видимых на максимальной плотности).
@@ -151,14 +151,15 @@ impl ComboLayer {
         // device-lost guard (P0-4): новый device → старые буферы/шейдеры/кольцо невалидны.
         // Сбрасываем ресурсы И счётчики кольца: пересозданный буфер пуст, а stale count заставил
         // бы DrawInstanced читать мусор. device_gen++ → prepare перезальёт всю историю (collect_all).
-        if self.device_ptr != gpu.device {
+        let device_ptr = d3d_device_ptr(gpu);
+        if self.device_ptr != device_ptr {
             self.pipe = None;
             self.tex = None;
             self.count = 0;
             self.head = 0;
             self.last_line_count = 0;
             self.mark_line_count = 0;
-            self.device_ptr = gpu.device;
+            self.device_ptr = device_ptr;
             self.device_gen = self.device_gen.wrapping_add(1);
         }
         if self.pipe.is_none() {
