@@ -211,3 +211,7 @@ mac_top_moon_gpui.txt / linux_top_threads.txt
 powermetrics/pidstat/perf/GPU logs when available
 short human note: what was visible and what felt wrong
 ```
+
+Наблюдения пиши подробно в файл MAC_LINUX_PERF_RES (создай если нету)
+
+вкратце пиши в чат.
