@@ -9,14 +9,34 @@ pub mod types;
 
 pub use types::*;
 
-use std::sync::mpsc::{Receiver, Sender, TryRecvError};
+use std::sync::mpsc::{Receiver, SendError, Sender, TryRecvError};
 use std::time::{Duration, Instant};
 
 use crate::config::ServerConfig;
 use crate::db::ReportTx;
 
 pub type FeedRx = Receiver<FeedMsg>;
-pub type FeedTx = Sender<FeedMsg>;
+pub type FeedWakeTx = Sender<()>;
+
+#[derive(Clone)]
+pub struct FeedTx {
+    data: Sender<FeedMsg>,
+    wake: Option<FeedWakeTx>,
+}
+
+impl FeedTx {
+    fn new(data: Sender<FeedMsg>, wake: Option<FeedWakeTx>) -> Self {
+        Self { data, wake }
+    }
+
+    pub fn send(&self, msg: FeedMsg) -> Result<(), SendError<FeedMsg>> {
+        self.data.send(msg)?;
+        if let Some(wake) = &self.wake {
+            let _ = wake.send(());
+        }
+        Ok(())
+    }
+}
 
 /// Команды координатора → backend ядра. Задают рыночную РОЛЬ ядра.
 #[derive(Debug, Clone)]
@@ -82,8 +102,10 @@ pub fn spawn(
     server: ServerConfig,
     reports: Option<ReportTx>,
     startup_delay: Duration,
+    wake: Option<FeedWakeTx>,
 ) -> FeedHandle {
-    let (tx, rx) = std::sync::mpsc::channel();
+    let (data_tx, rx) = std::sync::mpsc::channel();
+    let tx = FeedTx::new(data_tx, wake);
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<CoreCmd>();
     let join = std::thread::Builder::new()
         .name(format!("feed-{}", server.id))

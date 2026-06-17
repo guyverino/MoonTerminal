@@ -42,7 +42,12 @@ pub fn header(
                 .child(metric("Unreal", "−$8.10", p.orange, p))
                 .child(risk_meter(p)),
         )
-        .child(div().h_full().flex_1().window_control_area(WindowControlArea::Drag))
+        .child(
+            div()
+                .h_full()
+                .flex_1()
+                .window_control_area(WindowControlArea::Drag),
+        )
         .child(
             h_flex()
                 .flex_none()

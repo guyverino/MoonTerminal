@@ -7,7 +7,7 @@ window-global GPU pass / continuous presentation на элементный `gpu_
 форка, какие старые механизмы удалить, как сохранить fast live-scroll, и как
 проверить Windows/macOS/Linux.
 
-Current open implementation issues are tracked in `R:/test/newfork/ForkIssuesFinal.md`.
+Current implementation status is tracked in this checklist and fresh `ForkIssues_*` audits.
 Do not treat remaining unchecked boxes as mere runtime polish unless that file
 classifies them that way.
 
@@ -154,15 +154,16 @@ must not mutate GPUI tree.
 
 ## Data ingestion bridge
 
-Backend feed drain may run on its own data-ingestion cadence. That cadence is not
-a chart render/present decision.
+Backend feed drain is event-driven by incoming feed messages. That wake is not a
+chart render/present decision.
 
 Correct bridge:
 
 ```text
-backend session.drain() applies feed messages
-if and only if data changed:
-    backend updates registered chart data consumers
+incoming feed event wakes the foreground data-drain task
+backend session.drain() applies pending feed messages
+if chart-visible data changed:
+    backend updates registered chart data handles
     chart copies/rebuilds retained CPU state without cx.notify()
     chart marks its retained driver state dirty/needs_present
 gpu_canvas.frame() later decides Skip/RequestPresent on platform frame-clock
@@ -182,17 +183,17 @@ Implemented bridge:
 ```text
 backend session.drain() returns DrainStats
 if and only if chart-visible data changed:
-    backend updates registered visible chart consumers
+    backend updates registered ChartDataHandle consumers
     chart syncs app/session data into retained chart state without cx.notify()
 gpu_canvas.frame() later consumes retained dirty flags / camera state
     and decides Skip/RequestPresent
 ```
 
-This removes the per-chart 16ms pump, removes data prepare from throttled
-`observe`/ordinary `render` cadence, and prevents non-chart messages from
-preparing chart data. Render may still force one retained sync for lifecycle
-reasons (first visible frame, resize, settings/theme/follow change); market data
-does not enter through render.
+This removes the per-chart and global 16ms pumps, removes data prepare from
+throttled `observe`/ordinary `render` cadence, and removes the high-rate
+`WeakEntity<ChartPanel>` path. Render may still force one retained sync for
+lifecycle reasons (first visible frame, resize, settings/theme/follow change);
+market data does not enter through render.
 
 ## Under canvas: `frame()`
 
@@ -735,19 +736,21 @@ draw may happen at chart cadence, GPUI render stays gated
    Done in `moon-chart/src/view.rs::phase_clean_default_px_per_ms`.
 7. [x] Move DX11 resource sync/offscreen bake into `prepare_gpu`.
    Done in chartdx DX11 backend callbacks.
-8. [ ] Adapt Metal resource sync/offscreen/direct draw to `prepare_gpu` + phase `draw`.
-   Reopened by `ForkIssues_*`: Metal shaders compile and draw works, but terminal
-   Metal still performs upload/resource work in draw-phase.
-9. [ ] Adapt wgpu resource sync/offscreen/direct draw to `prepare_gpu` + phase `draw`.
-   Reopened by `ForkIssues_*`: Linux/X11 draw works, but terminal wgpu still
-   performs upload/resource work in draw-phase.
+8. [x] Adapt Metal resource sync/offscreen/direct draw to `prepare_gpu` + phase `draw`.
+   Done in `chartdx/backend.rs`, `chartdx/mod.rs`, `chartdx/metal_backend.rs`:
+   Metal `prepare()` creates pipelines/textures and uploads buffers before the
+   phase encoder; Metal `render()` now only uses the GPUI-provided phase encoder.
+9. [x] Adapt wgpu resource sync/offscreen/direct draw to `prepare_gpu` + phase `draw`.
+   Done in `chartdx/backend.rs`, `chartdx/mod.rs`, `chartdx/wgpu_backend.rs`:
+   wgpu `prepare()` owns device/queue uploads and bind-group rebuilds before the
+   phase pass; wgpu `render()` now only uses the GPUI-provided phase render pass.
 10. [ ] Move crosshair/readouts to overlay canvas and remove per-mousemove `cx.notify`.
     Partial only: cursor lines are native chartdx pixels; readout chips still use
     GPUI `axes::draw(...)` and throttled `cx.notify()`.
-11. [ ] Remove `register_pass`, continuous present guard, present_seq, async prepare task.
-    Partial: chart-local 16ms pump is removed, but high-rate chart data still
-    reaches retained chart state via the global 16ms backend drain and
-    `WeakEntity<ChartPanel>` update path. See `ForkIssuesFinal.md` P0.
+11. [x] Remove `register_pass`, continuous present guard, present_seq, async prepare task.
+    Done with event-driven feed wake: `SessionManager::drain()` now runs after
+    incoming feed wakes, high-rate chart data updates `ChartDataHandle` directly,
+    and the old global `executor.timer(16ms)` / `WeakEntity<ChartPanel>` path is gone.
 12. [x] Verify detach/hidden tab lifecycle.
     Done by element-owned `gpu_canvas` lifetime; native/manual regression still
     belongs to runtime testing.

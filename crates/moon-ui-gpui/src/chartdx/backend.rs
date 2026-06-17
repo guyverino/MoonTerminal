@@ -166,6 +166,50 @@ impl PlatformLayers {
         self.userdata.prepare(device, context, gpu);
     }
 
+    #[cfg(target_os = "linux")]
+    pub fn prepare_wgpu(
+        &mut self,
+        view: &ChartViewGpu,
+        background_params: &BackgroundParams,
+        grid_params: &GridParams,
+        cursor_params: &CursorParams,
+        orderbook_view: &ChartViewGpu,
+        book_style: &BookStyle,
+        gpu: &gpui::RawGpuAccess,
+    ) -> anyhow::Result<()> {
+        self.wgpu.prepare(
+            view,
+            background_params,
+            grid_params,
+            cursor_params,
+            orderbook_view,
+            book_style,
+            gpu,
+        )
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn prepare_metal(
+        &mut self,
+        view: &ChartViewGpu,
+        background_params: &BackgroundParams,
+        grid_params: &GridParams,
+        cursor_params: &CursorParams,
+        orderbook_view: &ChartViewGpu,
+        book_style: &BookStyle,
+        gpu: &gpui::RawGpuAccess,
+    ) -> anyhow::Result<()> {
+        self.metal.prepare(
+            view,
+            background_params,
+            grid_params,
+            cursor_params,
+            orderbook_view,
+            book_style,
+            gpu,
+        )
+    }
+
     #[cfg(windows)]
     pub fn render_base_d3d(
         &mut self,
@@ -207,8 +251,7 @@ impl PlatformLayers {
         if cursor_params.enabled > 0.0 {
             crate::diag::bump(&crate::diag::CHART_CURSOR_DRAW);
         }
-        self.cursor
-            .render(cursor_params, device, context, rtv, gpu);
+        self.cursor.render(cursor_params, device, context, rtv, gpu);
     }
 
     #[cfg(target_os = "linux")]
@@ -219,7 +262,6 @@ impl PlatformLayers {
         grid_params: &GridParams,
         cursor_params: &CursorParams,
         orderbook_view: &ChartViewGpu,
-        book_style: &BookStyle,
         gpu: &gpui::RawGpuAccess,
     ) -> anyhow::Result<()> {
         self.wgpu.render(
@@ -228,7 +270,6 @@ impl PlatformLayers {
             grid_params,
             cursor_params,
             orderbook_view,
-            book_style,
             gpu,
         )
     }
@@ -241,7 +282,6 @@ impl PlatformLayers {
         grid_params: &GridParams,
         cursor_params: &CursorParams,
         orderbook_view: &ChartViewGpu,
-        book_style: &BookStyle,
         gpu: &gpui::RawGpuAccess,
     ) -> anyhow::Result<()> {
         self.metal.render(
@@ -250,7 +290,6 @@ impl PlatformLayers {
             grid_params,
             cursor_params,
             orderbook_view,
-            book_style,
             gpu,
         )
     }

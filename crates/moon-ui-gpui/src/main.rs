@@ -38,13 +38,14 @@ use std::time::{Duration, Instant};
 use gpui::*;
 
 use chart_tabs::ChartTabs;
+use chartdx::ChartDataHandle;
 use dock_persist::DOCK_VERSION;
 use panels::{ChartPanel, DetectsPanel, LogPanel, OrderPanel, OrdersPanel, ReportPanel, StubPanel};
 
 use moon_palette::MoonRect;
 use moon_palette::{
-    DockArea, DockAreaState, DockEvent, DockItem, DockPlacement, MoonBackgroundPolicy, MoonPalette,
-    MoonButton, MoonButtonSize, MoonButtonVariant, MoonStatusBar, MoonStatusIndicator,
+    DockArea, DockAreaState, DockEvent, DockItem, DockPlacement, MoonBackgroundPolicy, MoonButton,
+    MoonButtonSize, MoonButtonVariant, MoonPalette, MoonStatusBar, MoonStatusIndicator,
     MoonStatusItem, MoonTheme, MoonThemeConfig, MoonTooltipView, MoonWindowChrome,
     MoonWindowChromeButton, PanelView, Root, h_flex, init as init_moon_palette, v_flex,
 };
@@ -137,6 +138,10 @@ struct Backend {
     price_scale_rev: u64,
     /// Live-follow тулбара: true = вид бежит за «сейчас», false = пауза (заморозка).
     follow: bool,
+    /// Backend-level notify is only for slow GPUI chrome/status/overlays. High-rate chart
+    /// data goes straight into retained chart handles and must not dirty the whole tree.
+    backend_dirty_since_notify: bool,
+    last_backend_notify: Option<Instant>,
     /// Запросы реконнекта ядра (кнопка ↻ в «Подключениях») — дренаж зовёт
     /// `session.reconnect`. Порт egui `SettingsActions.reconnect`.
     reconnect_request: Vec<CoreId>,
@@ -167,9 +172,9 @@ struct Backend {
     debug_window: Option<WindowHandle<Root>>,
     #[cfg(any(debug_assertions, moon_profile_debug, feature = "debug-tools"))]
     debug_chart_windows: Vec<WindowHandle<Root>>,
-    /// Visible chart data consumers. Backend drain is the single data-ingestion
-    /// clock; charts must not run their own 16ms data pumps.
-    chart_consumers: Vec<WeakEntity<ChartPanel>>,
+    /// Visible chart data consumers. High-rate market data updates retained chart
+    /// state directly through these handles, without GPUI Entity updates or notify.
+    chart_consumers: Vec<ChartDataHandle>,
     /// Персист чарт-вкладок (масштаб по вкладке + геометрия откреп-окон) — charts.json.
     /// Дебаунс-сейв делает дренаж по `chart_specs_dirty`. См. `chart_persist`.
     chart_specs: Vec<chart_persist::ChartTabSpec>,
@@ -180,16 +185,41 @@ struct Backend {
 }
 
 impl Backend {
-    fn register_chart_consumer(&mut self, chart: WeakEntity<ChartPanel>) {
-        if self.chart_consumers.iter().any(|existing| existing == &chart) {
+    fn register_chart_consumer(&mut self, chart: ChartDataHandle) {
+        if self
+            .chart_consumers
+            .iter()
+            .any(|existing| existing == &chart)
+        {
             return;
         }
         self.chart_consumers.push(chart);
     }
 
-    fn live_chart_consumers(&mut self) -> Vec<WeakEntity<ChartPanel>> {
-        self.chart_consumers.retain(|chart| chart.upgrade().is_some());
+    fn live_chart_consumers(&mut self) -> Vec<ChartDataHandle> {
+        self.chart_consumers.retain(ChartDataHandle::is_alive);
         self.chart_consumers.clone()
+    }
+
+    fn mark_backend_dirty(&mut self, cx: &mut Context<Self>) {
+        self.backend_dirty_since_notify = true;
+        self.flush_backend_notify(cx);
+    }
+
+    fn flush_backend_notify(&mut self, cx: &mut Context<Self>) {
+        if !self.backend_dirty_since_notify {
+            return;
+        }
+        let due = self
+            .last_backend_notify
+            .is_none_or(|last| last.elapsed() >= Duration::from_millis(250));
+        if !due {
+            return;
+        }
+        self.backend_dirty_since_notify = false;
+        self.last_backend_notify = Some(Instant::now());
+        crate::diag::bump(&crate::diag::BACKEND_NOTIFY);
+        cx.notify();
     }
 
     fn maybe_diag_open_first_market(&mut self, cx: &mut Context<Self>) {
@@ -647,12 +677,7 @@ fn window_chrome(width: f32) -> impl IntoElement {
         "moon-window-chrome",
         MoonRect::new(0.0, 0.0, width, design::HEADER_TOP_H),
     )
-    .drag_bounds(MoonRect::new(
-        drag_x,
-        0.0,
-        drag_w,
-        design::HEADER_TOP_H,
-    ));
+    .drag_bounds(MoonRect::new(drag_x, 0.0, drag_w, design::HEADER_TOP_H));
 
     if design::show_custom_window_controls() {
         chrome
@@ -1042,7 +1067,11 @@ impl Render for DebugPerfWindow {
                 p,
             ))
             .child(Self::stat_row("desired markets", desired.to_string(), p))
-            .child(Self::stat_row("group windows", group_windows.to_string(), p))
+            .child(Self::stat_row(
+                "group windows",
+                group_windows.to_string(),
+                p,
+            ))
             .child(Self::stat_row(
                 "chart windows",
                 format!("{detached_chart_windows} detached / {debug_windows} debug"),
@@ -1063,7 +1092,11 @@ impl Render for DebugPerfWindow {
                     .w_full()
                     .gap(px(4.0))
                     .mt(px(4.0))
-                    .child(div().text_color(rgb(p.text_muted)).child("last render_diag.log line"))
+                    .child(
+                        div()
+                            .text_color(rgb(p.text_muted))
+                            .child("last render_diag.log line"),
+                    )
                     .child(
                         div()
                             .w_full()
@@ -1415,9 +1448,15 @@ fn main() -> anyhow::Result<()> {
         // шлёт close-report → запись в SQLite), `generation` живёт в Backend для окна
         // «Отчёт». None = БД недоступна (окно отчётов покажет пусто).
         let reports = moon_core::db::spawn_writer();
+        let (feed_wake_tx, feed_wake_rx) = std::sync::mpsc::channel::<()>();
 
         let backend = cx.new(|_| Backend {
-            session: SessionManager::start(&cfg, epoch, reports.as_ref().map(|h| &h.tx)),
+            session: SessionManager::start(
+                &cfg,
+                epoch,
+                reports.as_ref().map(|h| &h.tx),
+                Some(feed_wake_tx.clone()),
+            ),
             epoch,
             reports,
             metrics: Metrics::new(),
@@ -1445,6 +1484,8 @@ fn main() -> anyhow::Result<()> {
             price_scale: None,
             price_scale_rev: 0,
             follow: true,
+            backend_dirty_since_notify: false,
+            last_backend_notify: None,
             reconnect_request: Vec::new(),
             show_group_request: Vec::new(),
             group_windows: HashMap::new(),
@@ -1508,8 +1549,7 @@ fn main() -> anyhow::Result<()> {
                         {
                             b.debug_window = None;
                         }
-                        b.debug_chart_windows
-                            .retain(|h| h.window_id() != closed_id);
+                        b.debug_chart_windows.retain(|h| h.window_id() != closed_id);
                     }
                     (Vec::new(), false)
                 }
@@ -1538,131 +1578,108 @@ fn main() -> anyhow::Result<()> {
         })
         .detach();
 
-        // Дренаж сессий часто, тяжёлая координация/метрики раз в ~100мс на UI-потоке.
-        let drain_backend = backend.clone();
-        let drain_cfg = cfg.clone();
-        let drain_layout = layout.clone();
+        // High-rate feed data path: feed threads send a causal wake after every FeedMsg.
+        // The foreground task drains session data only after a real wake, then updates retained
+        // chart handles directly. No 16ms polling, no ChartPanel Entity update, no GPUI dirty tree.
+        let data_backend = backend.clone();
         cx.spawn(async move |cx| {
-            // gpui (свежий): AsyncApp::update инфэллибл (возвращает R, не Result) — без `?`.
             let executor = cx.update(|cx| cx.background_executor().clone());
-            // Дренаж данных — ~60 Гц: фид кладёт тики/стакан каждые ~8мс,
-            // и при дренаже раз в 100мс живой скролл шёл ступеньками 10 Гц. Тяжёлая
-            // координация (reconcile_providers, метрики, сохранения) остаётся на ~100мс
-            // (каждый 6-й тик) — её незачем гонять 60 раз/сек.
-            let mut tick: u32 = 0;
-            let mut last_report = Instant::now();
-            // Causal-гейт пульса: копим, применились ли сообщения с фида с прошлого notify.
-            // Фид молчит → ничего не нотифаем (нет холостых top-down перерисовок).
-            let mut dirty_since_notify = false;
+            let mut feed_wake_rx = feed_wake_rx;
             loop {
-                executor.timer(Duration::from_millis(16)).await;
-                tick = tick.wrapping_add(1);
-                let coord = tick % 6 == 0;
-                // UI-пульс ~4 Гц (≈256мс) И ТОЛЬКО когда данные реально менялись (causal). backend-
-                // notify будит ВСЕХ обзёрверов, а GPUI-рендер идёт top-down → один notify
-                // перерисовывает ВСЮ сцену (Shell+тяжёлый Orders+все панели), сколько бы гейтов на
-                // отдельных вьюхах ни стояло. Поэтому: редкий пульс у ИСТОЧНИКА (синхронизирует все
-                // пробуждения хрома, ≥250мс) + гейт по факту прихода данных.
-                // Гладкость чарта — от `gpu_canvas.frame()` на platform tick, НЕ от этого notify.
-                // (Полная развязка = view-caching панелей в moon-palette — отдельная задача; до неё
-                // 4-Гц пульс это пожарный кап top-down сцепки, см. ЕБАНИНА Пример 5 / RENDER_INVALIDATION §7.)
-                let notify_due = tick % 16 == 0;
-                // gpui (свежий): AsyncApp::update инфэллибл; при закрытии приложения
-                // спавн-задача отменяется самим gpui (future дропается на await ниже).
+                let (rx, woke) = executor
+                    .spawn(async move {
+                        let woke = feed_wake_rx.recv().is_ok();
+                        (feed_wake_rx, woke)
+                    })
+                    .await;
+                feed_wake_rx = rx;
+                if !woke {
+                    break;
+                }
+                while feed_wake_rx.try_recv().is_ok() {}
+
                 cx.update(|cx| {
-                    // Сессия/метрики/реконнект — внутри backend.update; запросы
-                    // «показать группу» забираем наружу (нужен &mut App для окон).
-                    let (show_reqs, open_debug_10, chart_consumers) =
-                        drain_backend.update(cx, |b, cx| {
-                            // Данные дренятся ~60 Гц. Если реально пришли сообщения фида,
-                            // ниже causally обновим retained chart state у зарегистрированных
-                            // чартов без GPUI notify. Рисовать или Skip всё равно решит
-                            // gpu_canvas.frame() на platform tick.
-                            let drain = b.session.drain();
-                            dirty_since_notify |= drain.any;
-                            b.maybe_diag_open_first_market(cx);
-                            let mut reqs = Vec::new();
-                            if coord {
-                                // reconcile_providers избирает провайдера/биржу + держит
-                                // подписку на desired-рынки. subscribe_all_trades провайдера =
-                                // ретейн всех трейдов биржи (десятки ГБ — by-design, ради
-                                // мгновенного открытия монеты; дедуп держит 1 провайдера/биржу).
-                                b.session.set_open(&b.desired);
-                                b.snap = b.metrics.sample(Instant::now());
-                                // Реконнект ядер по кнопке ↻ (порт egui take_actions.reconnect).
-                                let recon: Vec<CoreId> = b.reconnect_request.drain(..).collect();
-                                for id in recon {
-                                    b.session.reconnect(
-                                        id,
-                                        &b.config,
-                                        b.reports.as_ref().map(|h| &h.tx),
-                                    );
-                                }
-                                // Дебаунс-сохранение раскладки окон (≤10/с).
-                                if b.layout_dirty {
-                                    b.layout.save();
-                                    b.layout_dirty = false;
-                                }
-                                // Дебаунс-сохранение раскладки доков (docks.json).
-                                if b.dock_dirty {
-                                    dock_persist::save_all(&b.dock_states);
-                                    b.dock_dirty = false;
-                                }
-                                // Дебаунс-сохранение откреплённых окон (detached.json).
-                                if b.detached_dirty {
-                                    detached::save_all(&b.detached);
-                                    b.detached_dirty = false;
-                                }
-                                // Дебаунс-сохранение чарт-вкладок (charts.json: масштаб + откреп-геометрия).
-                                if b.chart_specs_dirty {
-                                    chart_persist::save_all(&b.chart_specs);
-                                    b.chart_specs_dirty = false;
-                                }
-                                reqs = std::mem::take(&mut b.show_group_request);
+                    data_backend.update(cx, |b, cx| {
+                        let drain = b.session.drain();
+                        if !drain.any {
+                            return;
+                        }
+                        if drain.chart_data {
+                            let chart_consumers = b.live_chart_consumers();
+                            for chart in chart_consumers {
+                                chart.sync_retained_state_if_visible(&b.session, false);
                             }
-                            if notify_due && dirty_since_notify {
-                                dirty_since_notify = false;
-                                crate::diag::bump(&crate::diag::BACKEND_NOTIFY);
-                                cx.notify();
-                            }
-                            #[cfg(any(
-                                debug_assertions,
-                                moon_profile_debug,
-                                feature = "debug-tools"
-                            ))]
-                            let open_debug_10 = b.take_diag_open_10_btc();
-                            #[cfg(not(any(
-                                debug_assertions,
-                                moon_profile_debug,
-                                feature = "debug-tools"
-                            )))]
-                            let open_debug_10 = false;
-                            let chart_consumers = if drain.chart_data {
-                                b.live_chart_consumers()
-                            } else {
-                                Vec::new()
-                            };
-                            (reqs, open_debug_10, chart_consumers)
-                        });
-                    for chart in chart_consumers {
-                        let _ = chart.update(cx, |chart, cx| {
-                            chart.sync_retained_state_if_visible(cx, false);
-                        });
-                    }
+                        }
+                        b.mark_backend_dirty(cx);
+                    });
+                });
+            }
+        })
+        .detach();
+
+        // Slow coordination path: provider roles, metrics, reconnects and persistence. This may
+        // wake the GPUI tree through Backend notify, but it never stages high-rate chart pixels.
+        let coord_backend = backend.clone();
+        let coord_cfg = cfg.clone();
+        let coord_layout = layout.clone();
+        cx.spawn(async move |cx| {
+            let executor = cx.update(|cx| cx.background_executor().clone());
+            let mut last_report = Instant::now();
+            loop {
+                executor.timer(Duration::from_millis(100)).await;
+                cx.update(|cx| {
+                    let (show_reqs, open_debug_10) = coord_backend.update(cx, |b, cx| {
+                        b.maybe_diag_open_first_market(cx);
+                        b.session.set_open(&b.desired);
+                        b.snap = b.metrics.sample(Instant::now());
+
+                        let recon: Vec<CoreId> = b.reconnect_request.drain(..).collect();
+                        for id in recon {
+                            b.session
+                                .reconnect(id, &b.config, b.reports.as_ref().map(|h| &h.tx));
+                        }
+                        if b.layout_dirty {
+                            b.layout.save();
+                            b.layout_dirty = false;
+                        }
+                        if b.dock_dirty {
+                            dock_persist::save_all(&b.dock_states);
+                            b.dock_dirty = false;
+                        }
+                        if b.detached_dirty {
+                            detached::save_all(&b.detached);
+                            b.detached_dirty = false;
+                        }
+                        if b.chart_specs_dirty {
+                            chart_persist::save_all(&b.chart_specs);
+                            b.chart_specs_dirty = false;
+                        }
+                        b.flush_backend_notify(cx);
+                        let reqs = std::mem::take(&mut b.show_group_request);
+                        #[cfg(any(debug_assertions, moon_profile_debug, feature = "debug-tools"))]
+                        let open_debug_10 = b.take_diag_open_10_btc();
+                        #[cfg(not(any(
+                            debug_assertions,
+                            moon_profile_debug,
+                            feature = "debug-tools"
+                        )))]
+                        let open_debug_10 = false;
+                        (reqs, open_debug_10)
+                    });
+
                     #[cfg(any(debug_assertions, moon_profile_debug, feature = "debug-tools"))]
                     if open_debug_10 {
                         log::info!("diag auto-open: spawning 10 BTC chart windows");
-                        spawn_debug_btc_chart_windows(cx, drain_backend.clone());
+                        spawn_debug_btc_chart_windows(cx, coord_backend.clone());
                     }
-                    // Открыть/сфокусировать окна по запросам 👁.
                     for g in show_reqs {
                         spawn_group_window(
                             cx,
-                            &drain_backend,
-                            &drain_cfg,
+                            &coord_backend,
+                            &coord_cfg,
                             g,
                             epoch,
-                            &drain_layout,
+                            &coord_layout,
                             0.0,
                         );
                     }
@@ -1675,7 +1692,6 @@ fn main() -> anyhow::Result<()> {
             }
         })
         .detach();
-
         // По окну на группу (тем же helper'ом, что и кнопка 👁 «показать группу»).
         for (i, group) in group_list.into_iter().enumerate() {
             spawn_group_window(cx, &backend, &cfg, group, epoch, &layout, i as f32 * 40.0);

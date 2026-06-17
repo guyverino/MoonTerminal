@@ -55,9 +55,6 @@ impl BackgroundLayer {
         if params.dst[2] <= 0.0 || params.dst[3] <= 0.0 {
             return;
         }
-        if params.opacity <= f32::EPSILON {
-            return;
-        }
         let device_ptr = d3d_device_ptr(gpu);
         if self.device_ptr != device_ptr {
             self.pipe = None;

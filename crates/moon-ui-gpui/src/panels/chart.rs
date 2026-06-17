@@ -8,6 +8,7 @@
 
 use std::time::Duration;
 
+use gpui::prelude::FluentBuilder;
 use gpui::*;
 use moon_palette::{MoonBackgroundPolicy, MoonPalette, Panel, PanelEvent};
 
@@ -155,8 +156,7 @@ impl ChartPanel {
             // fast (≥250мс) и ≤1 Гц для addto. Частые GPU data/state обновляет
             // backend data drain без GPUI dirty; notify здесь только для редкого текста осей.
             let floor = if this.fast { 250.0 } else { 1000.0 };
-            if sig != this.last_axis_notify_data_sig
-                && now - this.last_adaptive_notify_ms >= floor
+            if sig != this.last_axis_notify_data_sig && now - this.last_adaptive_notify_ms >= floor
             {
                 this.last_axis_notify_data_sig = sig;
                 this.last_adaptive_notify_ms = now;
@@ -165,7 +165,7 @@ impl ChartPanel {
             }
         })
         .detach();
-        let chart_handle = cx.entity().downgrade();
+        let chart_handle = chart.data_handle();
         backend.update(cx, |b, _| b.register_chart_consumer(chart_handle));
         Self {
             backend,
@@ -241,8 +241,7 @@ impl ChartPanel {
             // AddToChart — фоновый/мультичарт: notify (а с ним top-down перерисовка Orders)
             // ≤1 Гц. Частые GPU data/state обновляет backend data drain без notify;
             // time-based prune делает локальный TTL timer.
-            if sig != this.last_axis_notify_data_sig
-                && now - this.last_adaptive_notify_ms >= 1000.0
+            if sig != this.last_axis_notify_data_sig && now - this.last_adaptive_notify_ms >= 1000.0
             {
                 this.last_axis_notify_data_sig = sig;
                 this.last_adaptive_notify_ms = now;
@@ -251,7 +250,7 @@ impl ChartPanel {
             }
         })
         .detach();
-        let chart_handle = cx.entity().downgrade();
+        let chart_handle = chart.data_handle();
         backend.update(cx, |b, _| b.register_chart_consumer(chart_handle));
         Self {
             backend,
@@ -293,6 +292,7 @@ impl ChartPanel {
     /// CPU-side data prepare; the `gpu_canvas` element lifetime is still owned by GPUI scene replay.
     pub fn set_scene_visible(&mut self, visible: bool) {
         self.scene_visible = visible;
+        self.chart.set_scene_visible(visible);
     }
 
     pub(crate) fn sync_retained_state_if_visible(&mut self, cx: &mut Context<Self>, force: bool) {
@@ -305,8 +305,7 @@ impl ChartPanel {
         if !force && sig == self.last_prepared_data_sig {
             return;
         }
-        crate::diag::bump(&crate::diag::CHART_PREPARE);
-        self.chart.sync_from_session(&b.session, self.last_ppp);
+        self.chart.sync_retained_state_if_visible(&b.session, force);
         self.last_prepared_data_sig = sig;
         self.last_prepared_dev = self.chart_dev;
         self.last_prepared_bounds = self.chart_bounds;
@@ -337,11 +336,11 @@ impl ChartPanel {
     /// (убрать (core, market) из `desired`, если ни одна оставшаяся панель этого чарта его не
     /// держит — трейды биржи идут оптом, снимаем именно стакан через `set_open`-дифф).
     fn remove_pane(&mut self, idx: usize, cx: &mut Context<Self>) {
-        let Some((core, market)) = self.chart.container.remove_pane(idx) else {
+        let Some((core, market)) = self.chart.remove_pane(idx) else {
             return;
         };
         self.view_dirty = true;
-        if !self.chart.container.uses_market(core, &market) {
+        if !self.chart.uses_market(core, &market) {
             self.backend.update(cx, |b, bcx| {
                 let before = b.desired.len();
                 b.desired
@@ -357,7 +356,7 @@ impl ChartPanel {
     /// Закрыть ВСЕ монеты этого чарта (кнопка «закрыть все графики» в выносном окне) +
     /// отписаться от их стаканов.
     pub fn close_all_panes(&mut self, cx: &mut Context<Self>) {
-        let removed = self.chart.container.clear_panes();
+        let removed = self.chart.clear_panes();
         if removed.is_empty() {
             return;
         }
@@ -480,9 +479,11 @@ impl Render for ChartPanel {
         crate::diag::bump(&crate::diag::CHART_RENDER);
         let became_visible = !self.scene_visible;
         self.scene_visible = true;
+        self.chart.set_scene_visible(true);
         let ppp = window.scale_factor();
         // Запоминаем DPI для data prepare path (у него нет window). DPI меняется редко.
         self.last_ppp = ppp;
+        self.chart.set_last_ppp(ppp);
         let monitor_rate_hz = chart_present_rate_hz();
         let fast_divisor = (monitor_rate_hz / 60.0).round().max(1.0) as u32;
         let effective_present_rate_hz = if self.fast {
@@ -544,6 +545,8 @@ impl Render for ChartPanel {
             .iter()
             .map(|(idx, rect, _)| (*idx, (rect.x + rect.w) / ppp, rect.y / ppp))
             .collect();
+        let show_empty_logo = axis_panes.is_empty();
+        let logo_w = ((self.chart_dev.0 as f32 / ppp) * 0.28).clamp(180.0, 280.0);
 
         div()
             .id("chart-slot")
@@ -569,14 +572,13 @@ impl Render for ChartPanel {
                 this.input.hovered_pane = this.input.pane_at(pos.0, pos.1);
                 this.sync_native_cursor();
                 let fb = this.chart_dev.0 as f32;
-                if this.input.wheel(
-                    dy,
-                    e.modifiers.shift,
-                    within,
-                    &mut this.chart.container,
-                    fb,
-                    sf,
-                ) {
+                let changed = {
+                    let input = &mut this.input;
+                    this.chart.with_container_mut(|container| {
+                        input.wheel(dy, e.modifiers.shift, within, container, fb, sf)
+                    })
+                };
+                if changed {
                     this.mark_input_changed(cx);
                     crate::diag::bump(&crate::diag::CHART_INPUT_NOTIFY);
                     cx.notify();
@@ -602,15 +604,20 @@ impl Render for ChartPanel {
                     this.sync_native_cursor();
                     // На AddToChart-вкладках дабл-клик по ЧАРТУ → открыть монету на Main (fullscreen).
                     let allow_to_main = this.num.is_some();
-                    let input_changed = this.input.mouse_button(
-                        input::Btn::Left,
-                        true,
-                        within,
-                        allow_to_main,
-                        &mut this.chart.container,
-                        sf,
-                        this.chart_dev.0 as f32,
-                    );
+                    let input_changed = {
+                        let input = &mut this.input;
+                        this.chart.with_container_mut(|container| {
+                            input.mouse_button(
+                                input::Btn::Left,
+                                true,
+                                within,
+                                allow_to_main,
+                                container,
+                                sf,
+                                this.chart_dev.0 as f32,
+                            )
+                        })
+                    };
                     let mut opened_to_main = false;
                     if let Some((core, market)) = this.input.pending_to_main.take() {
                         this.backend.update(cx, |b, bcx| {
@@ -630,15 +637,21 @@ impl Render for ChartPanel {
                 MouseButton::Left,
                 cx.listener(|this, _e: &MouseUpEvent, window, cx| {
                     let sf = window.scale_factor();
-                    if this.input.mouse_button(
-                        input::Btn::Left,
-                        false,
-                        false,
-                        false,
-                        &mut this.chart.container,
-                        sf,
-                        this.chart_dev.0 as f32,
-                    ) {
+                    let changed = {
+                        let input = &mut this.input;
+                        this.chart.with_container_mut(|container| {
+                            input.mouse_button(
+                                input::Btn::Left,
+                                false,
+                                false,
+                                false,
+                                container,
+                                sf,
+                                this.chart_dev.0 as f32,
+                            )
+                        })
+                    };
+                    if changed {
                         this.mark_input_changed(cx);
                         crate::diag::bump(&crate::diag::CHART_INPUT_NOTIFY);
                         cx.notify();
@@ -660,15 +673,21 @@ impl Render for ChartPanel {
                         None
                     };
                     this.sync_native_cursor();
-                    if this.input.mouse_button(
-                        input::Btn::Right,
-                        true,
-                        within,
-                        false,
-                        &mut this.chart.container,
-                        sf,
-                        this.chart_dev.0 as f32,
-                    ) {
+                    let changed = {
+                        let input = &mut this.input;
+                        this.chart.with_container_mut(|container| {
+                            input.mouse_button(
+                                input::Btn::Right,
+                                true,
+                                within,
+                                false,
+                                container,
+                                sf,
+                                this.chart_dev.0 as f32,
+                            )
+                        })
+                    };
+                    if changed {
                         crate::diag::bump(&crate::diag::CHART_INPUT_NOTIFY);
                         cx.notify();
                     }
@@ -678,15 +697,21 @@ impl Render for ChartPanel {
                 MouseButton::Right,
                 cx.listener(|this, _e: &MouseUpEvent, window, cx| {
                     let sf = window.scale_factor();
-                    if this.input.mouse_button(
-                        input::Btn::Right,
-                        false,
-                        false,
-                        false,
-                        &mut this.chart.container,
-                        sf,
-                        this.chart_dev.0 as f32,
-                    ) {
+                    let changed = {
+                        let input = &mut this.input;
+                        this.chart.with_container_mut(|container| {
+                            input.mouse_button(
+                                input::Btn::Right,
+                                false,
+                                false,
+                                false,
+                                container,
+                                sf,
+                                this.chart_dev.0 as f32,
+                            )
+                        })
+                    };
+                    if changed {
                         this.view_dirty = true;
                         crate::diag::bump(&crate::diag::CHART_INPUT_NOTIFY);
                         cx.notify();
@@ -713,18 +738,17 @@ impl Render for ChartPanel {
                 } else {
                     None
                 };
-                let dragging = this.input.pointer_drag(
-                    pos.0,
-                    pos.1,
-                    &mut this.chart.container,
-                    sf,
-                    this.chart_dev.0 as f32,
-                );
+                let dragging = {
+                    let input = &mut this.input;
+                    this.chart.with_container_mut(|container| {
+                        input.pointer_drag(pos.0, pos.1, container, sf, this.chart_dev.0 as f32)
+                    })
+                };
                 if dragging {
                     this.mark_input_changed(cx);
                 }
-                let cursor_changed = prev_cursor != this.input.cursor
-                    || prev_hovered != this.input.hovered_pane;
+                let cursor_changed =
+                    prev_cursor != this.input.cursor || prev_hovered != this.input.hovered_pane;
                 if cursor_changed {
                     this.sync_native_cursor();
                     this.notify_cursor_readout_if_due(cx);
@@ -748,6 +772,17 @@ impl Render for ChartPanel {
                 }
             }))
             .child(self.chart.canvas().absolute().size_full())
+            .when(show_empty_logo, |this| {
+                this.child(
+                    div()
+                        .absolute()
+                        .size_full()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(crate::design::logo_glow_sized(logo_w)),
+                )
+            })
             // Оверлей: оси/числа/перекрестие — GPUI поверх own-pass графика (прозрачный регион).
             .child({
                 let entity = cx.entity();

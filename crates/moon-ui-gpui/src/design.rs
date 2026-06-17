@@ -7,6 +7,7 @@
 use gpui::*;
 use moon_palette::{MoonMetrics, MoonPalette};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 const M: MoonMetrics = MoonMetrics::TERMINAL;
 
@@ -43,6 +44,12 @@ pub const LOGO_SVG: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../assets/brand/moonbot-logo.svg"
 );
+pub const LOGO_ASPECT: f32 = 199.0 / 43.0;
+const LOGO_GLOW_SVG_RAW: &str = include_str!("../../../assets/brand/moonbot-logo.svg");
+const LOGO_SRC_W: f32 = 199.0;
+const LOGO_SRC_H: f32 = 43.0;
+const LOGO_GLOW_VIEW_W: f32 = LOGO_SRC_W * 1.2;
+const LOGO_GLOW_VIEW_H: f32 = LOGO_SRC_W * 1.2;
 
 pub fn solid(hex: u32) -> Rgba {
     rgb(hex)
@@ -61,7 +68,55 @@ pub fn ui_font() -> SharedString {
 }
 
 pub fn logo() -> impl IntoElement {
-    img(PathBuf::from(LOGO_SVG)).w(px(83.3)).h(px(18.0))
+    logo_sized(83.3)
+}
+
+pub fn logo_sized(width: f32) -> impl IntoElement {
+    img(PathBuf::from(LOGO_SVG))
+        .w(px(width))
+        .h(px(width / LOGO_ASPECT))
+}
+
+pub fn logo_glow_sized(width: f32) -> impl IntoElement {
+    let paths = LOGO_GLOW_SVG_RAW
+        .split_once(r#"<g clip-path="url(#clip0_3800_3393)">"#)
+        .and_then(|(_, rest)| rest.split_once("</g>"))
+        .map(|(paths, _)| paths)
+        .unwrap_or("");
+    let cx = LOGO_GLOW_VIEW_W * 0.5;
+    let cy = LOGO_GLOW_VIEW_H * 0.5;
+    let r = LOGO_GLOW_VIEW_W * 0.5;
+    let logo_x = (LOGO_GLOW_VIEW_W - LOGO_SRC_W) * 0.5;
+    let logo_y = (LOGO_GLOW_VIEW_H - LOGO_SRC_H) * 0.5;
+    let svg = format!(
+        r##"<svg width="{view_w}" height="{view_h}" viewBox="0 0 {view_w} {view_h}" fill="none" xmlns="http://www.w3.org/2000/svg">
+<defs>
+  <radialGradient id="moonbot_aura" cx="50%" cy="50%" r="50%">
+    <stop offset="0%" stop-color="#00BCFF" stop-opacity="0.30"/>
+    <stop offset="34%" stop-color="#1A76FF" stop-opacity="0.19"/>
+    <stop offset="68%" stop-color="#0A5CFF" stop-opacity="0.07"/>
+    <stop offset="100%" stop-color="#0A5CFF" stop-opacity="0"/>
+  </radialGradient>
+</defs>
+<circle cx="{cx}" cy="{cy}" r="{r}" fill="url(#moonbot_aura)"/>
+<g transform="translate({logo_x} {logo_y})">{paths}</g>
+</svg>"##,
+        view_w = LOGO_GLOW_VIEW_W,
+        view_h = LOGO_GLOW_VIEW_H,
+        cx = cx,
+        cy = cy,
+        r = r,
+        logo_x = logo_x,
+        logo_y = logo_y,
+        paths = paths,
+    );
+    let frame_w = width * (LOGO_GLOW_VIEW_W / 199.0);
+    img(Arc::new(Image::from_bytes(
+        ImageFormat::Svg,
+        svg.into_bytes(),
+    )))
+    .w(px(frame_w))
+    .h(px(frame_w * (LOGO_GLOW_VIEW_H / LOGO_GLOW_VIEW_W)))
 }
 
 pub fn vline(height: f32, p: MoonPalette) -> impl IntoElement {

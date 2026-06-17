@@ -38,6 +38,7 @@ const MAX_WINDOW_MS: f32 = 3_600_000.0;
 /// Дефолтное видимое окно, к которому выбираем пиксельно-гладкий live scale.
 const DEFAULT_WINDOW_MS: f32 = 60_000.0;
 
+#[derive(Clone)]
 pub struct ChartView {
     /// Фиксированная точка отсчёта времени (unix ms), задаётся при старте.
     pub epoch_ms: f64,

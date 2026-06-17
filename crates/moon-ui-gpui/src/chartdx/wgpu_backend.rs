@@ -117,11 +117,26 @@ struct BackgroundTexture {
     view: wgpu::TextureView,
 }
 
+struct PreparedBindGroups {
+    bg: wgpu::BindGroup,
+    grid: wgpu::BindGroup,
+    cursor: wgpu::BindGroup,
+    cross: wgpu::BindGroup,
+    last: wgpu::BindGroup,
+    mark: wgpu::BindGroup,
+    book: wgpu::BindGroup,
+    zone: wgpu::BindGroup,
+    hline: wgpu::BindGroup,
+    seg: wgpu::BindGroup,
+    marker: wgpu::BindGroup,
+}
+
 pub struct WgpuLayers {
     device_generation: u64,
     format: Option<wgpu::TextureFormat>,
     pipelines: Option<Pipelines>,
     background_texture: Option<BackgroundTexture>,
+    prepared_binds: Option<PreparedBindGroups>,
     crosses: Vec<ChartCross>,
     last_line: Vec<PriceLinePoint>,
     mark_line: Vec<PriceLinePoint>,
@@ -155,6 +170,7 @@ impl WgpuLayers {
             format: None,
             pipelines: None,
             background_texture: None,
+            prepared_binds: None,
             crosses: Vec::new(),
             last_line: Vec::new(),
             mark_line: Vec::new(),
@@ -228,17 +244,130 @@ impl WgpuLayers {
         grid_params: &GridParams,
         cursor_params: &CursorParams,
         orderbook_view: &ChartViewGpu,
+        gpu: &RawGpuAccess,
+    ) -> anyhow::Result<()> {
+        let Some((device, queue, pass)) = (unsafe { borrow_wgpu_draw(gpu) }) else {
+            anyhow::bail!("chart wgpu draw received empty wgpu raw gpu handles");
+        };
+        self.upload_frame_uniforms(
+            device,
+            queue,
+            view,
+            orderbook_view,
+            background_params,
+            grid_params,
+            cursor_params,
+        );
+        self.prepare_bind_groups(device);
+        let pipelines = self.pipelines.as_ref().unwrap();
+        let binds = self.prepared_binds.as_ref().unwrap();
+
+        let sc = scissor_rect(view, orderbook_view, gpu.width(), gpu.height());
+        pass.set_scissor_rect(sc.0, sc.1, sc.2, sc.3);
+        draw_pipeline(pass, &pipelines.background, &binds.bg, 6, 1);
+        draw_pipeline(pass, &pipelines.grid, &binds.grid, 6, 1);
+        if !self.crosses.is_empty() {
+            draw_pipeline(
+                pass,
+                &pipelines.volume,
+                &binds.cross,
+                6,
+                self.crosses.len() as u32,
+            );
+        }
+        if self.last_line.len() > 1 {
+            draw_pipeline(
+                pass,
+                &pipelines.price_last,
+                &binds.last,
+                6,
+                (self.last_line.len() - 1) as u32,
+            );
+        }
+        if self.mark_line.len() > 1 {
+            draw_pipeline(
+                pass,
+                &pipelines.price_mark,
+                &binds.mark,
+                6,
+                (self.mark_line.len() - 1) as u32,
+            );
+        }
+        if !self.crosses.is_empty() {
+            draw_pipeline(
+                pass,
+                &pipelines.crosses,
+                &binds.cross,
+                6,
+                self.crosses.len() as u32,
+            );
+        }
+        draw_pipeline(pass, &pipelines.book_bg, &binds.book, 6, 1);
+        if !self.levels.is_empty() {
+            draw_pipeline(
+                pass,
+                &pipelines.book_bars,
+                &binds.book,
+                6,
+                self.levels.len() as u32,
+            );
+        }
+        if !self.zones.is_empty() {
+            draw_pipeline(
+                pass,
+                &pipelines.zone,
+                &binds.zone,
+                6,
+                self.zones.len() as u32,
+            );
+        }
+        if !self.hlines.is_empty() {
+            draw_pipeline(
+                pass,
+                &pipelines.hline,
+                &binds.hline,
+                6,
+                self.hlines.len() as u32,
+            );
+        }
+        if !self.segs.is_empty() {
+            draw_pipeline(pass, &pipelines.seg, &binds.seg, 6, self.segs.len() as u32);
+        }
+        if !self.markers.is_empty() {
+            draw_pipeline(
+                pass,
+                &pipelines.marker,
+                &binds.marker,
+                6,
+                self.markers.len() as u32,
+            );
+        }
+        if cursor_params.enabled > 0.0 {
+            crate::diag::bump(&crate::diag::CHART_CURSOR_DRAW);
+            draw_pipeline(pass, &pipelines.cursor, &binds.cursor, 12, 1);
+        }
+        Ok(())
+    }
+
+    pub fn prepare(
+        &mut self,
+        view: &ChartViewGpu,
+        background_params: &BackgroundParams,
+        grid_params: &GridParams,
+        cursor_params: &CursorParams,
+        orderbook_view: &ChartViewGpu,
         book_style: &BookStyle,
         gpu: &RawGpuAccess,
     ) -> anyhow::Result<()> {
-        let Some((device, queue, pass, format)) = (unsafe { borrow_wgpu(gpu) }) else {
-            anyhow::bail!("chart wgpu draw received empty wgpu raw gpu handles");
+        let Some((device, queue, format)) = (unsafe { borrow_wgpu_prepare(gpu) }) else {
+            anyhow::bail!("chart wgpu prepare received empty wgpu raw gpu handles");
         };
         if self.device_generation != gpu.device_generation() || self.format != Some(format) {
             self.device_generation = gpu.device_generation();
             self.format = Some(format);
             self.pipelines = Some(create_pipelines(device, format));
             self.background_texture = Some(create_background_texture(device, queue));
+            self.prepared_binds = None;
         }
         self.upload_common(
             device,
@@ -250,153 +379,7 @@ impl WgpuLayers {
             cursor_params,
             book_style,
         );
-        let pipelines = self.pipelines.as_ref().unwrap();
-        let bg = self.background_texture.as_ref().unwrap();
-
-        let bg_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("moon_chart_bg_bind"),
-            layout: &pipelines.bg_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: self.bg_uniform.binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&bg.view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::Sampler(&pipelines.sampler),
-                },
-            ],
-        });
-        let grid_bind = self.bind_uniform(device, &pipelines.grid_layout, &self.grid_uniform);
-        let cursor_bind =
-            self.bind_uniform(device, &pipelines.cursor_layout, &self.cursor_uniform);
-        let cross_bind =
-            self.bind_view_storage(device, &pipelines.view_storage_layout, &self.cross_buffer);
-        let last_bind = self.bind_view_storage(
-            device,
-            &pipelines.view_storage_layout,
-            &self.last_line_buffer,
-        );
-        let mark_bind = self.bind_view_storage(
-            device,
-            &pipelines.view_storage_layout,
-            &self.mark_line_buffer,
-        );
-        let book_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("moon_chart_book_bind"),
-            layout: &pipelines.book_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: self.book_view_uniform.binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: self.book_style_uniform.binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: self.level_buffer.binding(),
-                },
-            ],
-        });
-        let zone_bind =
-            self.bind_view_storage(device, &pipelines.view_storage_layout, &self.zone_buffer);
-        let hline_bind =
-            self.bind_view_storage(device, &pipelines.view_storage_layout, &self.hline_buffer);
-        let seg_bind =
-            self.bind_view_storage(device, &pipelines.view_storage_layout, &self.seg_buffer);
-        let marker_bind =
-            self.bind_view_storage(device, &pipelines.view_storage_layout, &self.marker_buffer);
-
-        let sc = scissor_rect(view, orderbook_view, gpu.width(), gpu.height());
-        pass.set_scissor_rect(sc.0, sc.1, sc.2, sc.3);
-        draw_pipeline(pass, &pipelines.background, &bg_bind, 6, 1);
-        draw_pipeline(pass, &pipelines.grid, &grid_bind, 6, 1);
-        if !self.crosses.is_empty() {
-            draw_pipeline(
-                pass,
-                &pipelines.volume,
-                &cross_bind,
-                6,
-                self.crosses.len() as u32,
-            );
-        }
-        if self.last_line.len() > 1 {
-            draw_pipeline(
-                pass,
-                &pipelines.price_last,
-                &last_bind,
-                6,
-                (self.last_line.len() - 1) as u32,
-            );
-        }
-        if self.mark_line.len() > 1 {
-            draw_pipeline(
-                pass,
-                &pipelines.price_mark,
-                &mark_bind,
-                6,
-                (self.mark_line.len() - 1) as u32,
-            );
-        }
-        if !self.crosses.is_empty() {
-            draw_pipeline(
-                pass,
-                &pipelines.crosses,
-                &cross_bind,
-                6,
-                self.crosses.len() as u32,
-            );
-        }
-        draw_pipeline(pass, &pipelines.book_bg, &book_bind, 6, 1);
-        if !self.levels.is_empty() {
-            draw_pipeline(
-                pass,
-                &pipelines.book_bars,
-                &book_bind,
-                6,
-                self.levels.len() as u32,
-            );
-        }
-        if !self.zones.is_empty() {
-            draw_pipeline(
-                pass,
-                &pipelines.zone,
-                &zone_bind,
-                6,
-                self.zones.len() as u32,
-            );
-        }
-        if !self.hlines.is_empty() {
-            draw_pipeline(
-                pass,
-                &pipelines.hline,
-                &hline_bind,
-                6,
-                self.hlines.len() as u32,
-            );
-        }
-        if !self.segs.is_empty() {
-            draw_pipeline(pass, &pipelines.seg, &seg_bind, 6, self.segs.len() as u32);
-        }
-        if !self.markers.is_empty() {
-            draw_pipeline(
-                pass,
-                &pipelines.marker,
-                &marker_bind,
-                6,
-                self.markers.len() as u32,
-            );
-        }
-        if cursor_params.enabled > 0.0 {
-            crate::diag::bump(&crate::diag::CHART_CURSOR_DRAW);
-            draw_pipeline(pass, &pipelines.cursor, &cursor_bind, 12, 1);
-        }
+        self.prepare_bind_groups(device);
         Ok(())
     }
 
@@ -515,6 +498,57 @@ impl WgpuLayers {
         );
     }
 
+    fn upload_frame_uniforms(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        view: &ChartViewGpu,
+        orderbook_view: &ChartViewGpu,
+        background_params: &BackgroundParams,
+        grid_params: &GridParams,
+        cursor_params: &CursorParams,
+    ) {
+        let mut view = *view;
+        view.volume_buy_inv = 1.0 / self.volume_buy_max.max(1e-6);
+        view.volume_sell_inv = 1.0 / self.volume_sell_max.max(1e-6);
+        view.volume_alpha = 0.34;
+        self.bg_uniform.write(
+            device,
+            queue,
+            "moon_chart_bg_uniform",
+            wgpu::BufferUsages::UNIFORM,
+            &[*background_params],
+        );
+        self.grid_uniform.write(
+            device,
+            queue,
+            "moon_chart_grid_uniform",
+            wgpu::BufferUsages::UNIFORM,
+            &[*grid_params],
+        );
+        self.cursor_uniform.write(
+            device,
+            queue,
+            "moon_chart_cursor_uniform",
+            wgpu::BufferUsages::UNIFORM,
+            &[*cursor_params],
+        );
+        self.view_uniform.write(
+            device,
+            queue,
+            "moon_chart_view_uniform",
+            wgpu::BufferUsages::UNIFORM,
+            &[view],
+        );
+        self.book_view_uniform.write(
+            device,
+            queue,
+            "moon_chart_book_view_uniform",
+            wgpu::BufferUsages::UNIFORM,
+            &[*orderbook_view],
+        );
+    }
+
     fn bind_uniform<'a>(
         &'a self,
         device: &wgpu::Device,
@@ -551,6 +585,82 @@ impl WgpuLayers {
                 },
             ],
         })
+    }
+
+    fn prepare_bind_groups(&mut self, device: &wgpu::Device) {
+        let pipelines = self.pipelines.as_ref().unwrap();
+        let bg = self.background_texture.as_ref().unwrap();
+        let bg_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("moon_chart_bg_bind"),
+            layout: &pipelines.bg_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.bg_uniform.binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&bg.view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&pipelines.sampler),
+                },
+            ],
+        });
+        let grid_bind = self.bind_uniform(device, &pipelines.grid_layout, &self.grid_uniform);
+        let cursor_bind = self.bind_uniform(device, &pipelines.cursor_layout, &self.cursor_uniform);
+        let cross_bind =
+            self.bind_view_storage(device, &pipelines.view_storage_layout, &self.cross_buffer);
+        let last_bind = self.bind_view_storage(
+            device,
+            &pipelines.view_storage_layout,
+            &self.last_line_buffer,
+        );
+        let mark_bind = self.bind_view_storage(
+            device,
+            &pipelines.view_storage_layout,
+            &self.mark_line_buffer,
+        );
+        let book_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("moon_chart_book_bind"),
+            layout: &pipelines.book_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.book_view_uniform.binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.book_style_uniform.binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.level_buffer.binding(),
+                },
+            ],
+        });
+        let zone_bind =
+            self.bind_view_storage(device, &pipelines.view_storage_layout, &self.zone_buffer);
+        let hline_bind =
+            self.bind_view_storage(device, &pipelines.view_storage_layout, &self.hline_buffer);
+        let seg_bind =
+            self.bind_view_storage(device, &pipelines.view_storage_layout, &self.seg_buffer);
+        let marker_bind =
+            self.bind_view_storage(device, &pipelines.view_storage_layout, &self.marker_buffer);
+        self.prepared_binds = Some(PreparedBindGroups {
+            bg: bg_bind,
+            grid: grid_bind,
+            cursor: cursor_bind,
+            cross: cross_bind,
+            last: last_bind,
+            mark: mark_bind,
+            book: book_bind,
+            zone: zone_bind,
+            hline: hline_bind,
+            seg: seg_bind,
+            marker: marker_bind,
+        });
     }
 
     fn recalc_volume_scale(&mut self) {
@@ -592,23 +702,39 @@ fn cap_head<T>(mut data: Vec<T>, cap: usize) -> Vec<T> {
     data
 }
 
-unsafe fn borrow_wgpu<'a>(
+unsafe fn borrow_wgpu_prepare<'a>(
+    gpu: &RawGpuAccess,
+) -> Option<(&'a wgpu::Device, &'a wgpu::Queue, wgpu::TextureFormat)> {
+    let RawGpuAccess::Wgpu(gpu) = gpu else {
+        return None;
+    };
+    if gpu.device.is_null() || gpu.queue.is_null() || gpu.render_target_format.is_null() {
+        return None;
+    }
+    Some((
+        unsafe { &*(gpu.device as *const wgpu::Device) },
+        unsafe { &*(gpu.queue as *const wgpu::Queue) },
+        unsafe { *(gpu.render_target_format as *const wgpu::TextureFormat) },
+    ))
+}
+
+unsafe fn borrow_wgpu_draw<'a>(
     gpu: &RawGpuAccess,
 ) -> Option<(
     &'a wgpu::Device,
     &'a wgpu::Queue,
     &'a mut wgpu::RenderPass<'a>,
-    wgpu::TextureFormat,
 )> {
     let RawGpuAccess::Wgpu(gpu) = gpu else {
         return None;
     };
-    let render_pass = gpu.render_pass?;
+    if gpu.device.is_null() || gpu.queue.is_null() || gpu.render_pass.is_null() {
+        return None;
+    }
     Some((
-        unsafe { &*(gpu.device.as_ptr() as *const wgpu::Device) },
-        unsafe { &*(gpu.queue.as_ptr() as *const wgpu::Queue) },
-        unsafe { &mut *(render_pass.as_ptr() as *mut wgpu::RenderPass<'a>) },
-        unsafe { *(gpu.render_target_format.as_ptr() as *const wgpu::TextureFormat) },
+        unsafe { &*(gpu.device as *const wgpu::Device) },
+        unsafe { &*(gpu.queue as *const wgpu::Queue) },
+        unsafe { &mut *(gpu.render_pass as *mut wgpu::RenderPass<'a>) },
     ))
 }
 

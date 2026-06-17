@@ -167,9 +167,7 @@ impl OrdersPanel {
         self.age_timer_armed = true;
         cx.spawn(async move |this, cx| {
             let executor = cx.update(|cx| cx.background_executor().clone());
-            executor
-                .timer(std::time::Duration::from_millis(1000))
-                .await;
+            executor.timer(std::time::Duration::from_millis(1000)).await;
             let alive = cx.update(|cx| {
                 this.update(cx, |this, cx| {
                     this.age_timer_armed = false;

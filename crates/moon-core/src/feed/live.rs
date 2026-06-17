@@ -15,7 +15,7 @@ use moonproto::{
     TradesStreamMode, TransportMode,
 };
 
-use super::report::{OrderIndex, OrderMeta, delphi_to_unix, send_close_report};
+use super::report::{delphi_to_unix, send_close_report, OrderIndex, OrderMeta};
 use super::strategies::{
     alert_params, build_schema_model, fmt_field, fv_from_str, strat_kind_name,
 };

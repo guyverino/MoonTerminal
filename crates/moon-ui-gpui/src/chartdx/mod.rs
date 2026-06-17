@@ -8,9 +8,9 @@
 
 mod backend;
 #[cfg(windows)]
-mod base;
-#[cfg(windows)]
 pub mod background;
+#[cfg(windows)]
+mod base;
 #[cfg(windows)]
 pub mod combo;
 #[cfg(windows)]
@@ -34,7 +34,7 @@ mod wgpu_backend;
 use std::cell::RefCell;
 #[cfg(windows)]
 use std::ffi::c_void;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 use gpui::{
     GpuBackend, GpuCanvasDriver, GpuCanvasHandle, GpuFrameDecision, GpuFrameInfo, RawGpuAccess,
@@ -55,15 +55,6 @@ use pane::{Container, ContainerKind, Mode};
 use types::{BackgroundParams, BookStyle, ChartViewGpu, CursorParams, GridParams, cover_uv};
 
 const CHART_PHOTO_BACKGROUND_ENABLED: bool = false;
-
-/// Аспект (w/h) брендового сплэша `assets/img/splash-cold-glow.png` (1280×720) для cover-fit
-/// полно-оконной подложки.
-#[cfg(windows)]
-const SPLASH_ASPECT: f32 = 1280.0 / 720.0;
-/// Непрозрачность сплэша поверх тёмного `theme.bg` (1.0 = чистая картинка). Подложка всё равно
-/// видна лишь в жёлобе/пустотах — плоты рисуются поверх в своём scissor.
-#[cfg(windows)]
-const WINDOW_BG_OPACITY: f32 = 1.0;
 
 /// sRGB [u8;3] → [f32;4] (alpha 1) для cbuffer-цветов (шейдер переводит в linear).
 fn rgb4(c: [u8; 3]) -> [f32; 4] {
@@ -214,21 +205,414 @@ struct RenderState {
     scissor_rs: Option<ID3D11RasterizerState>,
     #[cfg(windows)]
     scissor_dev: *mut c_void,
-    /// Полно-оконная брендовая подложка (сплэш): рисуется ПЕРВЫМ слоем own-pass на ВЕСЬ
-    /// backbuffer (без scissor) под панелями — закрывает белый незакрашенный фон (жёлоб цены,
-    /// шкала времени, пустоты, первый кадр). Плоты рисуются поверх в своём scissor.
+    /// Полно-оконная тёмная база: рисуется ПЕРВЫМ слоем own-pass на ВЕСЬ backbuffer
+    /// (без scissor), чтобы закрыть белый незакрашенный фон GPUI/SwapChain на первом кадре.
+    /// Брендовый empty-state логотип рисуется SVG-слоем GPUI, не растровым native splash.
     #[cfg(windows)]
     window_bg: background::BackgroundLayer,
-    /// Цвет тёмной базы (= `rgb4(theme.bg)`), обновляется в `prepare`. Заливает ВСЁ окно
-    /// (убирает белый незакрашенный фон), лого рисуется поверх только в слоте чарта.
+    /// Цвет тёмной базы (= `rgb4(theme.bg)`), обновляется в `prepare`. Заливает ВСЁ окно.
     #[cfg(windows)]
     window_bg_color: [f32; 4],
-    /// Прямоугольник СЛОТА чарта в окне (девайс-px: origin.x, origin.y, w, h) — в него
-    /// вписывается брендовое лого (cover-fit), как контейнер «здесь появятся графики».
-    #[cfg(windows)]
-    window_bg_dst: [f32; 4],
     #[cfg(windows)]
     base_cache: base::BaseCache,
+}
+
+#[derive(Clone)]
+pub struct ChartDataHandle {
+    inner: Weak<RefCell<ChartDataState>>,
+}
+
+impl PartialEq for ChartDataHandle {
+    fn eq(&self, other: &Self) -> bool {
+        self.inner.ptr_eq(&other.inner)
+    }
+}
+
+impl ChartDataHandle {
+    pub fn is_alive(&self) -> bool {
+        self.inner.strong_count() > 0
+    }
+
+    pub fn sync_retained_state_if_visible(&self, session: &SessionManager, force: bool) -> bool {
+        let Some(inner) = self.inner.upgrade() else {
+            return false;
+        };
+        inner
+            .borrow_mut()
+            .sync_retained_state_if_visible(session, force)
+    }
+}
+
+struct ChartDataState {
+    container: Rc<RefCell<Container>>,
+    render: Rc<RefCell<RenderState>>,
+    theme: ChartTheme,
+    orders: OrdersStyle,
+    follow: bool,
+    present_rate_hz: f32,
+    w: u32,
+    h: u32,
+    origin: (f32, f32),
+    scene_visible: bool,
+    last_ppp: f32,
+    last_prepared_data_sig: u64,
+    last_prepared_dev: (u32, u32),
+    view_dirty: bool,
+}
+
+impl ChartDataState {
+    fn new(
+        container: Rc<RefCell<Container>>,
+        render: Rc<RefCell<RenderState>>,
+        theme: ChartTheme,
+    ) -> Self {
+        Self {
+            container,
+            render,
+            theme,
+            orders: OrdersStyle::default(),
+            follow: true,
+            present_rate_hz: 60.0,
+            w: 1024,
+            h: 576,
+            origin: (0.0, 0.0),
+            scene_visible: false,
+            last_ppp: 1.0,
+            last_prepared_data_sig: u64::MAX,
+            last_prepared_dev: (0, 0),
+            view_dirty: true,
+        }
+    }
+
+    fn data_signature(&self, session: &SessionManager) -> u64 {
+        let mut sig = 0u64;
+        for p in &self.container.borrow().panes {
+            if let Some(v) = session.market_view(p.core, &p.market) {
+                sig = sig
+                    .wrapping_mul(31)
+                    .wrapping_add(v.ticks_rev)
+                    .wrapping_add(v.price_lines_rev)
+                    .wrapping_add(v.book_rev);
+            }
+            if let Some(core_st) = session.store().core(p.core) {
+                sig = sig.wrapping_mul(31).wrapping_add(core_st.orders_rev);
+            }
+        }
+        sig
+    }
+
+    fn sync_retained_state_if_visible(&mut self, session: &SessionManager, force: bool) -> bool {
+        if !self.scene_visible {
+            return false;
+        }
+        let sig = self.data_signature(session);
+        if !force && !self.view_dirty && sig == self.last_prepared_data_sig {
+            return false;
+        }
+        crate::diag::bump(&crate::diag::CHART_PREPARE);
+        self.sync_from_session(session);
+        self.last_prepared_data_sig = sig;
+        self.last_prepared_dev = (self.w, self.h);
+        self.view_dirty = false;
+        true
+    }
+
+    fn mark_view_dirty(&mut self) {
+        self.view_dirty = true;
+    }
+
+    fn sync_from_session(&mut self, session: &SessionManager) {
+        let area = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: self.w as f32,
+            h: self.h as f32,
+        };
+        let layout = self.container.borrow().layout(area);
+        let now = now_unix_ms();
+        let res = [self.w as f32, self.h as f32];
+        let mut st = self.render.borrow_mut();
+        let mut container = self.container.borrow_mut();
+        let mut pixels_changed = false;
+        #[cfg(windows)]
+        {
+            let next_bg_color = rgb4(self.theme.bg);
+            if st.window_bg_color != next_bg_color {
+                st.window_bg_color = next_bg_color;
+                pixels_changed = true;
+            }
+        }
+        let was_active: Vec<bool> = st.panes.iter().map(|pane| pane.active).collect();
+        if st.panes.len() != container.panes.len() {
+            pixels_changed = true;
+        }
+        st.panes.resize_with(container.panes.len(), PaneRender::new);
+        for pr in &mut st.panes {
+            pr.active = false;
+        }
+        for (idx, rect) in &layout {
+            let pane = &mut container.panes[*idx];
+            let pr = &mut st.panes[*idx];
+            if !was_active.get(*idx).copied().unwrap_or(false) {
+                pixels_changed = true;
+                pr.gpu_prepare_dirty = true;
+            }
+            if pr.core != Some(pane.core) || pr.market != pane.market {
+                *pr = PaneRender::new();
+                pr.core = Some(pane.core);
+                pr.market = pane.market.clone();
+                pixels_changed = true;
+            }
+            let device_gen = pr.layers.device_gen();
+            let device_lost = pr.last_device_gen != device_gen;
+            if device_lost {
+                pr.last_book_rev = u64::MAX;
+                pr.last_orders_rev = u64::MAX;
+                pr.gpu_prepare_dirty = true;
+                pixels_changed = true;
+            }
+            let price_axis_w = moon_chart::PRICE_AXIS_W * self.last_ppp;
+            let time_axis_h = moon_chart::TIME_AXIS_H * self.last_ppp;
+            let plot_h = (rect.h - time_axis_h).max(1.0);
+            let glass_w = moon_chart::GLASS_ZONE_PX.min(rect.w * 0.5);
+            let chart_area = Rect {
+                x: rect.x + price_axis_w,
+                y: rect.y,
+                w: (rect.w - price_axis_w - glass_w).max(1.0),
+                h: plot_h,
+            };
+            let glass_area = Rect {
+                x: rect.x + (rect.w - glass_w).max(1.0),
+                y: rect.y,
+                w: glass_w,
+                h: plot_h,
+            };
+            pane.view
+                .ensure_default_window(chart_area.w, self.present_rate_hz);
+            pane.view.follow_edge(now, now);
+            let (view_time0, window_ms) = pane.view.visible_x(chart_area.w);
+            let data = session.market_view(pane.core, &pane.market);
+            let cam_px = ((pane.view.right_time_ms - pane.view.epoch_ms)
+                * pane.view.px_per_ms.max(1e-9) as f64)
+                .round() as i64;
+            if device_lost || cam_px != pr.scan_cam_px {
+                pr.cached_tick_price = match data {
+                    Some(d) => {
+                        let margin = pane.view.marker_half_px / pane.view.px_per_ms.max(1e-6);
+                        let (cstart, ccount) = d
+                            .ring
+                            .visible_range(view_time0 - margin, view_time0 + window_ms + margin);
+                        d.ring.price_range_in(cstart, ccount)
+                    }
+                    None => None,
+                };
+                pr.scan_cam_px = cam_px;
+            }
+            let tick_price = pr.cached_tick_price;
+            let order_price = session
+                .store()
+                .core(pane.core)
+                .and_then(|core_st| core_st.order_lines.buy_sell_range(&pane.market));
+            let last_price = data.and_then(|d| d.last_price);
+            let visible_price = union_range(
+                union_range(tick_price, order_price),
+                last_price.map(|p| (p, p)),
+            );
+            pane.view.update_y(now, plot_h, visible_price, last_price);
+            let area_win = Rect {
+                x: self.origin.0 + chart_area.x,
+                y: self.origin.1 + chart_area.y,
+                w: chart_area.w,
+                h: chart_area.h,
+            };
+            let next_view = view::view_gpu(&pane.view, area_win, res);
+            if pr.view != next_view {
+                pr.view = next_view;
+                pr.gpu_prepare_dirty = true;
+                pixels_changed = true;
+            }
+            pr.epoch_ms = pane.view.epoch_ms;
+            pr.right_margin_frac = pane.view.right_margin_frac;
+            pr.follow = pane.view.follow;
+            pr.last_edge_px = ((pane.view.right_time_ms - pane.view.epoch_ms)
+                * pane.view.px_per_ms.max(1e-9) as f64)
+                .round() as i64;
+            let (bg_uv_off, bg_uv_scale) = cover_uv(chart_area.w, chart_area.h, 1.0);
+            let background_opacity = if CHART_PHOTO_BACKGROUND_ENABLED {
+                self.theme.background_opacity.clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let next_background_params = BackgroundParams {
+                dst: pr.view.bounds,
+                resolution: res,
+                uv_off: bg_uv_off,
+                uv_scale: bg_uv_scale,
+                opacity: background_opacity,
+                _pad: 0.0,
+                bg: rgb4(self.theme.bg),
+            };
+            if pr.background_params != next_background_params {
+                pr.background_params = next_background_params;
+                pixels_changed = true;
+            }
+            let next_grid_params = GridParams {
+                bounds: pr.view.bounds,
+                resolution: res,
+                n_vert: 6.0,
+                price_to_px: pr.view.price_to_px,
+                view_price0: pr.view.view_price0,
+                price_interval: moon_chart::axes::nice_interval(
+                    pane.view.render_range.max(1e-9),
+                    8.0,
+                ),
+                grid_alpha: self.theme.grid_alpha,
+                bg_alpha: if background_opacity > 0.0 { 0.0 } else { 1.0 },
+                bg: rgb4(self.theme.bg),
+                grid_col: rgb4(self.theme.grid),
+            };
+            if pr.grid_params != next_grid_params {
+                pr.grid_params = next_grid_params;
+                pixels_changed = true;
+            }
+            let glass_win = Rect {
+                x: self.origin.0 + glass_area.x,
+                y: self.origin.1 + glass_area.y,
+                w: glass_area.w,
+                h: glass_area.h,
+            };
+            let next_orderbook_view = view::view_gpu(&pane.view, glass_win, res);
+            if pr.orderbook_view != next_orderbook_view {
+                pr.orderbook_view = next_orderbook_view;
+                pr.gpu_prepare_dirty = true;
+                pixels_changed = true;
+            }
+            let next_book_style = BookStyle {
+                book_bg: rgb4(self.theme.book_bg),
+                bid: rgb4(self.theme.book_bid),
+                ask: rgb4(self.theme.book_ask),
+            };
+            if pr.book_style != next_book_style {
+                pr.book_style = next_book_style;
+                pr.gpu_prepare_dirty = true;
+                pixels_changed = true;
+            }
+            if let Some(d) = data {
+                let half = pane.view.render_range.max(1e-9) * 0.5;
+                let (lo, hi) = (
+                    pane.view.render_center - half,
+                    pane.view.render_center + half,
+                );
+                if pr.last_book_rev != d.book_rev || pr.last_book_lo != lo || pr.last_book_hi != hi
+                {
+                    let mut levels = Vec::new();
+                    d.book.build_instances(lo, hi, &mut levels);
+                    pr.layers.set_orderbook(levels);
+                    pr.last_book_rev = d.book_rev;
+                    pr.last_book_lo = lo;
+                    pr.last_book_hi = hi;
+                    pr.gpu_prepare_dirty = true;
+                    pixels_changed = true;
+                }
+            } else if pr.last_book_rev != u64::MAX {
+                pr.layers.set_orderbook(Vec::new());
+                pr.last_book_rev = u64::MAX;
+                pr.last_book_lo = f32::NAN;
+                pr.last_book_hi = f32::NAN;
+                pr.gpu_prepare_dirty = true;
+                pixels_changed = true;
+            }
+            let edge_rel = view_time0 + (chart_area.w + glass_w) / pane.view.px_per_ms.max(1e-6);
+            if pr.view.pad != edge_rel {
+                pr.view.pad = edge_rel;
+                pixels_changed = true;
+            }
+            if let Some(core_st) = session.store().core(pane.core) {
+                if pr.last_orders_rev != core_st.orders_rev {
+                    let mut hlines = Vec::new();
+                    let mut segs = Vec::new();
+                    let mut markers = Vec::new();
+                    let mut zones = Vec::new();
+                    moon_chart::build_order_geometry(
+                        &core_st.order_lines,
+                        &pane.market,
+                        &self.orders,
+                        pane.view.epoch_ms,
+                        now,
+                        f32::NEG_INFINITY,
+                        f32::INFINITY,
+                        0.0,
+                        &mut zones,
+                        &mut hlines,
+                        &mut segs,
+                        &mut markers,
+                    );
+                    pr.layers.set_userdata(&zones, &hlines, &segs, &markers);
+                    pr.last_orders_rev = core_st.orders_rev;
+                    pr.gpu_prepare_dirty = true;
+                    pixels_changed = true;
+                }
+            } else if pr.last_orders_rev != u64::MAX {
+                pr.layers.set_userdata(&[], &[], &[], &[]);
+                pr.last_orders_rev = u64::MAX;
+                pr.gpu_prepare_dirty = true;
+                pixels_changed = true;
+            }
+            if let Some(d) = data {
+                if pr.last_price_lines_rev != d.price_lines_rev {
+                    pr.layers
+                        .set_price_lines(d.last_line.points(), d.mark_line.points());
+                    pr.last_price_lines_rev = d.price_lines_rev;
+                    pr.gpu_prepare_dirty = true;
+                    pixels_changed = true;
+                }
+                let total = d.ring.total_pushed();
+                let avail_from = d.ring.dropped();
+                if device_lost || pr.last_total > total || pr.last_total < avail_from {
+                    pr.layers.reset_combo(view::collect_all(&d.ring));
+                    pr.layers
+                        .set_price_lines(d.last_line.points(), d.mark_line.points());
+                    pr.last_price_lines_rev = d.price_lines_rev;
+                    pr.last_total = total;
+                    pr.gpu_prepare_dirty = true;
+                    pixels_changed = true;
+                } else if total > pr.last_total {
+                    pr.layers
+                        .append_combo(&view::collect_since(&d.ring, pr.last_total));
+                    pr.last_total = total;
+                    pr.gpu_prepare_dirty = true;
+                    pixels_changed = true;
+                }
+            } else if pr.last_price_lines_rev != u64::MAX {
+                pr.layers.set_price_lines(&[], &[]);
+                pr.last_price_lines_rev = u64::MAX;
+                pr.gpu_prepare_dirty = true;
+                pixels_changed = true;
+            }
+            pr.last_device_gen = device_gen;
+            pr.active = true;
+        }
+        for (idx, was_active) in was_active.into_iter().enumerate() {
+            if was_active && !st.panes.get(idx).is_some_and(|pr| pr.active) {
+                pixels_changed = true;
+            }
+        }
+        let prev_cursor_params: Vec<CursorParams> =
+            st.panes.iter().map(|pr| pr.cursor_params).collect();
+        st.sync_cursor_params();
+        let cursor_changed = st.cursor.is_some()
+            && st
+                .panes
+                .iter()
+                .zip(prev_cursor_params.iter())
+                .any(|(pr, prev)| pr.cursor_params != *prev);
+        if pixels_changed {
+            st.base_dirty = true;
+        }
+        if pixels_changed || cursor_changed {
+            st.needs_present = true;
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -347,7 +731,13 @@ impl RenderState {
                     params.enabled = 1.0;
                 }
             }
+            #[cfg(not(windows))]
+            let changed = pr.cursor_params != params;
             pr.cursor_params = params;
+            #[cfg(not(windows))]
+            if changed {
+                pr.gpu_prepare_dirty = true;
+            }
         }
     }
 
@@ -424,6 +814,46 @@ impl RenderState {
                 }
                 Ok(())
             }
+            #[cfg(target_os = "linux")]
+            GpuBackend::Wgpu => {
+                for pr in &mut self.panes {
+                    if !pr.active || !pr.gpu_prepare_dirty {
+                        continue;
+                    }
+                    crate::diag::bump(&crate::diag::CHART_GPU_PREPARE);
+                    pr.layers.prepare_wgpu(
+                        &pr.view,
+                        &pr.background_params,
+                        &pr.grid_params,
+                        &pr.cursor_params,
+                        &pr.orderbook_view,
+                        &pr.book_style,
+                        gpu,
+                    )?;
+                    pr.gpu_prepare_dirty = false;
+                }
+                Ok(())
+            }
+            #[cfg(target_os = "macos")]
+            GpuBackend::Metal => {
+                for pr in &mut self.panes {
+                    if !pr.active || !pr.gpu_prepare_dirty {
+                        continue;
+                    }
+                    crate::diag::bump(&crate::diag::CHART_GPU_PREPARE);
+                    pr.layers.prepare_metal(
+                        &pr.view,
+                        &pr.background_params,
+                        &pr.grid_params,
+                        &pr.cursor_params,
+                        &pr.orderbook_view,
+                        &pr.book_style,
+                        gpu,
+                    )?;
+                    pr.gpu_prepare_dirty = false;
+                }
+                Ok(())
+            }
             _ => Ok(()),
         }
     }
@@ -447,20 +877,6 @@ impl RenderState {
             bg: self.window_bg_color,
         };
         self.window_bg.render(&base, device, context, rtv, gpu);
-        let d = self.window_bg_dst;
-        if d[2] > 0.0 && d[3] > 0.0 {
-            let (uv_off, uv_scale) = cover_uv(d[2], d[3], SPLASH_ASPECT);
-            let logo = BackgroundParams {
-                dst: d,
-                resolution: res,
-                uv_off,
-                uv_scale,
-                opacity: WINDOW_BG_OPACITY,
-                _pad: 0.0,
-                bg: self.window_bg_color,
-            };
-            self.window_bg.render(&logo, device, context, rtv, gpu);
-        }
     }
 
     #[cfg(windows)]
@@ -616,7 +1032,6 @@ impl RenderState {
                             &grid_params,
                             &cursor_params,
                             &orderbook_view,
-                            &pr.book_style,
                             gpu,
                         )?;
                     }
@@ -644,7 +1059,6 @@ impl RenderState {
                             &grid_params,
                             &cursor_params,
                             &orderbook_view,
-                            &pr.book_style,
                             gpu,
                         )?;
                     }
@@ -657,8 +1071,9 @@ impl RenderState {
 }
 
 pub struct ChartEngine {
-    pub container: Container,
+    container: Rc<RefCell<Container>>,
     state: Rc<RefCell<RenderState>>,
+    data: Rc<RefCell<ChartDataState>>,
     canvas: GpuCanvasHandle,
     epoch: f64,
     theme: ChartTheme,
@@ -680,6 +1095,7 @@ impl ChartEngine {
     }
 
     pub fn new_kind(epoch: f64, theme: ChartTheme, kind: ContainerKind) -> Self {
+        let container = Rc::new(RefCell::new(Container::new(kind)));
         let state = Rc::new(RefCell::new(RenderState {
             panes: Vec::new(),
             needs_present: true,
@@ -704,16 +1120,20 @@ impl ChartEngine {
             #[cfg(windows)]
             window_bg_color: rgb4(theme.bg),
             #[cfg(windows)]
-            window_bg_dst: [0.0, 0.0, 0.0, 0.0],
-            #[cfg(windows)]
             base_cache: base::BaseCache::new(),
         }));
         let canvas = GpuCanvasHandle::new(ChartCanvasDriver {
             state: state.clone(),
         });
+        let data = Rc::new(RefCell::new(ChartDataState::new(
+            container.clone(),
+            state.clone(),
+            theme.clone(),
+        )));
         Self {
-            container: Container::new(kind),
+            container,
             state,
+            data,
             canvas,
             epoch,
             theme,
@@ -727,6 +1147,12 @@ impl ChartEngine {
         }
     }
 
+    pub fn data_handle(&self) -> ChartDataHandle {
+        ChartDataHandle {
+            inner: Rc::downgrade(&self.data),
+        }
+    }
+
     /// Обычный GPUI element, который владеет bounds/clip/lifetime через дерево.
     /// В отличие от старого window-global pass, он сам исчезает при скрытии вкладки
     /// и переезжает при detach вместе с `ChartPanel`.
@@ -736,18 +1162,36 @@ impl ChartEngine {
 
     /// Размер слота чарта (девайс-px). Combo сам пересоздаёт битмап при смене размера.
     pub fn resize(&mut self, w: u32, h: u32) {
-        self.w = w.max(1);
-        self.h = h.max(1);
+        let next_w = w.max(1);
+        let next_h = h.max(1);
+        if self.w == next_w && self.h == next_h {
+            return;
+        }
+        self.w = next_w;
+        self.h = next_h;
+        let mut data = self.data.borrow_mut();
+        data.w = self.w;
+        data.h = self.h;
+        data.mark_view_dirty();
     }
 
     /// Левый-верхний угол слота чарта В ОКНЕ (девайс-px) — для координат own-pass в backbuffer.
     pub fn set_origin(&mut self, x: f32, y: f32) {
+        if self.origin == (x, y) {
+            return;
+        }
         self.origin = (x, y);
+        {
+            let mut data = self.data.borrow_mut();
+            data.origin = self.origin;
+            data.mark_view_dirty();
+        }
         self.state.borrow_mut().set_slot_origin(x, y);
     }
 
     pub fn set_present_rate_hz(&mut self, hz: f32) {
         self.present_rate_hz = hz.max(1.0);
+        self.data.borrow_mut().present_rate_hz = self.present_rate_hz;
         self.state
             .borrow_mut()
             .set_target_present_rate_hz(self.present_rate_hz);
@@ -768,342 +1212,26 @@ impl ChartEngine {
     /// Sync app/session data into retained chart state. This is the data-ingest
     /// side of the bridge; `gpu_canvas.frame()` later consumes the retained dirty
     /// flags and decides whether the current platform tick should present.
-    pub fn sync_from_session(&mut self, session: &SessionManager, ppp: f32) {
-        let area = Rect {
-            x: 0.0,
-            y: 0.0,
-            w: self.w as f32,
-            h: self.h as f32,
-        };
-        let layout = self.container.layout(area);
-        let now = now_unix_ms();
-        let res = [self.w as f32, self.h as f32];
-        let mut st = self.state.borrow_mut();
-        let mut pixels_changed = false;
-        #[cfg(windows)]
-        {
-            let next_bg_color = rgb4(self.theme.bg);
-            if st.window_bg_color != next_bg_color {
-                st.window_bg_color = next_bg_color;
-                pixels_changed = true;
-            }
-            // Слот чарта в окне (девайс-px): origin слота + его размер — в него вписываем лого.
-            let next_bg_dst = [self.origin.0, self.origin.1, self.w as f32, self.h as f32];
-            if st.window_bg_dst != next_bg_dst {
-                st.window_bg_dst = next_bg_dst;
-                pixels_changed = true;
-            }
-        }
-        let was_active: Vec<bool> = st.panes.iter().map(|pane| pane.active).collect();
-        if st.panes.len() != self.container.panes.len() {
-            pixels_changed = true;
-        }
-        st.panes
-            .resize_with(self.container.panes.len(), PaneRender::new);
-        for pr in &mut st.panes {
-            pr.active = false;
-        }
-        for (idx, rect) in &layout {
-            let pane = &mut self.container.panes[*idx];
-            let pr = &mut st.panes[*idx];
-            if !was_active.get(*idx).copied().unwrap_or(false) {
-                pixels_changed = true;
-                pr.gpu_prepare_dirty = true;
-            }
-            // sync идентичности: панель на этом индексе сменила монету → сбросить GPU-состояние.
-            if pr.core != Some(pane.core) || pr.market != pane.market {
-                *pr = PaneRender::new();
-                pr.core = Some(pane.core);
-                pr.market = pane.market.clone();
-                pixels_changed = true;
-            }
-            // device-lost: combo инкрементит device_gen при пересоздании device (в своём
-            // render). Стакан/userdata тоже зануляют буферы при смене device, но их
-            // перезаливка гейтится book_rev/orders_rev — а они от потери device НЕ меняются
-            // (orders_rev — вообще только на мутацию ордера → линии исчезли бы навсегда).
-            // Форсим перезаливку, инвалидируя гейты; combo восстановит себя ниже по флагу.
-            let device_gen = pr.layers.device_gen();
-            let device_lost = pr.last_device_gen != device_gen;
-            if device_lost {
-                pr.last_book_rev = u64::MAX;
-                pr.last_orders_rev = u64::MAX;
-                pr.gpu_prepare_dirty = true;
-                pixels_changed = true;
-            }
-            // Жёлоба шкал (физ. px): слева цена, снизу время. Подписи рисует GPUI (axes::draw);
-            // own-pass рисует ВНУТРИ chart_area. Зона стакана справа добавится с OrderBook-слоем.
-            let price_axis_w = moon_chart::PRICE_AXIS_W * ppp;
-            let time_axis_h = moon_chart::TIME_AXIS_H * ppp;
-            let plot_h = (rect.h - time_axis_h).max(1.0);
-            // Три зоны над нижней шкалой: жёлоб цены | график | стакан (справа).
-            let glass_w = moon_chart::GLASS_ZONE_PX.min(rect.w * 0.5);
-            let chart_area = Rect {
-                x: rect.x + price_axis_w,
-                y: rect.y,
-                w: (rect.w - price_axis_w - glass_w).max(1.0),
-                h: plot_h,
-            };
-            let glass_area = Rect {
-                x: rect.x + (rect.w - glass_w).max(1.0),
-                y: rect.y,
-                w: glass_w,
-                h: plot_h,
-            };
-            // Математика вида (общая с эталоном): X-окно → видимый срез тиков → авто-Y по нему.
-            pane.view
-                .ensure_default_window(chart_area.w, self.present_rate_hz);
-            pane.view.follow_edge(now, now);
-            let (view_time0, window_ms) = pane.view.visible_x(chart_area.w);
-            let data = session.market_view(pane.core, &pane.market);
-            // Авто-Y скан min/max видимого окна — ДОРОГО (проход по видимым тикам). Рубильник
-            // (пункт 2 аудита) Гейтим скан ТОЛЬКО по пиксель-кроссу камеры, НЕ по приходу тиков.
-            // Было `|| total != scan_total` — а total растёт КАЖДЫЙ тик, т.е. на живом рынке
-            // условие всегда истинно → скан гонялся каждый prepare (мёртвый рубильник). Новый
-            // тик лишь добавляется в combo (дёшево); полный скан min/max видимого окна нужен,
-            // лишь когда окно реально сдвинулось на ≥1 пиксель (или зум/пан/device-lost). Авто-Y
-            // сглажен (EMA+гистерезис в update_y), поэтому лаг ≤1 пикселя времени на новый
-            // экстремум незаметен. Адаптивно к зуму: zoom-in → пиксель-кроссы чаще, но тиков в
-            // окне меньше (скан дёшев); zoom-out → скан почти не гоняется.
-            let cam_px = ((pane.view.right_time_ms - pane.view.epoch_ms)
-                * pane.view.px_per_ms.max(1e-9) as f64)
-                .round() as i64;
-            if device_lost || cam_px != pr.scan_cam_px {
-                pr.cached_tick_price = match data {
-                    Some(d) => {
-                        let margin = pane.view.marker_half_px / pane.view.px_per_ms.max(1e-6);
-                        let (cstart, ccount) = d
-                            .ring
-                            .visible_range(view_time0 - margin, view_time0 + window_ms + margin);
-                        d.ring.price_range_in(cstart, ccount)
-                    }
-                    None => None,
-                };
-                pr.scan_cam_px = cam_px;
-            }
-            let tick_price = pr.cached_tick_price;
-            let order_price = session
-                .store()
-                .core(pane.core)
-                .and_then(|core_st| core_st.order_lines.buy_sell_range(&pane.market));
-            let last_price = data.and_then(|d| d.last_price);
-            // Авто-Y вмещает тики + выставленные ордера (buy/sell) + ТЕКУЩУЮ ЦЕНУ; поле по краям
-            // (чтобы линии не были впритирку) даёт update_y (см. множитель там).
-            let visible_price = union_range(
-                union_range(tick_price, order_price),
-                last_price.map(|p| (p, p)),
-            );
-            pane.view.update_y(now, plot_h, visible_price, last_price);
-            // own-pass рисует в backbuffer ОКНА → bounds в координатах окна (origin слота +
-            // локальные). resolution тут placeholder — реальный backbuffer ставит callback.
-            let area_win = Rect {
-                x: self.origin.0 + chart_area.x,
-                y: self.origin.1 + chart_area.y,
-                w: chart_area.w,
-                h: chart_area.h,
-            };
-            let next_view = view::view_gpu(&pane.view, area_win, res);
-            if pr.view != next_view {
-                pr.view = next_view;
-                pr.gpu_prepare_dirty = true;
-                pixels_changed = true;
-            }
-            // Камера X для `gpu_canvas.frame()` (он двигает живой край на vblank, целопиксельно).
-            // Синхронизируем пиксель-позицию с тем, что prepare только что поставил (follow_edge
-            // уже квантован) — callback продолжит ровно отсюда, без скачка назад/вперёд.
-            pr.epoch_ms = pane.view.epoch_ms;
-            pr.right_margin_frac = pane.view.right_margin_frac;
-            pr.follow = pane.view.follow;
-            pr.last_edge_px = ((pane.view.right_time_ms - pane.view.epoch_ms)
-                * pane.view.px_per_ms.max(1e-9) as f64)
-                .round() as i64;
-            let (bg_uv_off, bg_uv_scale) = cover_uv(chart_area.w, chart_area.h, 1.0);
-            let background_opacity = if CHART_PHOTO_BACKGROUND_ENABLED {
-                self.theme.background_opacity.clamp(0.0, 1.0)
-            } else {
-                0.0
-            };
-            let next_background_params = BackgroundParams {
-                dst: pr.view.bounds,
-                resolution: res,
-                uv_off: bg_uv_off,
-                uv_scale: bg_uv_scale,
-                opacity: background_opacity,
-                _pad: 0.0,
-                bg: rgb4(self.theme.bg),
-            };
-            if pr.background_params != next_background_params {
-                pr.background_params = next_background_params;
-                pixels_changed = true;
-            }
-            // Сетка: СТАТИЧНЫЕ вертикали (6 делений, как подписи времени) + горизонтали по цене
-            // (шаг = nice_interval, совпадает с подписями цены). resolution ставит callback.
-            let next_grid_params = GridParams {
-                bounds: pr.view.bounds,
-                resolution: res,
-                n_vert: 6.0,
-                price_to_px: pr.view.price_to_px,
-                view_price0: pr.view.view_price0,
-                price_interval: moon_chart::axes::nice_interval(
-                    pane.view.render_range.max(1e-9),
-                    8.0,
-                ),
-                grid_alpha: self.theme.grid_alpha,
-                bg_alpha: if background_opacity > 0.0 { 0.0 } else { 1.0 },
-                bg: rgb4(self.theme.bg),
-                grid_col: rgb4(self.theme.grid),
-            };
-            if pr.grid_params != next_grid_params {
-                pr.grid_params = next_grid_params;
-                pixels_changed = true;
-            }
-            // Стакан: своя зона справа. Та же ценовая шкала (price_to_px/view_price0), но
-            // viewport = glass_area. Уровни нормируются по видимому ценовому окну render_center±range/2.
-            let glass_win = Rect {
-                x: self.origin.0 + glass_area.x,
-                y: self.origin.1 + glass_area.y,
-                w: glass_area.w,
-                h: glass_area.h,
-            };
-            let next_orderbook_view = view::view_gpu(&pane.view, glass_win, res);
-            if pr.orderbook_view != next_orderbook_view {
-                pr.orderbook_view = next_orderbook_view;
-                pr.gpu_prepare_dirty = true;
-                pixels_changed = true;
-            }
-            let next_book_style = BookStyle {
-                book_bg: rgb4(self.theme.book_bg),
-                bid: rgb4(self.theme.book_bid),
-                ask: rgb4(self.theme.book_ask),
-            };
-            if pr.book_style != next_book_style {
-                pr.book_style = next_book_style;
-                pr.gpu_prepare_dirty = true;
-                pixels_changed = true;
-            }
-            if let Some(d) = data {
-                let half = pane.view.render_range.max(1e-9) * 0.5;
-                let (lo, hi) = (
-                    pane.view.render_center - half,
-                    pane.view.render_center + half,
-                );
-                if pr.last_book_rev != d.book_rev || pr.last_book_lo != lo || pr.last_book_hi != hi
-                {
-                    let mut levels = Vec::new();
-                    d.book.build_instances(lo, hi, &mut levels);
-                    pr.layers.set_orderbook(levels);
-                    pr.last_book_rev = d.book_rev;
-                    pr.last_book_lo = lo;
-                    pr.last_book_hi = hi;
-                    pr.gpu_prepare_dirty = true;
-                    pixels_changed = true;
-                }
-            } else if pr.last_book_rev != u64::MAX {
-                pr.layers.set_orderbook(Vec::new());
-                pr.last_book_rev = u64::MAX;
-                pr.last_book_lo = f32::NAN;
-                pr.last_book_hi = f32::NAN;
-                pr.gpu_prepare_dirty = true;
-                pixels_changed = true;
-            }
-            // Ордера юзера (UserData): геометрия лестниц/линий/маркеров из ретейн-стора ядра.
-            // Активные линии тянутся до правого края plot (через стакан) → edge_rel. Координаты
-            // логические (time_rel/price), трансформ в шейдере — тот же chart_area (pr.view).
-            let edge_rel = view_time0 + (chart_area.w + glass_w) / pane.view.px_per_ms.max(1e-6);
-            if pr.view.pad != edge_rel {
-                pr.view.pad = edge_rel;
-                pixels_changed = true;
-            }
-            if let Some(core_st) = session.store().core(pane.core) {
-                if pr.last_orders_rev != core_st.orders_rev {
-                    let mut hlines = Vec::new();
-                    let mut segs = Vec::new();
-                    let mut markers = Vec::new();
-                    let mut zones = Vec::new();
-                    moon_chart::build_order_geometry(
-                        &core_st.order_lines,
-                        &pane.market,
-                        &self.orders,
-                        pane.view.epoch_ms,
-                        now,
-                        f32::NEG_INFINITY,
-                        f32::INFINITY,
-                        0.0,
-                        &mut zones,
-                        &mut hlines,
-                        &mut segs,
-                        &mut markers,
-                    );
-                    pr.layers.set_userdata(&zones, &hlines, &segs, &markers);
-                    pr.last_orders_rev = core_st.orders_rev;
-                    pr.gpu_prepare_dirty = true;
-                    pixels_changed = true;
-                }
-            } else if pr.last_orders_rev != u64::MAX {
-                pr.layers.set_userdata(&[], &[], &[], &[]);
-                pr.last_orders_rev = u64::MAX;
-                pr.gpu_prepare_dirty = true;
-                pixels_changed = true;
-            }
-            // Trades в combo: combo адресует тики АБСОЛЮТНЫМ индексом (total_pushed), а не
-            // позицией в кольце. Поэтому сдвиг головы (drop старых тиков при переполнении)
-            // НЕ требует полного re-bake — догоняем только новый хвост [last_total, total).
-            // Полный reset лишь когда: device-lost (кольцо combo опустело), регрессия total
-            // (смена монеты / reset рынка), или combo отстал дальше глубины кольца (нужный
-            // хвост уже выпал из источника — бывает только если панель долго не рисовалась).
-            if let Some(d) = data {
-                if pr.last_price_lines_rev != d.price_lines_rev {
-                    pr.layers
-                        .set_price_lines(d.last_line.points(), d.mark_line.points());
-                    pr.last_price_lines_rev = d.price_lines_rev;
-                    pr.gpu_prepare_dirty = true;
-                    pixels_changed = true;
-                }
-                let total = d.ring.total_pushed();
-                let avail_from = d.ring.dropped();
-                if device_lost || pr.last_total > total || pr.last_total < avail_from {
-                    pr.layers.reset_combo(view::collect_all(&d.ring));
-                    pr.layers
-                        .set_price_lines(d.last_line.points(), d.mark_line.points());
-                    pr.last_price_lines_rev = d.price_lines_rev;
-                    pr.last_total = total;
-                    pr.gpu_prepare_dirty = true;
-                    pixels_changed = true;
-                } else if total > pr.last_total {
-                    pr.layers
-                        .append_combo(&view::collect_since(&d.ring, pr.last_total));
-                    pr.last_total = total;
-                    pr.gpu_prepare_dirty = true;
-                    pixels_changed = true;
-                }
-            } else if pr.last_price_lines_rev != u64::MAX {
-                pr.layers.set_price_lines(&[], &[]);
-                pr.last_price_lines_rev = u64::MAX;
-                pr.gpu_prepare_dirty = true;
-                pixels_changed = true;
-            }
-            pr.last_device_gen = device_gen;
-            pr.active = true;
-        }
-        for (idx, was_active) in was_active.into_iter().enumerate() {
-            if was_active && !st.panes.get(idx).is_some_and(|pr| pr.active) {
-                pixels_changed = true;
-            }
-        }
-        let prev_cursor_params: Vec<CursorParams> =
-            st.panes.iter().map(|pr| pr.cursor_params).collect();
-        st.sync_cursor_params();
-        let cursor_changed = st.cursor.is_some()
-            && st
-                .panes
-                .iter()
-                .zip(prev_cursor_params.iter())
-                .any(|(pr, prev)| pr.cursor_params != *prev);
-        if pixels_changed {
-            st.base_dirty = true;
-        }
-        if pixels_changed || cursor_changed {
-            st.needs_present = true;
-        }
+    pub fn sync_retained_state_if_visible(
+        &mut self,
+        session: &SessionManager,
+        force: bool,
+    ) -> bool {
+        self.data
+            .borrow_mut()
+            .sync_retained_state_if_visible(session, force)
+    }
+
+    pub fn data_signature(&self, session: &SessionManager) -> u64 {
+        self.data.borrow().data_signature(session)
+    }
+
+    pub fn set_scene_visible(&mut self, visible: bool) {
+        self.data.borrow_mut().scene_visible = visible;
+    }
+
+    pub fn set_last_ppp(&mut self, ppp: f32) {
+        self.data.borrow_mut().last_ppp = ppp.max(0.1);
     }
 
     // ── Настройки (порт из старого chart.rs::ChartGpu) ───────────────────────────
@@ -1116,6 +1244,9 @@ impl ChartEngine {
                 .borrow_mut()
                 .set_cursor_style(cursor_color, theme.cross_thickness);
             self.theme = theme;
+            let mut data = self.data.borrow_mut();
+            data.theme = self.theme.clone();
+            data.mark_view_dirty();
             true
         } else {
             false
@@ -1125,6 +1256,10 @@ impl ChartEngine {
     pub fn set_orders(&mut self, orders: OrdersStyle) -> bool {
         if self.orders != orders {
             self.orders = orders;
+            let mut data = self.data.borrow_mut();
+            data.orders = self.orders.clone();
+            data.mark_view_dirty();
+            drop(data);
             for pr in &mut self.state.borrow_mut().panes {
                 pr.last_orders_rev = u64::MAX;
             }
@@ -1140,7 +1275,8 @@ impl ChartEngine {
             return false;
         }
         self.scale = pct;
-        self.container.set_scale(pct);
+        self.container.borrow_mut().set_scale(pct);
+        self.data.borrow_mut().mark_view_dirty();
         true
     }
 
@@ -1155,7 +1291,8 @@ impl ChartEngine {
             return false;
         }
         self.follow = follow;
-        for p in &mut self.container.panes {
+        self.data.borrow_mut().follow = follow;
+        for p in &mut self.container.borrow_mut().panes {
             if follow {
                 // Возобновляем live только у панелей, которые НЕ следовали (явный Live из
                 // тулбара): уже живые панели не трогаем — их окно/зум не сбрасываем.
@@ -1167,6 +1304,7 @@ impl ChartEngine {
                 p.view.follow = false;
             }
         }
+        self.data.borrow_mut().mark_view_dirty();
         true
     }
 
@@ -1175,73 +1313,94 @@ impl ChartEngine {
     }
 
     pub fn sync_follow_from_views(&mut self) -> bool {
-        let follow = if self.container.panes.is_empty() {
+        let container = self.container.borrow();
+        let follow = if container.panes.is_empty() {
             self.follow
         } else {
-            self.container.panes.iter().all(|p| p.view.follow)
+            container.panes.iter().all(|p| p.view.follow)
         };
+        drop(container);
         if self.follow == follow {
             false
         } else {
             self.follow = follow;
+            self.data.borrow_mut().follow = follow;
             true
         }
     }
 
     /// Открыть монету (фулскрин-панель).
     pub fn open(&mut self, core: CoreId, market: &str) {
-        self.container.open_manual(core, market, self.epoch);
+        self.container
+            .borrow_mut()
+            .open_manual(core, market, self.epoch);
+        self.data.borrow_mut().mark_view_dirty();
     }
 
     /// AddToChart: добавить монету авто-панелью (Tiled) с TTL.
     pub fn push_auto(&mut self, core: CoreId, market: &str, ttl_ms: f64, now_ms: f64) {
         self.container
+            .borrow_mut()
             .push_auto(core, market, now_ms, ttl_ms, self.epoch);
+        self.data.borrow_mut().mark_view_dirty();
     }
 
     /// Убрать истёкшие AddToChart-панели. True — если что-то удалили.
     pub fn prune_ttl(&mut self, now_ms: f64) -> bool {
-        self.container.prune_ttl(now_ms)
+        let changed = self.container.borrow_mut().prune_ttl(now_ms);
+        if changed {
+            self.data.borrow_mut().mark_view_dirty();
+        }
+        changed
     }
 
     #[allow(dead_code)]
     pub fn has_ttl_panes(&self) -> bool {
-        self.container.has_ttl_panes()
+        self.container.borrow().has_ttl_panes()
     }
 
     pub fn next_ttl_deadline_ms(&self) -> Option<f64> {
-        self.container.next_ttl_deadline_ms()
+        self.container.borrow().next_ttl_deadline_ms()
     }
 
-    /// Сигнатура данных (ticks_rev+book_rev+orders_rev по всем панелям) — для гейта пере-рендера.
-    pub fn data_signature(&self, session: &SessionManager) -> u64 {
-        let mut sig = 0u64;
-        for p in &self.container.panes {
-            if let Some(v) = session.market_view(p.core, &p.market) {
-                sig = sig
-                    .wrapping_mul(31)
-                    .wrapping_add(v.ticks_rev)
-                    .wrapping_add(v.price_lines_rev)
-                    .wrapping_add(v.book_rev);
-            }
-            if let Some(core_st) = session.store().core(p.core) {
-                sig = sig.wrapping_mul(31).wrapping_add(core_st.orders_rev);
-            }
+    pub fn with_container_mut<R>(&mut self, f: impl FnOnce(&mut Container) -> R) -> R {
+        let out = f(&mut self.container.borrow_mut());
+        self.data.borrow_mut().mark_view_dirty();
+        out
+    }
+
+    pub fn remove_pane(&mut self, idx: usize) -> Option<(CoreId, String)> {
+        let removed = self.container.borrow_mut().remove_pane(idx);
+        if removed.is_some() {
+            self.data.borrow_mut().mark_view_dirty();
         }
-        sig
+        removed
+    }
+
+    pub fn uses_market(&self, core: CoreId, market: &str) -> bool {
+        self.container.borrow().uses_market(core, market)
+    }
+
+    pub fn clear_panes(&mut self) -> Vec<(CoreId, String)> {
+        let removed = self.container.borrow_mut().clear_panes();
+        if !removed.is_empty() {
+            self.data.borrow_mut().mark_view_dirty();
+        }
+        removed
     }
 
     /// Рынок активной (фулскрин/первой) панели — для подписи вкладки.
     pub fn active_market(&self) -> Option<String> {
-        let idx = match self.container.mode {
+        let container = self.container.borrow();
+        let idx = match container.mode {
             Mode::Fullscreen(i) => i,
             Mode::Tiled => 0,
         };
-        self.container.panes.get(idx).map(|p| p.market.clone())
+        container.panes.get(idx).map(|p| p.market.clone())
     }
 
     pub fn pane_count(&self) -> usize {
-        self.container.panes.len()
+        self.container.borrow().panes.len()
     }
 
     /// Снимки осей ПО ВИДИМЫМ ПАНЕЛЯМ: (индекс, прямоугольник девайс-px, снимок). Звать ПОСЛЕ prepare.
@@ -1252,11 +1411,12 @@ impl ChartEngine {
             w: self.w as f32,
             h: self.h as f32,
         };
-        self.container
+        let container = self.container.borrow();
+        container
             .layout(area)
             .into_iter()
             .filter_map(|(idx, rect)| {
-                let v = &self.container.panes.get(idx)?.view;
+                let v = &container.panes.get(idx)?.view;
                 Some((
                     idx,
                     rect,

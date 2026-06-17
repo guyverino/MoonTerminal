@@ -337,7 +337,10 @@ impl OrderLineStore {
             for idx in [LineKind::Buy as usize, LineKind::Sell as usize] {
                 if let Some(p) = o.lines[idx].current_price() {
                     if p.is_finite() && p > 0.0 {
-                        let e = self.buy_sell_ranges.entry(o.market.clone()).or_insert((p, p));
+                        let e = self
+                            .buy_sell_ranges
+                            .entry(o.market.clone())
+                            .or_insert((p, p));
                         e.0 = e.0.min(p);
                         e.1 = e.1.max(p);
                     }

@@ -219,28 +219,18 @@ impl MetalLayers {
         grid_params: &GridParams,
         cursor_params: &CursorParams,
         orderbook_view: &ChartViewGpu,
-        book_style: &BookStyle,
         gpu: &RawGpuAccess,
     ) -> anyhow::Result<()> {
-        let Some((device, encoder, pixel_format)) = (unsafe { borrow_metal(gpu) }) else {
+        let Some((device, encoder)) = (unsafe { borrow_metal_draw(gpu) }) else {
             anyhow::bail!("chart Metal draw received empty Metal raw gpu handles");
         };
-        if self.device_generation != gpu.device_generation()
-            || self.pixel_format != Some(pixel_format)
-        {
-            self.device_generation = gpu.device_generation();
-            self.pixel_format = Some(pixel_format);
-            self.pipelines = Some(create_pipelines(device, pixel_format));
-            self.background_texture = Some(create_background_texture(device));
-        }
-        self.upload_common(
+        self.upload_frame_uniforms(
             device,
             view,
             orderbook_view,
             background_params,
             grid_params,
             cursor_params,
-            book_style,
         );
         let pipelines = self.pipelines.as_ref().unwrap();
         let bg = self.background_texture.as_ref().unwrap();
@@ -317,6 +307,39 @@ impl MetalLayers {
         Ok(())
     }
 
+    pub fn prepare(
+        &mut self,
+        view: &ChartViewGpu,
+        background_params: &BackgroundParams,
+        grid_params: &GridParams,
+        cursor_params: &CursorParams,
+        orderbook_view: &ChartViewGpu,
+        book_style: &BookStyle,
+        gpu: &RawGpuAccess,
+    ) -> anyhow::Result<()> {
+        let Some((device, pixel_format)) = (unsafe { borrow_metal_prepare(gpu) }) else {
+            anyhow::bail!("chart Metal prepare received empty Metal raw gpu handles");
+        };
+        if self.device_generation != gpu.device_generation()
+            || self.pixel_format != Some(pixel_format)
+        {
+            self.device_generation = gpu.device_generation();
+            self.pixel_format = Some(pixel_format);
+            self.pipelines = Some(create_pipelines(device, pixel_format));
+            self.background_texture = Some(create_background_texture(device));
+        }
+        self.upload_common(
+            device,
+            view,
+            orderbook_view,
+            background_params,
+            grid_params,
+            cursor_params,
+            book_style,
+        );
+        Ok(())
+    }
+
     fn upload_common(
         &mut self,
         device: &DeviceRef,
@@ -360,6 +383,31 @@ impl MetalLayers {
             .write(device, "moon_chart_markers", &self.markers);
     }
 
+    fn upload_frame_uniforms(
+        &mut self,
+        device: &DeviceRef,
+        view: &ChartViewGpu,
+        orderbook_view: &ChartViewGpu,
+        background_params: &BackgroundParams,
+        grid_params: &GridParams,
+        cursor_params: &CursorParams,
+    ) {
+        let mut view = *view;
+        view.volume_buy_inv = 1.0 / self.volume_buy_max.max(1e-6);
+        view.volume_sell_inv = 1.0 / self.volume_sell_max.max(1e-6);
+        view.volume_alpha = 0.34;
+        self.bg_uniform
+            .write(device, "moon_chart_bg_uniform", &[*background_params]);
+        self.grid_uniform
+            .write(device, "moon_chart_grid_uniform", &[*grid_params]);
+        self.cursor_uniform
+            .write(device, "moon_chart_cursor_uniform", &[*cursor_params]);
+        self.view_uniform
+            .write(device, "moon_chart_view_uniform", &[view]);
+        self.book_view_uniform
+            .write(device, "moon_chart_book_view_uniform", &[*orderbook_view]);
+    }
+
     fn recalc_volume_scale(&mut self) {
         self.volume_buy_max = 1e-6;
         self.volume_sell_max = 1e-6;
@@ -392,20 +440,36 @@ fn draw(
     encoder.draw_primitives_instanced(MTLPrimitiveType::Triangle, 0, vertices, instances);
 }
 
-unsafe fn borrow_metal<'a>(
-    gpu: &RawGpuAccess,
-) -> Option<(&'a DeviceRef, &'a RenderCommandEncoderRef, MTLPixelFormat)> {
+unsafe fn borrow_metal_prepare<'a>(gpu: &RawGpuAccess) -> Option<(&'a DeviceRef, MTLPixelFormat)> {
     let RawGpuAccess::Metal(gpu) = gpu else {
         return None;
     };
-    let command_encoder = gpu.command_encoder?;
+    if gpu.device.is_null() {
+        return None;
+    }
     if gpu.render_target_format == 0 {
         return None;
     }
+    Some((unsafe { DeviceRef::from_ptr(gpu.device.cast()) }, unsafe {
+        std::mem::transmute::<u64, MTLPixelFormat>(gpu.render_target_format)
+    }))
+}
+
+unsafe fn borrow_metal_draw<'a>(
+    gpu: &RawGpuAccess,
+) -> Option<(&'a DeviceRef, &'a RenderCommandEncoderRef)> {
+    let RawGpuAccess::Metal(gpu) = gpu else {
+        return None;
+    };
+    if gpu.device.is_null() {
+        return None;
+    }
+    if gpu.command_encoder.is_null() {
+        return None;
+    }
     Some((
-        unsafe { DeviceRef::from_ptr(gpu.device.as_ptr().cast()) },
-        unsafe { RenderCommandEncoderRef::from_ptr(command_encoder.as_ptr().cast()) },
-        unsafe { std::mem::transmute::<u64, MTLPixelFormat>(gpu.render_target_format) },
+        unsafe { DeviceRef::from_ptr(gpu.device.cast()) },
+        unsafe { RenderCommandEncoderRef::from_ptr(gpu.command_encoder.cast()) },
     ))
 }
 

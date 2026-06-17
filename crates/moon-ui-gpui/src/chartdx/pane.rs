@@ -18,6 +18,7 @@ fn apply_scale(view: &mut ChartView, pct: Option<f32>) {
 }
 
 /// Одна панель: ядро/рынок/источник + вид (координаты). GPU-слои — в `RenderState` по индексу.
+#[derive(Clone)]
 pub struct Pane {
     pub core: CoreId,
     pub market: String,
@@ -25,6 +26,7 @@ pub struct Pane {
     pub view: ChartView,
 }
 
+#[derive(Clone)]
 pub struct Container {
     /// Идентичность вкладки (Main / Chart{num}); используется при persist раскладки (позже).
     #[allow(dead_code)]

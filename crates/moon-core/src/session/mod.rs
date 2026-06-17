@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 
 use crate::config::AppConfig;
 use crate::db::ReportTx;
-use crate::feed::{self, ConnStatus, CoreCmd, ExchangeId, FeedHandle, FeedMsg};
+use crate::feed::{self, ConnStatus, CoreCmd, ExchangeId, FeedHandle, FeedMsg, FeedWakeTx};
 use crate::market::{MarketDataMode, MarketStore, MarketView};
 
 pub struct CoreSession {
@@ -41,6 +41,7 @@ pub struct ConnSummary {
 
 pub struct SessionManager {
     sessions: Vec<CoreSession>,
+    feed_wake: Option<FeedWakeTx>,
     /// Аккаунтный план: статус/ордера/детекты/стратегии по ядру. Снаружи —
     /// только чтение через [`SessionManager::store`]; мутирует лишь сам менеджер.
     store: CoreStore,
@@ -74,7 +75,12 @@ pub struct DrainStats {
 impl SessionManager {
     /// Поднимает live-сессии по всем серверам конфига. Нет серверов — нет сессий.
     /// `reports` — общий канал к SQLite-writer'у (клонируется на каждое ядро).
-    pub fn start(config: &AppConfig, epoch_ms: f64, reports: Option<&ReportTx>) -> Self {
+    pub fn start(
+        config: &AppConfig,
+        epoch_ms: f64,
+        reports: Option<&ReportTx>,
+        feed_wake: Option<FeedWakeTx>,
+    ) -> Self {
         let mut store = CoreStore::default();
         let mut sessions = Vec::new();
         for (i, s) in config
@@ -91,7 +97,7 @@ impl SessionManager {
             // Стаггер начального коннекта: ядра уходят в сеть веером (150мс шаг,
             // потолок ~4с), а не залпом — иначе всплеск соединений/UDP-bind на старте.
             let startup_delay = Self::startup_stagger(i);
-            let handle = feed::spawn(s, reports.cloned(), startup_delay);
+            let handle = feed::spawn(s, reports.cloned(), startup_delay, feed_wake.clone());
             sessions.push(CoreSession {
                 id,
                 name,
@@ -105,6 +111,7 @@ impl SessionManager {
         }
         Self {
             sessions,
+            feed_wake,
             store,
             market: MarketStore::new(epoch_ms),
             mode: MarketDataMode::default(),
@@ -217,7 +224,12 @@ impl SessionManager {
         let name = server.name.clone();
         let group = server.group.clone();
         // Ручной реконнект — мгновенно, без стаггера.
-        let handle = feed::spawn(server, reports.cloned(), Duration::ZERO);
+        let handle = feed::spawn(
+            server,
+            reports.cloned(),
+            Duration::ZERO,
+            self.feed_wake.clone(),
+        );
         match self.sessions.iter_mut().find(|s| s.id == id) {
             Some(sess) => sess.handle = handle, // дроп старого хэндла → старый поток завершится
             None => self.sessions.push(CoreSession {
@@ -284,6 +296,10 @@ impl SessionManager {
     /// Живые сессии ядер (id/имя/группа) — read-only срез для UI.
     pub fn sessions(&self) -> &[CoreSession] {
         &self.sessions
+    }
+
+    pub fn feed_wake(&self) -> Option<FeedWakeTx> {
+        self.feed_wake.clone()
     }
 
     /// Рыночные данные для чарта ядра `core` на рынке `market`: резолвим провайдера

@@ -47,9 +47,10 @@ impl BaseCache {
         let h = gpu.height();
         let generation = gpu.device_generation();
         self.valid
-            && self.tex.as_ref().is_some_and(|tex| {
-                tex.w == w && tex.h == h && tex.generation == generation
-            })
+            && self
+                .tex
+                .as_ref()
+                .is_some_and(|tex| tex.w == w && tex.h == h && tex.generation == generation)
     }
 
     pub fn invalidate(&mut self) {

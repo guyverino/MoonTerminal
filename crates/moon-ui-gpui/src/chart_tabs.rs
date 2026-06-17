@@ -616,7 +616,8 @@ impl Render for ChartTabs {
         // (бейджа нет — ты смотришь). Ушёл → seen заморожен → новые монеты растят бейдж только
         // этой вкладки (а не всех открытых). Прибраться от закрытых вкладок: чистим seen.
         if let Tab::Add(n, c) = self.active {
-            if let Some((_, _, panel)) = self.add.iter().find(|(num, cc, _)| *num == n && *cc == c) {
+            if let Some((_, _, panel)) = self.add.iter().find(|(num, cc, _)| *num == n && *cc == c)
+            {
                 let cnt = panel.read(cx).pane_count();
                 self.seen.insert((n, c), cnt);
             }
@@ -660,7 +661,11 @@ impl Render for ChartTabs {
                 true,
             )
         }));
-        let tab_keys = Rc::new(tabs.iter().map(|(tab, _, _, _, _)| *tab).collect::<Vec<_>>());
+        let tab_keys = Rc::new(
+            tabs.iter()
+                .map(|(tab, _, _, _, _)| *tab)
+                .collect::<Vec<_>>(),
+        );
         let items = tabs
             .iter()
             .map(|(tab, label, _count, unread, detachable)| {

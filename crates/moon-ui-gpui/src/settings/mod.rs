@@ -27,8 +27,8 @@ use moon_palette::{
     h_flex, rgba_from, v_flex,
 };
 
-use crate::{Backend, design};
 use crate::icons::IconSet;
+use crate::{Backend, design};
 use moon_core::config::{AppConfig, Language};
 use moon_core::market::MarketDataMode;
 use moon_core::session::SessionManager;
@@ -306,8 +306,12 @@ impl SettingsView {
             // Рестарт сессий по новому конфигу + пересоздание окон групп (их число/состав
             // зависит от серверов/групп). epoch сохраняем прежний.
             self.backend.update(cx, |b, _| {
-                let mut s =
-                    SessionManager::start(&b.config, b.epoch, b.reports.as_ref().map(|h| &h.tx));
+                let mut s = SessionManager::start(
+                    &b.config,
+                    b.epoch,
+                    b.reports.as_ref().map(|h| &h.tx),
+                    b.session.feed_wake(),
+                );
                 s.set_market_mode(b.config.market_mode);
                 b.session = s;
                 b.desired.clear();
