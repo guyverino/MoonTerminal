@@ -764,7 +764,10 @@ impl ChartEngine {
     /// ПОДГОТОВКА кадра (вместо wgpu submit+readback): обновляет вид и данные слоёв каждой
     /// видимой панели. НЕ рисует — рисование делает `gpu_canvas.draw()`. Дёшево:
     /// математика вида + конверт новых тиков; тяжёлое (bake/blit) — на GPU в callback.
-    pub fn prepare(&mut self, session: &SessionManager, ppp: f32) {
+    /// Sync app/session data into retained chart state. This is the data-ingest
+    /// side of the bridge; `gpu_canvas.frame()` later consumes the retained dirty
+    /// flags and decides whether the current platform tick should present.
+    pub fn sync_from_session(&mut self, session: &SessionManager, ppp: f32) {
         let area = Rect {
             x: 0.0,
             y: 0.0,

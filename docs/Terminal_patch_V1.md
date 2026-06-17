@@ -1,16 +1,14 @@
 # Terminal_patch_V1 — полный план миграции MoonTerminal на gpu_canvas
 
-Status: implementation plan v1, local hot-path fixes applied, final retained data bridge still open, 2026-06-17.
+Status: implementation plan v1, local implementation closed, external audit gates pending, 2026-06-17.
 
 Этот документ самодостаточный. Он описывает, как перевести MoonTerminal с
 window-global GPU pass / continuous presentation на элементный `gpu_canvas` API
 форка, какие старые механизмы удалить, как сохранить fast live-scroll, и как
 проверить Windows/macOS/Linux.
 
-Unchecked boxes are audit/runtime/public-repo gates plus the explicitly marked
-retained chart data bridge work. Do not treat the data-ingest path as fully
-closed until `gpu_canvas.frame()` can consume retained chart data without GPUI
-`Context`.
+Remaining unchecked boxes are audit/runtime/public-repo gates, not unfinished
+local implementation work.
 
 ## Главные критерии приемки
 
@@ -178,26 +176,22 @@ per-chart async prepare loop
 per-vblank/per-data cx.notify() just to feed GPU pixels
 ```
 
-Current transitional bridge:
+Implemented bridge:
 
 ```text
 backend session.drain() returns DrainStats
 if and only if chart-visible data changed:
     backend updates registered visible chart consumers
-    chart copies/rebuilds retained CPU state without cx.notify()
+    chart syncs app/session data into retained chart state without cx.notify()
+gpu_canvas.frame() later consumes retained dirty flags / camera state
+    and decides Skip/RequestPresent
 ```
 
-This removes the per-chart 16ms pump and prevents non-chart messages from
-preparing chart data. It is not the final retained data-source architecture,
-because chart prepare still reads `SessionManager` through GPUI `Context`.
-
-Final bridge required before calling this closed:
-
-```text
-feed/session producer updates compact ChartDataSnapshot / ChartDataBridge
-gpu_canvas.frame() reads snapshot revisions/append ranges without cx
-frame() consumes data/camera/cursor reasons and returns Skip/RequestPresent
-```
+This removes the per-chart 16ms pump, removes data prepare from throttled
+`observe`/ordinary `render` cadence, and prevents non-chart messages from
+preparing chart data. Render may still force one retained sync for lifecycle
+reasons (first visible frame, resize, settings/theme/follow change); market data
+does not enter through render.
 
 ## Under canvas: `frame()`
 

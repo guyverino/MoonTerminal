@@ -127,6 +127,7 @@ pub struct MetalLayers {
     grid_uniform: BufferSlot,
     cursor_uniform: BufferSlot,
     view_uniform: BufferSlot,
+    book_view_uniform: BufferSlot,
     book_style_uniform: BufferSlot,
     cross_buffer: BufferSlot,
     last_line_buffer: BufferSlot,
@@ -159,6 +160,7 @@ impl MetalLayers {
             grid_uniform: BufferSlot::default(),
             cursor_uniform: BufferSlot::default(),
             view_uniform: BufferSlot::default(),
+            book_view_uniform: BufferSlot::default(),
             book_style_uniform: BufferSlot::default(),
             cross_buffer: BufferSlot::default(),
             last_line_buffer: BufferSlot::default(),
@@ -234,6 +236,7 @@ impl MetalLayers {
         self.upload_common(
             device,
             view,
+            orderbook_view,
             background_params,
             grid_params,
             cursor_params,
@@ -280,7 +283,7 @@ impl MetalLayers {
             draw(encoder, &pipelines.crosses, 6, self.crosses.len() as u64);
         }
 
-        set_uniform(encoder, 0, self.view_uniform.buffer());
+        set_uniform(encoder, 0, self.book_view_uniform.buffer());
         encoder.set_vertex_buffer(1, Some(self.book_style_uniform.buffer()), 0);
         encoder.set_fragment_buffer(1, Some(self.book_style_uniform.buffer()), 0);
         set_storage(encoder, 2, self.level_buffer.buffer());
@@ -318,6 +321,7 @@ impl MetalLayers {
         &mut self,
         device: &DeviceRef,
         view: &ChartViewGpu,
+        orderbook_view: &ChartViewGpu,
         background_params: &BackgroundParams,
         grid_params: &GridParams,
         cursor_params: &CursorParams,
@@ -335,6 +339,8 @@ impl MetalLayers {
             .write(device, "moon_chart_cursor_uniform", &[*cursor_params]);
         self.view_uniform
             .write(device, "moon_chart_view_uniform", &[view]);
+        self.book_view_uniform
+            .write(device, "moon_chart_book_view_uniform", &[*orderbook_view]);
         self.book_style_uniform
             .write(device, "moon_chart_book_style_uniform", &[*book_style]);
         self.cross_buffer

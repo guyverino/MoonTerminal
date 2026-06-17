@@ -1643,7 +1643,7 @@ fn main() -> anyhow::Result<()> {
                         });
                     for chart in chart_consumers {
                         let _ = chart.update(cx, |chart, cx| {
-                            chart.prepare_current_data_if_visible(cx);
+                            chart.sync_retained_state_if_visible(cx, false);
                         });
                     }
                     #[cfg(any(debug_assertions, moon_profile_debug, feature = "debug-tools"))]

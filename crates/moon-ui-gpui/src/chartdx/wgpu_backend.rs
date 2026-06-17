@@ -136,6 +136,7 @@ pub struct WgpuLayers {
     grid_uniform: BufferSlot,
     cursor_uniform: BufferSlot,
     view_uniform: BufferSlot,
+    book_view_uniform: BufferSlot,
     book_style_uniform: BufferSlot,
     cross_buffer: BufferSlot,
     last_line_buffer: BufferSlot,
@@ -168,6 +169,7 @@ impl WgpuLayers {
             grid_uniform: BufferSlot::default(),
             cursor_uniform: BufferSlot::default(),
             view_uniform: BufferSlot::default(),
+            book_view_uniform: BufferSlot::default(),
             book_style_uniform: BufferSlot::default(),
             cross_buffer: BufferSlot::default(),
             last_line_buffer: BufferSlot::default(),
@@ -242,6 +244,7 @@ impl WgpuLayers {
             device,
             queue,
             view,
+            orderbook_view,
             background_params,
             grid_params,
             cursor_params,
@@ -289,7 +292,7 @@ impl WgpuLayers {
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: self.view_uniform.binding(),
+                    resource: self.book_view_uniform.binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
@@ -402,6 +405,7 @@ impl WgpuLayers {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         view: &ChartViewGpu,
+        orderbook_view: &ChartViewGpu,
         background_params: &BackgroundParams,
         grid_params: &GridParams,
         cursor_params: &CursorParams,
@@ -438,6 +442,13 @@ impl WgpuLayers {
             "moon_chart_view_uniform",
             wgpu::BufferUsages::UNIFORM,
             &[view],
+        );
+        self.book_view_uniform.write(
+            device,
+            queue,
+            "moon_chart_book_view_uniform",
+            wgpu::BufferUsages::UNIFORM,
+            &[*orderbook_view],
         );
         self.book_style_uniform.write(
             device,
