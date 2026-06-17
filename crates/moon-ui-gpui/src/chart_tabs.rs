@@ -15,6 +15,7 @@ use moon_palette::{
 
 use crate::Backend;
 use crate::chart_persist;
+use crate::design;
 use crate::panels::ChartPanel;
 use moon_core::config::ChartTheme;
 use moon_core::session::CoreId;
@@ -335,6 +336,7 @@ impl ChartTabs {
                 title: Some(format!("MoonTerminal — Чарт {n}").into()),
                 ..Default::default()
             }),
+            window_decorations: design::platform_window_decorations(),
             ..Default::default()
         };
         let backend = self.backend.clone();

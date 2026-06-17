@@ -16,6 +16,7 @@ use moon_palette::{MoonBackgroundPolicy, MoonPalette, PanelView, Root};
 use serde::{Deserialize, Serialize};
 
 use crate::Backend;
+use crate::design;
 use crate::panels::{LogPanel, OrdersPanel, ReportPanel, StubPanel};
 use moon_core::config::paths;
 
@@ -206,6 +207,7 @@ pub fn spawn(app: &mut App, backend: &Entity<Backend>, spec: &DetachedSpec) {
             title: Some(format!("{} — MoonTerminal", panel_title(&spec.panel)).into()),
             ..Default::default()
         }),
+        window_decorations: design::platform_window_decorations(),
         ..Default::default()
     };
     let backend = backend.clone();
