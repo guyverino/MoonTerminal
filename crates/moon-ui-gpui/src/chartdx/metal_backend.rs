@@ -444,15 +444,15 @@ unsafe fn borrow_metal_prepare<'a>(gpu: &RawGpuAccess) -> Option<(&'a DeviceRef,
     let RawGpuAccess::Metal(gpu) = gpu else {
         return None;
     };
-    if gpu.device.is_null() {
-        return None;
-    }
     if gpu.render_target_format == 0 {
         return None;
     }
-    Some((unsafe { DeviceRef::from_ptr(gpu.device.cast()) }, unsafe {
-        std::mem::transmute::<u64, MTLPixelFormat>(gpu.render_target_format)
-    }))
+    // device — NonNull<c_void> (по контракту не null): берём сырой указатель и кастуем
+    // к *mut MTLDevice, как dx11-путь делает через `.as_ptr()`.
+    Some((
+        unsafe { DeviceRef::from_ptr(gpu.device.as_ptr().cast()) },
+        unsafe { std::mem::transmute::<u64, MTLPixelFormat>(gpu.render_target_format) },
+    ))
 }
 
 unsafe fn borrow_metal_draw<'a>(
@@ -461,15 +461,11 @@ unsafe fn borrow_metal_draw<'a>(
     let RawGpuAccess::Metal(gpu) = gpu else {
         return None;
     };
-    if gpu.device.is_null() {
-        return None;
-    }
-    if gpu.command_encoder.is_null() {
-        return None;
-    }
+    // command_encoder — Option<NonNull<c_void>>: None во время prepare (энкодера ещё нет).
+    let encoder = gpu.command_encoder?;
     Some((
-        unsafe { DeviceRef::from_ptr(gpu.device.cast()) },
-        unsafe { RenderCommandEncoderRef::from_ptr(gpu.command_encoder.cast()) },
+        unsafe { DeviceRef::from_ptr(gpu.device.as_ptr().cast()) },
+        unsafe { RenderCommandEncoderRef::from_ptr(encoder.as_ptr().cast()) },
     ))
 }
 
