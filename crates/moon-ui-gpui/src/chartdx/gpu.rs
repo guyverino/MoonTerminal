@@ -254,7 +254,7 @@ pub fn full_viewport(gpu: &RawGpuAccess) -> D3D11_VIEWPORT {
 
 pub fn d3d_device_ptr(gpu: &RawGpuAccess) -> *mut c_void {
     match gpu {
-        RawGpuAccess::D3d11(access) => access.device,
+        RawGpuAccess::D3d11(access) => access.device.as_ptr(),
         _ => std::ptr::null_mut(),
     }
 }
@@ -269,9 +269,9 @@ pub fn borrow_d3d(
         return None;
     };
     unsafe {
-        let device = ID3D11Device::from_raw_borrowed(&gpu.device)?.clone();
-        let context = ID3D11DeviceContext::from_raw_borrowed(&gpu.context)?.clone();
-        let rtv = ID3D11RenderTargetView::from_raw_borrowed(&gpu.render_target)?.clone();
+        let device = ID3D11Device::from_raw_borrowed(&gpu.device.as_ptr())?.clone();
+        let context = ID3D11DeviceContext::from_raw_borrowed(&gpu.context.as_ptr())?.clone();
+        let rtv = ID3D11RenderTargetView::from_raw_borrowed(&gpu.render_target.as_ptr())?.clone();
         Some((device, context, rtv))
     }
 }

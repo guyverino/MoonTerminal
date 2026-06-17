@@ -603,18 +603,12 @@ unsafe fn borrow_wgpu<'a>(
     let RawGpuAccess::Wgpu(gpu) = gpu else {
         return None;
     };
-    if gpu.device.is_null()
-        || gpu.queue.is_null()
-        || gpu.render_pass.is_null()
-        || gpu.render_target_format.is_null()
-    {
-        return None;
-    }
+    let render_pass = gpu.render_pass?;
     Some((
-        unsafe { &*(gpu.device as *const wgpu::Device) },
-        unsafe { &*(gpu.queue as *const wgpu::Queue) },
-        unsafe { &mut *(gpu.render_pass as *mut wgpu::RenderPass<'a>) },
-        unsafe { *(gpu.render_target_format as *const wgpu::TextureFormat) },
+        unsafe { &*(gpu.device.as_ptr() as *const wgpu::Device) },
+        unsafe { &*(gpu.queue.as_ptr() as *const wgpu::Queue) },
+        unsafe { &mut *(render_pass.as_ptr() as *mut wgpu::RenderPass<'a>) },
+        unsafe { *(gpu.render_target_format.as_ptr() as *const wgpu::TextureFormat) },
     ))
 }
 

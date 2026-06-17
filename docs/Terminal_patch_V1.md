@@ -1,14 +1,15 @@
 # Terminal_patch_V1 — полный план миграции MoonTerminal на gpu_canvas
 
-Status: implementation plan v1, local implementation closed, external audit gates pending, 2026-06-17.
+Status: implementation plan v1, implementation audit reopened, 2026-06-17.
 
 Этот документ самодостаточный. Он описывает, как перевести MoonTerminal с
 window-global GPU pass / continuous presentation на элементный `gpu_canvas` API
 форка, какие старые механизмы удалить, как сохранить fast live-scroll, и как
 проверить Windows/macOS/Linux.
 
-Remaining unchecked boxes are audit/runtime/public-repo gates, not unfinished
-local implementation work.
+Current open implementation issues are tracked in `R:/test/newfork/ForkIssuesFinal.md`.
+Do not treat remaining unchecked boxes as mere runtime polish unless that file
+classifies them that way.
 
 ## Главные критерии приемки
 
@@ -734,18 +735,19 @@ draw may happen at chart cadence, GPUI render stays gated
    Done in `moon-chart/src/view.rs::phase_clean_default_px_per_ms`.
 7. [x] Move DX11 resource sync/offscreen bake into `prepare_gpu`.
    Done in chartdx DX11 backend callbacks.
-8. [x] Adapt Metal resource sync/offscreen/direct draw to `prepare_gpu` + phase `draw`.
-   Done; shader array issue was fixed in `chart_native.metal`.
-9. [x] Adapt wgpu resource sync/offscreen/direct draw to `prepare_gpu` + phase `draw`.
-   Done in code; native Linux runtime check is assigned to the Linux tester.
-10. [x] Move crosshair/readouts to overlay canvas and remove per-mousemove `cx.notify`.
-    Done with deviation: cursor pixels are native chartdx overlay inside the
-    single canvas; GPUI readout chips notify at throttled cadence only.
-11. [x] Remove `register_pass`, continuous present guard, present_seq, async prepare task.
-    Done after removing `ChartPanel::spawn_visible_data_pump`: backend
-    `session.drain()` causally updates registered chart consumers only when feed
-    data changed, without `cx.notify()`. The chart has no private 16ms prepare
-    loop; `gpu_canvas.frame()` remains the render/present decision point.
+8. [ ] Adapt Metal resource sync/offscreen/direct draw to `prepare_gpu` + phase `draw`.
+   Reopened by `ForkIssues_*`: Metal shaders compile and draw works, but terminal
+   Metal still performs upload/resource work in draw-phase.
+9. [ ] Adapt wgpu resource sync/offscreen/direct draw to `prepare_gpu` + phase `draw`.
+   Reopened by `ForkIssues_*`: Linux/X11 draw works, but terminal wgpu still
+   performs upload/resource work in draw-phase.
+10. [ ] Move crosshair/readouts to overlay canvas and remove per-mousemove `cx.notify`.
+    Partial only: cursor lines are native chartdx pixels; readout chips still use
+    GPUI `axes::draw(...)` and throttled `cx.notify()`.
+11. [ ] Remove `register_pass`, continuous present guard, present_seq, async prepare task.
+    Partial: chart-local 16ms pump is removed, but high-rate chart data still
+    reaches retained chart state via the global 16ms backend drain and
+    `WeakEntity<ChartPanel>` update path. See `ForkIssuesFinal.md` P0.
 12. [x] Verify detach/hidden tab lifecycle.
     Done by element-owned `gpu_canvas` lifetime; native/manual regression still
     belongs to runtime testing.
@@ -778,7 +780,9 @@ Frame behavior:
 Rendering:
 
 - [x] Pure live scroll composites resident layers without unnecessary full bake.
-- [x] Pure mousemove updates crosshair/readouts without combo/orderbook bake.
+- [ ] Pure mousemove updates crosshair/readouts without combo/orderbook bake.
+      Partial only: native crosshair lines update without combo/orderbook bake;
+      moving readout chips are still GPUI-throttled, not native overlay pixels.
 - [x] Resize never stretches stale texture.
 - [x] Device generation change recreates all backend resources.
 - [x] Background/grid/combo/orderbook/userdata draw in correct order.

@@ -1,13 +1,14 @@
 # ZED_FORK_V1 — полный план нового GPUI/Zed fork
 
-Status: implementation plan v1, local implementation closed, external audit gates pending, 2026-06-17.
+Status: implementation plan v1, implementation audit reopened, 2026-06-17.
 
 Этот документ самодостаточный. Он описывает, что писать в Zed/GPUI fork, как это
 оформлять для upstream PR, какие старые идеи не переносить, и какие проверки
 обязательны. Терминальной специфики в коде GPUI быть не должно.
 
-Remaining unchecked boxes in this document are PR audit gates, not unfinished
-local implementation work.
+Current reopened audit items are tracked in `R:/test/newfork/ForkIssuesFinal.md`.
+Do not treat unchecked boxes as mere PR polish unless that file classifies them
+that way.
 
 ## Главные критерии приемки
 
@@ -898,11 +899,15 @@ Use a clean upstream clone/branch.
 9. [x] Implement Wayland timer fallback.
    Done with deviation: no separate timer; Wayland skip-present path keeps the
    frame callback alive via `completed_frame()` commit without buffer.
-10. [x] Add neutral example.
-    Done in `crates/gpui/examples/gpu_canvas.rs`.
-11. [x] Add tests/diagnostics.
-    Done for core scene invariants in `scene.rs` tests; runtime diagnostics live
-    in terminal, not in generic GPUI source.
+10. [ ] Add neutral example.
+    Partial: `crates/gpui/examples/gpu_canvas.rs` exists, but the reopened audit
+    says it is too weak for the upstream story because it does not demonstrate a
+    retained custom cursor/readout or viewport-style GPU-only update.
+11. [ ] Add tests/diagnostics.
+    Partial: core scene invariants are covered in `scene.rs`, but the main
+    lifecycle contract still lacks direct tests: `Skip -> no clear/present`,
+    `RequestPresent -> prepare/draw/present in same tick`, UI-dirty draws all
+    visible canvases, and one requesting canvas wakes all visible canvases.
 12. [x] Port terminal to new API in a separate product branch.
     Done in MoonTerminal `chartdx` / `ChartPanel`.
 13. [x] Prepare separate Windows pacing PR for delivery/perf if needed.

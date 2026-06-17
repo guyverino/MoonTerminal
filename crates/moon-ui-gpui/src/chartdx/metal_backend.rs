@@ -398,12 +398,13 @@ unsafe fn borrow_metal<'a>(
     let RawGpuAccess::Metal(gpu) = gpu else {
         return None;
     };
-    if gpu.device.is_null() || gpu.command_encoder.is_null() || gpu.render_target_format == 0 {
+    let command_encoder = gpu.command_encoder?;
+    if gpu.render_target_format == 0 {
         return None;
     }
     Some((
-        unsafe { DeviceRef::from_ptr(gpu.device.cast()) },
-        unsafe { RenderCommandEncoderRef::from_ptr(gpu.command_encoder.cast()) },
+        unsafe { DeviceRef::from_ptr(gpu.device.as_ptr().cast()) },
+        unsafe { RenderCommandEncoderRef::from_ptr(command_encoder.as_ptr().cast()) },
         unsafe { std::mem::transmute::<u64, MTLPixelFormat>(gpu.render_target_format) },
     ))
 }

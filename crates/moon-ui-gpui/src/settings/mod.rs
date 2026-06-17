@@ -630,6 +630,7 @@ pub fn open(backend: Entity<Backend>, cx: &mut App) {
         kind: WindowKind::Floating,
         app_id: Some("MoonTerminal".to_string()),
         window_min_size: Some(size(px(620.0), px(420.0))),
+        window_decorations: design::platform_window_decorations(),
         ..Default::default()
     };
     let b = backend.clone();

@@ -1114,6 +1114,7 @@ fn open_debug_perf_window(cx: &mut App, backend: Entity<Backend>) {
         }),
         app_id: Some("MoonTerminal".to_string()),
         window_min_size: Some(size(px(560.0), px(320.0))),
+        window_decorations: design::platform_window_decorations(),
         ..Default::default()
     };
     let b = backend.clone();
@@ -1164,6 +1165,7 @@ fn spawn_debug_btc_chart_windows(cx: &mut App, backend: Entity<Backend>) {
             is_minimizable: false,
             app_id: Some("MoonTerminal".to_string()),
             window_min_size: Some(size(px(520.0), px(340.0))),
+            window_decorations: design::platform_window_decorations(),
             ..Default::default()
         };
         let opened_window = cx.open_window(opts, move |window, cx| {
@@ -1277,6 +1279,7 @@ pub(crate) fn spawn_group_window(
         app_id: Some("MoonTerminal".to_string()),
         window_background: WindowBackgroundAppearance::Opaque,
         window_min_size: Some(size(px(520.0), px(340.0))),
+        window_decorations: design::platform_window_decorations(),
         ..Default::default()
     };
     let theme = cfg.theme.clone();

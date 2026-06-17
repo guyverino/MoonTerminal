@@ -31,6 +31,14 @@ pub fn show_custom_window_controls() -> bool {
     !cfg!(target_os = "macos")
 }
 
+pub fn platform_window_decorations() -> Option<WindowDecorations> {
+    if cfg!(target_os = "linux") {
+        Some(WindowDecorations::Client)
+    } else {
+        None
+    }
+}
+
 pub const LOGO_SVG: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../assets/brand/moonbot-logo.svg"

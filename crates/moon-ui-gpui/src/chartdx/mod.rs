@@ -533,9 +533,10 @@ impl RenderState {
                     anyhow::bail!("chart dx11 draw received empty D3D11 raw gpu handles");
                 };
 
-                if self.scissor_dev != d3d.device {
+                let d3d_device_ptr = d3d.device.as_ptr();
+                if self.scissor_dev != d3d_device_ptr {
                     self.scissor_rs = Some(gpu::create_scissor_rasterizer(&device));
-                    self.scissor_dev = d3d.device;
+                    self.scissor_dev = d3d_device_ptr;
                 }
                 let res = [width as f32, height as f32];
                 let scissor_rs = self.scissor_rs.clone().unwrap();
