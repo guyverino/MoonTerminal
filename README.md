@@ -6,139 +6,97 @@
 
 # MoonTerminal
 
-Кросс-десктопный трейдинговый терминал для ядер **MoonBot**: график тиков + стакан,
-рисуемые **own-pass DX11** прямо в backbuffer **GPUI** (без wgpu-readback), оболочка на
-**GPUI / MoonPalette**, поток данных через **MoonProtoBeta**.
+Десктопный трейдинговый терминал для ядер **MoonBot**: график тиков + стакан, оболочка
+на **GPUI / MoonPalette**, поток данных через **MoonProtoBeta**. График рисуется прямо в
+backbuffer GPUI (own-pass DX11/Metal, без wgpu-readback).
 
-Единственный бинарь — `moon-gpui` (`crates/moon-ui-gpui`). Старый egui/winit-бинарь
-`moon-terminal` и wgpu-движок удалены (рисование переведено на own-pass DX11); историю
-перехода см. [docs/REFACTOR_RENDER.md](docs/REFACTOR_RENDER.md).
+Один бинарь — **`moon-gpui`** (крейт `crates/moon-ui-gpui`). Несколько ядер обслуживаются
+сразу: ядра группируются, каждая группа — отдельное окно со своей раскладкой панелей.
 
-Один терминал обслуживает **несколько ядер сразу**. Ядра группируются, и каждая
-группа — это **отдельное ОС-окно** со своей раскладкой. Маркет-данные (трейды +
-стакан) дедуплицируются: на каждую биржу подписку держит **одно выбранное ядро**,
-а аккаунт-данные (ордера/детекты/стратегии) читаются по каждому ядру отдельно.
+---
 
-Режим один — **live** (синтетики нет).
+## Сборка и запуск
 
-## Крейты
-
-```
-crates/
-  moon-core      backend: feed/session/market/coordinator/config/db/data/metrics (UI-агностик)
-  moon-chart     чарт-математика/геометрия (wgpu-free): view (зум/пан/Y), axes, transform,
-                 build_order_geometry, типы инстансов, константы. Данные рисует own-pass.
-  moon-ui-gpui   бинарь `moon-gpui`: GPUI-оболочка (MoonPalette) + own-pass DX11 рендер
-                 чарта (src/chartdx/) поверх moon-core.
-```
-
-Внешние GitHub-зависимости:
-**GPUI** (форк `Moonbot-Tech/ZedFork` — raw GPU-pass hook ещё не в upstream) и
-**MoonPalette** (`Moonbot-Tech/MoonPalette`, библиотека компонентов с `MoonBackgroundPolicy::NoFill`).
-
-## Запуск
-
-**Windows toolchain: MSVC, не GNU.** Собираем таргетом `x86_64-pc-windows-msvc`: его ожидают
-GPUI, DirectX/DWrite/DComp и наш `chartdx` GPU-pass. GNU-таргет (`*-windows-gnu`) не используем.
-
-### Быстро — `make`
-
-```
-make run            # собрать и запустить (debug)
-make build          # собрать
-make release        # собрать release
-make check          # быстрая проверка типов
-make update-forks   # обновить ZedFork/MoonPalette до HEAD веток + перелочить Cargo.lock
-```
-
-`Makefile` сам подставляет MSVC-таргет на Windows и нативный на macOS/Linux.
-**Windows:** запускать `make` из **«x64 Native Tools Command Prompt for VS 2022»** (там настроен
-`vcvars`, иначе линковщик C-зависимостей не найдёт `link.exe`). **macOS/Linux:** просто `make run`.
-
-Ниже — то же вручную (если без `make`).
-
-Требования:
-- **Rust** с MSVC standard library для `x86_64-pc-windows-msvc`.
-- **Visual Studio Build Tools 2022**, компонент *«Разработка на C++ для настольных систем»*
-  — даёт `link.exe`, `lib.exe`, `ml64.exe` и Windows SDK. Полная Visual Studio не нужна.
-- Доступ к GitHub-зависимостям `Moonbot-Tech/ZedFork` и `Moonbot-Tech/MoonPalette`.
-
-```powershell
-cd MoonTerminal
-
-$vcvars = 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat'
-cmd.exe /d /s /c "`"$vcvars`" && cargo run -p moon-ui-gpui --bin moon-gpui --target x86_64-pc-windows-msvc"
-```
-
-Сборка без запуска — заменить `run` на `build`; exe тогда в
-`target\x86_64-pc-windows-msvc\debug\moon-gpui.exe`.
-
-Важно: `target\debug\moon-gpui.exe` и `target\x86_64-pc-windows-msvc\debug\moon-gpui.exe` —
-разные output-директории. Если собирали с явным `--target x86_64-pc-windows-msvc`, запускать
-нужно именно из `target\x86_64-pc-windows-msvc\debug\`; другой exe может быть старым.
+Нужен **Rust** (stable) и доступ к приватным GitHub-зависимостям организации Moonbot-Tech
+(`ZedFork`, `MoonPalette`, `MoonProtoBeta`).
 
 ### macOS / Linux
 
-Нативный таргет, отдельная настройка не нужна — нужен только Rust и доступ к GitHub-зависимостям:
+```bash
+make run
+```
+
+`make` есть из коробки. Без него — то же напрямую:
 
 ```bash
-cd MoonTerminal
-make run            # или вручную:
 cargo run -p moon-ui-gpui --bin moon-gpui
 ```
 
-Бинарь — в `target/debug/moon-gpui`. GPUI на macOS рисует через **Metal**, на Linux — нативным
-GPUI-бэкендом; терминальный `chartdx` GPU-pass кросс-платформенный (DX11/Metal/wgpu).
+### Windows
 
-### Зависимости-форки и `Cargo.lock`
+Собираем **только MSVC-таргетом** (`x86_64-pc-windows-msvc`), не GNU. Нужны
+**Visual Studio Build Tools 2022** с компонентом *«Разработка на C++»* (даёт `link.exe` и Windows SDK).
 
-GPUI (`Moonbot-Tech/ZedFork`, ветка `master`) и MoonPalette (`Moonbot-Tech/MoonPalette`, ветка
-`main`) пинятся **по веткам**, а точные rev фиксирует **закоммиченный `Cargo.lock`** — поэтому у
-всех детерминированная сборка. Если после `git pull` сборка падает на отсутствующих API
-(`gpui::GpuCanvas*`, `Panel::show_dock_header` и т.п.) — значит твой `Cargo.lock` устарел:
-`git pull` подтянет актуальный. Обновлять форки осознанно: `make update-forks` → `make build` →
-закоммитить новый `Cargo.lock`.
+```powershell
+cargo run -p moon-ui-gpui --bin moon-gpui --target x86_64-pc-windows-msvc
+```
 
-### Runtime на чистой Windows
+`make` на Windows не предустановлен. Если хочешь команды `make` — поставь его
+(`winget install ezwinports.make`) и запускай `make run`.
 
-MSVC-сборка не вшивает системные DLL в exe. На Windows 10/11 обычно уже есть UCRT и графический
-стек (`d3d11.dll`, `dxgi.dll`, `dwrite.dll`, `dcomp.dll`), но `dumpbin /dependents` для
-`moon-gpui.exe` также показывает `VCRUNTIME140.dll`. Для чистой машины ставим или кладём рядом
-**Microsoft Visual C++ Redistributable 2015-2022 x64**.
+> ⚠️ Запускай **всегда с `--target x86_64-pc-windows-msvc`** (или через `make`). Без таргета
+> cargo собирает в `target\debug\` — это отдельная папка со своим конфигом, легко перепутать.
+> С таргетом бинарь и конфиг — в `target\x86_64-pc-windows-msvc\debug\`.
+
+### Команды `make`
+
+| Команда | Что делает |
+|---|---|
+| `make run` | собрать и запустить (debug) |
+| `make build` | собрать (debug) |
+| `make release` | собрать (release) |
+| `make check` | быстрая проверка типов |
+| `make update-forks` | обновить ZedFork/MoonPalette + перелочить `Cargo.lock` |
+
+Makefile сам подставляет MSVC-таргет на Windows и нативный на macOS/Linux.
+
+---
+
+## Зависимости-форки
+
+GPUI берётся из форка **`Moonbot-Tech/ZedFork`** (ветка `master`), компоненты UI — из
+**`Moonbot-Tech/MoonPalette`** (ветка `main`). Точные версии зафиксированы в **`Cargo.lock`**
+(он закоммичен) — сборка детерминированная.
+
+Если после `git pull` сборка падает на отсутствующих API (`gpui::GpuCanvas*`,
+`Panel::show_dock_header` и т.п.) — значит подтянулся старый `Cargo.lock`; повтори `git pull`.
+
+Обновление форков — осознанное: `make update-forks` → `make build` → закоммитить новый `Cargo.lock`.
+
+---
 
 ## Конфиг
 
-Сервера (ядра) добавляются прямо в приложении: **⚙ Настройки → Подключения** (имя/биржа/host/port,
-ключ скрыт, фид-фильтры, группа, цвет). Конфиг с ключами шифруется при сохранении (`servers.enc`,
-AES-256-GCM, ключ — в OS keyring); открытые настройки — в `settings.toml`, тема графика — в
-переносимом `theme.toml`.
+Сервера (ядра) добавляются прямо в приложении: **⚙ Настройки → Подключения**. Ключи шифруются
+(`servers.enc`, AES-256-GCM, ключ — в системном keyring); открытые настройки — `settings.toml`,
+тема — `theme.toml`. Конфиг читается **из папки рядом с бинарём**.
 
-> `servers.enc` / `settings.toml` в `.gitignore` — ключи и приватные настройки в git не попадают.
+`servers.enc` и `settings.toml` в `.gitignore` — ключи в git не попадают.
 
-## Архитектура (кратко)
+---
+
+## Структура
 
 ```
-servers.enc ─decrypt(keyring+AES)→ AppConfig.servers ─group→ окна по группам
-        │
-        ▼  (поток на ядро, live/moonproto)
-SessionManager ──FeedMsg──▶ CoreStore (аккаунт) + MarketStore (дедуп трейды/стакан)
-        ▲                                    │
-        └─────── CoreCmd::SetMarket ◀────────┤  (coordinator: выбор провайдера)
-                                             ▼
-GPUI App ── окно-группа = own-pass чарт (chartdx DX11, UnderScene) + панели/доки (moon-ui)
+crates/
+  moon-core      backend: feed / session / market / config / БД отчётов (UI-агностик)
+  moon-chart     чарт-математика: view (зум/пан/Y), axes, геометрия ордеров
+  moon-ui-gpui   бинарь moon-gpui: GPUI-оболочка + own-pass DX11 рендер чарта
 ```
 
-UI **никогда** не зовёт moonproto напрямую — только читает `FeedMsg` из канала и шлёт `CoreCmd`.
-Бэкенд и дедуп — [docs/ARCHITECTURE_MULTICORE.md](docs/ARCHITECTURE_MULTICORE.md). Рендер чарта —
-[docs/REFACTOR_RENDER.md](docs/REFACTOR_RENDER.md) и [docs/RENDER_INVALIDATION.md](docs/RENDER_INVALIDATION.md).
-
-## Статус
-
-Сделано: мультиядро/мультиокно, дедуп маркет-данных, шифр-конфиг, локальная БД отчётов,
-GPUI-оболочка на `moon-ui`, own-pass DX11 рендер чарта под generic GPUI GPU-pass hook,
-без wgpu-readback.
-
-Детальный render/fork-план ведётся во внутренних заметках (вне публичного репо).
+Подробнее: [docs/ARCHITECTURE_MULTICORE.md](docs/ARCHITECTURE_MULTICORE.md) (бэкенд, дедуп данных),
+[docs/REFACTOR_RENDER.md](docs/REFACTOR_RENDER.md) и
+[docs/RENDER_INVALIDATION.md](docs/RENDER_INVALIDATION.md) (рендер чарта).
 
 ---
 
