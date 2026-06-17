@@ -1,4 +1,4 @@
-# Virtual workspace. Единственный бинарь — GPUI-оболочка moon-ui-gpui (`moon-gpui`)
+# Virtual workspace. Единственный бинарь — GPUI-оболочка moon-ui-gpui (`moonterminal`)
 # поверх UI-агностичного ядра moon-core; общий чарт-крейт moon-chart даёт математику/
 # геометрию (view/axes/transform/build_order_geometry/инстанс-типы), wgpu-free.
 #

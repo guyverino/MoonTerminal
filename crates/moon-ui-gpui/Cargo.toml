@@ -8,7 +8,7 @@ description = "MoonTerminal GPUI shell over moon-core; UI migration target is Mo
 debug-tools = []
 
 [[bin]]
-name = "moon-gpui"
+name = "moonterminal"
 path = "src/main.rs"
 
 [build-dependencies]

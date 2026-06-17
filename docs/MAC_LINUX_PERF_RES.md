@@ -14,9 +14,9 @@ MoonProto terminal-core key was used only to generate local encrypted config on 
 
 Build status:
 
-- `TOOLCHAINS=com.apple.dt.toolchain.Metal cargo check -p moon-ui-gpui --bin moon-gpui`: OK.
-- `TOOLCHAINS=com.apple.dt.toolchain.Metal cargo build -p moon-ui-gpui --bin moon-gpui`: OK.
-- `TOOLCHAINS=com.apple.dt.toolchain.Metal cargo build --release -p moon-ui-gpui --bin moon-gpui --features debug-tools`: OK.
+- `TOOLCHAINS=com.apple.dt.toolchain.Metal cargo check -p moon-ui-gpui --bin moonterminal`: OK.
+- `TOOLCHAINS=com.apple.dt.toolchain.Metal cargo build -p moon-ui-gpui --bin moonterminal`: OK.
+- `TOOLCHAINS=com.apple.dt.toolchain.Metal cargo build --release -p moon-ui-gpui --bin moonterminal --features debug-tools`: OK.
 
 Live-run status:
 
@@ -30,11 +30,11 @@ Live-run status:
 Follow-up:
 
 - After allowing the CLI `security` prompt, `security find-generic-password -s moon-terminal -a config-key-v1` succeeds from SSH.
-- Direct SSH launch of `moon-gpui` still fails with `User interaction is not allowed`; metadata access for `security` is not enough to grant the app binary access to the secret.
-- GUI launch attempts via a shell wrapper and via a real `.app` bundle both start `moon-gpui` as user `m1`, but the process stays alive before any app log is printed.
+- Direct SSH launch of `moonterminal` still fails with `User interaction is not allowed`; metadata access for `security` is not enough to grant the app binary access to the secret.
+- GUI launch attempts via a shell wrapper and via a real `.app` bundle both start `moonterminal` as user `m1`, but the process stays alive before any app log is printed.
 - `sample` shows the main thread blocked in:
   `SecKeychainFindGenericPassword` -> `SecurityServer::ClientSession::getAcl`.
-- Recreating a separate unlocked `moon-test.keychain-db`, signing the real binary, and adding the item with `security add-generic-password -T <moon-gpui>` did not unblock this remote test session.
+- Recreating a separate unlocked `moon-test.keychain-db`, signing the real binary, and adding the item with `security add-generic-password -T <moonterminal>` did not unblock this remote test session.
 - Conclusion: clean macOS live-run is blocked by interactive Keychain ACL on this rental machine, not by Metal/chartdx.
 
 macOS renderer/live check with Keychain bypass:
@@ -74,9 +74,9 @@ Notes:
 
 Build status before dependency fix:
 
-- `cargo check -p moon-ui-gpui --bin moon-gpui`: OK.
-- `cargo build -p moon-ui-gpui --bin moon-gpui`: OK.
-- `cargo build --release -p moon-ui-gpui --bin moon-gpui --features debug-tools`: OK.
+- `cargo check -p moon-ui-gpui --bin moonterminal`: OK.
+- `cargo build -p moon-ui-gpui --bin moonterminal`: OK.
+- `cargo build --release -p moon-ui-gpui --bin moonterminal --features debug-tools`: OK.
 
 Live-run status before dependency fix:
 
@@ -101,7 +101,7 @@ Fix in working tree:
 - Local check after fix:
   `cargo check -p moon-core`: OK.
 - Linux remote check after fix:
-  `cargo check -p moon-ui-gpui --bin moon-gpui`: OK.
+  `cargo check -p moon-ui-gpui --bin moonterminal`: OK.
 
 Live-run status after dependency fix:
 

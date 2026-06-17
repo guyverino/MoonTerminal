@@ -44,11 +44,11 @@ GPU↔CPU столл) → теперь его рисует **own-pass DX11 пр�
   `build.rs` (иконка exe старого бинаря).
 - **Корневой `Cargo.toml` → virtual workspace**: без `[package]`, без egui/wgpu/winit/egui-*/
   resvg/rust-i18n/raw-window-handle. Остались `[workspace]` + `[patch]` (GPUI) + `[profile]`.
-- **`moon-gpui`**: убраны мёртвые `wgpu`, `pollster` (наследие readback-эры; в коде 0 употреблений).
+- **`moonterminal`**: убраны мёртвые `wgpu`, `pollster` (наследие readback-эры; в коде 0 употреблений).
 - **`moon-chart`**: вырезан wgpu-движок — `Chart`, `canvas.rs`, `style.rs`, wgpu-слои
   `layers/{crosses,cursor,glass,grid}.rs`, wgpu-часть `order_lines.rs`/`transform.rs`/`container.rs`/
   `paint.rs`, весь `shaders/*.wgsl`. Крейт стал **wgpu-free** (зависимость на `wgpu` убрана).
-- **Единственный бинарь теперь — `moon-gpui`** (`crates/moon-ui-gpui`).
+- **Единственный бинарь теперь — `moonterminal`** (`crates/moon-ui-gpui`).
 - **Удалён halo/glow вокруг GPUI-крестика**: оставлена только функциональная тонкая вертикаль/горизонталь.
   В own-pass cursor это было визуальным хвостом без понятной пользы; переносить/имитировать в GPUI не стали.
 

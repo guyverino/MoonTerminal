@@ -33,7 +33,7 @@ cargo tree -i moon-palette
 
 ```bash
 TOOLCHAINS=com.apple.dt.toolchain.Metal \
-cargo check -p moon-ui-gpui --bin moon-gpui
+cargo check -p moon-ui-gpui --bin moonterminal
 ```
 
 Обычный запуск из `cargo run` на macOS не является эталоном для live-проверки:
@@ -52,7 +52,7 @@ open -n target/macos/MoonTerminal.app
 
 `scripts/macos-bundle.sh` делает:
 
-- release build `moon-gpui`;
+- release build `moonterminal`;
 - `target/macos/MoonTerminal.app`;
 - stable bundle id `pro.moonbot.terminal`;
 - ad-hoc подпись по умолчанию (`MOON_CODESIGN_IDENTITY=-`);
@@ -77,8 +77,8 @@ MOON_CODESIGN_IDENTITY="MoonTerminal Local Dev" ./scripts/macos-bundle.sh
 Сборка:
 
 ```bash
-cargo check -p moon-ui-gpui --bin moon-gpui
-cargo build --release -p moon-ui-gpui --bin moon-gpui --features debug-tools
+cargo check -p moon-ui-gpui --bin moonterminal
+cargo build --release -p moon-ui-gpui --bin moonterminal --features debug-tools
 ```
 
 Запуск для диагностики:
@@ -86,7 +86,7 @@ cargo build --release -p moon-ui-gpui --bin moon-gpui --features debug-tools
 ```bash
 MOON_RENDER_DIAG=1 \
 MOON_RENDER_DIAG_OPEN_FIRST_MARKET=1 \
-./target/release/moon-gpui
+./target/release/moonterminal
 ```
 
 Для encrypted config на Linux нужен реальный Secret Service backend в той же
@@ -140,7 +140,7 @@ xwininfo -root -tree | grep -i MoonTerminal
 ```bash
 MOON_RENDER_DIAG=1 \
 MOON_RENDER_DIAG_OPEN_10_BTC=1 \
-./target/release/moon-gpui
+./target/release/moonterminal
 ```
 
 Смотреть `render_diag.log`. Хороший признак после фикса invalidation:

@@ -36,13 +36,13 @@ There are two useful runs.
 Functional/debug-tools run:
 
 ```bash
-MOON_RENDER_DIAG=1 cargo run -p moon-ui-gpui --bin moon-gpui
+MOON_RENDER_DIAG=1 cargo run -p moon-ui-gpui --bin moonterminal
 ```
 
 Optimized performance run with the same debug UI:
 
 ```bash
-MOON_RENDER_DIAG=1 cargo run --release -p moon-ui-gpui --bin moon-gpui --features debug-tools
+MOON_RENDER_DIAG=1 cargo run --release -p moon-ui-gpui --bin moonterminal --features debug-tools
 ```
 
 The `debug` status-bar label is compiled into normal debug-profile builds.
@@ -55,12 +55,12 @@ Do not ship that feature in public release artifacts.
 git clone -b feat/gpui-shell https://github.com/guyverino/MoonTerminal.git
 cd MoonTerminal
 
-TOOLCHAINS=com.apple.dt.toolchain.Metal cargo check -p moon-ui-gpui --bin moon-gpui
-TOOLCHAINS=com.apple.dt.toolchain.Metal cargo build -p moon-ui-gpui --bin moon-gpui
+TOOLCHAINS=com.apple.dt.toolchain.Metal cargo check -p moon-ui-gpui --bin moonterminal
+TOOLCHAINS=com.apple.dt.toolchain.Metal cargo build -p moon-ui-gpui --bin moonterminal
 
 MOON_RENDER_DIAG=1 \
 TOOLCHAINS=com.apple.dt.toolchain.Metal \
-cargo run --release -p moon-ui-gpui --bin moon-gpui --features debug-tools
+cargo run --release -p moon-ui-gpui --bin moonterminal --features debug-tools
 ```
 
 If `--release` is too slow for first smoke, run the same command without
@@ -69,7 +69,7 @@ If `--release` is too slow for first smoke, run the same command without
 System counters while the app is running:
 
 ```bash
-PID=$(pgrep -n moon-gpui)
+PID=$(pgrep -n moonterminal)
 ps -p "$PID" -o pid,pcpu,pmem,rss,vsz,etime,comm
 top -pid "$PID" -stats pid,command,cpu,mem,threads,ports -l 60 -s 1 > mac_top_moon_gpui.txt
 vm_stat 1 60 > mac_vm_stat.txt
@@ -88,11 +88,11 @@ sudo powermetrics --samplers cpu_power,gpu_power -i 1000 -n 60 > mac_powermetric
 git clone -b feat/gpui-shell https://github.com/guyverino/MoonTerminal.git
 cd MoonTerminal
 
-cargo check -p moon-ui-gpui --bin moon-gpui
-cargo build -p moon-ui-gpui --bin moon-gpui
+cargo check -p moon-ui-gpui --bin moonterminal
+cargo build -p moon-ui-gpui --bin moonterminal
 
 MOON_RENDER_DIAG=1 \
-cargo run --release -p moon-ui-gpui --bin moon-gpui --features debug-tools
+cargo run --release -p moon-ui-gpui --bin moonterminal --features debug-tools
 ```
 
 Record session type and compositor:
@@ -107,7 +107,7 @@ ps -e | grep -E 'kwin|gnome-shell|mutter|sway|hypr|weston|Xorg|Xwayland'
 System counters:
 
 ```bash
-PID=$(pgrep -n moon-gpui)
+PID=$(pgrep -n moonterminal)
 ps -p "$PID" -o pid,pcpu,pmem,rss,vsz,etime,cmd
 top -H -p "$PID" -b -d 1 -n 60 > linux_top_threads.txt
 ```

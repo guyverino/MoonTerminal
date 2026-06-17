@@ -34,10 +34,10 @@ winget install ezwinports.make
 ```powershell
 git clone -b feat/gpui-shell https://github.com/guyverino/MoonTerminal
 cd MoonTerminal
-cargo build -p moon-ui-gpui --bin moon-gpui --target x86_64-pc-windows-msvc
+cargo build -p moon-ui-gpui --bin moonterminal --target x86_64-pc-windows-msvc
 ```
 
-**Готовый файл:** `target\x86_64-pc-windows-msvc\debug\moon-gpui.exe`
+**Готовый файл:** `target\x86_64-pc-windows-msvc\debug\moonterminal.exe`
 (запуск: `cargo run ...` с тем же `--target`, либо `make run`).
 
 ### macOS
@@ -57,10 +57,10 @@ source "$HOME/.cargo/env"
 ```bash
 git clone -b feat/gpui-shell https://github.com/guyverino/MoonTerminal
 cd MoonTerminal
-cargo build -p moon-ui-gpui --bin moon-gpui     # или: make build
+cargo build -p moon-ui-gpui --bin moonterminal     # или: make build
 ```
 
-**Готовый файл:** `target/debug/moon-gpui` (запуск: `make run`).
+**Готовый файл:** `target/debug/moonterminal` (запуск: `make run`).
 
 ### Linux (Debian/Ubuntu)
 
@@ -80,10 +80,10 @@ source "$HOME/.cargo/env"
 ```bash
 git clone -b feat/gpui-shell https://github.com/guyverino/MoonTerminal
 cd MoonTerminal
-cargo build -p moon-ui-gpui --bin moon-gpui     # или: make build
+cargo build -p moon-ui-gpui --bin moonterminal     # или: make build
 ```
 
-**Готовый файл:** `target/debug/moon-gpui` (запуск: `make run`).
+**Готовый файл:** `target/debug/moonterminal` (запуск: `make run`).
 
 ---
 
@@ -93,11 +93,11 @@ cargo build -p moon-ui-gpui --bin moon-gpui     # или: make build
 
 ```bash
 # macOS / Linux
-cargo build --release -p moon-ui-gpui --bin moon-gpui      # → target/release/moon-gpui
+cargo build --release -p moon-ui-gpui --bin moonterminal      # → target/release/moonterminal
 
 # Windows
-cargo build --release -p moon-ui-gpui --bin moon-gpui --target x86_64-pc-windows-msvc
-#                                                       → target\x86_64-pc-windows-msvc\release\moon-gpui.exe
+cargo build --release -p moon-ui-gpui --bin moonterminal --target x86_64-pc-windows-msvc
+#                                                       → target\x86_64-pc-windows-msvc\release\moonterminal.exe
 ```
 (или `make release`). На чистой Windows для release-exe нужен **Microsoft Visual C++ Redistributable 2015–2022 x64**.
 
@@ -144,7 +144,7 @@ GPUI — из форка **`Moonbot-Tech/ZedFork`** (ветка `master`), UI-к
 crates/
   moon-core      backend: feed / session / market / config / БД отчётов (UI-агностик)
   moon-chart     чарт-математика: view (зум/пан/Y), axes, геометрия ордеров
-  moon-ui-gpui   бинарь moon-gpui: GPUI-оболочка + own-pass DX11 рендер чарта
+  moon-ui-gpui   бинарь moonterminal: GPUI-оболочка + own-pass DX11 рендер чарта
 ```
 
 Подробнее: [docs/ARCHITECTURE_MULTICORE.md](docs/ARCHITECTURE_MULTICORE.md),

@@ -669,19 +669,19 @@ Build with explicit MSVC target.
 
 ```powershell
 $vcvars = 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat'
-cmd.exe /d /s /c "`"$vcvars`" && `"C:\files\utils\rust\cargo\bin\cargo.exe`" build -p moon-ui-gpui --bin moon-gpui --target x86_64-pc-windows-msvc"
+cmd.exe /d /s /c "`"$vcvars`" && `"C:\files\utils\rust\cargo\bin\cargo.exe`" build -p moon-ui-gpui --bin moonterminal --target x86_64-pc-windows-msvc"
 ```
 
 Executable to test:
 
 ```text
-R:\test\MoonTerminal\target\x86_64-pc-windows-msvc\debug\moon-gpui.exe
+R:\test\MoonTerminal\target\x86_64-pc-windows-msvc\debug\moonterminal.exe
 ```
 
 Do not validate from:
 
 ```text
-target\debug\moon-gpui.exe
+target\debug\moonterminal.exe
 ```
 
 ## Diagnostics
@@ -761,11 +761,11 @@ draw may happen at chart cadence, GPUI render stays gated
 15. [x] Build and run Windows MSVC target.
     Done locally with explicit `--target x86_64-pc-windows-msvc` and
     `--features debug-tools`; tested executable path is
-    `target/x86_64-pc-windows-msvc/debug/moon-gpui.exe`.
+    `target/x86_64-pc-windows-msvc/debug/moonterminal.exe`.
 16. [x] Get macOS and Linux checks from native machines/CI.
     Done as initial native handoff in `MAC_LINUX_PERF_RES.md`: macOS build/Metal
     compile path OK but live perf is blocked by GUI Keychain permission for
-    `moon-gpui`; Linux X11 live 10-window run reached chart rendering and perf
+    `moonterminal`; Linux X11 live 10-window run reached chart rendering and perf
     counters after Secret Service/openbox setup. Remaining native numbers are
     audit gates, not local implementation blockers.
 
@@ -830,7 +830,7 @@ Multi-chart/window:
 
 Platform:
 
-- [x] Windows MSVC build succeeds and tested exe is target\x86_64-pc-windows-msvc\debug\moon-gpui.exe.
+- [x] Windows MSVC build succeeds and tested exe is target\x86_64-pc-windows-msvc\debug\moonterminal.exe.
       Done locally after latest fork/C2 code with `--features debug-tools`.
 - [x] Windows live chart no longer freezes/stutters on idle frame-clock path.
       Done after removing the bad waitable posting gate; user manual check
@@ -845,7 +845,7 @@ Platform:
       Confirmed by Mac developer after shader fix; FPS check is separate.
 - [ ] macOS multiple chart windows have acceptable FPS or measured bottleneck with fix plan.
       External audit gate; current blocker is macOS Keychain GUI permission for
-      `moon-gpui`, not Metal shader/chart creation.
+      `moonterminal`, not Metal shader/chart creation.
 - [x] Linux wgpu path builds and runs on X11.
       Native Linux report: Ubuntu 24.04/NVIDIA/Vulkan, 10 debug chart windows,
       live rendering and perf counters collected after Secret Service/openbox

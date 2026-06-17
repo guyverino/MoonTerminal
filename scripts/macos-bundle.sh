@@ -9,7 +9,7 @@ APP_DIR="${APP_DIR:-$ROOT/target/macos/MoonTerminal.app}"
 SIGN_IDENTITY="${MOON_CODESIGN_IDENTITY:--}"
 export TOOLCHAINS="${TOOLCHAINS:-com.apple.dt.toolchain.Metal}"
 
-build_args=(build -p moon-ui-gpui --bin moon-gpui)
+build_args=(build -p moon-ui-gpui --bin moonterminal)
 if [[ "$PROFILE" == "release" ]]; then
   build_args+=(--release)
 fi
@@ -20,7 +20,7 @@ fi
 cargo "${build_args[@]}"
 
 BIN_DIR="$ROOT/target/$PROFILE"
-BIN="$BIN_DIR/moon-gpui"
+BIN="$BIN_DIR/moonterminal"
 if [[ ! -x "$BIN" ]]; then
   echo "missing built binary: $BIN" >&2
   exit 1

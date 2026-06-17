@@ -1,4 +1,4 @@
-# MoonTerminal — сборка единственного бинаря `moon-gpui` (crates/moon-ui-gpui).
+# MoonTerminal — сборка единственного бинаря `moonterminal` (crates/moon-ui-gpui).
 #
 #   make run            собрать и запустить (debug)
 #   make build          собрать (debug)
@@ -13,14 +13,14 @@
 # vcvars), иначе линковка C-зависимостей не найдёт link.exe.
 # macOS (Metal) / Linux: нативный таргет, отдельная настройка не нужна.
 
-PKG := -p moon-ui-gpui --bin moon-gpui
+PKG := -p moon-ui-gpui --bin moonterminal
 
 ifeq ($(OS),Windows_NT)
   TARGET := --target x86_64-pc-windows-msvc
-  BIN := target\x86_64-pc-windows-msvc\debug\moon-gpui.exe
+  BIN := target\x86_64-pc-windows-msvc\debug\moonterminal.exe
 else
   TARGET :=
-  BIN := target/debug/moon-gpui
+  BIN := target/debug/moonterminal
 endif
 
 .PHONY: run build release check fmt clean update-forks help

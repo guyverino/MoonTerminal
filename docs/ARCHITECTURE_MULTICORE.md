@@ -18,7 +18,7 @@
 - **`moon-chart`** — чарт-математика/геометрия, **wgpu-free**: `view::ChartView` (зум/пан/Y/
   follow), `axes` (тик-математика осей), `transform::ChartUniform`, `container` (типы вкладок),
   `build_order_geometry`, типы инстансов линий, константы. Данные рисует own-pass.
-- **`moon-ui-gpui`** — единственный бинарь `moon-gpui`: GPUI-оболочка на **MoonPalette** +
+- **`moon-ui-gpui`** — единственный бинарь `moonterminal`: GPUI-оболочка на **MoonPalette** +
   own-pass DX11 рендер чарта (`src/chartdx/`).
 
 ---
