@@ -904,10 +904,13 @@ Use a clean upstream clone/branch.
     says it is too weak for the upstream story because it does not demonstrate a
     retained custom cursor/readout or viewport-style GPU-only update.
 11. [ ] Add tests/diagnostics.
-    Partial: core scene invariants are covered in `scene.rs`, but the main
-    lifecycle contract still lacks direct tests: `Skip -> no clear/present`,
-    `RequestPresent -> prepare/draw/present in same tick`, UI-dirty draws all
-    visible canvases, and one requesting canvas wakes all visible canvases.
+    Partial: core scene invariants are covered in `scene.rs`, and
+    `window.rs::gpu_canvas_frame_plan_tests` now covers the basic frame gate:
+    GPU-only `Skip` does not present, GPU-only `RequestPresent` presents in the
+    same tick, UI-dirty frames still run the canvas path and present, and explicit
+    present reasons still present. Full renderer integration coverage is still
+    open: prepare/draw call counts and one requesting canvas drawing all visible
+    canvases should be tested with a fake renderer/harness.
 12. [x] Port terminal to new API in a separate product branch.
     Done in MoonTerminal `chartdx` / `ChartPanel`.
 13. [x] Prepare separate Windows pacing PR for delivery/perf if needed.
