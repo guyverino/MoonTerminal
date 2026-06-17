@@ -6,13 +6,23 @@
 //! механизм покрывает оба режима: в dedup один провайдер на биржу, в per-core каждое
 //! ядро провайдер самому себе (см. `MarketDataMode`).
 
+mod source;
+
 use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::data::{OrderBookModel, PriceLineRing, TickRing};
 use crate::feed::{OrderBook, PriceLineKind, PricePoint, Tick};
 use crate::session::CoreId;
+
+pub use source::MarketDataSource;
+
+/// Shared market buffer owned by moon-core, not by a GPUI entity. Live feeds only wake
+/// consumers; `SessionManager` pulls provider snapshots into this buffer for visible
+/// charts. Synthetic/compat feed messages can still publish here directly.
+pub type SharedMarketStore = Arc<RwLock<MarketStore>>;
 
 /// Ёмкость кольца крестиков на один (провайдер, рынок).
 const TICK_CAP: usize = 200_000;
@@ -123,6 +133,10 @@ pub struct MarketStore {
 }
 
 impl MarketStore {
+    pub fn shared(epoch_ms: f64) -> SharedMarketStore {
+        Arc::new(RwLock::new(Self::new(epoch_ms)))
+    }
+
     pub fn new(epoch_ms: f64) -> Self {
         Self {
             by_provider: HashMap::new(),

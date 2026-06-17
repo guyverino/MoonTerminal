@@ -5,7 +5,7 @@
 //! пиксели в системе окна (origin слота = `bounds.origin`).
 
 use gpui::{App, Bounds, Hsla, Pixels, Point, SharedString, TextRun, Window, fill, point, px};
-use moon_palette::MoonPalette;
+use moon_ui::MoonPalette;
 
 use moon_chart::axes::{AxisSnapshot, fmt_clock, nice_interval, price_decimals};
 use moon_chart::{GLASS_ZONE_PX, PRICE_AXIS_W, TIME_AXIS_H};

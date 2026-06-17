@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 use crate::config::AppConfig;
 use crate::db::ReportTx;
 use crate::feed::{self, ConnStatus, CoreCmd, ExchangeId, FeedHandle, FeedMsg, FeedWakeTx};
-use crate::market::{MarketDataMode, MarketStore, MarketView};
+use crate::market::{MarketDataMode, MarketDataSource, MarketStore, MarketView, SharedMarketStore};
 
 pub struct CoreSession {
     pub id: CoreId,
@@ -45,9 +45,11 @@ pub struct SessionManager {
     /// Аккаунтный план: статус/ордера/детекты/стратегии по ядру. Снаружи —
     /// только чтение через [`SessionManager::store`]; мутирует лишь сам менеджер.
     store: CoreStore,
-    /// Рыночный план: крестики/стакан по ядру-провайдеру (дедуп). Полностью
-    /// инкапсулирован: наружу — только через [`SessionManager::market_view`].
-    market: MarketStore,
+    /// Рыночный план: общий буфер вне GPUI entity. Live-feed только будит; данные
+    /// в буфер тянет `MarketDataSource` из MoonProto snapshots.
+    market: SharedMarketStore,
+    /// Pull/read-model bridge shared by UI listener and native chart frames.
+    market_source: MarketDataSource,
     /// Режим источника рыночных данных (рубильник; пока дефолт Dedup).
     mode: MarketDataMode,
     /// Ядро → биржа (из `Identity`). Без идентичности провайдер не назначается.
@@ -70,6 +72,10 @@ pub struct DrainStats {
     pub any: bool,
     /// Data visible to chart GPU state changed: market ticks/book/price-lines or order lines.
     pub chart_data: bool,
+    /// Compatibility/synthetic path already wrote market payload into `MarketStore`.
+    pub market_store_updated: bool,
+    /// Slow GPUI chrome/account state changed and the Backend entity should be notified.
+    pub ui_state: bool,
 }
 
 impl SessionManager {
@@ -81,6 +87,8 @@ impl SessionManager {
         reports: Option<&ReportTx>,
         feed_wake: Option<FeedWakeTx>,
     ) -> Self {
+        let market = MarketStore::shared(epoch_ms);
+        let market_source = MarketDataSource::new(market.clone());
         let mut store = CoreStore::default();
         let mut sessions = Vec::new();
         for (i, s) in config
@@ -97,7 +105,13 @@ impl SessionManager {
             // Стаггер начального коннекта: ядра уходят в сеть веером (150мс шаг,
             // потолок ~4с), а не залпом — иначе всплеск соединений/UDP-bind на старте.
             let startup_delay = Self::startup_stagger(i);
-            let handle = feed::spawn(s, reports.cloned(), startup_delay, feed_wake.clone());
+            let handle = feed::spawn(
+                s,
+                reports.cloned(),
+                startup_delay,
+                feed_wake.clone(),
+            );
+            market_source.set_client(id, handle.client.clone());
             sessions.push(CoreSession {
                 id,
                 name,
@@ -113,7 +127,8 @@ impl SessionManager {
             sessions,
             feed_wake,
             store,
-            market: MarketStore::new(epoch_ms),
+            market,
+            market_source,
             mode: MarketDataMode::default(),
             core_key: HashMap::new(),
             core_provider: HashMap::new(),
@@ -145,10 +160,15 @@ impl SessionManager {
                 match msg {
                     FeedMsg::Identity(ex) => {
                         self.core_key.insert(sess.id, ex);
+                        stats.ui_state = true;
                     }
                     FeedMsg::Ticks { market, ticks } => {
-                        self.market.apply_ticks(sess.id, &market, &ticks);
+                        self.market
+                            .write()
+                            .expect("market store poisoned")
+                            .apply_ticks(sess.id, &market, &ticks);
                         stats.chart_data = true;
+                        stats.market_store_updated = true;
                     }
                     FeedMsg::PriceLine {
                         market,
@@ -156,11 +176,21 @@ impl SessionManager {
                         points,
                     } => {
                         self.market
+                            .write()
+                            .expect("market store poisoned")
                             .apply_price_line(sess.id, &market, kind, &points);
                         stats.chart_data = true;
+                        stats.market_store_updated = true;
                     }
                     FeedMsg::OrderBook { market, book } => {
-                        self.market.apply_book(sess.id, &market, &book);
+                        self.market
+                            .write()
+                            .expect("market store poisoned")
+                            .apply_book(sess.id, &market, &book);
+                        stats.chart_data = true;
+                        stats.market_store_updated = true;
+                    }
+                    FeedMsg::MarketDataChanged => {
                         stats.chart_data = true;
                     }
                     FeedMsg::Orders(orders) => {
@@ -168,17 +198,25 @@ impl SessionManager {
                             let before = core.orders_rev;
                             core.apply(FeedMsg::Orders(orders));
                             stats.chart_data |= core.orders_rev != before;
+                            stats.ui_state = true;
                         }
                     }
                     other => {
                         if let Some(core) = self.store.core_mut(sess.id) {
                             core.apply(other);
+                            stats.ui_state = true;
                         }
                     }
                 }
             }
         }
         stats
+    }
+
+    /// Compatibility pull for non-frame consumers. Native chart frames call the same
+    /// `MarketDataSource` directly, so a data event cannot miss the current platform tick.
+    pub fn refresh_market_data_for_open(&self, desired: &[(CoreId, String)]) -> bool {
+        self.market_source.refresh_for_open(desired)
     }
 
     /// Снимок статусов подключения всех ядер (id → статус) — для бейджей в окне
@@ -304,9 +342,17 @@ impl SessionManager {
 
     /// Рыночные данные для чарта ядра `core` на рынке `market`: резолвим провайдера
     /// ядра и читаем его view. None, пока провайдер не избран или данные не пришли.
-    pub fn market_view(&self, core: CoreId, market: &str) -> Option<&MarketView> {
-        let provider = *self.core_provider.get(&core)?;
-        self.market.view(provider, market)
+    pub fn with_market_view<R>(
+        &self,
+        core: CoreId,
+        market: &str,
+        f: impl FnOnce(Option<&MarketView>) -> R,
+    ) -> R {
+        self.market_source.with_market_view(core, market, f)
+    }
+
+    pub fn market_source(&self) -> MarketDataSource {
+        self.market_source.clone()
     }
 
     /// Переключить режим источника рыночных данных (рубильник из Настроек). При
@@ -318,7 +364,7 @@ impl SessionManager {
             return;
         }
         self.mode = mode;
-        self.market.clear();
+        self.market_source.clear();
         self.providers.clear();
         self.core_provider.clear();
         self.wanted.clear();

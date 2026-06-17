@@ -5,7 +5,7 @@
 
 use gpui::*;
 
-use moon_palette::{
+use moon_ui::{
     MoonAccent, MoonButton, MoonButtonSegment, MoonButtonSize, MoonButtonVariant, MoonDropdown,
     MoonMenuItem, MoonMenuSize, MoonPalette, MoonSegmentItem, MoonSegmentedControl, h_flex,
 };

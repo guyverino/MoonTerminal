@@ -7,7 +7,7 @@ use std::collections::{HashMap, VecDeque};
 use std::time::Duration;
 
 use gpui::*;
-use moon_palette::{MoonPalette, Panel, PanelEvent, PanelState, h_flex, v_flex};
+use moon_ui::{MoonPalette, Panel, PanelEvent, PanelState, h_flex, v_flex};
 
 use crate::{Backend, hex};
 use moon_chart::paint::now_unix_ms;

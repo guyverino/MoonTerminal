@@ -1038,16 +1038,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "collections"
-version = "0.1.0"
-source = "git+https://github.com/Moonbot-Tech/ZedFork?branch=master#ec6f53d7581e7f56ed960e7314eb273b3001a407"
-dependencies = [
- "gpui_util",
- "indexmap",
- "rustc-hash 2.1.2",
-]
-
-[[package]]
 name = "color_quant"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1437,16 +1427,6 @@ dependencies = [
  "rustc_version",
  "syn",
  "unicode-xid",
-]
-
-[[package]]
-name = "derive_refineable"
-version = "0.1.0"
-source = "git+https://github.com/Moonbot-Tech/ZedFork?branch=master#ec6f53d7581e7f56ed960e7314eb273b3001a407"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
 ]
 
 [[package]]
@@ -2297,385 +2277,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gpui"
-version = "0.2.2"
-source = "git+https://github.com/Moonbot-Tech/ZedFork?branch=master#ec6f53d7581e7f56ed960e7314eb273b3001a407"
-dependencies = [
- "accesskit",
- "anyhow",
- "async-channel",
- "async-task",
- "bindgen",
- "bitflags 2.13.0",
- "block",
- "cbindgen",
- "chrono",
- "cocoa 0.26.0",
- "cocoa-foundation 0.2.0",
- "collections",
- "core-foundation 0.10.0",
- "core-foundation-sys",
- "core-graphics 0.24.0",
- "core-text",
- "core-video",
- "ctor",
- "derive_more",
- "embed-resource",
- "etagere",
- "foreign-types",
- "futures",
- "futures-concurrency",
- "getrandom 0.3.4",
- "gpui_macros",
- "gpui_shared_string",
- "gpui_util",
- "heapless",
- "http_client",
- "image",
- "inventory",
- "itertools 0.14.0",
- "log",
- "lyon",
- "mach2",
- "media",
- "metal",
- "num_cpus",
- "objc",
- "parking",
- "parking_lot",
- "pathfinder_geometry",
- "pin-project",
- "pollster 0.4.0",
- "postage",
- "profiling",
- "rand 0.9.4",
- "raw-window-handle",
- "refineable",
- "regex",
- "resvg",
- "scheduler",
- "schemars",
- "seahash",
- "serde",
- "serde_json",
- "slotmap",
- "smallvec",
- "spin 0.10.0",
- "stacksafe",
- "strum",
- "sum_tree",
- "taffy",
- "thiserror 2.0.18",
- "ttf-parser",
- "url",
- "usvg",
- "util_macros",
- "uuid",
- "waker-fn",
- "web-time",
- "windows 0.61.3",
- "zed-font-kit",
- "zed-scap",
-]
-
-[[package]]
-name = "gpui-component"
-version = "0.5.2"
-source = "git+https://github.com/Moonbot-Tech/MoonPalette?branch=main#0116b7cf7df174ffffa89a5d14590c050cf6dffb"
-dependencies = [
- "aho-corasick",
- "anyhow",
- "async-channel",
- "chrono",
- "core-text",
- "enum-iterator",
- "futures",
- "gpui",
- "gpui-component-assets",
- "gpui-component-macros",
- "gpui_macros",
- "html5ever",
- "instant",
- "itertools 0.13.0",
- "log",
- "lsp-types",
- "markdown",
- "markup5ever_rcdom",
- "notify",
- "num-traits",
- "objc2 0.6.4",
- "objc2-app-kit 0.3.2",
- "objc2-foundation 0.3.2",
- "once_cell",
- "paste",
- "raw-window-handle",
- "regex",
- "ropey",
- "rust-i18n",
- "schemars",
- "serde",
- "serde_json",
- "serde_repr",
- "smallvec",
- "smol",
- "toml 0.8.23",
- "tracing",
- "tree-sitter",
- "tree-sitter-json",
- "unicode-segmentation",
- "uuid",
- "windows 0.58.0",
- "zed-sum-tree",
-]
-
-[[package]]
-name = "gpui-component-assets"
-version = "0.5.1"
-source = "git+https://github.com/Moonbot-Tech/MoonPalette?branch=main#0116b7cf7df174ffffa89a5d14590c050cf6dffb"
-dependencies = [
- "anyhow",
- "gpui",
- "log",
- "rust-embed",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "zed-reqwest",
-]
-
-[[package]]
-name = "gpui-component-macros"
-version = "0.5.1"
-source = "git+https://github.com/Moonbot-Tech/MoonPalette?branch=main#0116b7cf7df174ffffa89a5d14590c050cf6dffb"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
-]
-
-[[package]]
-name = "gpui_linux"
-version = "0.1.0"
-source = "git+https://github.com/Moonbot-Tech/ZedFork?branch=master#ec6f53d7581e7f56ed960e7314eb273b3001a407"
-dependencies = [
- "accesskit",
- "accesskit_unix",
- "anyhow",
- "as-raw-xcb-connection",
- "ashpd",
- "bitflags 2.13.0",
- "bytemuck",
- "calloop",
- "calloop-wayland-source",
- "collections",
- "filedescriptor",
- "futures",
- "gpui",
- "gpui_util",
- "gpui_wgpu",
- "http_client",
- "image",
- "itertools 0.14.0",
- "libc",
- "log",
- "oo7",
- "open",
- "parking_lot",
- "pathfinder_geometry",
- "pollster 0.4.0",
- "profiling",
- "raw-window-handle",
- "smallvec",
- "smol",
- "strum",
- "swash",
- "url",
- "uuid",
- "wayland-backend",
- "wayland-client",
- "wayland-cursor",
- "wayland-protocols",
- "wayland-protocols-plasma",
- "wayland-protocols-wlr",
- "x11-clipboard",
- "x11rb",
- "xkbcommon",
- "zed-scap",
- "zed-xim",
-]
-
-[[package]]
-name = "gpui_macos"
-version = "0.1.0"
-source = "git+https://github.com/Moonbot-Tech/ZedFork?branch=master#ec6f53d7581e7f56ed960e7314eb273b3001a407"
-dependencies = [
- "accesskit",
- "accesskit_macos",
- "anyhow",
- "async-task",
- "block",
- "cbindgen",
- "cocoa 0.26.0",
- "collections",
- "core-foundation 0.10.0",
- "core-foundation-sys",
- "core-graphics 0.24.0",
- "core-text",
- "core-video",
- "ctor",
- "derive_more",
- "dispatch2",
- "etagere",
- "foreign-types",
- "futures",
- "gpui",
- "gpui_util",
- "image",
- "itertools 0.14.0",
- "libc",
- "log",
- "mach2",
- "media",
- "metal",
- "objc",
- "objc2 0.6.4",
- "objc2-app-kit 0.3.2",
- "objc2-foundation 0.3.2",
- "parking_lot",
- "pathfinder_geometry",
- "raw-window-handle",
- "semver",
- "smallvec",
- "strum",
- "uuid",
- "zed-font-kit",
-]
-
-[[package]]
-name = "gpui_macros"
-version = "0.1.0"
-source = "git+https://github.com/Moonbot-Tech/ZedFork?branch=master#ec6f53d7581e7f56ed960e7314eb273b3001a407"
-dependencies = [
- "heck 0.5.0",
- "proc-macro2",
- "quote",
- "syn",
-]
-
-[[package]]
-name = "gpui_platform"
-version = "0.1.0"
-source = "git+https://github.com/Moonbot-Tech/ZedFork?branch=master#ec6f53d7581e7f56ed960e7314eb273b3001a407"
-dependencies = [
- "console_error_panic_hook",
- "gpui",
- "gpui_linux",
- "gpui_macos",
- "gpui_web",
- "gpui_windows",
-]
-
-[[package]]
-name = "gpui_shared_string"
-version = "0.1.0"
-source = "git+https://github.com/Moonbot-Tech/ZedFork?branch=master#ec6f53d7581e7f56ed960e7314eb273b3001a407"
-dependencies = [
- "schemars",
- "serde",
- "smol_str",
-]
-
-[[package]]
-name = "gpui_util"
-version = "0.1.0"
-source = "git+https://github.com/Moonbot-Tech/ZedFork?branch=master#ec6f53d7581e7f56ed960e7314eb273b3001a407"
-dependencies = [
- "anyhow",
- "log",
- "which",
-]
-
-[[package]]
-name = "gpui_web"
-version = "0.1.0"
-source = "git+https://github.com/Moonbot-Tech/ZedFork?branch=master#ec6f53d7581e7f56ed960e7314eb273b3001a407"
-dependencies = [
- "anyhow",
- "console_error_panic_hook",
- "futures",
- "gpui",
- "gpui_wgpu",
- "http_client",
- "js-sys",
- "log",
- "parking_lot",
- "raw-window-handle",
- "smallvec",
- "uuid",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "wasm_thread",
- "web-sys",
- "web-time",
-]
-
-[[package]]
-name = "gpui_wgpu"
-version = "0.1.0"
-source = "git+https://github.com/Moonbot-Tech/ZedFork?branch=master#ec6f53d7581e7f56ed960e7314eb273b3001a407"
-dependencies = [
- "anyhow",
- "bytemuck",
- "collections",
- "cosmic-text",
- "etagere",
- "gpui",
- "gpui_util",
- "itertools 0.14.0",
- "js-sys",
- "log",
- "parking_lot",
- "pollster 0.4.0",
- "profiling",
- "raw-window-handle",
- "smallvec",
- "swash",
- "unicode-segmentation",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
- "wgpu",
- "zed-font-kit",
-]
-
-[[package]]
-name = "gpui_windows"
-version = "0.1.0"
-source = "git+https://github.com/Moonbot-Tech/ZedFork?branch=master#ec6f53d7581e7f56ed960e7314eb273b3001a407"
-dependencies = [
- "accesskit",
- "accesskit_windows",
- "anyhow",
- "collections",
- "dunce",
- "etagere",
- "futures",
- "gpui",
- "gpui_util",
- "image",
- "itertools 0.14.0",
- "log",
- "parking_lot",
- "rand 0.9.4",
- "raw-window-handle",
- "smallvec",
- "uuid",
- "windows 0.61.3",
- "windows-core 0.61.2",
- "windows-numerics 0.2.0",
- "windows-registry 0.5.3",
-]
-
-[[package]]
 name = "grid"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2890,26 +2491,6 @@ dependencies = [
  "http",
  "http-body",
  "pin-project-lite",
-]
-
-[[package]]
-name = "http_client"
-version = "0.1.0"
-source = "git+https://github.com/Moonbot-Tech/ZedFork?branch=master#ec6f53d7581e7f56ed960e7314eb273b3001a407"
-dependencies = [
- "anyhow",
- "async-compression",
- "bytes",
- "derive_more",
- "futures",
- "http",
- "http-body",
- "log",
- "parking_lot",
- "serde",
- "serde_json",
- "serde_urlencoded",
- "url",
 ]
 
 [[package]]
@@ -3810,21 +3391,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "media"
-version = "0.1.0"
-source = "git+https://github.com/Moonbot-Tech/ZedFork?branch=master#ec6f53d7581e7f56ed960e7314eb273b3001a407"
-dependencies = [
- "anyhow",
- "bindgen",
- "core-foundation 0.10.0",
- "core-video",
- "ctor",
- "foreign-types",
- "metal",
- "objc",
-]
-
-[[package]]
 name = "memchr"
 version = "2.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3916,6 +3482,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "moon-collections"
+version = "0.0.0"
+source = "git+https://github.com/Moonbot-Tech/MoonUI?branch=master#1b283e57c6693c104eb14101fa56d8a8696cfc9c"
+dependencies = [
+ "indexmap",
+ "moon-gpui-util",
+ "rustc-hash 2.1.2",
+]
+
+[[package]]
 name = "moon-core"
 version = "0.1.0"
 dependencies = [
@@ -3937,24 +3513,480 @@ dependencies = [
 ]
 
 [[package]]
-name = "moon-palette"
-version = "0.1.0"
-source = "git+https://github.com/Moonbot-Tech/MoonPalette?branch=main#0116b7cf7df174ffffa89a5d14590c050cf6dffb"
+name = "moon-derive-refineable"
+version = "0.0.0"
+source = "git+https://github.com/Moonbot-Tech/MoonUI?branch=master#1b283e57c6693c104eb14101fa56d8a8696cfc9c"
 dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "moon-gpui"
+version = "0.0.0"
+source = "git+https://github.com/Moonbot-Tech/MoonUI?branch=master#1b283e57c6693c104eb14101fa56d8a8696cfc9c"
+dependencies = [
+ "accesskit",
+ "anyhow",
+ "async-channel",
+ "async-task",
+ "bindgen",
+ "bitflags 2.13.0",
+ "block",
+ "cbindgen",
  "chrono",
- "gpui",
- "gpui-component",
- "markdown",
+ "cocoa 0.26.0",
+ "cocoa-foundation 0.2.0",
+ "core-foundation 0.10.0",
+ "core-foundation-sys",
+ "core-graphics 0.24.0",
+ "core-text",
+ "core-video",
+ "ctor",
+ "derive_more",
+ "embed-resource",
+ "etagere",
+ "foreign-types",
+ "futures",
+ "futures-concurrency",
+ "getrandom 0.3.4",
+ "heapless",
+ "image",
+ "inventory",
+ "itertools 0.14.0",
+ "log",
+ "lyon",
+ "mach2",
+ "metal",
+ "moon-collections",
+ "moon-gpui-macros",
+ "moon-gpui-shared-string",
+ "moon-gpui-util",
+ "moon-http-client",
+ "moon-media",
+ "moon-refineable",
+ "moon-scheduler",
+ "moon-sum-tree",
+ "moon-util-macros",
+ "num_cpus",
+ "objc",
+ "parking",
+ "parking_lot",
+ "pathfinder_geometry",
+ "pin-project",
+ "pollster 0.4.0",
+ "postage",
+ "profiling",
+ "rand 0.9.4",
+ "raw-window-handle",
+ "regex",
+ "resvg",
+ "schemars",
+ "seahash",
+ "serde",
+ "serde_json",
+ "slotmap",
+ "smallvec",
+ "spin 0.10.0",
+ "stacksafe",
+ "strum",
+ "taffy",
+ "thiserror 2.0.18",
+ "ttf-parser",
+ "url",
+ "usvg",
+ "uuid",
+ "waker-fn",
+ "web-time",
+ "windows 0.61.3",
+ "zed-font-kit",
+ "zed-scap",
+]
+
+[[package]]
+name = "moon-gpui-linux"
+version = "0.0.0"
+source = "git+https://github.com/Moonbot-Tech/MoonUI?branch=master#1b283e57c6693c104eb14101fa56d8a8696cfc9c"
+dependencies = [
+ "accesskit",
+ "accesskit_unix",
+ "anyhow",
+ "as-raw-xcb-connection",
+ "ashpd",
+ "bitflags 2.13.0",
+ "bytemuck",
+ "calloop",
+ "calloop-wayland-source",
+ "filedescriptor",
+ "futures",
+ "image",
+ "itertools 0.14.0",
+ "libc",
+ "log",
+ "moon-collections",
+ "moon-gpui",
+ "moon-gpui-util",
+ "moon-gpui-wgpu",
+ "moon-http-client",
+ "oo7",
+ "open",
+ "parking_lot",
+ "pathfinder_geometry",
+ "pollster 0.4.0",
+ "profiling",
+ "raw-window-handle",
+ "smallvec",
+ "smol",
+ "strum",
+ "swash",
+ "url",
+ "uuid",
+ "wayland-backend",
+ "wayland-client",
+ "wayland-cursor",
+ "wayland-protocols",
+ "wayland-protocols-plasma",
+ "wayland-protocols-wlr",
+ "x11-clipboard",
+ "x11rb",
+ "xkbcommon",
+ "zed-scap",
+ "zed-xim",
+]
+
+[[package]]
+name = "moon-gpui-macos"
+version = "0.0.0"
+source = "git+https://github.com/Moonbot-Tech/MoonUI?branch=master#1b283e57c6693c104eb14101fa56d8a8696cfc9c"
+dependencies = [
+ "accesskit",
+ "accesskit_macos",
+ "anyhow",
+ "async-task",
+ "block",
+ "cbindgen",
+ "cocoa 0.26.0",
+ "core-foundation 0.10.0",
+ "core-foundation-sys",
+ "core-graphics 0.24.0",
+ "core-text",
+ "core-video",
+ "ctor",
+ "derive_more",
+ "dispatch2",
+ "etagere",
+ "foreign-types",
+ "futures",
+ "image",
+ "itertools 0.14.0",
+ "libc",
+ "log",
+ "mach2",
+ "metal",
+ "moon-collections",
+ "moon-gpui",
+ "moon-gpui-util",
+ "moon-media",
+ "objc",
  "objc2 0.6.4",
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
+ "parking_lot",
+ "pathfinder_geometry",
  "raw-window-handle",
- "regex",
+ "semver",
+ "smallvec",
+ "strum",
+ "uuid",
+ "zed-font-kit",
+]
+
+[[package]]
+name = "moon-gpui-macros"
+version = "0.0.0"
+source = "git+https://github.com/Moonbot-Tech/MoonUI?branch=master#1b283e57c6693c104eb14101fa56d8a8696cfc9c"
+dependencies = [
+ "heck 0.5.0",
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "moon-gpui-platform"
+version = "0.0.0"
+source = "git+https://github.com/Moonbot-Tech/MoonUI?branch=master#1b283e57c6693c104eb14101fa56d8a8696cfc9c"
+dependencies = [
+ "console_error_panic_hook",
+ "moon-gpui",
+ "moon-gpui-linux",
+ "moon-gpui-macos",
+ "moon-gpui-web",
+ "moon-gpui-windows",
+]
+
+[[package]]
+name = "moon-gpui-shared-string"
+version = "0.0.0"
+source = "git+https://github.com/Moonbot-Tech/MoonUI?branch=master#1b283e57c6693c104eb14101fa56d8a8696cfc9c"
+dependencies = [
+ "schemars",
+ "serde",
+ "smol_str",
+]
+
+[[package]]
+name = "moon-gpui-util"
+version = "0.0.0"
+source = "git+https://github.com/Moonbot-Tech/MoonUI?branch=master#1b283e57c6693c104eb14101fa56d8a8696cfc9c"
+dependencies = [
+ "anyhow",
+ "log",
+ "which",
+]
+
+[[package]]
+name = "moon-gpui-web"
+version = "0.0.0"
+source = "git+https://github.com/Moonbot-Tech/MoonUI?branch=master#1b283e57c6693c104eb14101fa56d8a8696cfc9c"
+dependencies = [
+ "anyhow",
+ "console_error_panic_hook",
+ "futures",
+ "js-sys",
+ "log",
+ "moon-gpui",
+ "moon-gpui-wgpu",
+ "moon-http-client",
+ "parking_lot",
+ "raw-window-handle",
+ "smallvec",
+ "uuid",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "wasm_thread",
+ "web-sys",
+ "web-time",
+]
+
+[[package]]
+name = "moon-gpui-wgpu"
+version = "0.0.0"
+source = "git+https://github.com/Moonbot-Tech/MoonUI?branch=master#1b283e57c6693c104eb14101fa56d8a8696cfc9c"
+dependencies = [
+ "anyhow",
+ "bytemuck",
+ "cosmic-text",
+ "etagere",
+ "itertools 0.14.0",
+ "js-sys",
+ "log",
+ "moon-collections",
+ "moon-gpui",
+ "moon-gpui-util",
+ "parking_lot",
+ "pollster 0.4.0",
+ "profiling",
+ "raw-window-handle",
+ "smallvec",
+ "swash",
+ "unicode-segmentation",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+ "wgpu 29.0.3 (registry+https://github.com/rust-lang/crates.io-index)",
+ "zed-font-kit",
+]
+
+[[package]]
+name = "moon-gpui-windows"
+version = "0.0.0"
+source = "git+https://github.com/Moonbot-Tech/MoonUI?branch=master#1b283e57c6693c104eb14101fa56d8a8696cfc9c"
+dependencies = [
+ "accesskit",
+ "accesskit_windows",
+ "anyhow",
+ "dunce",
+ "etagere",
+ "futures",
+ "image",
+ "itertools 0.14.0",
+ "log",
+ "moon-collections",
+ "moon-gpui",
+ "moon-gpui-util",
+ "parking_lot",
+ "rand 0.9.4",
+ "raw-window-handle",
+ "smallvec",
+ "uuid",
+ "windows 0.61.3",
+ "windows-core 0.61.2",
+ "windows-numerics 0.2.0",
+ "windows-registry 0.5.3",
+]
+
+[[package]]
+name = "moon-http-client"
+version = "0.0.0"
+source = "git+https://github.com/Moonbot-Tech/MoonUI?branch=master#1b283e57c6693c104eb14101fa56d8a8696cfc9c"
+dependencies = [
+ "anyhow",
+ "async-compression",
+ "bytes",
+ "derive_more",
+ "futures",
+ "http",
+ "http-body",
+ "log",
+ "parking_lot",
  "serde",
  "serde_json",
+ "serde_urlencoded",
+ "url",
+]
+
+[[package]]
+name = "moon-media"
+version = "0.0.0"
+source = "git+https://github.com/Moonbot-Tech/MoonUI?branch=master#1b283e57c6693c104eb14101fa56d8a8696cfc9c"
+dependencies = [
+ "anyhow",
+ "bindgen",
+ "core-foundation 0.10.0",
+ "core-video",
+ "ctor",
+ "foreign-types",
+ "metal",
+ "objc",
+]
+
+[[package]]
+name = "moon-perf"
+version = "0.0.0"
+source = "git+https://github.com/Moonbot-Tech/MoonUI?branch=master#1b283e57c6693c104eb14101fa56d8a8696cfc9c"
+dependencies = [
+ "moon-collections",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "moon-refineable"
+version = "0.0.0"
+source = "git+https://github.com/Moonbot-Tech/MoonUI?branch=master#1b283e57c6693c104eb14101fa56d8a8696cfc9c"
+dependencies = [
+ "moon-derive-refineable",
+]
+
+[[package]]
+name = "moon-scheduler"
+version = "0.0.0"
+source = "git+https://github.com/Moonbot-Tech/MoonUI?branch=master#1b283e57c6693c104eb14101fa56d8a8696cfc9c"
+dependencies = [
+ "async-task",
+ "backtrace",
+ "chrono",
+ "flume",
+ "futures",
+ "parking_lot",
+ "rand 0.9.4",
+ "web-time",
+]
+
+[[package]]
+name = "moon-sum-tree"
+version = "0.0.0"
+source = "git+https://github.com/Moonbot-Tech/MoonUI?branch=master#1b283e57c6693c104eb14101fa56d8a8696cfc9c"
+dependencies = [
+ "heapless",
+ "log",
+ "moon-ztracing",
+ "rayon",
+ "tracing",
+]
+
+[[package]]
+name = "moon-ui"
+version = "0.1.0"
+source = "git+https://github.com/Moonbot-Tech/MoonUI?branch=master#1b283e57c6693c104eb14101fa56d8a8696cfc9c"
+dependencies = [
+ "moon-ui-components",
+]
+
+[[package]]
+name = "moon-ui-components"
+version = "0.1.0"
+source = "git+https://github.com/Moonbot-Tech/MoonUI?branch=master#1b283e57c6693c104eb14101fa56d8a8696cfc9c"
+dependencies = [
+ "aho-corasick",
+ "anyhow",
+ "async-channel",
+ "chrono",
+ "core-text",
+ "enum-iterator",
+ "futures",
+ "html5ever",
+ "instant",
+ "itertools 0.13.0",
+ "log",
+ "lsp-types",
+ "markdown",
+ "markup5ever_rcdom",
+ "moon-gpui",
+ "moon-gpui-macros",
+ "moon-sum-tree",
+ "moon-ui-components-assets",
+ "moon-ui-components-macros",
+ "notify",
+ "num-traits",
+ "objc2 0.6.4",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
+ "once_cell",
+ "paste",
+ "raw-window-handle",
+ "regex",
+ "ropey",
+ "rust-i18n",
+ "schemars",
+ "serde",
+ "serde_json",
+ "serde_repr",
+ "smallvec",
+ "smol",
  "toml 0.8.23",
+ "tracing",
+ "tree-sitter",
+ "tree-sitter-json",
  "unicode-segmentation",
- "windows 0.61.3",
+ "uuid",
+ "windows 0.58.0",
+]
+
+[[package]]
+name = "moon-ui-components-assets"
+version = "0.1.0"
+source = "git+https://github.com/Moonbot-Tech/MoonUI?branch=master#1b283e57c6693c104eb14101fa56d8a8696cfc9c"
+dependencies = [
+ "anyhow",
+ "log",
+ "moon-gpui",
+ "rust-embed",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "zed-reqwest",
+]
+
+[[package]]
+name = "moon-ui-components-macros"
+version = "0.1.0"
+source = "git+https://github.com/Moonbot-Tech/MoonUI?branch=master#1b283e57c6693c104eb14101fa56d8a8696cfc9c"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]
@@ -3965,23 +3997,60 @@ dependencies = [
  "bytemuck",
  "env_logger",
  "foreign-types",
- "gpui",
- "gpui_platform",
  "ico",
  "image",
  "log",
  "metal",
  "moon-chart",
  "moon-core",
- "moon-palette",
+ "moon-gpui",
+ "moon-gpui-platform",
+ "moon-ui",
  "raw-window-handle",
  "rusqlite",
  "serde",
  "serde_json",
- "wgpu",
+ "wgpu 29.0.3 (git+https://github.com/zed-industries/wgpu.git?rev=357a0c56e0070480ad9daea5d2eaa83150b79e88)",
  "windows 0.61.3",
  "winresource",
 ]
+
+[[package]]
+name = "moon-util-macros"
+version = "0.0.0"
+source = "git+https://github.com/Moonbot-Tech/MoonUI?branch=master#1b283e57c6693c104eb14101fa56d8a8696cfc9c"
+dependencies = [
+ "moon-perf",
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "moon-zlog"
+version = "0.0.0"
+source = "git+https://github.com/Moonbot-Tech/MoonUI?branch=master#1b283e57c6693c104eb14101fa56d8a8696cfc9c"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "log",
+ "moon-collections",
+]
+
+[[package]]
+name = "moon-ztracing"
+version = "0.0.0"
+source = "git+https://github.com/Moonbot-Tech/MoonUI?branch=master#1b283e57c6693c104eb14101fa56d8a8696cfc9c"
+dependencies = [
+ "moon-zlog",
+ "moon-ztracing-macro",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "moon-ztracing-macro"
+version = "0.0.0"
+source = "git+https://github.com/Moonbot-Tech/MoonUI?branch=master#1b283e57c6693c104eb14101fa56d8a8696cfc9c"
 
 [[package]]
 name = "moonproto"
@@ -4012,6 +4081,32 @@ checksum = "bb85c154ba489f01b25c0d36ae69a87e4a1c73a72631fc6c0eb6dde34a73e44b"
 dependencies = [
  "num-traits",
  "pxfm",
+]
+
+[[package]]
+name = "naga"
+version = "29.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0dd91265cc2454558f659b3b4b9640f0ddb8cc6521277f166b8a8c181c898079"
+dependencies = [
+ "arrayvec",
+ "bit-set",
+ "bitflags 2.13.0",
+ "cfg-if",
+ "cfg_aliases",
+ "codespan-reporting",
+ "half",
+ "hashbrown 0.16.1",
+ "hexf-parse",
+ "indexmap",
+ "libm",
+ "log",
+ "num-traits",
+ "once_cell",
+ "rustc-hash 1.1.0",
+ "spirv",
+ "thiserror 2.0.18",
+ "unicode-ident",
 ]
 
 [[package]]
@@ -4762,16 +4857,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
-name = "perf"
-version = "0.1.0"
-source = "git+https://github.com/Moonbot-Tech/ZedFork?branch=master#ec6f53d7581e7f56ed960e7314eb273b3001a407"
-dependencies = [
- "collections",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "phf"
 version = "0.11.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5443,14 +5528,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "refineable"
-version = "0.1.0"
-source = "git+https://github.com/Moonbot-Tech/ZedFork?branch=master#ec6f53d7581e7f56ed960e7314eb273b3001a407"
-dependencies = [
- "derive_refineable",
-]
-
-[[package]]
 name = "regex"
 version = "1.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5793,21 +5870,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "91c1b7e4904c873ef0710c1f407dde2e6287de2bebc1bbbf7d430bb7cbffd939"
 dependencies = [
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "scheduler"
-version = "0.1.0"
-source = "git+https://github.com/Moonbot-Tech/ZedFork?branch=master#ec6f53d7581e7f56ed960e7314eb273b3001a407"
-dependencies = [
- "async-task",
- "backtrace",
- "chrono",
- "flume",
- "futures",
- "parking_lot",
- "rand 0.9.4",
- "web-time",
 ]
 
 [[package]]
@@ -6417,18 +6479,6 @@ name = "subtle"
 version = "2.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
-
-[[package]]
-name = "sum_tree"
-version = "0.1.0"
-source = "git+https://github.com/Moonbot-Tech/ZedFork?branch=master#ec6f53d7581e7f56ed960e7314eb273b3001a407"
-dependencies = [
- "heapless",
- "log",
- "rayon",
- "tracing",
- "ztracing",
-]
 
 [[package]]
 name = "sval"
@@ -7266,16 +7316,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 
 [[package]]
-name = "util_macros"
-version = "0.1.0"
-source = "git+https://github.com/Moonbot-Tech/ZedFork?branch=master#ec6f53d7581e7f56ed960e7314eb273b3001a407"
-dependencies = [
- "perf",
- "quote",
- "syn",
-]
-
-[[package]]
 name = "uuid"
 version = "1.23.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7663,6 +7703,36 @@ checksum = "a28ac98ddc8b9274cb41bb4d9d4d5c425b6020c50c46f25559911905610b4a88"
 [[package]]
 name = "wgpu"
 version = "29.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bb3feacc458f7bee8bc1737149b42b6c731aa461039a4264a67bb6681646b250"
+dependencies = [
+ "arrayvec",
+ "bitflags 2.13.0",
+ "bytemuck",
+ "cfg-if",
+ "cfg_aliases",
+ "document-features",
+ "hashbrown 0.16.1",
+ "js-sys",
+ "log",
+ "naga 29.0.3 (registry+https://github.com/rust-lang/crates.io-index)",
+ "parking_lot",
+ "portable-atomic",
+ "profiling",
+ "raw-window-handle",
+ "smallvec",
+ "static_assertions",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+ "wgpu-core 29.0.3 (registry+https://github.com/rust-lang/crates.io-index)",
+ "wgpu-hal 29.0.3 (registry+https://github.com/rust-lang/crates.io-index)",
+ "wgpu-types 29.0.3 (registry+https://github.com/rust-lang/crates.io-index)",
+]
+
+[[package]]
+name = "wgpu"
+version = "29.0.3"
 source = "git+https://github.com/zed-industries/wgpu.git?rev=357a0c56e0070480ad9daea5d2eaa83150b79e88#357a0c56e0070480ad9daea5d2eaa83150b79e88"
 dependencies = [
  "arrayvec",
@@ -7674,7 +7744,7 @@ dependencies = [
  "hashbrown 0.16.1",
  "js-sys",
  "log",
- "naga",
+ "naga 29.0.3 (git+https://github.com/zed-industries/wgpu.git?rev=357a0c56e0070480ad9daea5d2eaa83150b79e88)",
  "parking_lot",
  "portable-atomic",
  "profiling",
@@ -7684,9 +7754,42 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
- "wgpu-core",
- "wgpu-hal",
- "wgpu-types",
+ "wgpu-core 29.0.3 (git+https://github.com/zed-industries/wgpu.git?rev=357a0c56e0070480ad9daea5d2eaa83150b79e88)",
+ "wgpu-hal 29.0.3 (git+https://github.com/zed-industries/wgpu.git?rev=357a0c56e0070480ad9daea5d2eaa83150b79e88)",
+ "wgpu-types 29.0.3 (git+https://github.com/zed-industries/wgpu.git?rev=357a0c56e0070480ad9daea5d2eaa83150b79e88)",
+]
+
+[[package]]
+name = "wgpu-core"
+version = "29.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "02da3ad1b568337f25513b317870960ef87073ea0945502e44b864b67a8c77b7"
+dependencies = [
+ "arrayvec",
+ "bit-set",
+ "bit-vec",
+ "bitflags 2.13.0",
+ "bytemuck",
+ "cfg_aliases",
+ "document-features",
+ "hashbrown 0.16.1",
+ "indexmap",
+ "log",
+ "naga 29.0.3 (registry+https://github.com/rust-lang/crates.io-index)",
+ "once_cell",
+ "parking_lot",
+ "portable-atomic",
+ "profiling",
+ "raw-window-handle",
+ "rustc-hash 1.1.0",
+ "smallvec",
+ "thiserror 2.0.18",
+ "wgpu-core-deps-apple 29.0.3 (registry+https://github.com/rust-lang/crates.io-index)",
+ "wgpu-core-deps-emscripten 29.0.3 (registry+https://github.com/rust-lang/crates.io-index)",
+ "wgpu-core-deps-windows-linux-android 29.0.3 (registry+https://github.com/rust-lang/crates.io-index)",
+ "wgpu-hal 29.0.3 (registry+https://github.com/rust-lang/crates.io-index)",
+ "wgpu-naga-bridge 29.0.3 (registry+https://github.com/rust-lang/crates.io-index)",
+ "wgpu-types 29.0.3 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
@@ -7704,7 +7807,7 @@ dependencies = [
  "hashbrown 0.16.1",
  "indexmap",
  "log",
- "naga",
+ "naga 29.0.3 (git+https://github.com/zed-industries/wgpu.git?rev=357a0c56e0070480ad9daea5d2eaa83150b79e88)",
  "once_cell",
  "parking_lot",
  "portable-atomic",
@@ -7713,12 +7816,21 @@ dependencies = [
  "rustc-hash 1.1.0",
  "smallvec",
  "thiserror 2.0.18",
- "wgpu-core-deps-apple",
- "wgpu-core-deps-emscripten",
- "wgpu-core-deps-windows-linux-android",
- "wgpu-hal",
- "wgpu-naga-bridge",
- "wgpu-types",
+ "wgpu-core-deps-apple 29.0.3 (git+https://github.com/zed-industries/wgpu.git?rev=357a0c56e0070480ad9daea5d2eaa83150b79e88)",
+ "wgpu-core-deps-emscripten 29.0.3 (git+https://github.com/zed-industries/wgpu.git?rev=357a0c56e0070480ad9daea5d2eaa83150b79e88)",
+ "wgpu-core-deps-windows-linux-android 29.0.3 (git+https://github.com/zed-industries/wgpu.git?rev=357a0c56e0070480ad9daea5d2eaa83150b79e88)",
+ "wgpu-hal 29.0.3 (git+https://github.com/zed-industries/wgpu.git?rev=357a0c56e0070480ad9daea5d2eaa83150b79e88)",
+ "wgpu-naga-bridge 29.0.3 (git+https://github.com/zed-industries/wgpu.git?rev=357a0c56e0070480ad9daea5d2eaa83150b79e88)",
+ "wgpu-types 29.0.3 (git+https://github.com/zed-industries/wgpu.git?rev=357a0c56e0070480ad9daea5d2eaa83150b79e88)",
+]
+
+[[package]]
+name = "wgpu-core-deps-apple"
+version = "29.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "62e51b5447e144b3dbba4feb01f80f4fa21696fa0cd99afb2c3df1affd6fdb28"
+dependencies = [
+ "wgpu-hal 29.0.3 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
@@ -7726,7 +7838,16 @@ name = "wgpu-core-deps-apple"
 version = "29.0.3"
 source = "git+https://github.com/zed-industries/wgpu.git?rev=357a0c56e0070480ad9daea5d2eaa83150b79e88#357a0c56e0070480ad9daea5d2eaa83150b79e88"
 dependencies = [
- "wgpu-hal",
+ "wgpu-hal 29.0.3 (git+https://github.com/zed-industries/wgpu.git?rev=357a0c56e0070480ad9daea5d2eaa83150b79e88)",
+]
+
+[[package]]
+name = "wgpu-core-deps-emscripten"
+version = "29.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3487cd6293a963bc5c0c0396f6a2192043c50003c07f4efdccbad3d90ec9d819"
+dependencies = [
+ "wgpu-hal 29.0.3 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
@@ -7734,7 +7855,16 @@ name = "wgpu-core-deps-emscripten"
 version = "29.0.3"
 source = "git+https://github.com/zed-industries/wgpu.git?rev=357a0c56e0070480ad9daea5d2eaa83150b79e88#357a0c56e0070480ad9daea5d2eaa83150b79e88"
 dependencies = [
- "wgpu-hal",
+ "wgpu-hal 29.0.3 (git+https://github.com/zed-industries/wgpu.git?rev=357a0c56e0070480ad9daea5d2eaa83150b79e88)",
+]
+
+[[package]]
+name = "wgpu-core-deps-windows-linux-android"
+version = "29.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1bfb01076d0aa08b0ba9bd741e178b5cc440f5abe99d9581323a4c8b5d1a1916"
+dependencies = [
+ "wgpu-hal 29.0.3 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
@@ -7742,7 +7872,61 @@ name = "wgpu-core-deps-windows-linux-android"
 version = "29.0.3"
 source = "git+https://github.com/zed-industries/wgpu.git?rev=357a0c56e0070480ad9daea5d2eaa83150b79e88#357a0c56e0070480ad9daea5d2eaa83150b79e88"
 dependencies = [
- "wgpu-hal",
+ "wgpu-hal 29.0.3 (git+https://github.com/zed-industries/wgpu.git?rev=357a0c56e0070480ad9daea5d2eaa83150b79e88)",
+]
+
+[[package]]
+name = "wgpu-hal"
+version = "29.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "31f8e1a9e7a8512f276f7c62e018c7fa8d60954303fed2e5750114332049193f"
+dependencies = [
+ "android_system_properties",
+ "arrayvec",
+ "ash",
+ "bit-set",
+ "bitflags 2.13.0",
+ "block2 0.6.2",
+ "bytemuck",
+ "cfg-if",
+ "cfg_aliases",
+ "glow",
+ "glutin_wgl_sys",
+ "gpu-allocator",
+ "gpu-descriptor",
+ "hashbrown 0.16.1",
+ "js-sys",
+ "khronos-egl",
+ "libc",
+ "libloading",
+ "log",
+ "naga 29.0.3 (registry+https://github.com/rust-lang/crates.io-index)",
+ "ndk-sys",
+ "objc2 0.6.4",
+ "objc2-core-foundation",
+ "objc2-foundation 0.3.2",
+ "objc2-metal 0.3.2",
+ "objc2-quartz-core 0.3.2",
+ "once_cell",
+ "ordered-float",
+ "parking_lot",
+ "portable-atomic",
+ "portable-atomic-util",
+ "profiling",
+ "range-alloc",
+ "raw-window-handle",
+ "raw-window-metal",
+ "renderdoc-sys",
+ "smallvec",
+ "thiserror 2.0.18",
+ "wasm-bindgen",
+ "wayland-sys",
+ "web-sys",
+ "wgpu-naga-bridge 29.0.3 (registry+https://github.com/rust-lang/crates.io-index)",
+ "wgpu-types 29.0.3 (registry+https://github.com/rust-lang/crates.io-index)",
+ "windows 0.62.2",
+ "windows-core 0.62.2",
+ "windows-result 0.4.1",
 ]
 
 [[package]]
@@ -7769,7 +7953,7 @@ dependencies = [
  "libc",
  "libloading",
  "log",
- "naga",
+ "naga 29.0.3 (git+https://github.com/zed-industries/wgpu.git?rev=357a0c56e0070480ad9daea5d2eaa83150b79e88)",
  "ndk-sys",
  "objc2 0.6.4",
  "objc2-core-foundation",
@@ -7791,8 +7975,8 @@ dependencies = [
  "wasm-bindgen",
  "wayland-sys",
  "web-sys",
- "wgpu-naga-bridge",
- "wgpu-types",
+ "wgpu-naga-bridge 29.0.3 (git+https://github.com/zed-industries/wgpu.git?rev=357a0c56e0070480ad9daea5d2eaa83150b79e88)",
+ "wgpu-types 29.0.3 (git+https://github.com/zed-industries/wgpu.git?rev=357a0c56e0070480ad9daea5d2eaa83150b79e88)",
  "windows 0.62.2",
  "windows-core 0.62.2",
  "windows-result 0.4.1",
@@ -7801,10 +7985,34 @@ dependencies = [
 [[package]]
 name = "wgpu-naga-bridge"
 version = "29.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "59c654c483f058800972c3645e95388a7eca31bf9fe1933bc20e036588a0be02"
+dependencies = [
+ "naga 29.0.3 (registry+https://github.com/rust-lang/crates.io-index)",
+ "wgpu-types 29.0.3 (registry+https://github.com/rust-lang/crates.io-index)",
+]
+
+[[package]]
+name = "wgpu-naga-bridge"
+version = "29.0.3"
 source = "git+https://github.com/zed-industries/wgpu.git?rev=357a0c56e0070480ad9daea5d2eaa83150b79e88#357a0c56e0070480ad9daea5d2eaa83150b79e88"
 dependencies = [
- "naga",
- "wgpu-types",
+ "naga 29.0.3 (git+https://github.com/zed-industries/wgpu.git?rev=357a0c56e0070480ad9daea5d2eaa83150b79e88)",
+ "wgpu-types 29.0.3 (git+https://github.com/zed-industries/wgpu.git?rev=357a0c56e0070480ad9daea5d2eaa83150b79e88)",
+]
+
+[[package]]
+name = "wgpu-types"
+version = "29.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a9bcc31518a0e9735aefebedb5f7a9ef3ed1c42549c9f4c882fa9060ceaac639"
+dependencies = [
+ "bitflags 2.13.0",
+ "bytemuck",
+ "js-sys",
+ "log",
+ "raw-window-handle",
+ "web-sys",
 ]
 
 [[package]]
@@ -8536,12 +8744,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "workspace-hack"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "beffa227304dbaea3ad6a06ac674f9bc83a3dec3b7f63eeb442de37e7cb6bb01"
-
-[[package]]
 name = "writeable"
 version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8898,7 +9100,8 @@ dependencies = [
 [[package]]
 name = "zed-reqwest"
 version = "0.12.15-zed"
-source = "git+https://github.com/zed-industries/reqwest.git?rev=c15662463bda39148ba154100dd44d3fba5873a4#c15662463bda39148ba154100dd44d3fba5873a4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ac2d05756ff48539950c3282ad7acf3817ad3f08797c205ad1c34a2ce03b9970"
 dependencies = [
  "base64",
  "bytes",
@@ -8947,7 +9150,8 @@ dependencies = [
 [[package]]
 name = "zed-scap"
 version = "0.0.8-zed"
-source = "git+https://github.com/zed-industries/scap?rev=4afea48c3b002197176fb19cd0f9b180dd36eaac#4afea48c3b002197176fb19cd0f9b180dd36eaac"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b6b338d705ae33a43ca00287c11129303a7a0aa57b101b72a1c08c863f698ac8"
 dependencies = [
  "anyhow",
  "cocoa 0.25.0",
@@ -8963,18 +9167,6 @@ dependencies = [
  "windows-capture",
  "x11",
  "xcb",
-]
-
-[[package]]
-name = "zed-sum-tree"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d490156d0d7311855564d6e1d6dccab992405a0c0e15e1c8ef18920c02177e35"
-dependencies = [
- "arrayvec",
- "log",
- "rayon",
- "workspace-hack",
 ]
 
 [[package]]
@@ -9091,37 +9283,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "zlog"
-version = "0.1.0"
-source = "git+https://github.com/Moonbot-Tech/ZedFork?branch=master#ec6f53d7581e7f56ed960e7314eb273b3001a407"
-dependencies = [
- "anyhow",
- "chrono",
- "collections",
- "log",
-]
-
-[[package]]
 name = "zmij"
 version = "1.0.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
-
-[[package]]
-name = "ztracing"
-version = "0.1.0"
-source = "git+https://github.com/Moonbot-Tech/ZedFork?branch=master#ec6f53d7581e7f56ed960e7314eb273b3001a407"
-dependencies = [
- "tracing",
- "tracing-subscriber",
- "zlog",
- "ztracing_macro",
-]
-
-[[package]]
-name = "ztracing_macro"
-version = "0.1.0"
-source = "git+https://github.com/Moonbot-Tech/ZedFork?branch=master#ec6f53d7581e7f56ed960e7314eb273b3001a407"
 
 [[package]]
 name = "zune-core"

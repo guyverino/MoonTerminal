@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use gpui::*;
-use moon_palette::{DockAreaState, PanelInfo, PanelState, register_panel};
+use moon_ui::{DockAreaState, PanelInfo, PanelState, register_panel};
 
 use moon_core::config::paths;
 

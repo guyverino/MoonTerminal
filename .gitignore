@@ -5,8 +5,8 @@
 /config.enc
 /servers.enc
 /settings.toml
-# Cargo.lock коммитим (bin-проект): фиксируем точные rev форков ZedFork/MoonPalette,
-# чтобы у всех был детерминированный набор и не было рассинхрона веток master/main.
+# Cargo.lock коммитим (bin-проект): фиксируем точные rev MoonUI и внешних зависимостей,
+# чтобы у всех был детерминированный набор и не было рассинхрона локального/public source.
 /legasy
 *.log
 /docAi

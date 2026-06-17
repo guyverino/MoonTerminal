@@ -25,25 +25,11 @@ debug-assertions = false
 [profile.dev.package."*"]
 opt-level = 3
 
-# MoonKernel: единая GPUI база для public-сборки.
+# Moon UI: единая локальная/публичная база для GPUI runtime + компонентов.
 #
-# Канонический источник GPUI для всего Moon-стека — Moonbot-Tech/ZedFork, ветка `master`.
-# MoonPalette тоже пинит gpui на ZedFork branch=master, поэтому терминал ОБЯЗАН использовать
-# тот же спек `{git, branch="master"}` (а не `{git, rev}`) — иначе Cargo считает их разными
-# источниками и собирает две несовместимые копии GPUI. Каждый push в
-# ZedFork/MoonPalette/MoonTerminal обязан сохранять сборку всего стека.
-# Локальные path overrides живут только в ignored .cargo/config.toml.
-[patch."https://github.com/zed-industries/zed"]
-gpui = { git = "https://github.com/Moonbot-Tech/ZedFork", branch = "master" }
-gpui_platform = { git = "https://github.com/Moonbot-Tech/ZedFork", branch = "master" }
-gpui_windows = { git = "https://github.com/Moonbot-Tech/ZedFork", branch = "master" }
-gpui_macos = { git = "https://github.com/Moonbot-Tech/ZedFork", branch = "master" }
-gpui_linux = { git = "https://github.com/Moonbot-Tech/ZedFork", branch = "master" }
-gpui_web = { git = "https://github.com/Moonbot-Tech/ZedFork", branch = "master" }
-gpui_wgpu = { git = "https://github.com/Moonbot-Tech/ZedFork", branch = "master" }
-gpui_macros = { git = "https://github.com/Moonbot-Tech/ZedFork", branch = "master" }
-gpui_shared_string = { git = "https://github.com/Moonbot-Tech/ZedFork", branch = "master" }
-gpui_util = { git = "https://github.com/Moonbot-Tech/ZedFork", branch = "master" }
+# Канонический источник Moon-стека теперь Moonbot-Tech/MoonUI: standalone GPUI
+# (`moon-gpui`) + Moon components (`moon-ui`). Публичные зависимости идут через Git;
+# локальная разработка подменяет их на соседний checkout в untracked `.cargo/config.toml`.
 
 # Zed's crates.io patches are not inherited transitively when GPUI is consumed as a dependency.
 # Keep the GPUI process stack on the same patched crates the fork itself uses.

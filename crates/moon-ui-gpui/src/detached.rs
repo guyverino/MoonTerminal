@@ -12,7 +12,7 @@
 use std::rc::Rc;
 
 use gpui::*;
-use moon_palette::{MoonBackgroundPolicy, MoonPalette, PanelView, Root};
+use moon_ui::{MoonBackgroundPolicy, MoonPalette, PanelView, Root};
 use serde::{Deserialize, Serialize};
 
 use crate::Backend;

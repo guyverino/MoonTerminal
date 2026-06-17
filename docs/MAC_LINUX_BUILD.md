@@ -10,8 +10,9 @@ MoonTerminal на macOS и Linux. Windows/MSVC правила живут в `AGE
 Публичные зависимости должны оставаться воспроизводимыми через git:
 
 ```toml
-gpui = { git = "https://github.com/Moonbot-Tech/ZedFork", branch = "master" }
-moon-palette = { git = "https://github.com/Moonbot-Tech/MoonPalette", branch = "main" }
+gpui = { package = "moon-gpui", git = "https://github.com/Moonbot-Tech/MoonUI", branch = "master" }
+gpui_platform = { package = "moon-gpui-platform", git = "https://github.com/Moonbot-Tech/MoonUI", branch = "master" }
+moon-ui = { package = "moon-ui", git = "https://github.com/Moonbot-Tech/MoonUI", branch = "master" }
 ```
 
 Локальная разработка через соседние checkout'ы делается только через локальный
@@ -22,12 +23,24 @@ Cargo override в `.cargo/config.toml`. Этот файл не коммитит�
 ```bash
 git rev-parse HEAD
 cargo tree -i gpui
-cargo tree -i moon-palette
+cargo tree -i moon-ui
 ```
 
 ## macOS
 
-Нужен Xcode / Command Line Tools с Metal toolchain.
+Нужен полный Xcode или другой установленный Metal toolchain, где работает
+`xcrun --find metal`. Одних Command Line Tools недостаточно: `moon-gpui-macos`
+в build script компилирует GPUI `shaders.metal` через `xcrun metal`.
+
+Проверка toolchain:
+
+```bash
+xcode-select -p
+xcrun --find metal
+```
+
+Если `xcrun --find metal` пишет `unable to find utility "metal"`, сборка
+остановится на `moon-gpui-macos` даже если `cargo`, `clang` и SDK уже есть.
 
 Быстрая проверка:
 

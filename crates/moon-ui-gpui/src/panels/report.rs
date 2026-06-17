@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use gpui::prelude::FluentBuilder;
 use gpui::*;
-use moon_palette::{
+use moon_ui::{
     DockArea, MoonButton, MoonButtonSize, MoonButtonVariant, MoonDataCell, MoonDataRow,
     MoonDataTable, MoonDataTableColumn, MoonDataTableState, MoonDropdown, MoonInput,
     MoonInputEvent, MoonInputState, MoonMenuItem, MoonMenuSize, MoonPalette, Panel, PanelEvent,

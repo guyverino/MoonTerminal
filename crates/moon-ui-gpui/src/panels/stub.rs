@@ -3,7 +3,7 @@
 //! Кнопка «⧉» откпрепляет панель в отдельное окно (убирает из дока + окно открепления).
 
 use gpui::*;
-use moon_palette::{
+use moon_ui::{
     DockArea, MoonButton, MoonButtonSize, MoonPalette, Panel, PanelEvent, PanelState,
 };
 

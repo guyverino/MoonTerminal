@@ -3,7 +3,7 @@
 //! в draft, применяются после «Сохранить» (язык/чарты — на перезапуске/пересборке окон).
 
 use gpui::*;
-use moon_palette::{
+use moon_ui::{
     MoonButton, MoonButtonSize, MoonCheckbox, MoonCheckboxSize, MoonMenuSize, MoonPalette,
     MoonSelect, StyledExt, h_flex, rgba_from, v_flex,
 };

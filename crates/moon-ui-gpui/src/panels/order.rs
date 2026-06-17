@@ -2,7 +2,7 @@
 //! Действия пока заглушки-лог; форму ввода/реальные ордера прикрутим позже.
 
 use gpui::*;
-use moon_palette::{MoonButton, MoonButtonSize, MoonButtonVariant, Panel, PanelEvent, v_flex};
+use moon_ui::{MoonButton, MoonButtonSize, MoonButtonVariant, Panel, PanelEvent, v_flex};
 
 pub struct OrderPanel {
     focus: FocusHandle,

@@ -275,6 +275,10 @@ pub enum FeedMsg {
         market: String,
         book: OrderBook,
     },
+    /// Рыночный read-model изменился. Это лёгкий пинок consumer-side pull:
+    /// `SessionManager` перечитает provider snapshot для видимых графиков.
+    /// Сами тики/стакан через UI-channel не едут.
+    MarketDataChanged,
     /// Открытые ордера ядра (все рынки).
     Orders(Vec<OrderRow>),
     /// Пачка новых детектов (накопленных за тик дренажа событий).

@@ -2,7 +2,7 @@
 name = "moon-ui-gpui"
 version = "0.1.0"
 edition = "2024"
-description = "MoonTerminal GPUI shell over moon-core; UI migration target is MoonPalette."
+description = "MoonTerminal GPUI shell over moon-core and MoonUI."
 
 [features]
 debug-tools = []
@@ -24,12 +24,11 @@ moon-chart = { path = "../moon-chart" }
 image = "0.25"
 bytemuck = { version = "1", features = ["derive"] }
 
-# GPUI source identity must stay single across terminal and MoonPalette.
-# Public builds intentionally follow our integration branches; local path
-# overrides live in the workspace .cargo/config.toml.
-gpui = { git = "https://github.com/Moonbot-Tech/ZedFork", branch = "master" }
-gpui_platform = { git = "https://github.com/Moonbot-Tech/ZedFork", branch = "master", features = ["font-kit", "wayland", "x11"] }
-moon-palette = { git = "https://github.com/Moonbot-Tech/MoonPalette", branch = "main" }
+# Canonical Moon UI source: standalone GPUI runtime + Moon components.
+# Local development overrides this Git source through untracked `.cargo/config.toml`.
+gpui = { package = "moon-gpui", git = "https://github.com/Moonbot-Tech/MoonUI", branch = "master" }
+gpui_platform = { package = "moon-gpui-platform", git = "https://github.com/Moonbot-Tech/MoonUI", branch = "master", features = ["font-kit", "wayland", "x11"] }
+moon-ui = { package = "moon-ui", git = "https://github.com/Moonbot-Tech/MoonUI", branch = "master" }
 
 anyhow = "1"
 log = "0.4"

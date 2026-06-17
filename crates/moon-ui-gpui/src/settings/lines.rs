@@ -4,7 +4,7 @@
 //! Состояние редактора — [`Lines`]; раскрытость блоков живёт в `SettingsView.open_lines`.
 
 use gpui::*;
-use moon_palette::{
+use moon_ui::{
     MoonCheckbox, MoonCheckboxSize, MoonColorPicker, MoonColorPickerEvent, MoonColorPickerState,
     MoonPalette, MoonSliderEvent, MoonSliderState, StyledExt, h_flex, rgba_from, v_flex,
 };

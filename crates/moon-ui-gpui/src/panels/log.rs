@@ -8,7 +8,7 @@
 //! через `MoonVirtualList`; при появлении новых строк прокрутка держится у хвоста.
 
 use gpui::*;
-use moon_palette::{
+use moon_ui::{
     DockArea, MoonButton, MoonButtonSize, MoonButtonVariant, MoonCheckbox, MoonCheckboxSize,
     MoonDropdown, MoonInput, MoonInputEvent, MoonInputState, MoonMenuItem, MoonMenuSize,
     MoonPalette, MoonScrollbarVisibility, MoonVirtualList, MoonVirtualListScrollHandle, Panel,

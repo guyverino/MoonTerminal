@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use gpui::*;
-use moon_palette::{
+use moon_ui::{
     MoonButton, MoonButtonSize, MoonButtonVariant, MoonCheckbox, MoonCheckboxSize, MoonColorPicker,
     MoonColorPickerEvent, MoonColorPickerState, MoonDropdown, MoonInput, MoonInputEvent,
     MoonInputState, MoonMenuItem, MoonMenuSize, MoonPalette, MoonSelect, MoonTooltipView,

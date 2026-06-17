@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use gpui::prelude::FluentBuilder;
 use gpui::*;
-use moon_palette::{
+use moon_ui::{
     MoonBackgroundPolicy, MoonButton, MoonButtonSize, MoonButtonVariant, MoonCheckbox,
     MoonCheckboxSize, MoonDropdown, MoonInput, MoonInputEvent, MoonInputState, MoonMenuItem,
     MoonMenuSize, MoonPalette, MoonRect, MoonTextArea, MoonTextAreaEvent, MoonTextAreaState,
@@ -1580,7 +1580,7 @@ fn strategies_header(p: MoonPalette) -> impl IntoElement {
                         .h(px(7.0))
                         .rounded(px(999.0))
                         .bg(moon(p.accent))
-                        .shadow(vec![moon_palette::foundation::box_shadow(
+                        .shadow(vec![moon_ui::foundation::box_shadow(
                             px(0.0),
                             px(0.0),
                             px(8.0),

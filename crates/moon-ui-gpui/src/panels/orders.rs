@@ -13,7 +13,7 @@ use std::rc::Rc;
 
 use gpui::prelude::FluentBuilder;
 use gpui::*;
-use moon_palette::{
+use moon_ui::{
     DockArea, MoonButton, MoonButtonSize, MoonButtonVariant, MoonDataCell, MoonDataRow,
     MoonDataTable, MoonDataTableColumn, MoonDropdown, MoonMenuItem, MoonMenuSize, MoonPalette,
     MoonText, MoonTone, Panel, PanelEvent, PanelInfo, PanelState, h_flex, v_flex,

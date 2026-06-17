@@ -20,7 +20,7 @@ use std::hash::{Hash, Hasher};
 
 use gpui::prelude::FluentBuilder;
 use gpui::*;
-use moon_palette::{
+use moon_ui::{
     IndexPath, MoonBackgroundPolicy, MoonButton, MoonButtonSize, MoonButtonVariant,
     MoonColorPicker, MoonColorPickerState, MoonPalette, MoonRect, MoonSelectEvent, MoonSelectItem,
     MoonSelectState, MoonSlider, MoonSliderState, MoonWindowChrome, MoonWindowChromeButton, Root,
@@ -472,7 +472,7 @@ fn settings_header(p: MoonPalette) -> impl IntoElement {
                         .h(px(7.0))
                         .rounded(px(999.0))
                         .bg(rgba_from(p.blue, 1.0))
-                        .shadow(vec![moon_palette::foundation::box_shadow(
+                        .shadow(vec![moon_ui::foundation::box_shadow(
                             px(0.0),
                             px(0.0),
                             px(8.0),

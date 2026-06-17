@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use gpui::*;
-use moon_palette::{
+use moon_ui::{
     MoonBackgroundPolicy, MoonPalette, MoonRect, MoonTabItem, MoonTabStrip, Panel, PanelEvent,
     PanelState, Root, h_flex, v_flex,
 };
@@ -788,7 +788,7 @@ impl DetachedChartHost {
         .detach();
         // Восстановленное окно: НИКОГДА не пересохраняем геометрию автоматически. gpui на
         // не-primary DPI читает позицию со сдвигом ×scale (баг размещения, см. заметку для
-        // gpui/ZedFork), и если её сохранить — на след. запуске окно уезжает ещё → улетает за
+        // MoonUI GPUI), и если её сохранить — на след. запуске окно уезжает ещё → улетает за
         // экран → дефолт (компаундинг). Поэтому сохранённую позицию НЕ трогаем: рестор кладёт
         // окно на исходное место и держит стабильно. (Свежий детач — persist_armed=true.)
         // Закрытие окна → репин в стрип (дренит ChartTabs). На выходе приложения запрос не

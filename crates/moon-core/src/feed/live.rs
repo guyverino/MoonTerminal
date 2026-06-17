@@ -1,18 +1,17 @@
 //! Live-backend: подключение к ядру MoonBot через MoonProtoBeta.
 //! Единственный модуль, знающий про moonproto.
 //!
-//! Поток: snapshot-driven. Трейды читаем retained-курсором `SeqRingReader`,
-//! стакан — из `snapshot().order_book(...)`. Доменные события только дренируем,
-//! чтобы очередь не росла; данные берём из read-model snapshot.
+//! Поток: event-driven. `MoonEventSink` будит backend thread после реального события;
+//! market data остаётся в immutable read-model snapshot, сюда идёт только лёгкий сигнал.
 
-use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use moonproto::state::{OrderBookKind, OrderTraceChartPoint, OrderTraceLine};
+use moonproto::state::{OrderTraceChartPoint, OrderTraceLine};
 use moonproto::{
     ClientConfig, ConnectConfig, Event, InitConfig, InitialStrategies, LifecycleEvent, MoonClient,
-    TradesStreamMode, TransportMode,
+    MoonEventSink, TradesStreamMode, TransportMode,
 };
 
 use super::report::{delphi_to_unix, send_close_report, OrderIndex, OrderMeta};
@@ -20,8 +19,8 @@ use super::strategies::{
     alert_params, build_schema_model, fmt_field, fv_from_str, strat_kind_name,
 };
 use super::{
-    ConnStatus, CoreCmd, CoreLogLine, DetectRow, ExchangeId, FeedMsg, FeedTx, Level, OrderBook,
-    OrderRow, OrderTrace, OrderTracePoint, PriceLineKind, PricePoint, Side, StrategyRow, Tick,
+    ConnStatus, CoreCmd, CoreLogLine, DetectRow, ExchangeId, FeedMsg, FeedTx, OrderRow, OrderTrace,
+    OrderTracePoint, SharedMoonClient, StrategyRow,
 };
 use crate::config::ServerConfig;
 use crate::db::ReportTx;
@@ -58,11 +57,22 @@ fn order_trace(line: &OrderTraceLine) -> Option<OrderTrace> {
     })
 }
 
+struct ClientSlotGuard {
+    slot: SharedMoonClient,
+}
+
+impl Drop for ClientSlotGuard {
+    fn drop(&mut self) {
+        self.slot.set(None);
+    }
+}
+
 pub fn run(
     server: &ServerConfig,
     tx: &FeedTx,
     cmd_rx: &Receiver<CoreCmd>,
     reports: Option<&ReportTx>,
+    client_slot: SharedMoonClient,
 ) -> anyhow::Result<()> {
     let _ = tx.send(FeedMsg::Status(ConnStatus::Connecting));
 
@@ -96,25 +106,26 @@ pub fn run(
 
     // connect (не blocking) + connect_timeout, чтобы зависший шаг init пришёл
     // как ConnectFailed с причиной, а не молчал.
-    let client = MoonClient::connect(
+    let (event_wake_tx, event_wake_rx) = std::sync::mpsc::channel::<()>();
+    let (event_sink, event_queue) = MoonEventSink::queue_with_waker(move || {
+        let _ = event_wake_tx.send(());
+    });
+    let client = Arc::new(MoonClient::connect_with_sink(
         client_cfg,
         ConnectConfig::new(init).with_connect_timeout(Duration::from_secs(15)),
-    )?;
+        event_sink,
+    )?);
+    client_slot.set(Some(client.clone()));
+    let _client_slot_guard = ClientSlotGuard {
+        slot: client_slot.clone(),
+    };
 
     // Рыночная роль ядра (задаётся координатором командой SetMarket).
     // is_provider — ретейним ли ВСЕ трейды биржи (subscribe_all_trades).
-    // wanted — рынки, которые активно обслуживаем (стакан + чтение крестиков).
-    // cursors — свой курсор ленты на каждый обслуживаемый рынок.
+    // wanted — рынки, которые активно обслуживаем (подписки + snapshot source).
     let mut is_provider = false;
     let mut wanted: Vec<String> = Vec::new();
-    let mut cursors = HashMap::new(); // market -> SeqRingCursor (тип выводится)
-    let mut last_price_cursors = HashMap::new();
-    let mut mark_price_cursors = HashMap::new();
     let mut identity_sent = false;
-    let mut rows = Vec::new(); // тип Vec<TradeHistoryRow> выводится
-    let mut last_price_rows = Vec::new();
-    let mut mark_price_rows = Vec::new();
-    let mut last_book = Instant::now();
     let mut last_orders = Instant::now();
     let mut last_strats = Instant::now();
     // Курсоры выгрузки стратегий: revision схемы и сигнатура состава/checked —
@@ -129,6 +140,9 @@ pub fn run(
     // ротацией. Пишем на ПОТОКЕ ФИДА (не на UI), т.к. лога много — UI не должен ждать
     // диск. В UI уходит лишь in-memory копия для живого просмотра/поиска.
     let mut log_writer = crate::applog::DatedWriter::new(&server.name);
+    let mut events = Vec::new();
+    let mut lifecycle_events = Vec::new();
+    let mut force_market_sample = false;
 
     loop {
         // Команды роли от координатора (полное желаемое состояние, не дельта).
@@ -137,7 +151,7 @@ pub fn run(
             match cmd_rx.try_recv() {
                 Ok(CoreCmd::SetMarket { provider, markets }) => {
                     // Переход провайдерства: вкл → ретейним все трейды биржи; выкл →
-                    // снимаем подписку и забываем курсоры.
+                    // снимаем подписку. Курсоры чтения market history живут у потребителя.
                     if provider != is_provider {
                         if provider {
                             let _ = client
@@ -146,34 +160,25 @@ pub fn run(
                             log::info!("core {} → market provider (all-trades)", server.id);
                         } else {
                             let _ = client.streams().unsubscribe_all_trades();
-                            cursors.clear();
-                            last_price_cursors.clear();
-                            mark_price_cursors.clear();
                             log::info!("core {} → account-only", server.id);
                         }
                         is_provider = provider;
                     }
                     // Не провайдер не обслуживает рынки (стакан/чтение) вообще.
                     let markets = if provider { markets } else { Vec::new() };
-                    // Диф обслуживаемых рынков: новым подписываем стакан и сбрасываем
-                    // курсор (перечитать историю с начала), убранным — отписываем.
+                    // Диф обслуживаемых рынков: новым подписываем стакан, убранным — отписываем.
                     for m in &markets {
                         if !wanted.iter().any(|w| w == m) {
                             let _ = client.streams().subscribe_orderbook(m.clone());
-                            cursors.remove(m);
-                            last_price_cursors.remove(m);
-                            mark_price_cursors.remove(m);
                         }
                     }
                     for m in &wanted {
                         if !markets.iter().any(|x| x == m) {
                             let _ = client.streams().unsubscribe_orderbook(m.clone());
-                            cursors.remove(m);
-                            last_price_cursors.remove(m);
-                            mark_price_cursors.remove(m);
                         }
                     }
                     wanted = markets;
+                    force_market_sample = true;
                 }
                 Ok(CoreCmd::StrategiesAction { checks, start_stop }) => {
                     // 1. Синхронизация галок: правим локальный checked у изменённых и
@@ -261,7 +266,9 @@ pub fn run(
         // не запустился бы. Поэтому ловим ConnectFailed и возвращаем Err → внешний
         // цикл пересоздаст клиент с backoff. (Ровно баг «5/7, авто-реконнекта нет».)
         let mut connect_failed: Option<String> = None;
-        for ev in client.drain_lifecycle_events() {
+        lifecycle_events.clear();
+        event_queue.drain_lifecycle_events_into(&mut lifecycle_events);
+        for ev in lifecycle_events.drain(..) {
             log::info!("lifecycle: {ev:?}");
             let st = match ev {
                 LifecycleEvent::Connecting => ConnStatus::Stage("connecting…".into()),
@@ -303,9 +310,11 @@ pub fn run(
             return Err(anyhow::anyhow!("{e}"));
         }
 
-        // Дренируем доменные события. Тики/стакан/ордера берём из snapshot;
-        // детекты и отчёты — только из потока событий, по флагам сервера.
-        let events = client.drain_events();
+        // Дренируем доменные события из MoonEventSink. Тики/стакан/ордера берём из
+        // snapshot только после реального события, а не постоянным 8мс polling.
+        events.clear();
+        event_queue.drain_events_into(&mut events);
+        let had_domain_event = !events.is_empty();
         let want_log = server.feed.log;
         // detect-diag: один раз за процесс — состояние серверных флагов фида. Если
         // `feed.detects=false`, ветка `Event::Detect` ниже вообще не работает → корень
@@ -325,7 +334,7 @@ pub fn run(
             let mut logs: Vec<CoreLogLine> = Vec::new();
             // Снимок для полей стратегии-источника детекта (SoundAlert/KeepAlert).
             let detect_snap = server.feed.detects.then(|| client.snapshot()).flatten();
-            for ev in events {
+            for ev in events.drain(..) {
                 match ev {
                     Event::ServerLog(l) if want_log => {
                         let ms = l.unix_millis();
@@ -398,10 +407,10 @@ pub fn run(
             }
         }
 
-        // Снимок дёшев (Arc-clone): карту ордеров обновляем КАЖДУЮ итерацию (~8мс)
-        // — ловим короткоживущие ордера для close-report. Список ордеров в UI —
-        // троттлим до ~4 Гц.
-        if server.feed.orders || server.feed.reports {
+        // Снимок дёшев (Arc-clone), но читаем его по реальному domain event.
+        // Список ордеров в UI троттлим до ~4 Гц; reports индекс обновляем тем же
+        // event-driven проходом, без постоянного 8мс polling.
+        if had_domain_event && (server.feed.orders || server.feed.reports) {
             let orders_due =
                 server.feed.orders && last_orders.elapsed() >= Duration::from_millis(250);
             if let Some(snap) = client.snapshot() {
@@ -585,9 +594,12 @@ pub fn run(
             }
         }
 
-        // Стратегии ядра (для окна стратегий) — проверяем ~1 Гц, но шлём только при
-        // изменениях: схему по revision, состав/значения — по сигнатуре.
-        if server.feed.strategies && last_strats.elapsed() >= Duration::from_secs(1) {
+        // Стратегии ядра (для окна стратегий): проверяем по domain event, не чаще
+        // ~1 Гц, и шлём только при изменениях.
+        if had_domain_event
+            && server.feed.strategies
+            && last_strats.elapsed() >= Duration::from_secs(1)
+        {
             last_strats = Instant::now();
             if let Some(snap) = client.snapshot() {
                 let strats = snap.strats();
@@ -650,151 +662,26 @@ pub fn run(
             }
         }
 
-        // Рыночные данные обслуживаем, только если мы провайдер и есть wanted-рынки.
-        // Крестики читаем по каждому рынку своим курсором; стакан троттлим ~20 Гц.
-        if is_provider && !wanted.is_empty() {
-            if let Some(snap) = client.snapshot() {
-                // Трейды -> крестики (append-only через курсор на рынок).
-                for market in &wanted {
-                    let Some(reader) = snap
-                        .market_history_readers(market)
-                        .and_then(|r| r.futures_trades)
-                    else {
-                        continue;
-                    };
-                    let cur = cursors
-                        .entry(market.clone())
-                        .or_insert_with(|| reader.cursor_from_oldest());
-                    rows.clear();
-                    reader.copy_new_since(cur, 8192, &mut rows);
-                    if !rows.is_empty() {
-                        let ticks: Vec<Tick> = rows
-                            .iter()
-                            .map(|r| Tick {
-                                time_ms: r.unix_millis() as f64,
-                                price: r.price,
-                                qty: r.quantity(),
-                                side: if r.is_buy() { Side::Buy } else { Side::Sell },
-                            })
-                            .collect();
-                        if tx
-                            .send(FeedMsg::Ticks {
-                                market: market.clone(),
-                                ticks,
-                            })
-                            .is_err()
-                        {
-                            let _ = client.disconnect();
-                            return Ok(()); // координатор ушёл.
-                        }
-                    }
-                }
-
-                // Retained price-lines (LastPrice / MarkPrice) для combo.
-                for market in &wanted {
-                    if let Some(reader) = snap
-                        .market_history_readers(market)
-                        .and_then(|r| r.last_prices)
-                    {
-                        let cur = last_price_cursors
-                            .entry(market.clone())
-                            .or_insert_with(|| reader.cursor_from_oldest());
-                        last_price_rows.clear();
-                        reader.copy_new_since(cur, 8192, &mut last_price_rows);
-                        if !last_price_rows.is_empty() {
-                            let points: Vec<PricePoint> = last_price_rows
-                                .iter()
-                                .map(|p| PricePoint {
-                                    time_ms: p.unix_millis() as f64,
-                                    price: p.price(),
-                                })
-                                .collect();
-                            if tx
-                                .send(FeedMsg::PriceLine {
-                                    market: market.clone(),
-                                    kind: PriceLineKind::Last,
-                                    points,
-                                })
-                                .is_err()
-                            {
-                                let _ = client.disconnect();
-                                return Ok(());
-                            }
-                        }
-                    }
-
-                    if let Some(reader) = snap
-                        .market_history_readers(market)
-                        .and_then(|r| r.mark_prices)
-                    {
-                        let cur = mark_price_cursors
-                            .entry(market.clone())
-                            .or_insert_with(|| reader.cursor_from_oldest());
-                        mark_price_rows.clear();
-                        reader.copy_new_since(cur, 8192, &mut mark_price_rows);
-                        if !mark_price_rows.is_empty() {
-                            let points: Vec<PricePoint> = mark_price_rows
-                                .iter()
-                                .map(|p| PricePoint {
-                                    time_ms: p.unix_millis() as f64,
-                                    price: p.price(),
-                                })
-                                .collect();
-                            if tx
-                                .send(FeedMsg::PriceLine {
-                                    market: market.clone(),
-                                    kind: PriceLineKind::Mark,
-                                    points,
-                                })
-                                .is_err()
-                            {
-                                let _ = client.disconnect();
-                                return Ok(());
-                            }
-                        }
-                    }
-                }
-
-                // Стакан по каждому рынку — троттлим ~20 Гц.
-                if last_book.elapsed() >= Duration::from_millis(50) {
-                    last_book = Instant::now();
-                    for market in &wanted {
-                        if let Some(book) = snap.order_book(market, OrderBookKind::Futures) {
-                            let ob = OrderBook {
-                                bids: book
-                                    .buys
-                                    .iter()
-                                    .map(|l| Level {
-                                        price: l.rate as f32,
-                                        qty: l.quantity as f32,
-                                    })
-                                    .collect(),
-                                asks: book
-                                    .sells
-                                    .iter()
-                                    .map(|l| Level {
-                                        price: l.rate as f32,
-                                        qty: l.quantity as f32,
-                                    })
-                                    .collect(),
-                            };
-                            if tx
-                                .send(FeedMsg::OrderBook {
-                                    market: market.clone(),
-                                    book: ob,
-                                })
-                                .is_err()
-                            {
-                                let _ = client.disconnect();
-                                return Ok(());
-                            }
-                        }
-                    }
-                }
+        // Рыночные данные НЕ переливаем здесь. Feed только сигналит, что у provider
+        // появился свежий read-model snapshot; видимый chart сам подтянет нужные рынки.
+        if (force_market_sample || had_domain_event) && is_provider && !wanted.is_empty() {
+            if tx.send(FeedMsg::MarketDataChanged).is_err() {
+                let _ = client.disconnect();
+                return Ok(());
             }
         }
+        force_market_sample = false;
 
-        std::thread::sleep(Duration::from_millis(8));
+        match event_wake_rx.recv_timeout(Duration::from_millis(50)) {
+            Ok(()) => {
+                while event_wake_rx.try_recv().is_ok() {}
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                let _ = client.disconnect();
+                return Ok(());
+            }
+        }
     }
 
     let _ = client.disconnect();

@@ -17,7 +17,7 @@ fn rust_sources(dir: &Path, out: &mut Vec<PathBuf>) {
 }
 
 #[test]
-fn terminal_ui_uses_runtime_moon_palette_theme() {
+fn terminal_ui_uses_runtime_moon_ui_theme() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut sources = Vec::new();
     rust_sources(&root, &mut sources);
@@ -27,7 +27,7 @@ fn terminal_ui_uses_runtime_moon_palette_theme() {
         let text = fs::read_to_string(&path)
             .unwrap_or_else(|err| panic!("failed to read {}: {err}", path.display()));
         for (line_ix, line) in text.lines().enumerate() {
-            let check = line.replace("moon_palette::", "moon_palette__");
+            let check = line.replace("moon_ui::", "moon_ui__");
             if check.contains("MoonPalette::TERMINAL")
                 || check.contains("moon_core::palette")
                 || check.contains("use moon_core::palette")

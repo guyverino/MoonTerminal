@@ -40,7 +40,7 @@ impl SessionManager {
             for m in mkts {
                 self.pending_drop.remove(&(*p, m.clone()));
                 if w.insert(m.clone()) {
-                    self.market.reset(*p, m);
+                    self.market_source.reset_market(*p, m);
                 }
             }
         }
@@ -71,7 +71,7 @@ impl SessionManager {
             if let Some(w) = self.wanted.get_mut(&p) {
                 w.remove(&m);
             }
-            self.market.drop_market(p, &m);
+            self.market_source.drop_market(p, &m);
         }
 
         // 3. Рассылаем ядрам роль. Провайдер (значение в core_provider) → (true, его
@@ -169,7 +169,7 @@ impl SessionManager {
                 for (k, &p) in &elected {
                     if self.providers.get(k).copied() != Some(p) {
                         if let Some(old) = self.providers.get(k).copied() {
-                            self.market.drop_provider(old);
+                            self.market_source.drop_provider(old);
                             self.wanted.remove(&old);
                             self.last_cmd.remove(&old);
                             self.pending_drop.retain(|(pp, _), _| *pp != old);
@@ -180,6 +180,7 @@ impl SessionManager {
             }
         }
 
+        self.market_source.set_provider_map(&new_core_provider);
         self.core_provider = new_core_provider;
     }
 }

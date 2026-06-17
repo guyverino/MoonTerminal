@@ -126,7 +126,8 @@ impl CoreData {
             FeedMsg::Identity(_)
             | FeedMsg::Ticks { .. }
             | FeedMsg::PriceLine { .. }
-            | FeedMsg::OrderBook { .. } => {}
+            | FeedMsg::OrderBook { .. }
+            | FeedMsg::MarketDataChanged => {}
         }
     }
 }

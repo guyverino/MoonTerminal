@@ -42,12 +42,12 @@ use chartdx::ChartDataHandle;
 use dock_persist::DOCK_VERSION;
 use panels::{ChartPanel, DetectsPanel, LogPanel, OrderPanel, OrdersPanel, ReportPanel, StubPanel};
 
-use moon_palette::MoonRect;
-use moon_palette::{
+use moon_ui::MoonRect;
+use moon_ui::{
     DockArea, DockAreaState, DockEvent, DockItem, DockPlacement, MoonBackgroundPolicy, MoonButton,
     MoonButtonSize, MoonButtonVariant, MoonPalette, MoonStatusBar, MoonStatusIndicator,
     MoonStatusItem, MoonTheme, MoonThemeConfig, MoonTooltipView, MoonWindowChrome,
-    MoonWindowChromeButton, PanelView, Root, h_flex, init as init_moon_palette, v_flex,
+    MoonWindowChromeButton, PanelView, Root, h_flex, init as init_moon_ui, v_flex,
 };
 
 use moon_core::config::{AppConfig, GroupLayout, WindowLayout};
@@ -172,8 +172,9 @@ struct Backend {
     debug_window: Option<WindowHandle<Root>>,
     #[cfg(any(debug_assertions, moon_profile_debug, feature = "debug-tools"))]
     debug_chart_windows: Vec<WindowHandle<Root>>,
-    /// Visible chart data consumers. High-rate market data updates retained chart
-    /// state directly through these handles, without GPUI Entity updates or notify.
+    /// Visible chart data consumers. Account/synth compatibility updates can still sync
+    /// retained chart state through these handles; live market frames pull `MarketDataSource`
+    /// directly from `gpu_canvas.frame()`.
     chart_consumers: Vec<ChartDataHandle>,
     /// Персист чарт-вкладок (масштаб по вкладке + геометрия откреп-окон) — charts.json.
     /// Дебаунс-сейв делает дренаж по `chart_specs_dirty`. См. `chart_persist`.
@@ -682,17 +683,20 @@ impl Render for Shell {
                         .find(|(id, _)| *id == core)
                         .map(|(_, m)| (core, m.clone()))
                 }) {
-                    Some((core, m)) => match b.session.market_view(core, &m) {
-                        Some(v) => (
-                            m,
-                            v.last_price
-                                .map(|p| format!("{p:.2}"))
-                                .unwrap_or_else(|| "—".into()),
-                            v.ring.len(),
-                            v.book.len(),
-                        ),
-                        None => (m, "—".into(), 0, 0),
-                    },
+                    Some((core, m)) => b.session.with_market_view(core, &m, |data| {
+                        let label = m.clone();
+                        match data {
+                            Some(v) => (
+                                label,
+                                v.last_price
+                                    .map(|p| format!("{p:.2}"))
+                                    .unwrap_or_else(|| "—".into()),
+                                v.ring.len(),
+                                v.book.len(),
+                            ),
+                            None => (label, "—".into(), 0, 0),
+                        }
+                    }),
                     None => ("—".into(), "—".into(), 0, 0),
                 }
             };
@@ -1390,9 +1394,9 @@ pub(crate) fn spawn_group_window(
         },
     };
     // Монитор по сохранённому origin — чтобы окно открылось на ТОМ дисплее, с которого
-    // снимали bounds. Без display_id форк восстанавливает по scale primary-монитора, и на
-    // мониторе с другим DPI окно открывается смещённым/сжатым (фикс ZedFork 7a93298 берёт
-    // scale целевого display ТОЛЬКО когда display_id задан). Round-trip как у detached-окон.
+    // снимали bounds. Без display_id GPUI восстанавливает по scale primary-монитора, и на
+    // мониторе с другим DPI окно открывается смещённым/сжатым. MoonUI GPUI берёт scale
+    // целевого display ТОЛЬКО когда display_id задан. Round-trip как у detached-окон.
     let origin = win_bounds.origin;
     let display_id = cx
         .displays()
@@ -1537,7 +1541,7 @@ fn main() -> anyhow::Result<()> {
 
     let app = gpui_platform::application();
     app.run(move |cx| {
-        init_moon_palette(cx);
+        init_moon_ui(cx);
         MoonTheme::install_config(MoonThemeConfig::moon_terminal(), cx);
         cx.text_system()
             .add_fonts(embedded_fonts())
@@ -1681,9 +1685,9 @@ fn main() -> anyhow::Result<()> {
         })
         .detach();
 
-        // High-rate feed data path: feed threads send a causal wake after every FeedMsg.
-        // The foreground task drains session data only after a real wake, then updates retained
-        // chart handles directly. No 16ms polling, no ChartPanel Entity update, no GPUI dirty tree.
+        // Feed event path: feed threads send causal wakes after real MoonProto events.
+        // Market-only wakes update retained chart handles without dirtying Backend/Shell.
+        // Account/status/log/order wakes still notify Backend through the slow 250ms gate.
         let data_backend = backend.clone();
         cx.spawn(async move |cx| {
             let executor = cx.update(|cx| cx.background_executor().clone());
@@ -1708,12 +1712,18 @@ fn main() -> anyhow::Result<()> {
                             return;
                         }
                         if drain.chart_data {
-                            let chart_consumers = b.live_chart_consumers();
-                            for chart in chart_consumers {
-                                chart.sync_retained_state_if_visible(&b.session, false);
+                            let desired = b.desired.clone();
+                            let pulled_market = b.session.refresh_market_data_for_open(&desired);
+                            if pulled_market || drain.market_store_updated || drain.ui_state {
+                                let chart_consumers = b.live_chart_consumers();
+                                for chart in chart_consumers {
+                                    chart.sync_retained_state_if_visible(&b.session, false);
+                                }
                             }
                         }
-                        b.mark_backend_dirty(cx);
+                        if drain.ui_state {
+                            b.mark_backend_dirty(cx);
+                        }
                     });
                 });
             }

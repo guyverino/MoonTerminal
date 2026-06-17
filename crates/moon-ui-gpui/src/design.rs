@@ -5,7 +5,7 @@
 //! no terminal logic, no chart renderer state.
 
 use gpui::*;
-use moon_palette::{MoonMetrics, MoonPalette};
+use moon_ui::{MoonMetrics, MoonPalette};
 use std::path::PathBuf;
 use std::sync::Arc;
 

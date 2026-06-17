@@ -1,4 +1,4 @@
-//! Dock-панели окна группы (порт egui `src/dock/*`) как `moon_palette::Panel` —
+//! Dock-панели окна группы (порт egui `src/dock/*`) как `moon_ui::Panel` —
 //! получают вкладки, сплиты, отцепление в окно и персист раскладки от `DockArea`
 //! через MoonPalette Dock/TabPanel. По файлу на панель:
 //! - [`chart`] — чарт (offscreen wgpu-движок + ввод + оси), центр дока;

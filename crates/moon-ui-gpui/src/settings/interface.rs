@@ -3,7 +3,7 @@
 //! draft (живое превью), «Сохранить» пишет theme.toml. Состояние редактора — [`Iface`].
 
 use gpui::*;
-use moon_palette::{
+use moon_ui::{
     MoonColorPickerEvent, MoonColorPickerState, MoonPalette, MoonSliderEvent, MoonSliderState,
     v_flex,
 };

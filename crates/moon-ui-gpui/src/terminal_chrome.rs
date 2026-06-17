@@ -6,7 +6,7 @@
 
 use gpui::prelude::FluentBuilder;
 use gpui::*;
-use moon_palette::{MoonPalette, h_flex};
+use moon_ui::{MoonPalette, h_flex};
 
 use crate::{Backend, design, settings, strategies};
 

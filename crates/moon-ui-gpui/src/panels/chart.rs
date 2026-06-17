@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use gpui::prelude::FluentBuilder;
 use gpui::*;
-use moon_palette::{MoonBackgroundPolicy, MoonPalette, Panel, PanelEvent};
+use moon_ui::{MoonBackgroundPolicy, MoonPalette, Panel, PanelEvent};
 
 use crate::chartdx::ChartEngine;
 use crate::{Backend, axes, input};
@@ -117,6 +117,7 @@ impl ChartPanel {
         cx: &mut Context<Self>,
     ) -> Self {
         let mut chart = ChartEngine::new(epoch, theme);
+        chart.set_market_source(Some(backend.read(cx).session.market_source()));
         let mut market = None;
         if let Some((core, m)) = focus_open {
             chart.open(core, &m);
@@ -132,7 +133,7 @@ impl ChartPanel {
             chart_settings_sig(&b)
         };
         // UI notify при изменении настроек/редкого текста осей. Частые рыночные данные не
-        // идут через notify: backend data drain causally обновляет retained chart state.
+        // идут через notify: gpu_canvas.frame() подтягивает MarketDataSource напрямую.
         // Time-based TTL панелей обслуживает локальный one-shot timer, не backend data observe.
         cx.observe(&backend, |this, backend, cx| {
             crate::diag::bump(&crate::diag::CHART_OBS_FIRE);
@@ -154,7 +155,7 @@ impl ChartPanel {
             // Троттл notify. Данные gpu_canvas рисует сам по present (форк), notify нужен лишь
             // для GPUI-оверлея осей, а он идёт top-down → дёргает Orders. Поэтому ≤4 Гц для
             // fast (≥250мс) и ≤1 Гц для addto. Частые GPU data/state обновляет
-            // backend data drain без GPUI dirty; notify здесь только для редкого текста осей.
+            // gpu_canvas.frame() без GPUI dirty; notify здесь только для редкого текста осей.
             let floor = if this.fast { 250.0 } else { 1000.0 };
             if sig != this.last_axis_notify_data_sig && now - this.last_adaptive_notify_ms >= floor
             {
@@ -217,7 +218,8 @@ impl ChartPanel {
         theme: ChartTheme,
         cx: &mut Context<Self>,
     ) -> Self {
-        let chart = ChartEngine::new_kind(epoch, theme, ContainerKind::Chart { num, core });
+        let mut chart = ChartEngine::new_kind(epoch, theme, ContainerKind::Chart { num, core });
+        chart.set_market_source(Some(backend.read(cx).session.market_source()));
         let settings_sig = {
             let b = backend.read(cx);
             chart_settings_sig(&b)
@@ -239,7 +241,7 @@ impl ChartPanel {
             }
             this.data_sig = sig;
             // AddToChart — фоновый/мультичарт: notify (а с ним top-down перерисовка Orders)
-            // ≤1 Гц. Частые GPU data/state обновляет backend data drain без notify;
+            // ≤1 Гц. Частые GPU data/state обновляет gpu_canvas.frame() без notify;
             // time-based prune делает локальный TTL timer.
             if sig != this.last_axis_notify_data_sig && now - this.last_adaptive_notify_ms >= 1000.0
             {
@@ -480,6 +482,8 @@ impl Render for ChartPanel {
         let became_visible = !self.scene_visible;
         self.scene_visible = true;
         self.chart.set_scene_visible(true);
+        self.chart
+            .set_market_source(Some(self.backend.read(cx).session.market_source()));
         let ppp = window.scale_factor();
         // Запоминаем DPI для data prepare path (у него нет window). DPI меняется редко.
         self.last_ppp = ppp;
@@ -518,9 +522,9 @@ impl Render for ChartPanel {
 
         let geometry_changed = self.chart_dev != self.last_prepared_dev
             || self.chart_bounds != self.last_prepared_bounds;
-        // Render path updates layout/settings only. Market data enters retained
-        // chart state from backend data-drain (`DrainStats.chart_data`), not from
-        // throttled GPUI notify/render cadence.
+        // Render path updates layout/settings. Live market data also enters retained
+        // chart state from gpu_canvas.frame() via MarketDataSource, not from throttled
+        // GPUI notify/render cadence.
         let view_changed = self.view_dirty;
         if became_visible || geometry_changed || view_changed {
             self.sync_retained_state_if_visible(cx, true);

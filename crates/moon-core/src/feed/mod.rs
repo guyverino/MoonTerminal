@@ -10,13 +10,34 @@ pub mod types;
 pub use types::*;
 
 use std::sync::mpsc::{Receiver, SendError, Sender, TryRecvError};
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
+
+use moonproto::MoonClient;
 
 use crate::config::ServerConfig;
 use crate::db::ReportTx;
 
 pub type FeedRx = Receiver<FeedMsg>;
 pub type FeedWakeTx = Sender<()>;
+
+#[derive(Clone, Default)]
+pub struct SharedMoonClient {
+    inner: Arc<RwLock<Option<Arc<MoonClient>>>>,
+}
+
+impl SharedMoonClient {
+    pub(crate) fn set(&self, client: Option<Arc<MoonClient>>) {
+        *self.inner.write().expect("moon client slot poisoned") = client;
+    }
+
+    pub fn get(&self) -> Option<Arc<MoonClient>> {
+        self.inner
+            .read()
+            .expect("moon client slot poisoned")
+            .clone()
+    }
+}
 
 #[derive(Clone)]
 pub struct FeedTx {
@@ -74,6 +95,7 @@ pub enum CoreCmd {
 pub struct FeedHandle {
     pub rx: FeedRx,
     pub cmd_tx: Sender<CoreCmd>,
+    pub client: SharedMoonClient,
     _join: std::thread::JoinHandle<()>,
 }
 
@@ -107,6 +129,8 @@ pub fn spawn(
     let (data_tx, rx) = std::sync::mpsc::channel();
     let tx = FeedTx::new(data_tx, wake);
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<CoreCmd>();
+    let client = SharedMoonClient::default();
+    let thread_client = client.clone();
     let join = std::thread::Builder::new()
         .name(format!("feed-{}", server.id))
         .spawn(move || {
@@ -128,7 +152,7 @@ pub fn spawn(
             let mut backoff = BACKOFF_MIN;
             loop {
                 let started = Instant::now();
-                match live::run(&server, &tx, &cmd_rx, reports.as_ref()) {
+                match live::run(&server, &tx, &cmd_rx, reports.as_ref(), thread_client.clone()) {
                     Ok(()) => break,
                     Err(e) => {
                         // Коннект продержался долго перед падением → не штормящий хост,
@@ -164,6 +188,7 @@ pub fn spawn(
     FeedHandle {
         rx,
         cmd_tx,
+        client,
         _join: join,
     }
 }
