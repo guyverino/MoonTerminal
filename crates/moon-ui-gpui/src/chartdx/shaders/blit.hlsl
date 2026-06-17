@@ -39,3 +39,12 @@ BlitOut blit_vertex(uint vid : SV_VertexID) {
 float4 blit_fragment(BlitOut i) : SV_Target {
     return bp_tex.Sample(bp_samp, i.uv);
 }
+
+// OPAQUE-вариант для блита полной базы (base.rs). База — непрозрачный кадр всей сцены;
+// блитить её надо как замену (alpha=1, blend off), иначе при alpha<1 сквозь неё
+// блендится белый clear backbuffer'а (Opaque-окно форк чистит в [1,1,1,1]) → бледные
+// вспышки панелей на каждый UI-present. Combo/orderbook этот fragment НЕ используют —
+// им нужна прозрачность поверх фона.
+float4 blit_opaque_fragment(BlitOut i) : SV_Target {
+    return float4(bp_tex.Sample(bp_samp, i.uv).rgb, 1.0);
+}

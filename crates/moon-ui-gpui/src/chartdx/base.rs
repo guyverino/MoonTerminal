@@ -9,8 +9,8 @@ use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC};
 
 use super::gpu::{
-    BlitParams, create_alpha_blend, create_dynamic_cb, create_point_sampler, full_viewport,
-    make_ps, make_vs, update_dynamic,
+    BlitParams, create_dynamic_cb, create_no_scissor_rasterizer, create_point_sampler,
+    full_viewport, make_ps, make_vs, update_dynamic,
 };
 
 const BLIT_HLSL: &str = include_str!("shaders/blit.hlsl");
@@ -26,7 +26,7 @@ struct BaseTex {
     blit_ps: ID3D11PixelShader,
     blit_cb: ID3D11Buffer,
     sampler: ID3D11SamplerState,
-    blend: ID3D11BlendState,
+    no_scissor_rs: ID3D11RasterizerState,
 }
 
 pub struct BaseCache {
@@ -110,6 +110,9 @@ impl BaseCache {
         unsafe {
             context.OMSetRenderTargets(Some(&[Some(rtv.clone())]), None);
             context.RSSetViewports(Some(&[full_viewport(gpu)]));
+            // Scissor OFF на весь backbuffer: иначе блит наследует scissor-rect нижней
+            // панели от предыдущего прохода и верхние панели не покрываются (мигают).
+            context.RSSetState(&tex.no_scissor_rs);
             context.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
             context.VSSetShader(&tex.blit_vs, None);
             context.PSSetShader(&tex.blit_ps, None);
@@ -117,7 +120,9 @@ impl BaseCache {
             context.PSSetConstantBuffers(0, Some(&[Some(tex.blit_cb.clone())]));
             context.PSSetShaderResources(0, Some(&[Some(tex.srv.clone())]));
             context.PSSetSamplers(0, Some(&[Some(tex.sampler.clone())]));
-            context.OMSetBlendState(&tex.blend, None, 0xFFFFFFFF);
+            // Blend OFF: непрозрачная замена. База перекрывает белый clear целиком —
+            // никакого подмешивания белого через alpha<1 (см. blit_opaque_fragment).
+            context.OMSetBlendState(None, None, 0xFFFFFFFF);
             context.Draw(6, 0);
         }
         crate::diag::bump(&crate::diag::CHART_BASE_BLIT);
@@ -166,10 +171,10 @@ impl BaseCache {
             h,
             generation,
             blit_vs: make_vs(device, BLIT_HLSL, "blit_vertex"),
-            blit_ps: make_ps(device, BLIT_HLSL, "blit_fragment"),
+            blit_ps: make_ps(device, BLIT_HLSL, "blit_opaque_fragment"),
             blit_cb: create_dynamic_cb(device, std::mem::size_of::<BlitParams>() as u32),
             sampler: create_point_sampler(device),
-            blend: create_alpha_blend(device),
+            no_scissor_rs: create_no_scissor_rasterizer(device),
         }
     }
 }
