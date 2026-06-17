@@ -608,14 +608,22 @@ impl Render for Shell {
             }
         }
 
-        // Снять геометрию окна → раскладка (save дебаунсит дренаж-таймер).
-        if let WindowBounds::Windowed(b) = window.window_bounds() {
+        // Снять геометрию окна → раскладка (save дебаунсит дренаж-таймер). Для Maximized/
+        // Fullscreen window_bounds() отдаёт RESTORE-bounds (размер в обычном состоянии) —
+        // сохраняем именно их + флаг maximized, иначе развёрнутое окно теряло размер и при
+        // следующем запуске открывалось «сжатым» (старое условие ловило только Windowed).
+        let (b, maximized) = match window.window_bounds() {
+            WindowBounds::Windowed(b) => (Some(b), false),
+            WindowBounds::Maximized(b) => (Some(b), true),
+            WindowBounds::Fullscreen(b) => (Some(b), false),
+        };
+        if let Some(b) = b {
             let g = GroupLayout {
                 x: f32::from(b.origin.x) as i32,
                 y: f32::from(b.origin.y) as i32,
                 w: f32::from(b.size.width) as u32,
                 h: f32::from(b.size.height) as u32,
-                maximized: window.is_maximized(),
+                maximized,
                 collapsed: false,
                 tab: 0,
                 dock_h: 220.0,
@@ -630,7 +638,13 @@ impl Render for Shell {
                     .layout
                     .groups
                     .get(&group)
-                    .map(|o| o.x != g.x || o.y != g.y || o.w != g.w || o.h != g.h)
+                    .map(|o| {
+                        o.x != g.x
+                            || o.y != g.y
+                            || o.w != g.w
+                            || o.h != g.h
+                            || o.maximized != g.maximized
+                    })
                     .unwrap_or(true);
                 if changed {
                     bk.layout.groups.insert(group, g);
@@ -1364,7 +1378,8 @@ pub(crate) fn spawn_group_window(
     // открывается по действию пользователя (дабл-клик по детекту → open_market), а не
     // авто-подхватом фокус-монеты. Закрыть монету на Main можно угловым ✕ → снова лого.
     let focus: Option<(CoreId, String)> = None;
-    let win_bounds = match layout.groups.get(&group) {
+    let saved = layout.groups.get(&group);
+    let win_bounds = match saved {
         Some(g) => Bounds {
             origin: point(px(g.x as f32), px(g.y as f32)),
             size: size(px(g.w as f32), px(g.h as f32)),
@@ -1374,8 +1389,24 @@ pub(crate) fn spawn_group_window(
             size: size(px(1280.0), px(720.0)),
         },
     };
+    // Монитор по сохранённому origin — чтобы окно открылось на ТОМ дисплее, с которого
+    // снимали bounds. Без display_id форк восстанавливает по scale primary-монитора, и на
+    // мониторе с другим DPI окно открывается смещённым/сжатым (фикс ZedFork 7a93298 берёт
+    // scale целевого display ТОЛЬКО когда display_id задан). Round-trip как у detached-окон.
+    let origin = win_bounds.origin;
+    let display_id = cx
+        .displays()
+        .into_iter()
+        .find(|d| d.bounds().contains(&origin))
+        .map(|d| d.id());
+    let window_bounds = if saved.map(|g| g.maximized).unwrap_or(false) {
+        WindowBounds::Maximized(win_bounds)
+    } else {
+        WindowBounds::Windowed(win_bounds)
+    };
     let opts = WindowOptions {
-        window_bounds: Some(WindowBounds::Windowed(win_bounds)),
+        window_bounds: Some(window_bounds),
+        display_id,
         titlebar: Some(TitlebarOptions {
             title: Some("MoonTerminal".into()),
             appears_transparent: true,
