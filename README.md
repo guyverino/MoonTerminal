@@ -14,23 +14,29 @@
 
 ### Windows (PowerShell)
 
-**1. Rust** — [rustup.rs](https://rustup.rs) (по умолчанию ставит таргет `x86_64-pc-windows-msvc`):
+**1. Git** — [git-scm.com](https://git-scm.com/download/win) или winget:
+```powershell
+winget install --id Git.Git -e --source winget
+```
+Закрой и открой терминал, проверь: `git --version`.
+
+**2. Rust** — [rustup.rs](https://rustup.rs) (по умолчанию ставит таргет `x86_64-pc-windows-msvc`):
 ```powershell
 winget install Rustlang.Rustup
 ```
 Закрой и открой терминал, проверь: `rustc --version`.
 
-**2. C++ Build Tools** (дают `link.exe` + Windows SDK) — [скачать](https://visualstudio.microsoft.com/visual-cpp-build-tools/) или winget:
+**3. C++ Build Tools** (дают `link.exe` + Windows SDK) — [скачать](https://visualstudio.microsoft.com/visual-cpp-build-tools/) или winget:
 ```powershell
 winget install Microsoft.VisualStudio.2022.BuildTools --override "--add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
 ```
 
-**3. make** *(опционально, для коротких команд `make ...`)* — [ezwinports.make](https://github.com/getmber/ezwinports):
+**4. make** *(опционально, для коротких команд `make ...`)* — [ezwinports.make](https://github.com/getmber/ezwinports):
 ```powershell
 winget install ezwinports.make
 ```
 
-**4. Клонировать и собрать:**
+**5. Клонировать и собрать:**
 ```powershell
 git clone -b feat/gpui-shell https://github.com/guyverino/MoonTerminal
 cd MoonTerminal
@@ -42,7 +48,7 @@ cargo build -p moon-ui-gpui --bin moonterminal --target x86_64-pc-windows-msvc
 
 ### macOS
 
-**1. Xcode Command Line Tools:**
+**1. Xcode Command Line Tools** (включают `git` и компилятор):
 ```bash
 xcode-select --install
 ```
@@ -64,9 +70,9 @@ cargo build -p moon-ui-gpui --bin moonterminal     # или: make build
 
 ### Linux (Debian/Ubuntu)
 
-**1. Системные зависимости** (для GPUI):
+**1. Git и системные зависимости** (для GPUI):
 ```bash
-sudo apt update && sudo apt install -y build-essential pkg-config \
+sudo apt update && sudo apt install -y git build-essential pkg-config \
   libfontconfig-dev libwayland-dev libxkbcommon-dev libvulkan-dev libssl-dev
 ```
 
