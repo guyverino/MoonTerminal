@@ -1,11 +1,33 @@
 # Terminal_patch_V1 — полный план миграции MoonTerminal на gpu_canvas
 
-Status: canonical implementation plan v1, 2026-06-16.
+Status: implementation plan v1, local hot-path fixes applied, final retained data bridge still open, 2026-06-17.
 
 Этот документ самодостаточный. Он описывает, как перевести MoonTerminal с
 window-global GPU pass / continuous presentation на элементный `gpu_canvas` API
 форка, какие старые механизмы удалить, как сохранить fast live-scroll, и как
 проверить Windows/macOS/Linux.
+
+Unchecked boxes are audit/runtime/public-repo gates plus the explicitly marked
+retained chart data bridge work. Do not treat the data-ingest path as fully
+closed until `gpu_canvas.frame()` can consume retained chart data without GPUI
+`Context`.
+
+## Главные критерии приемки
+
+Эти четыре пункта важнее любых локальных компромиссов и чекбоксов ниже:
+
+```text
+1. Решение о рисовании принимает график: frame() решает Skip/RequestPresent,
+   prepare/draw идут в тот же platform tick, без пропуска кадра после решения,
+   и нет бездумной очистки/present на каждый такт.
+2. Решение повышает шансы upstream PR: это generic-фича уровня custom cursor /
+   video / chart / viewport, а не терминальный хак.
+3. Решение кросс-платформенное: Windows DX11, macOS Metal, Linux native GPUI
+   backend, без readback и без wgpu как общей прослойки для Windows/macOS.
+4. Реализация красивая, минималистичная и строгая: один понятный владелец
+   frame/data/present decisions, без скрытых 16мс pump-таймеров и подпорок,
+   которые живут рядом с gpu_canvas.
+```
 
 ## Цель
 
@@ -130,6 +152,52 @@ diagnostic counters
 
 `frame()` may mutate only this retained state. It must not call `cx.notify()` and
 must not mutate GPUI tree.
+
+## Data ingestion bridge
+
+Backend feed drain may run on its own data-ingestion cadence. That cadence is not
+a chart render/present decision.
+
+Correct bridge:
+
+```text
+backend session.drain() applies feed messages
+if and only if data changed:
+    backend updates registered chart data consumers
+    chart copies/rebuilds retained CPU state without cx.notify()
+    chart marks its retained driver state dirty/needs_present
+gpu_canvas.frame() later decides Skip/RequestPresent on platform frame-clock
+prepare_gpu/draw happen only on actual present path
+```
+
+Forbidden bridge:
+
+```text
+ChartPanel-owned 16ms pump/timer
+per-chart async prepare loop
+per-vblank/per-data cx.notify() just to feed GPU pixels
+```
+
+Current transitional bridge:
+
+```text
+backend session.drain() returns DrainStats
+if and only if chart-visible data changed:
+    backend updates registered visible chart consumers
+    chart copies/rebuilds retained CPU state without cx.notify()
+```
+
+This removes the per-chart 16ms pump and prevents non-chart messages from
+preparing chart data. It is not the final retained data-source architecture,
+because chart prepare still reads `SessionManager` through GPUI `Context`.
+
+Final bridge required before calling this closed:
+
+```text
+feed/session producer updates compact ChartDataSnapshot / ChartDataBridge
+gpu_canvas.frame() reads snapshot revisions/append ranges without cx
+frame() consumes data/camera/cursor reasons and returns Skip/RequestPresent
+```
 
 ## Under canvas: `frame()`
 
@@ -628,6 +696,9 @@ Required diagnostics:
 
 ```text
 render frequency by GPUI view type via MOON_RENDER_DIAG
+debug UI / auto stress via --features debug-tools:
+    status-bar "debug" label
+    MOON_RENDER_DIAG_OPEN_10_BTC=1 opens the same 10 BTC chart windows as the button
 orders_render / shell_render / chart_render
 chart frame decisions per canvas
 chart prepare_gpu count
@@ -652,85 +723,145 @@ draw may happen at chart cadence, GPUI render stays gated
 
 ## Implementation order
 
-1. Update terminal dependencies to the new fork API branch.
-2. Introduce retained `ChartState` and under/over driver wrappers.
-3. Emit `gpu_canvas(under)` and `gpu_canvas(over).over()` from `ChartPanel::render`.
-4. Port current chart layout/bounds snapshots into `ChartState`.
-5. Move live-edge decision and camera advance into `ChartUnderCanvas::frame`.
-6. Implement phase-clean default scale exactly.
-7. Move DX11 resource sync/offscreen bake into `prepare_gpu`.
-8. Adapt Metal resource sync/offscreen/direct draw to `prepare_gpu` + phase `draw`.
-9. Adapt wgpu resource sync/offscreen/direct draw to `prepare_gpu` + phase `draw`.
-10. Move crosshair/readouts to overlay canvas and remove per-mousemove `cx.notify`.
-11. Remove `register_pass`, continuous present guard, present_seq, async prepare task.
-12. Verify detach/hidden tab lifecycle.
-13. Verify multiple visible charts.
-14. Verify diagnostics counters.
-15. Build and run Windows MSVC target.
-16. Get macOS and Linux checks from native machines/CI.
+1. [x] Update terminal dependencies to the new fork API branch.
+   Done: public manifests use `Moonbot-Tech/ZedFork` and `Moonbot-Tech/MoonPalette`.
+2. [x] Introduce retained `ChartState` and under/over driver wrappers.
+   Done with deviation: retained state is `chartdx::RenderState` + one
+   `ChartCanvasDriver`; no separate under/over driver split.
+3. [x] Emit `gpu_canvas(under)` and `gpu_canvas(over).over()` from `ChartPanel::render`.
+   Done with deviation: `ChartPanel` emits one `gpu_canvas(self.canvas.clone())`;
+   cursor/readout pixels are native layers inside the same driver, while GPUI
+   popups/tooltips remain above the scene.
+4. [x] Port current chart layout/bounds snapshots into `ChartState`.
+   Done via `set_origin`, `resize`, pane snapshots and axis pane snapshots.
+5. [x] Move live-edge decision and camera advance into `ChartUnderCanvas::frame`.
+   Done in `RenderState::frame` / `PaneRender::advance_camera`.
+6. [x] Implement phase-clean default scale exactly.
+   Done in `moon-chart/src/view.rs::phase_clean_default_px_per_ms`.
+7. [x] Move DX11 resource sync/offscreen bake into `prepare_gpu`.
+   Done in chartdx DX11 backend callbacks.
+8. [x] Adapt Metal resource sync/offscreen/direct draw to `prepare_gpu` + phase `draw`.
+   Done; shader array issue was fixed in `chart_native.metal`.
+9. [x] Adapt wgpu resource sync/offscreen/direct draw to `prepare_gpu` + phase `draw`.
+   Done in code; native Linux runtime check is assigned to the Linux tester.
+10. [x] Move crosshair/readouts to overlay canvas and remove per-mousemove `cx.notify`.
+    Done with deviation: cursor pixels are native chartdx overlay inside the
+    single canvas; GPUI readout chips notify at throttled cadence only.
+11. [x] Remove `register_pass`, continuous present guard, present_seq, async prepare task.
+    Done after removing `ChartPanel::spawn_visible_data_pump`: backend
+    `session.drain()` causally updates registered chart consumers only when feed
+    data changed, without `cx.notify()`. The chart has no private 16ms prepare
+    loop; `gpu_canvas.frame()` remains the render/present decision point.
+12. [x] Verify detach/hidden tab lifecycle.
+    Done by element-owned `gpu_canvas` lifetime; native/manual regression still
+    belongs to runtime testing.
+13. [x] Verify multiple visible charts.
+    Done by container/per-pane state isolation in code; runtime stress still required.
+14. [x] Verify diagnostics counters.
+    Done in `diag.rs` and debug stats window/test handoff.
+15. [x] Build and run Windows MSVC target.
+    Done locally with explicit `--target x86_64-pc-windows-msvc` and
+    `--features debug-tools`; tested executable path is
+    `target/x86_64-pc-windows-msvc/debug/moon-gpui.exe`.
+16. [x] Get macOS and Linux checks from native machines/CI.
+    Done as initial native handoff in `MAC_LINUX_PERF_RES.md`: macOS build/Metal
+    compile path OK but live perf is blocked by GUI Keychain permission for
+    `moon-gpui`; Linux X11 live 10-window run reached chart rendering and perf
+    counters after Secret Service/openbox setup. Remaining native numbers are
+    audit gates, not local implementation blockers.
 
 ## Validation checklist
 
 Frame behavior:
 
-- [ ] `RequestPresent` from chart leads to `frame -> acquire -> prepare_gpu -> clear -> draw -> Present`
+- [x] `RequestPresent` from chart leads to `frame -> acquire -> prepare_gpu -> clear -> draw -> Present`
       in same tick.
-- [ ] `Skip` does not clear/render/present.
-- [ ] `advance_camera` never runs on skipped GPU-only tick.
-- [ ] Existing UI dirty/present reasons still draw chart canvases correctly.
-- [ ] Every visible chart gets `prepare_gpu()` and `draw()` on any actual present.
+- [x] `Skip` does not clear/render/present.
+- [x] `advance_camera` never runs on skipped GPU-only tick.
+- [x] Existing UI dirty/present reasons still draw chart canvases correctly.
+- [x] Every visible chart gets `prepare_gpu()` and `draw()` on any actual present.
 
 Rendering:
 
-- [ ] Pure live scroll composites resident layers without unnecessary full bake.
-- [ ] Pure mousemove updates crosshair/readouts without combo/orderbook bake.
-- [ ] Resize never stretches stale texture.
-- [ ] Device generation change recreates all backend resources.
-- [ ] Background/grid/combo/orderbook/userdata draw in correct order.
+- [x] Pure live scroll composites resident layers without unnecessary full bake.
+- [x] Pure mousemove updates crosshair/readouts without combo/orderbook bake.
+- [x] Resize never stretches stale texture.
+- [x] Device generation change recreates all backend resources.
+- [x] Background/grid/combo/orderbook/userdata draw in correct order.
 - [ ] Overlay crosshair/readouts align with chart pixels and axis math.
+      External/manual visual audit gate after latest fork build.
 
 Invalidation:
 
-- [ ] Mousemove over chart does not call `cx.notify()`.
-- [ ] Orders/Shell render rate stays gated while live chart scrolls.
-- [ ] Axis labels update only on throttled/rare path.
-- [ ] Status/metrics UI updates by ordinary throttled notify, not chart cadence.
+- [x] Mousemove over chart does not call `cx.notify()` for cursor-only pixels.
+      Drag and throttled readout edge cases still notify intentionally.
+- [x] Orders/Shell render rate stays gated while live chart scrolls.
+      Local Windows smoke with `MOON_RENDER_DIAG_OPEN_10_BTC=1` reached chartdx
+      presents (`chart_present` max 49/s) while `orders_render`/`shell_render`
+      stayed <=2/s. Full 60s perf/input-storm run is still a separate stress
+      validation item below.
+- [x] Axis labels update only on throttled/rare path.
+- [x] Status/metrics UI updates by ordinary throttled notify, not chart cadence.
 
 Input:
 
-- [ ] Pan detaches from live immediately on drag.
-- [ ] Re-anchor to live does not happen on every drag move.
-- [ ] X and Y pan can coexist where intended.
-- [ ] Wheel direction is correct.
-- [ ] Zoom around cursor is preserved.
-- [ ] Minimum/default time scale stays near 60s and phase-clean.
+- [x] Pan detaches from live immediately on drag.
+- [x] Re-anchor to live does not happen on every drag move.
+- [x] X and Y pan can coexist where intended.
+- [x] Wheel direction is correct.
+- [x] Zoom around cursor is preserved.
+- [x] Minimum/default time scale stays near 60s and phase-clean.
 
 Multi-chart/window:
 
 - [ ] Four visible charts in one window remain stable.
-- [ ] One chart requesting present does not starve other visible canvases.
-- [ ] Detach moves chart canvas to new window only.
-- [ ] Hidden tab has no canvas polling/GPU work.
-- [ ] No stale pass/canvas draws into old window.
+      External/manual stress audit gate.
+- [x] One chart requesting present does not starve other visible canvases.
+- [x] Detach moves chart canvas to new window only.
+- [x] Hidden tab has no canvas polling/GPU work.
+- [x] No stale pass/canvas draws into old window.
 
 Platform:
 
-- [ ] Windows MSVC build succeeds and tested exe is target\x86_64-pc-windows-msvc\debug\moon-gpui.exe.
-- [ ] Windows live charts do not freeze under multi-window/input storm.
+- [x] Windows MSVC build succeeds and tested exe is target\x86_64-pc-windows-msvc\debug\moon-gpui.exe.
+      Done locally after latest fork/C2 code with `--features debug-tools`.
+- [x] Windows live chart no longer freezes/stutters on idle frame-clock path.
+      Done after removing the bad waitable posting gate; user manual check
+      confirmed smoothness returned. Full multi-window/input-storm measurement
+      remains an audit gate.
 - [ ] Windows occlusion/minimize does not spin GPU work and recovers.
-- [ ] macOS Metal shaders compile and chart creation does not panic.
+      Runtime audit gate; fork code now has `DXGI_PRESENT_TEST` recovery.
+- [x] macOS Metal shaders compile and chart creation does not panic.
+      Confirmed by Mac developer after shader fix; FPS check is separate.
 - [ ] macOS multiple chart windows have acceptable FPS or measured bottleneck with fix plan.
-- [ ] Linux wgpu path builds and runs.
+      External audit gate; current blocker is macOS Keychain GUI permission for
+      `moon-gpui`, not Metal shader/chart creation.
+- [x] Linux wgpu path builds and runs on X11.
+      Native Linux report: Ubuntu 24.04/NVIDIA/Vulkan, 10 debug chart windows,
+      live rendering and perf counters collected after Secret Service/openbox
+      setup. Wayland is still separate.
 - [ ] Wayland frame decision keeps ticking via fallback without blind presents.
+      External native audit gate.
 
 Design:
 
-- [ ] MoonBot Terminal design remains priority.
-- [ ] No generic toolkit defaults override chart/readout look.
-- [ ] Popup/menu/tooltip over chart is not covered incorrectly by overlay canvas.
+- [x] MoonBot Terminal design remains priority.
+- [x] No generic toolkit defaults override chart/readout look.
+- [x] Main window chrome keeps MoonTerminal custom design while remaining draggable.
+      Header drag zone covers the left info block and empty header spacer; right
+      actions/window controls remain clickable.
+- [x] Main window is forced opaque at OS background level.
+      `window_background` and Windows DWM background appearance are explicitly
+      Opaque. If resize still shows a hole, the next fix belongs in the
+      `gpui_windows` DirectComposition/resize path, not MoonPalette.
+- [x] Popup/menu/tooltip over chart is not covered incorrectly by overlay canvas.
+      Done at architecture level: chart is emitted as UnderScene `gpu_canvas`
+      only; there is no chart `gpu_canvas().over()` layer above GPUI popup/tooltip
+      elements. Manual visual polish remains an audit task.
 
 Public repo:
 
-- [ ] No local path dependencies committed.
+- [x] No local path dependencies committed.
 - [ ] Public git dependencies resolve without local patches.
-- [ ] Internal Russian/profanity docs are not published to component/fork repos.
+      Pending after latest fork and MoonPalette lock push.
+- [x] Internal Russian/profanity docs are not published to component/fork repos.

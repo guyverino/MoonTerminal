@@ -63,6 +63,14 @@ pub struct SessionManager {
     last_cmd: HashMap<CoreId, (bool, Vec<String>)>,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DrainStats {
+    /// At least one feed message was applied to session state.
+    pub any: bool,
+    /// Data visible to chart GPU state changed: market ticks/book/price-lines or order lines.
+    pub chart_data: bool,
+}
+
 impl SessionManager {
     /// Поднимает live-сессии по всем серверам конфига. Нет серверов — нет сессий.
     /// `reports` — общий канал к SQLite-writer'у (клонируется на каждое ядро).
@@ -120,19 +128,20 @@ impl SessionManager {
 
     /// Дренирует все каналы ядер. Аккаунтные сообщения → CoreStore; рыночные →
     /// MarketStore (по ядру-источнику, т.е. провайдеру); Identity → core_key.
-    /// Зовётся раз в кадр перед `set_open`. Возвращает true, если применил хоть одно
-    /// сообщение — вызывающий будит окна только тогда (а не на каждый пустой тик).
-    pub fn drain(&mut self) -> bool {
-        let mut any = false;
+    /// Зовётся частым data-drain тиком перед `set_open`. Возвращает, что именно
+    /// изменилось: общий UI-state и отдельно данные, которые могут менять GPU-пиксели чарта.
+    pub fn drain(&mut self) -> DrainStats {
+        let mut stats = DrainStats::default();
         for sess in &self.sessions {
             while let Ok(msg) = sess.handle.rx.try_recv() {
-                any = true;
+                stats.any = true;
                 match msg {
                     FeedMsg::Identity(ex) => {
                         self.core_key.insert(sess.id, ex);
                     }
                     FeedMsg::Ticks { market, ticks } => {
                         self.market.apply_ticks(sess.id, &market, &ticks);
+                        stats.chart_data = true;
                     }
                     FeedMsg::PriceLine {
                         market,
@@ -141,9 +150,18 @@ impl SessionManager {
                     } => {
                         self.market
                             .apply_price_line(sess.id, &market, kind, &points);
+                        stats.chart_data = true;
                     }
                     FeedMsg::OrderBook { market, book } => {
                         self.market.apply_book(sess.id, &market, &book);
+                        stats.chart_data = true;
+                    }
+                    FeedMsg::Orders(orders) => {
+                        if let Some(core) = self.store.core_mut(sess.id) {
+                            let before = core.orders_rev;
+                            core.apply(FeedMsg::Orders(orders));
+                            stats.chart_data |= core.orders_rev != before;
+                        }
                     }
                     other => {
                         if let Some(core) = self.store.core_mut(sess.id) {
@@ -153,7 +171,7 @@ impl SessionManager {
                 }
             }
         }
-        any
+        stats
     }
 
     /// Снимок статусов подключения всех ядер (id → статус) — для бейджей в окне

@@ -116,6 +116,10 @@ struct Backend {
     /// включается только env `MOON_RENDER_DIAG_OPEN_FIRST_MARKET`.
     diag_open_first_market: bool,
     diag_open_done: bool,
+    #[cfg(any(debug_assertions, moon_profile_debug, feature = "debug-tools"))]
+    diag_open_10_btc: bool,
+    #[cfg(any(debug_assertions, moon_profile_debug, feature = "debug-tools"))]
+    diag_open_10_btc_done: bool,
     /// Раскладка окон (геометрия по группам) — load на старте, save на изменении
     /// (дебаунс через дренаж-таймер). Порт egui WindowLayout/layout.toml.
     layout: WindowLayout,
@@ -163,6 +167,9 @@ struct Backend {
     debug_window: Option<WindowHandle<Root>>,
     #[cfg(any(debug_assertions, moon_profile_debug, feature = "debug-tools"))]
     debug_chart_windows: Vec<WindowHandle<Root>>,
+    /// Visible chart data consumers. Backend drain is the single data-ingestion
+    /// clock; charts must not run their own 16ms data pumps.
+    chart_consumers: Vec<WeakEntity<ChartPanel>>,
     /// Персист чарт-вкладок (масштаб по вкладке + геометрия откреп-окон) — charts.json.
     /// Дебаунс-сейв делает дренаж по `chart_specs_dirty`. См. `chart_persist`.
     chart_specs: Vec<chart_persist::ChartTabSpec>,
@@ -173,6 +180,18 @@ struct Backend {
 }
 
 impl Backend {
+    fn register_chart_consumer(&mut self, chart: WeakEntity<ChartPanel>) {
+        if self.chart_consumers.iter().any(|existing| existing == &chart) {
+            return;
+        }
+        self.chart_consumers.push(chart);
+    }
+
+    fn live_chart_consumers(&mut self) -> Vec<WeakEntity<ChartPanel>> {
+        self.chart_consumers.retain(|chart| chart.upgrade().is_some());
+        self.chart_consumers.clone()
+    }
+
     fn maybe_diag_open_first_market(&mut self, cx: &mut Context<Self>) {
         if !self.diag_open_first_market || self.diag_open_done || self.open_request.is_some() {
             return;
@@ -211,6 +230,22 @@ impl Backend {
         }
         log::info!("diag auto-open: core={core} name={name} market={market}");
         cx.notify();
+    }
+
+    #[cfg(any(debug_assertions, moon_profile_debug, feature = "debug-tools"))]
+    fn take_diag_open_10_btc(&mut self) -> bool {
+        if !self.diag_open_10_btc || self.diag_open_10_btc_done {
+            return false;
+        }
+        // Debug perf windows only need a live core id/group, not the main group window.
+        // On headless Linux/X11 the main window can exist while the bookkeeping gate is
+        // still false during early startup, which made MOON_RENDER_DIAG_OPEN_10_BTC
+        // silently do nothing and broke automated perf runs.
+        if self.session.sessions().is_empty() {
+            return false;
+        }
+        self.diag_open_10_btc_done = true;
+        true
     }
 }
 
@@ -601,24 +636,36 @@ impl Render for Shell {
 
 fn window_chrome(width: f32) -> impl IntoElement {
     let controls_x = (width - 108.0).max(0.0);
+    let drag_x = design::titlebar_leading_inset();
+    let drag_w = if design::show_custom_window_controls() {
+        116.0_f32.min(width)
+    } else {
+        (width - drag_x).max(0.0)
+    };
 
-    MoonWindowChrome::new(
+    let chrome = MoonWindowChrome::new(
         "moon-window-chrome",
         MoonRect::new(0.0, 0.0, width, design::HEADER_TOP_H),
     )
     .drag_bounds(MoonRect::new(
+        drag_x,
         0.0,
-        0.0,
-        116.0_f32.min(width),
+        drag_w,
         design::HEADER_TOP_H,
-    ))
-    .controls_bounds(MoonRect::new(controls_x, 0.0, 96.0, design::HEADER_TOP_H))
-    .buttons([
-        MoonWindowChromeButton::Minimize,
-        MoonWindowChromeButton::Maximize,
-        MoonWindowChromeButton::Close,
-    ])
-    .render()
+    ));
+
+    if design::show_custom_window_controls() {
+        chrome
+            .controls_bounds(MoonRect::new(controls_x, 0.0, 96.0, design::HEADER_TOP_H))
+            .buttons([
+                MoonWindowChromeButton::Minimize,
+                MoonWindowChromeButton::Maximize,
+                MoonWindowChromeButton::Close,
+            ])
+            .render()
+    } else {
+        chrome.no_controls().render()
+    }
 }
 
 impl Shell {
@@ -783,6 +830,80 @@ struct DebugPerfWindow {
 }
 
 #[cfg(any(debug_assertions, moon_profile_debug, feature = "debug-tools"))]
+struct DebugChartHost {
+    panel: Entity<ChartPanel>,
+    title: String,
+    focus: FocusHandle,
+}
+
+#[cfg(any(debug_assertions, moon_profile_debug, feature = "debug-tools"))]
+impl DebugChartHost {
+    fn new(panel: Entity<ChartPanel>, title: String, cx: &mut Context<Self>) -> Self {
+        Self {
+            panel,
+            title,
+            focus: cx.focus_handle(),
+        }
+    }
+}
+
+#[cfg(any(debug_assertions, moon_profile_debug, feature = "debug-tools"))]
+impl Focusable for DebugChartHost {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus.clone()
+    }
+}
+
+#[cfg(any(debug_assertions, moon_profile_debug, feature = "debug-tools"))]
+impl Render for DebugChartHost {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        let title = self.title.clone();
+        v_flex()
+            .size_full()
+            .track_focus(&self.focus)
+            .child(
+                h_flex()
+                    .h(px(30.0))
+                    .w_full()
+                    .items_center()
+                    .gap(px(8.0))
+                    .px(px(8.0))
+                    .bg(rgba(0x121416F2))
+                    .window_control_area(WindowControlArea::Drag)
+                    .child(
+                        div()
+                            .flex_1()
+                            .font_family(design::mono())
+                            .text_size(px(11.0))
+                            .text_color(rgba(0xD6D9DDFF))
+                            .child(title),
+                    )
+                    .child(
+                        div()
+                            .id("debug-chart-close")
+                            .w(px(22.0))
+                            .h(px(20.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(3.0))
+                            .text_size(px(13.0))
+                            .text_color(rgba(0xC8CCD0FF))
+                            .bg(rgba(0x00000059))
+                            .cursor_pointer()
+                            .hover(|s| s.bg(rgba(0xE04848CC)).text_color(rgb(0xFFFFFF)))
+                            .child("×")
+                            .on_mouse_down(MouseButton::Left, |_e, window, cx| {
+                                cx.stop_propagation();
+                                window.remove_window();
+                            }),
+                    ),
+            )
+            .child(div().flex_1().w_full().child(self.panel.clone()))
+    }
+}
+
+#[cfg(any(debug_assertions, moon_profile_debug, feature = "debug-tools"))]
 impl DebugPerfWindow {
     fn new(backend: Entity<Backend>, cx: &mut Context<Self>) -> Self {
         cx.observe(&backend, |_, _, cx| cx.notify()).detach();
@@ -851,7 +972,8 @@ impl Render for DebugPerfWindow {
         let cwd = std::env::current_dir()
             .map(|p| p.display().to_string())
             .unwrap_or_else(|e| format!("<cwd error: {e}>"));
-        let backend = self.backend.clone();
+        let open_backend = self.backend.clone();
+        let close_backend = self.backend.clone();
 
         v_flex()
             .id("debug-perf-window")
@@ -875,15 +997,30 @@ impl Render for DebugPerfWindow {
                             .child("MoonTerminal debug stats"),
                     )
                     .child(
-                        MoonButton::new("debug-open-10-btc")
-                            .width(230.0)
-                            .variant(MoonButtonVariant::Neutral)
-                            .size(MoonButtonSize::Toolbar)
-                            .label("Открыть 10 BTC графиков")
-                            .on_click(move |_, _, cx| {
-                                spawn_debug_btc_chart_windows(cx, backend.clone());
-                            })
-                            .render(),
+                        h_flex()
+                            .gap(px(6.0))
+                            .child(
+                                MoonButton::new("debug-open-10-btc")
+                                    .width(230.0)
+                                    .variant(MoonButtonVariant::Neutral)
+                                    .size(MoonButtonSize::Toolbar)
+                                    .label("Открыть 10 BTC графиков")
+                                    .on_click(move |_, _, cx| {
+                                        spawn_debug_btc_chart_windows(cx, open_backend.clone());
+                                    })
+                                    .render(),
+                            )
+                            .child(
+                                MoonButton::new("debug-close-10-btc")
+                                    .width(120.0)
+                                    .variant(MoonButtonVariant::Neutral)
+                                    .size(MoonButtonSize::Toolbar)
+                                    .label("Закрыть")
+                                    .on_click(move |_, _, cx| {
+                                        close_debug_btc_chart_windows(cx, close_backend.clone());
+                                    })
+                                    .render(),
+                            ),
                     ),
             )
             .child(Self::stat_row(
@@ -975,14 +1112,16 @@ fn open_debug_perf_window(cx: &mut App, backend: Entity<Backend>) {
             title: Some("MoonTerminal Debug".into()),
             ..Default::default()
         }),
-        app_id: Some("MoonTerminal.Debug".to_string()),
+        app_id: Some("MoonTerminal".to_string()),
         window_min_size: Some(size(px(560.0), px(320.0))),
         ..Default::default()
     };
     let b = backend.clone();
     if let Ok(handle) = cx.open_window(opts, move |window, cx| {
+        #[cfg(target_os = "windows")]
+        configure_dwm_window(window);
         let view = cx.new(|cx| DebugPerfWindow::new(b, cx));
-        cx.new(|cx| Root::new(view, window, cx).background_policy(MoonBackgroundPolicy::NoFill))
+        cx.new(|cx| Root::new(view, window, cx).background_policy(MoonBackgroundPolicy::Opaque))
     }) {
         backend.update(cx, |bk, _| {
             bk.debug_window = Some(handle);
@@ -1009,20 +1148,27 @@ fn spawn_debug_btc_chart_windows(cx: &mut App, backend: Entity<Backend>) {
         let backend_for_panel = backend.clone();
         let market = DEBUG_MARKET.to_string();
         let theme = theme.clone();
+        let title = format!("MoonTerminal Debug BTC {}", i + 1);
         let opts = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(Bounds {
                 origin: point(px(90.0 + i as f32 * 24.0), px(90.0 + i as f32 * 24.0)),
                 size: size(px(920.0), px(560.0)),
             })),
             titlebar: Some(TitlebarOptions {
-                title: Some(format!("MoonTerminal Debug BTC {}", i + 1).into()),
+                title: Some(title.clone().into()),
+                appears_transparent: true,
                 ..Default::default()
             }),
-            app_id: Some("MoonTerminal.Debug.Chart".to_string()),
+            kind: WindowKind::PopUp,
+            focus: false,
+            is_minimizable: false,
+            app_id: Some("MoonTerminal".to_string()),
             window_min_size: Some(size(px(520.0), px(340.0))),
             ..Default::default()
         };
         let opened_window = cx.open_window(opts, move |window, cx| {
+            #[cfg(target_os = "windows")]
+            configure_dwm_window(window);
             let panel = cx.new(|cx| {
                 ChartPanel::new(
                     backend_for_panel,
@@ -1033,7 +1179,8 @@ fn spawn_debug_btc_chart_windows(cx: &mut App, backend: Entity<Backend>) {
                     cx,
                 )
             });
-            cx.new(|cx| Root::new(panel, window, cx).background_policy(MoonBackgroundPolicy::NoFill))
+            let host = cx.new(|cx| DebugChartHost::new(panel, title, cx));
+            cx.new(|cx| Root::new(host, window, cx).background_policy(MoonBackgroundPolicy::NoFill))
         });
         match opened_window {
             Ok(handle) => opened.push(handle),
@@ -1048,6 +1195,26 @@ fn spawn_debug_btc_chart_windows(cx: &mut App, backend: Entity<Backend>) {
                 .extend(opened.into_iter().map(|handle| (group.clone(), handle)));
             bcx.notify();
         });
+    }
+}
+
+#[cfg(any(debug_assertions, moon_profile_debug, feature = "debug-tools"))]
+fn close_debug_btc_chart_windows(cx: &mut App, backend: Entity<Backend>) {
+    let handles = backend.update(cx, |b, bcx| {
+        let handles = std::mem::take(&mut b.debug_chart_windows);
+        let ids = handles
+            .iter()
+            .map(|handle| handle.window_id())
+            .collect::<Vec<_>>();
+        b.detached_chart_windows
+            .retain(|(_, handle)| !ids.contains(&handle.window_id()));
+        bcx.notify();
+        handles
+    });
+    for handle in handles {
+        handle
+            .update(cx, |_, window, _| window.remove_window())
+            .ok();
     }
 }
 
@@ -1108,6 +1275,7 @@ pub(crate) fn spawn_group_window(
             ..Default::default()
         }),
         app_id: Some("MoonTerminal".to_string()),
+        window_background: WindowBackgroundAppearance::Opaque,
         window_min_size: Some(size(px(520.0), px(340.0))),
         ..Default::default()
     };
@@ -1135,6 +1303,8 @@ fn configure_dwm_window(window: &Window) {
             DWMWCP_DONOTROUND, DwmSetWindowAttribute,
         },
     };
+
+    window.set_background_appearance(WindowBackgroundAppearance::Opaque);
 
     let Ok(handle) = raw_window_handle::HasWindowHandle::window_handle(window) else {
         return;
@@ -1261,6 +1431,10 @@ fn main() -> anyhow::Result<()> {
             diag_open_first_market: std::env::var_os("MOON_RENDER_DIAG_OPEN_FIRST_MARKET")
                 .is_some(),
             diag_open_done: false,
+            #[cfg(any(debug_assertions, moon_profile_debug, feature = "debug-tools"))]
+            diag_open_10_btc: std::env::var_os("MOON_RENDER_DIAG_OPEN_10_BTC").is_some(),
+            #[cfg(any(debug_assertions, moon_profile_debug, feature = "debug-tools"))]
+            diag_open_10_btc_done: false,
             layout: layout.clone(),
             layout_dirty: false,
             dock_states,
@@ -1282,6 +1456,7 @@ fn main() -> anyhow::Result<()> {
             debug_window: None,
             #[cfg(any(debug_assertions, moon_profile_debug, feature = "debug-tools"))]
             debug_chart_windows: Vec::new(),
+            chart_consumers: Vec::new(),
             chart_specs: chart_persist::load_all(),
             chart_specs_dirty: false,
             quitting: false,
@@ -1360,92 +1535,122 @@ fn main() -> anyhow::Result<()> {
         })
         .detach();
 
-        // Дренаж сессий + метрики раз в 100мс на UI-потоке → notify окон.
+        // Дренаж сессий часто, тяжёлая координация/метрики раз в ~100мс на UI-потоке.
         let drain_backend = backend.clone();
         let drain_cfg = cfg.clone();
         let drain_layout = layout.clone();
         cx.spawn(async move |cx| {
             // gpui (свежий): AsyncApp::update инфэллибл (возвращает R, не Result) — без `?`.
             let executor = cx.update(|cx| cx.background_executor().clone());
-            // Дренаж данных — ~60 Гц (под present): фид кладёт тики/стакан каждые ~8мс,
+            // Дренаж данных — ~60 Гц: фид кладёт тики/стакан каждые ~8мс,
             // и при дренаже раз в 100мс живой скролл шёл ступеньками 10 Гц. Тяжёлая
             // координация (reconcile_providers, метрики, сохранения) остаётся на ~100мс
             // (каждый 6-й тик) — её незачем гонять 60 раз/сек.
             let mut tick: u32 = 0;
             let mut last_report = Instant::now();
-            // Causal-гейт пульса: копим, текли ли данные с фида (drain()->bool) с прошлого
-            // notify. Рынок молчит → ничего не нотифаем (нет холостых top-down перерисовок).
+            // Causal-гейт пульса: копим, применились ли сообщения с фида с прошлого notify.
+            // Фид молчит → ничего не нотифаем (нет холостых top-down перерисовок).
             let mut dirty_since_notify = false;
             loop {
                 executor.timer(Duration::from_millis(16)).await;
                 tick = tick.wrapping_add(1);
                 let coord = tick % 6 == 0;
-                // UI-пульс ≤6 Гц (160мс) И ТОЛЬКО когда данные реально менялись (causal). backend-
+                // UI-пульс ~4 Гц (≈256мс) И ТОЛЬКО когда данные реально менялись (causal). backend-
                 // notify будит ВСЕХ обзёрверов, а GPUI-рендер идёт top-down → один notify
                 // перерисовывает ВСЮ сцену (Shell+тяжёлый Orders+все панели), сколько бы гейтов на
                 // отдельных вьюхах ни стояло. Поэтому: редкий пульс у ИСТОЧНИКА (синхронизирует все
-                // пробуждения хрома, ≤4 Гц — юзер: ордера ≥250мс) + гейт по факту прихода данных.
+                // пробуждения хрома, ≥250мс) + гейт по факту прихода данных.
                 // Гладкость чарта — от `gpu_canvas.frame()` на platform tick, НЕ от этого notify.
                 // (Полная развязка = view-caching панелей в moon-palette — отдельная задача; до неё
                 // 4-Гц пульс это пожарный кап top-down сцепки, см. ЕБАНИНА Пример 5 / RENDER_INVALIDATION §7.)
-                let notify_due = tick % 10 == 0;
+                let notify_due = tick % 16 == 0;
                 // gpui (свежий): AsyncApp::update инфэллибл; при закрытии приложения
                 // спавн-задача отменяется самим gpui (future дропается на await ниже).
                 cx.update(|cx| {
                     // Сессия/метрики/реконнект — внутри backend.update; запросы
                     // «показать группу» забираем наружу (нужен &mut App для окон).
-                    let show_reqs = drain_backend.update(cx, |b, cx| {
-                        // Данные дренятся ~60 Гц; visible chart data pump готовит GPU state без
-                        // частого GPUI notify. drain()->bool = «пришли ли сообщения с фида»; копим до
-                        // следующего notify (causal-гейт пульса, см. коммент у notify_due).
-                        dirty_since_notify |= b.session.drain();
-                        b.maybe_diag_open_first_market(cx);
-                        let mut reqs = Vec::new();
-                        if coord {
-                            // reconcile_providers избирает провайдера/биржу + держит
-                            // подписку на desired-рынки. subscribe_all_trades провайдера =
-                            // ретейн всех трейдов биржи (десятки ГБ — by-design, ради
-                            // мгновенного открытия монеты; дедуп держит 1 провайдера/биржу).
-                            b.session.set_open(&b.desired);
-                            b.snap = b.metrics.sample(Instant::now());
-                            // Реконнект ядер по кнопке ↻ (порт egui take_actions.reconnect).
-                            let recon: Vec<CoreId> = b.reconnect_request.drain(..).collect();
-                            for id in recon {
-                                b.session.reconnect(
-                                    id,
-                                    &b.config,
-                                    b.reports.as_ref().map(|h| &h.tx),
-                                );
+                    let (show_reqs, open_debug_10, chart_consumers) =
+                        drain_backend.update(cx, |b, cx| {
+                            // Данные дренятся ~60 Гц. Если реально пришли сообщения фида,
+                            // ниже causally обновим retained chart state у зарегистрированных
+                            // чартов без GPUI notify. Рисовать или Skip всё равно решит
+                            // gpu_canvas.frame() на platform tick.
+                            let drain = b.session.drain();
+                            dirty_since_notify |= drain.any;
+                            b.maybe_diag_open_first_market(cx);
+                            let mut reqs = Vec::new();
+                            if coord {
+                                // reconcile_providers избирает провайдера/биржу + держит
+                                // подписку на desired-рынки. subscribe_all_trades провайдера =
+                                // ретейн всех трейдов биржи (десятки ГБ — by-design, ради
+                                // мгновенного открытия монеты; дедуп держит 1 провайдера/биржу).
+                                b.session.set_open(&b.desired);
+                                b.snap = b.metrics.sample(Instant::now());
+                                // Реконнект ядер по кнопке ↻ (порт egui take_actions.reconnect).
+                                let recon: Vec<CoreId> = b.reconnect_request.drain(..).collect();
+                                for id in recon {
+                                    b.session.reconnect(
+                                        id,
+                                        &b.config,
+                                        b.reports.as_ref().map(|h| &h.tx),
+                                    );
+                                }
+                                // Дебаунс-сохранение раскладки окон (≤10/с).
+                                if b.layout_dirty {
+                                    b.layout.save();
+                                    b.layout_dirty = false;
+                                }
+                                // Дебаунс-сохранение раскладки доков (docks.json).
+                                if b.dock_dirty {
+                                    dock_persist::save_all(&b.dock_states);
+                                    b.dock_dirty = false;
+                                }
+                                // Дебаунс-сохранение откреплённых окон (detached.json).
+                                if b.detached_dirty {
+                                    detached::save_all(&b.detached);
+                                    b.detached_dirty = false;
+                                }
+                                // Дебаунс-сохранение чарт-вкладок (charts.json: масштаб + откреп-геометрия).
+                                if b.chart_specs_dirty {
+                                    chart_persist::save_all(&b.chart_specs);
+                                    b.chart_specs_dirty = false;
+                                }
+                                reqs = std::mem::take(&mut b.show_group_request);
                             }
-                            // Дебаунс-сохранение раскладки окон (≤10/с).
-                            if b.layout_dirty {
-                                b.layout.save();
-                                b.layout_dirty = false;
+                            if notify_due && dirty_since_notify {
+                                dirty_since_notify = false;
+                                crate::diag::bump(&crate::diag::BACKEND_NOTIFY);
+                                cx.notify();
                             }
-                            // Дебаунс-сохранение раскладки доков (docks.json).
-                            if b.dock_dirty {
-                                dock_persist::save_all(&b.dock_states);
-                                b.dock_dirty = false;
-                            }
-                            // Дебаунс-сохранение откреплённых окон (detached.json).
-                            if b.detached_dirty {
-                                detached::save_all(&b.detached);
-                                b.detached_dirty = false;
-                            }
-                            // Дебаунс-сохранение чарт-вкладок (charts.json: масштаб + откреп-геометрия).
-                            if b.chart_specs_dirty {
-                                chart_persist::save_all(&b.chart_specs);
-                                b.chart_specs_dirty = false;
-                            }
-                            reqs = std::mem::take(&mut b.show_group_request);
-                        }
-                        if notify_due && dirty_since_notify {
-                            dirty_since_notify = false;
-                            crate::diag::bump(&crate::diag::BACKEND_NOTIFY);
-                            cx.notify();
-                        }
-                        reqs
-                    });
+                            #[cfg(any(
+                                debug_assertions,
+                                moon_profile_debug,
+                                feature = "debug-tools"
+                            ))]
+                            let open_debug_10 = b.take_diag_open_10_btc();
+                            #[cfg(not(any(
+                                debug_assertions,
+                                moon_profile_debug,
+                                feature = "debug-tools"
+                            )))]
+                            let open_debug_10 = false;
+                            let chart_consumers = if drain.chart_data {
+                                b.live_chart_consumers()
+                            } else {
+                                Vec::new()
+                            };
+                            (reqs, open_debug_10, chart_consumers)
+                        });
+                    for chart in chart_consumers {
+                        let _ = chart.update(cx, |chart, cx| {
+                            chart.prepare_current_data_if_visible(cx);
+                        });
+                    }
+                    #[cfg(any(debug_assertions, moon_profile_debug, feature = "debug-tools"))]
+                    if open_debug_10 {
+                        log::info!("diag auto-open: spawning 10 BTC chart windows");
+                        spawn_debug_btc_chart_windows(cx, drain_backend.clone());
+                    }
                     // Открыть/сфокусировать окна по запросам 👁.
                     for g in show_reqs {
                         spawn_group_window(

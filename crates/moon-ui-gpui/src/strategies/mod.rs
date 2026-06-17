@@ -22,7 +22,7 @@ use moon_palette::{
     MoonTone, MoonWindowChrome, MoonWindowChromeButton, Root, h_flex, rgba_from, v_flex,
 };
 
-use crate::Backend;
+use crate::{Backend, design};
 use moon_core::feed::{SchemaField, SchemaFieldUi, SchemaSection, StrategyRow};
 use moon_core::session::{CoreId, CoreStore};
 
@@ -1566,7 +1566,8 @@ fn strategies_header(p: MoonPalette) -> impl IntoElement {
         .w_full()
         .h(px(STRATEGIES_HEADER_H))
         .justify_between()
-        .px(px(12.0))
+        .pl(px(design::titlebar_leading_inset()))
+        .pr(px(design::HEADER_PAD_X))
         .bg(moon(p.shell_high))
         .border_b(px(1.0))
         .border_color(moon_alpha(p.border, 1.0))
@@ -1596,7 +1597,9 @@ fn strategies_header(p: MoonPalette) -> impl IntoElement {
                         .child("Стратегии"),
                 ),
         )
-        .child(strategies_window_buttons(p))
+        .when(design::show_custom_window_controls(), |this| {
+            this.child(strategies_window_buttons(p))
+        })
 }
 
 fn strategies_window_buttons(p: MoonPalette) -> impl IntoElement {
@@ -1625,29 +1628,36 @@ fn strategies_window_button(label: &'static str, color: u32) -> impl IntoElement
 fn strategies_window_chrome(width: f32) -> impl IntoElement {
     let controls_w = 52.0;
     let controls_x = (width - controls_w - 12.0).max(0.0);
+    let drag_x = design::titlebar_leading_inset();
+    let drag_w = if design::show_custom_window_controls() {
+        (width - controls_w - 20.0).max(0.0)
+    } else {
+        (width - drag_x).max(0.0)
+    };
 
-    MoonWindowChrome::new(
+    let chrome = MoonWindowChrome::new(
         "strategies-window-chrome",
         MoonRect::new(0.0, 0.0, width, STRATEGIES_HEADER_H),
     )
-    .drag_bounds(MoonRect::new(
-        0.0,
-        0.0,
-        (width - controls_w - 20.0).max(0.0),
-        STRATEGIES_HEADER_H,
-    ))
-    .controls_bounds(MoonRect::new(
-        controls_x,
-        0.0,
-        controls_w,
-        STRATEGIES_HEADER_H,
-    ))
-    .button_width(26.0)
-    .buttons([
-        MoonWindowChromeButton::Minimize,
-        MoonWindowChromeButton::Close,
-    ])
-    .render()
+    .drag_bounds(MoonRect::new(drag_x, 0.0, drag_w, STRATEGIES_HEADER_H));
+
+    if design::show_custom_window_controls() {
+        chrome
+            .controls_bounds(MoonRect::new(
+                controls_x,
+                0.0,
+                controls_w,
+                STRATEGIES_HEADER_H,
+            ))
+            .button_width(26.0)
+            .buttons([
+                MoonWindowChromeButton::Minimize,
+                MoonWindowChromeButton::Close,
+            ])
+            .render()
+    } else {
+        chrome.no_controls().render()
+    }
 }
 
 // ── Чистые помощники (порт `strategies/mod.rs`) ──────────────────────────────

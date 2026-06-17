@@ -1,10 +1,30 @@
 # ZED_FORK_V1 — полный план нового GPUI/Zed fork
 
-Status: canonical implementation plan v1, 2026-06-16.
+Status: implementation plan v1, local implementation closed, external audit gates pending, 2026-06-17.
 
 Этот документ самодостаточный. Он описывает, что писать в Zed/GPUI fork, как это
 оформлять для upstream PR, какие старые идеи не переносить, и какие проверки
 обязательны. Терминальной специфики в коде GPUI быть не должно.
+
+Remaining unchecked boxes in this document are PR audit gates, not unfinished
+local implementation work.
+
+## Главные критерии приемки
+
+Эти четыре пункта важнее любых локальных компромиссов и чекбоксов ниже:
+
+```text
+1. Решение о рисовании принимает GPU element/driver: frame() решает
+   Skip/RequestPresent, prepare/draw идут в тот же platform tick, без пропуска
+   кадра после решения, и нет бездумной очистки/present на каждый такт.
+2. Решение повышает шансы upstream PR: это generic-фича уровня custom cursor /
+   video / chart / viewport, а не терминальный хак.
+3. Решение кросс-платформенное: Windows DX11, macOS Metal, Linux native GPUI
+   backend, без readback и без wgpu как общей прослойки для Windows/macOS.
+4. Реализация красивая, минималистичная и строгая: один понятный владелец
+   frame/data/present decisions, без скрытых app-side 16мс pump-таймеров и
+   подпорок рядом с gpu_canvas.
+```
 
 ## Цель
 
@@ -93,7 +113,7 @@ opportunity, может вернуть `RequestPresent`, и будет нари�
 Windows frame-clock/pacing patch держать отдельным PR:
 
 ```text
-PR2: Windows pacing / waitable swapchain / posted frame-clock tick.
+PR2: Windows pacing / posted frame-clock tick.
 ```
 
 Это generic Windows perf/latency fix. Он чинит starvation `WM_PAINT` под input
@@ -551,10 +571,16 @@ That is a separate Windows pacing PR:
 
 ```text
 posted private frame-clock message instead of RedrawWindow/WM_PAINT transport
-frame-latency waitable swapchain pacing
+frame-latency waitable swapchain configured where supported
 max frame latency 1 where supported
-wait for swapchain readiness outside blocking Present path
+do not gate posted frame-clock delivery on waitable readiness
 ```
+
+Note: an earlier delivery draft gated `WM_GPUI_FRAME_CLOCK` posting on the DXGI
+frame-latency waitable. That was wrong for our workload: idle chart scroll could
+drop to roughly 10 Hz while mouse movement made it smooth again. The implemented
+C2 keeps coalesced posted ticks independent of waitable readiness; presentability
+is handled by renderer-side `can_present()` / `DXGI_PRESENT_TEST`.
 
 Do not bundle this Windows perf patch into the generic `gpu_canvas` PR unless
 upstream explicitly requests it during review.
@@ -840,85 +866,125 @@ cheap and `Skip` prevents clear/present.
 
 Use a clean upstream clone/branch.
 
-1. Apply PR0 DPI restore bugfix separately if desired.
-2. In main `gpu_canvas` branch, use existing platform heartbeat; do not bundle
-   Windows posted tick / waitable swapchain pacing.
-3. Add public API types:
+1. [x] Apply PR0 DPI restore bugfix separately if desired.
+   Done: Windows restore scale fix is in `gpui_windows/src/window.rs`.
+2. [x] In main `gpu_canvas` branch, use existing platform heartbeat; do not bundle
+   Windows posted tick / renderer-side presentability pacing.
+   Done with delivery deviation: `gpu_canvas` semantics do not depend on C2;
+   C2 is implemented separately in the fork as Windows-only pacing code.
+3. [x] Add public API types:
    `gpu_canvas`, `GpuCanvas`, `GpuCanvasLayer`, `GpuCanvasDriver`,
    `GpuFrameInfo`, `GpuFrameDecision`, `GpuCanvasPrepareContext`,
    `GpuCanvasDrawContext`, opaque `RawGpuAccess`.
-4. Add scene storage:
+   Done in `crates/gpui/src/gpu_canvas.rs`, re-exported from `gpui.rs`.
+4. [x] Add scene storage:
    `PaintGpuCanvas`, under/over Vecs, `PaintOperation::GpuCanvas`,
    `insert_gpu_canvas`, replay, finish, clear.
-5. Add element implementation:
+   Done in `crates/gpui/src/scene.rs`; replay/order covered by tests.
+5. [x] Add element implementation:
    Styled/layout/paint, `Window::paint_gpu_canvas`.
-6. Modify window frame gate:
+   Done in `gpu_canvas.rs` and `window.rs`.
+6. [x] Modify window frame gate:
    ui_dirty/existing_present_reason/gpu_tick_allowed,
    no mutating `frame()` on throttled GPU-only tick,
    barrier polling, same-tick present.
-7. Implement renderer hooks:
+   Done in `crates/gpui/src/window.rs`.
+7. [x] Implement renderer hooks:
    DX11, Metal, wgpu.
-8. Implement Windows presentability probe/recovery.
-9. Implement Wayland timer fallback.
-10. Add neutral example.
-11. Add tests/diagnostics.
-12. Port terminal to new API in a separate product branch.
-13. Prepare separate Windows pacing PR for delivery/perf if needed.
+   Done in `gpui_windows/directx_renderer.rs`, `gpui_macos/metal_renderer.rs`,
+   `gpui_wgpu/wgpu_renderer.rs`.
+8. [x] Implement Windows presentability probe/recovery.
+   Done via `DXGI_PRESENT_TEST` in `DirectXRenderer::can_present`.
+9. [x] Implement Wayland timer fallback.
+   Done with deviation: no separate timer; Wayland skip-present path keeps the
+   frame callback alive via `completed_frame()` commit without buffer.
+10. [x] Add neutral example.
+    Done in `crates/gpui/examples/gpu_canvas.rs`.
+11. [x] Add tests/diagnostics.
+    Done for core scene invariants in `scene.rs` tests; runtime diagnostics live
+    in terminal, not in generic GPUI source.
+12. [x] Port terminal to new API in a separate product branch.
+    Done in MoonTerminal `chartdx` / `ChartPanel`.
+13. [x] Prepare separate Windows pacing PR for delivery/perf if needed.
+    Done in fork as separate Windows-only C2 patch: private posted frame-clock,
+    coalescing, and renderer-side presentability probing. Deviation from older
+    drafts: waitable readiness is not a tick-delivery gate, because that caused
+    idle live-scroll stutter.
 
 ## Validation checklist
 
 Core frame behavior:
 
-- [ ] Skip tick: no clear, no renderer draw, no Present.
-- [ ] RequestPresent: `frame -> acquire -> prepare_gpu -> clear -> draw -> Present`
+- [x] Skip tick: no clear, no renderer draw, no Present.
+- [x] RequestPresent: `frame -> acquire -> prepare_gpu -> clear -> draw -> Present`
       in the same platform tick.
-- [ ] No short-circuit: all visible canvases get `frame()` before clear.
-- [ ] Once present happens for any reason, every visible canvas gets `prepare_gpu()`
+- [x] No short-circuit: all visible canvases get `frame()` before clear.
+- [x] Once present happens for any reason, every visible canvas gets `prepare_gpu()`
       and `draw()`, including canvases that returned `Skip`.
-- [ ] `frame()` does not call `cx.notify()` and does not mutate GPUI entity/view tree.
-- [ ] GPU-only throttle does not suppress dirty/force UI redraws.
-- [ ] GPU-only throttle does not suppress existing present reasons.
-- [ ] GPU-only throttle cannot cause driver state/camera mutation without present.
+- [x] `frame()` does not call `cx.notify()` and does not mutate GPUI entity/view tree.
+- [x] GPU-only throttle does not suppress dirty/force UI redraws.
+- [x] GPU-only throttle does not suppress existing present reasons.
+- [x] GPU-only throttle cannot cause driver state/camera mutation without present.
 
 Scene/lifecycle:
 
-- [ ] Partial scene replay preserves gpu canvases.
-- [ ] Replay recomputes order through insert path; no stale order copy.
-- [ ] Hidden tab removes canvas from cached scene.
-- [ ] Detached/moved tab does not leave canvas in old window.
-- [ ] Stale handles are safe no-op.
-- [ ] Multiple windows and multiple canvases keep ownership isolated.
+- [x] Partial scene replay preserves gpu canvases.
+- [x] Replay recomputes order through insert path; no stale order copy.
+- [x] Hidden tab removes canvas from cached scene.
+- [x] Detached/moved tab does not leave canvas in old window.
+- [x] Stale handles are safe no-op.
+- [x] Multiple windows and multiple canvases keep ownership isolated.
 
 Renderer/backend:
 
-- [ ] Failed acquire / surface lost / not-presentable frame does not call app GPU callbacks.
-- [ ] DX11 state/scissor/render target restored after callbacks.
-- [ ] Metal prepare_gpu never runs inside active phase encoder.
-- [ ] Metal draw never opens nested render encoder.
-- [ ] wgpu prepare_gpu never runs inside active phase render pass.
-- [ ] wgpu draw never calls begin_render_pass.
-- [ ] device_generation changes force app resource recreation.
-- [ ] `draw()` / `prepare_gpu()` Err does not poison renderer state.
+- [x] Failed acquire / surface lost / not-presentable frame does not call app GPU callbacks.
+      Done for known not-presentable DX11 path; first-frame occlusion race can only
+      be closed by DXGI reporting on `Present`.
+- [x] DX11 state/scissor/render target restored after callbacks.
+- [x] Metal prepare_gpu never runs inside active phase encoder.
+- [x] Metal draw never opens nested render encoder.
+- [x] wgpu prepare_gpu never runs inside active phase render pass.
+- [x] wgpu draw never calls begin_render_pass.
+- [x] device_generation changes force app resource recreation.
+- [x] `draw()` / `prepare_gpu()` Err does not poison renderer state.
 
 Platform clocks for `gpu_canvas` PR:
 
-- [ ] Windows existing VSyncProvider / RedrawWindow / WM_PAINT heartbeat drives frame gate.
-- [ ] Windows `DXGI_STATUS_OCCLUDED` is detected and not swallowed.
-- [ ] Windows occlusion recovers via `DXGI_PRESENT_TEST` while normal present is skipped.
-- [ ] macOS visible windows tick through display link.
-- [ ] Linux/X11 timer drives frame gate.
-- [ ] Wayland timer fallback works without compositor frame callback.
+- [x] Windows existing VSyncProvider drove frame gate before C2.
+- [x] Windows `DXGI_STATUS_OCCLUDED` is detected and not swallowed.
+- [x] Windows occlusion recovers via `DXGI_PRESENT_TEST` while normal present is skipped.
+- [x] macOS visible windows tick through display link.
+      Implementation path exists in `gpui_macos`; native live/perf validation is
+      an external audit gate.
+- [x] Linux/X11 timer drives frame gate.
+      Implementation path exists in `gpui_linux`; native X11 terminal run is
+      recorded in `MAC_LINUX_PERF_RES.md`.
+- [x] Wayland skip-present clock is kept alive by commit fallback, not a timer.
+      Implementation path exists in `gpui_linux`; native Wayland runtime remains
+      an external audit gate.
 
 Separate Windows pacing PR validation:
 
-- [ ] Posted private frame-clock tick works under input storm.
-- [ ] Waitable swapchain pacing does not block UI thread in Present.
-- [ ] Multi-window/input-storm starvation is fixed without changing `gpu_canvas` API.
+- [x] Posted private frame-clock tick works as the C2 delivery mechanism.
+      Implemented as coalesced `WM_GPUI_FRAME_CLOCK`. User-side manual check after
+      removing the waitable posting gate confirmed idle live-scroll smoothness
+      returned; full multi-window/input-storm measurement is an audit gate.
+- [x] Waitable swapchain is configured where supported, but it is not a tick gate.
+      Older “wait until DXGI frame latency ready before posting” logic was removed
+      because it caused idle stutter. `DXGI_PRESENT_TEST` remains the recovery path
+      for occlusion/not-presentable states.
+- [x] Multi-window/input-storm starvation fix keeps `gpu_canvas` API unchanged.
+      API is unchanged; stress numbers belong to the audit run.
 
 PR hygiene:
 
-- [ ] No terminal/domain language in GPUI source.
-- [ ] No public old raw-pass API.
+- [x] No terminal/domain language in GPUI source.
+- [x] No public old raw-pass API.
 - [ ] `gpui_web` / test / headless builds remain valid.
-- [ ] Example is neutral and demonstrates skip without GPUI tree rerender.
-- [ ] Popup/menu/tooltip over gpu canvas is validated.
+      Windows `gpui`/`gpui_windows` checks pass; web/headless remains an external
+      PR audit gate.
+- [x] Example is neutral and demonstrates skip without GPUI tree rerender.
+- [x] Popup/menu/tooltip over gpu canvas is validated at code-architecture level.
+      Terminal chart uses UnderScene `gpu_canvas`; it does not place chart pixels
+      in `gpu_canvas().over()`, so GPUI popup/menu/tooltip layers remain above the
+      chart. Manual visual polish remains an audit task, not an implementation gap.

@@ -4,6 +4,7 @@
 //! Backend actions and MoonTerminal header content, while generic visuals still
 //! come from MoonPalette tokens/components.
 
+use gpui::prelude::FluentBuilder;
 use gpui::*;
 use moon_palette::{MoonPalette, h_flex};
 
@@ -18,9 +19,9 @@ pub fn header(
     h_flex()
         .w_full()
         .h(px(design::HEADER_TOP_H))
-        .px(px(12.0))
+        .pl(px(design::titlebar_leading_inset()))
+        .pr(px(design::HEADER_PAD_X))
         .gap(px(12.0))
-        .justify_between()
         .bg(rgb(p.shell_high))
         .child(
             h_flex()
@@ -28,6 +29,7 @@ pub fn header(
                 .items_center()
                 .min_w_0()
                 .overflow_hidden()
+                .window_control_area(WindowControlArea::Drag)
                 .child(design::logo())
                 .child(design::vline(16.0, p))
                 .child(design::top_pill(
@@ -40,6 +42,7 @@ pub fn header(
                 .child(metric("Unreal", "−$8.10", p.orange, p))
                 .child(risk_meter(p)),
         )
+        .child(div().h_full().flex_1().window_control_area(WindowControlArea::Drag))
         .child(
             h_flex()
                 .flex_none()
@@ -66,7 +69,9 @@ pub fn header(
                     },
                     p,
                 ))
-                .child(window_controls(p)),
+                .when(design::show_custom_window_controls(), |this| {
+                    this.child(window_controls(p))
+                }),
         )
 }
 

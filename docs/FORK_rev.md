@@ -65,7 +65,7 @@ PR-friendly границы:
 - backend access strict, borrowed, frame-scoped;
 - C1/DPI можно отдельно; `gpu_canvas` PR должен использовать существующий Windows
   heartbeat (`VSyncProvider -> RedrawWindow -> WM_PAINT -> on_request_frame`);
-- C2 Windows pacing / waitable swapchain / posted tick держать отдельным perf PR,
+- C2 Windows pacing / posted tick держать отдельным perf PR,
   а не обязательной частью `gpu_canvas`.
 
 ### 3. Кросс-платформенность
@@ -130,7 +130,7 @@ generic баг, и его судьба не должна блокировать 
 ```text
 PR0: Windows DPI restore bugfix — отдельно.
 PR1: gpu_canvas — generic retained GPU canvas API.
-PR2: Windows pacing / waitable swapchain / posted vsync tick — отдельный perf PR.
+PR2: Windows pacing / posted vsync tick — отдельный perf PR.
 C3: floating tool-window style — отдельно / optional / delivery-only.
 ```
 
@@ -165,8 +165,10 @@ commit 4: example/tests/docs
 
 ```text
 Improve Windows frame-clock delivery under input/multi-window load.
-Move the vblank tick away from WM_PAINT starvation and avoid blocking Present on
-the UI thread via waitable swapchain pacing.
+Move the vblank tick away from WM_PAINT starvation with a coalesced private
+frame-clock message. Configure max frame latency / DXGI presentability where
+supported, but do not gate tick delivery on the DXGI waitable: that gate caused
+idle live-scroll stutter and was removed in the delivery fork.
 ```
 
 ### 1. Scene replay/cache integration
@@ -664,7 +666,8 @@ stale handle/request is safe no-op
 - Длинные подробности C1/C3 рядом с API. Лучше отдельный `ZED_PORTS_V0.md`
   или appendix.
 - C2 подробности из core spec `gpu_canvas`. Держать C2 как отдельный Windows
-  perf PR/appendix: posted tick, waitable swapchain, input-storm starvation.
+  perf PR/appendix: posted tick/coalescing, renderer-side presentability,
+  input-storm starvation.
 - “Нет кейсов для z-between-UI-primitives”. Заменить на V0 boundary:
   `in-scene interleaving is future work`.
 - Пример “треугольник/партиклы, не курсор” — это PR notes, не implementation
@@ -702,7 +705,7 @@ items.
 0. PR strategy:
    - PR0 DPI restore bugfix separately;
    - PR1 gpu_canvas uses existing Windows heartbeat;
-   - PR2 Windows pacing / waitable swapchain / posted tick is a separate perf PR.
+   - PR2 Windows pacing / posted tick is a separate perf PR.
 1. Add gpu_canvas element: Styled/layout/clip/lifetime from GPUI tree.
 2. Add PaintGpuCanvas + GpuCanvasLayer { UnderScene, OverScene }.
 3. Add PaintOperation::GpuCanvas so scene replay/cache works.

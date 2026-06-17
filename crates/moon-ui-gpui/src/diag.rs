@@ -32,6 +32,10 @@ diag_counters!(
     DETACHED_RENDER   => "detached_render",
     BACKEND_NOTIFY    => "backend_notify",
     CHART_PREPARE     => "chart_prepare",
+    CHART_FRAME       => "chart_frame",
+    CHART_FRAME_REQUEST => "chart_frame_request",
+    CHART_FRAME_SKIP_NOT_PRESENTABLE => "chart_frame_skip_not_presentable",
+    CHART_FRAME_SKIP_IDLE => "chart_frame_skip_idle",
     CHART_GPU_PREPARE => "chart_gpu_prepare",
     // gpu_canvas present (реальная частота показа чарта) — раньше СЛЕПАЯ зона: present-rate
     // не измерялся вообще. CHART_CAM_STEP = сколько present'ов реально сдвинули камеру на

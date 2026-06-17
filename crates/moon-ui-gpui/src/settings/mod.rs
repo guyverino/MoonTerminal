@@ -18,6 +18,7 @@ use std::collections::HashSet;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
+use gpui::prelude::FluentBuilder;
 use gpui::*;
 use moon_palette::{
     IndexPath, MoonBackgroundPolicy, MoonButton, MoonButtonSize, MoonButtonVariant,
@@ -26,7 +27,7 @@ use moon_palette::{
     h_flex, rgba_from, v_flex,
 };
 
-use crate::Backend;
+use crate::{Backend, design};
 use crate::icons::IconSet;
 use moon_core::config::{AppConfig, Language};
 use moon_core::market::MarketDataMode;
@@ -452,7 +453,8 @@ fn settings_header(p: MoonPalette) -> impl IntoElement {
         .w_full()
         .h(px(SETTINGS_HEADER_H))
         .justify_between()
-        .px(px(12.0))
+        .pl(px(design::titlebar_leading_inset()))
+        .pr(px(design::HEADER_PAD_X))
         .bg(rgba_from(p.shell_high, 1.0))
         .border_b(px(1.0))
         .border_color(rgba_from(p.border, 1.0))
@@ -483,7 +485,9 @@ fn settings_header(p: MoonPalette) -> impl IntoElement {
                         .child("Настройки"),
                 ),
         )
-        .child(settings_window_buttons(p))
+        .when(design::show_custom_window_controls(), |this| {
+            this.child(settings_window_buttons(p))
+        })
 }
 
 fn settings_window_buttons(p: MoonPalette) -> impl IntoElement {
@@ -565,29 +569,36 @@ fn settings_sig(b: &Backend) -> u64 {
 fn settings_window_chrome(width: f32) -> impl IntoElement {
     let controls_w = 52.0;
     let controls_x = (width - controls_w - 12.0).max(0.0);
+    let drag_x = design::titlebar_leading_inset();
+    let drag_w = if design::show_custom_window_controls() {
+        (width - controls_w - 20.0).max(0.0)
+    } else {
+        (width - drag_x).max(0.0)
+    };
 
-    MoonWindowChrome::new(
+    let chrome = MoonWindowChrome::new(
         "settings-window-chrome",
         MoonRect::new(0.0, 0.0, width, SETTINGS_HEADER_H),
     )
-    .drag_bounds(MoonRect::new(
-        0.0,
-        0.0,
-        (width - controls_w - 20.0).max(0.0),
-        SETTINGS_HEADER_H,
-    ))
-    .controls_bounds(MoonRect::new(
-        controls_x,
-        0.0,
-        controls_w,
-        SETTINGS_HEADER_H,
-    ))
-    .button_width(26.0)
-    .buttons([
-        MoonWindowChromeButton::Minimize,
-        MoonWindowChromeButton::Close,
-    ])
-    .render()
+    .drag_bounds(MoonRect::new(drag_x, 0.0, drag_w, SETTINGS_HEADER_H));
+
+    if design::show_custom_window_controls() {
+        chrome
+            .controls_bounds(MoonRect::new(
+                controls_x,
+                0.0,
+                controls_w,
+                SETTINGS_HEADER_H,
+            ))
+            .button_width(26.0)
+            .buttons([
+                MoonWindowChromeButton::Minimize,
+                MoonWindowChromeButton::Close,
+            ])
+            .render()
+    } else {
+        chrome.no_controls().render()
+    }
 }
 
 /// Открыть окно настроек (отдельное ОС-окно). Заводит draft = копия config (его

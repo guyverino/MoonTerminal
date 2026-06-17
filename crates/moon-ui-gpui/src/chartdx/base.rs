@@ -31,20 +31,33 @@ struct BaseTex {
 
 pub struct BaseCache {
     tex: Option<BaseTex>,
+    valid: bool,
 }
 
 impl BaseCache {
     pub fn new() -> Self {
-        Self { tex: None }
+        Self {
+            tex: None,
+            valid: false,
+        }
     }
 
-    pub fn needs_rebuild(&self, gpu: &RawGpuAccess) -> bool {
+    pub fn is_valid_for(&self, gpu: &RawGpuAccess) -> bool {
         let w = gpu.width();
         let h = gpu.height();
         let generation = gpu.device_generation();
-        self.tex.as_ref().map_or(true, |tex| {
-            tex.w != w || tex.h != h || tex.generation != generation
-        })
+        self.valid
+            && self.tex.as_ref().is_some_and(|tex| {
+                tex.w == w && tex.h == h && tex.generation == generation
+            })
+    }
+
+    pub fn invalidate(&mut self) {
+        self.valid = false;
+    }
+
+    pub fn needs_rebuild(&self, gpu: &RawGpuAccess) -> bool {
+        !self.is_valid_for(gpu)
     }
 
     pub fn begin_rebuild(
@@ -71,6 +84,7 @@ impl BaseCache {
             context.RSSetViewports(Some(&[full_viewport(gpu)]));
             context.ClearRenderTargetView(&tex.rtv, &[0.0, 0.0, 0.0, 0.0]);
         }
+        self.valid = true;
         crate::diag::bump(&crate::diag::CHART_BASE_BAKE);
         Ok(tex.rtv.clone())
     }

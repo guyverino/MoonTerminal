@@ -45,7 +45,9 @@ use moon_chart::view::Rect;
 use moon_core::config::{ChartTheme, OrdersStyle};
 use moon_core::session::{CoreId, SessionManager};
 #[cfg(windows)]
-use windows::Win32::Graphics::Direct3D11::ID3D11RasterizerState;
+use windows::Win32::Graphics::Direct3D11::{
+    ID3D11Device, ID3D11DeviceContext, ID3D11RasterizerState, ID3D11RenderTargetView,
+};
 
 use crate::axes::CrossStyle;
 use backend::PlatformLayers;
@@ -194,8 +196,11 @@ struct RenderState {
     /// CPU-side dirty flag для `GpuCanvasDriver::frame`: `prepare()` обновил resident state,
     /// значит следующий platform tick должен презентить кадр даже без GPUI dirty.
     needs_present: bool,
-    /// Full chart base changed. Cursor-only frames must leave this false and reuse base cache.
+    /// Scene pixels changed since the optional DX11 cursor-restore cache was built.
+    /// Live-scroll draws directly and invalidates that cache; cursor-only frames may rebuild it once.
     base_dirty: bool,
+    last_present_ms: f64,
+    target_present_interval_ms: f64,
     last_gpu_prepare_generation: u64,
     /// Левый верхний угол chart slot в backbuffer. Cursor приходит из UI в локальных
     /// device-px слота, а own-pass рисует в координатах окна.
@@ -276,6 +281,11 @@ impl GpuCanvasDriver for ChartCanvasDriver {
 }
 
 impl RenderState {
+    fn set_target_present_rate_hz(&mut self, hz: f32) {
+        let hz = hz.clamp(1.0, 240.0);
+        self.target_present_interval_ms = 1000.0 / hz as f64;
+    }
+
     fn set_slot_origin(&mut self, x: f32, y: f32) {
         let next = [x, y];
         if self.slot_origin != next {
@@ -342,14 +352,18 @@ impl RenderState {
     }
 
     fn frame(&mut self, info: GpuFrameInfo) -> GpuFrameDecision {
+        crate::diag::bump(&crate::diag::CHART_FRAME);
         if !info.presentable || info.bounds.is_empty() {
+            crate::diag::bump(&crate::diag::CHART_FRAME_SKIP_NOT_PRESENTABLE);
             return GpuFrameDecision::Skip;
         }
 
         let now_ms = now_unix_ms();
         let mut wants_present = std::mem::take(&mut self.needs_present);
+        let cap_due = self.last_present_ms <= 0.0
+            || now_ms - self.last_present_ms >= self.target_present_interval_ms;
         for pr in &mut self.panes {
-            if pr.active && pr.advance_camera(now_ms) {
+            if pr.active && (wants_present || cap_due) && pr.advance_camera(now_ms) {
                 crate::diag::bump(&crate::diag::CHART_CAM_STEP);
                 self.base_dirty = true;
                 wants_present = true;
@@ -357,8 +371,11 @@ impl RenderState {
         }
 
         if wants_present {
+            self.last_present_ms = now_ms;
+            crate::diag::bump(&crate::diag::CHART_FRAME_REQUEST);
             GpuFrameDecision::RequestPresent
         } else {
+            crate::diag::bump(&crate::diag::CHART_FRAME_SKIP_IDLE);
             GpuFrameDecision::Skip
         }
     }
@@ -411,6 +428,92 @@ impl RenderState {
         }
     }
 
+    #[cfg(windows)]
+    fn render_window_background_d3d(
+        &mut self,
+        res: [f32; 2],
+        device: &ID3D11Device,
+        context: &ID3D11DeviceContext,
+        rtv: &ID3D11RenderTargetView,
+        gpu: &RawGpuAccess,
+    ) {
+        let base = BackgroundParams {
+            dst: [0.0, 0.0, res[0], res[1]],
+            resolution: res,
+            uv_off: [0.0, 0.0],
+            uv_scale: [1.0, 1.0],
+            opacity: 0.0,
+            _pad: 0.0,
+            bg: self.window_bg_color,
+        };
+        self.window_bg.render(&base, device, context, rtv, gpu);
+        let d = self.window_bg_dst;
+        if d[2] > 0.0 && d[3] > 0.0 {
+            let (uv_off, uv_scale) = cover_uv(d[2], d[3], SPLASH_ASPECT);
+            let logo = BackgroundParams {
+                dst: d,
+                resolution: res,
+                uv_off,
+                uv_scale,
+                opacity: WINDOW_BG_OPACITY,
+                _pad: 0.0,
+                bg: self.window_bg_color,
+            };
+            self.window_bg.render(&logo, device, context, rtv, gpu);
+        }
+    }
+
+    #[cfg(windows)]
+    fn render_chart_base_d3d(
+        &mut self,
+        res: [f32; 2],
+        device: &ID3D11Device,
+        context: &ID3D11DeviceContext,
+        rtv: &ID3D11RenderTargetView,
+        gpu: &RawGpuAccess,
+        scissor_rs: &ID3D11RasterizerState,
+    ) {
+        for pr in &mut self.panes {
+            if !pr.active {
+                continue;
+            }
+            let mut view = pr.view;
+            let mut background_params = pr.background_params;
+            let mut grid_params = pr.grid_params;
+            let mut orderbook_view = pr.orderbook_view;
+            view.resolution = res;
+            background_params.resolution = res;
+            grid_params.resolution = res;
+            orderbook_view.resolution = res;
+            let panel_clip = [
+                view.bounds[0],
+                view.bounds[1],
+                orderbook_view.bounds[0] + orderbook_view.bounds[2],
+                view.bounds[1] + view.bounds[3],
+            ];
+            gpu::set_scissor(
+                context,
+                scissor_rs,
+                panel_clip[0],
+                panel_clip[1],
+                panel_clip[2],
+                panel_clip[3],
+            );
+            pr.layers.render_base_d3d(
+                &view,
+                &background_params,
+                &grid_params,
+                &orderbook_view,
+                &pr.book_style,
+                device,
+                context,
+                rtv,
+                gpu,
+                panel_clip,
+            );
+        }
+    }
+
     fn draw_gpu(&mut self, gpu: &RawGpuAccess) -> anyhow::Result<()> {
         let width = gpu.width();
         let height = gpu.height();
@@ -430,110 +533,34 @@ impl RenderState {
                     anyhow::bail!("chart dx11 draw received empty D3D11 raw gpu handles");
                 };
 
-                let res = [width as f32, height as f32];
-                let base = BackgroundParams {
-                    dst: [0.0, 0.0, res[0], res[1]],
-                    resolution: res,
-                    uv_off: [0.0, 0.0],
-                    uv_scale: [1.0, 1.0],
-                    opacity: 0.0,
-                    _pad: 0.0,
-                    bg: self.window_bg_color,
-                };
-                self.window_bg.render(&base, &device, &context, &rtv, gpu);
-                let d = self.window_bg_dst;
-                if d[2] > 0.0 && d[3] > 0.0 {
-                    let (uv_off, uv_scale) = cover_uv(d[2], d[3], SPLASH_ASPECT);
-                    let logo = BackgroundParams {
-                        dst: d,
-                        resolution: res,
-                        uv_off,
-                        uv_scale,
-                        opacity: WINDOW_BG_OPACITY,
-                        _pad: 0.0,
-                        bg: self.window_bg_color,
-                    };
-                    self.window_bg.render(&logo, &device, &context, &rtv, gpu);
-                }
-
                 if self.scissor_dev != d3d.device {
                     self.scissor_rs = Some(gpu::create_scissor_rasterizer(&device));
                     self.scissor_dev = d3d.device;
                 }
+                let res = [width as f32, height as f32];
                 let scissor_rs = self.scissor_rs.clone().unwrap();
                 let prev_rs = unsafe { context.RSGetState().ok() };
 
-                if self.base_dirty || self.base_cache.needs_rebuild(gpu) {
-                    let base_rtv = self.base_cache.begin_rebuild(&device, &context, gpu)?;
-                    let base = BackgroundParams {
-                        dst: [0.0, 0.0, res[0], res[1]],
-                        resolution: res,
-                        uv_off: [0.0, 0.0],
-                        uv_scale: [1.0, 1.0],
-                        opacity: 0.0,
-                        _pad: 0.0,
-                        bg: self.window_bg_color,
-                    };
-                    self.window_bg
-                        .render(&base, &device, &context, &base_rtv, gpu);
-                    let d = self.window_bg_dst;
-                    if d[2] > 0.0 && d[3] > 0.0 {
-                        let (uv_off, uv_scale) = cover_uv(d[2], d[3], SPLASH_ASPECT);
-                        let logo = BackgroundParams {
-                            dst: d,
-                            resolution: res,
-                            uv_off,
-                            uv_scale,
-                            opacity: WINDOW_BG_OPACITY,
-                            _pad: 0.0,
-                            bg: self.window_bg_color,
-                        };
-                        self.window_bg
-                            .render(&logo, &device, &context, &base_rtv, gpu);
-                    }
-
-                    for pr in &mut self.panes {
-                        if pr.active {
-                            let mut view = pr.view;
-                            let mut background_params = pr.background_params;
-                            let mut grid_params = pr.grid_params;
-                            let mut orderbook_view = pr.orderbook_view;
-                            view.resolution = res;
-                            background_params.resolution = res;
-                            grid_params.resolution = res;
-                            orderbook_view.resolution = res;
-                            let panel_clip = [
-                                view.bounds[0],
-                                view.bounds[1],
-                                orderbook_view.bounds[0] + orderbook_view.bounds[2],
-                                view.bounds[1] + view.bounds[3],
-                            ];
-                            gpu::set_scissor(
-                                &context,
-                                &scissor_rs,
-                                panel_clip[0],
-                                panel_clip[1],
-                                panel_clip[2],
-                                panel_clip[3],
-                            );
-                            pr.layers.render_base_d3d(
-                                &view,
-                                &background_params,
-                                &grid_params,
-                                &orderbook_view,
-                                &pr.book_style,
-                                &device,
-                                &context,
-                                &base_rtv,
-                                gpu,
-                                panel_clip,
-                            );
-                        }
-                    }
+                if self.base_dirty {
+                    self.render_window_background_d3d(res, &device, &context, &rtv, gpu);
+                    self.render_chart_base_d3d(res, &device, &context, &rtv, gpu, &scissor_rs);
+                    self.base_cache.invalidate();
                     self.base_dirty = false;
+                } else {
+                    if self.base_cache.needs_rebuild(gpu) {
+                        let base_rtv = self.base_cache.begin_rebuild(&device, &context, gpu)?;
+                        self.render_window_background_d3d(res, &device, &context, &base_rtv, gpu);
+                        self.render_chart_base_d3d(
+                            res,
+                            &device,
+                            &context,
+                            &base_rtv,
+                            gpu,
+                            &scissor_rs,
+                        );
+                    }
+                    self.base_cache.blit_to(&context, &rtv, gpu);
                 }
-
-                self.base_cache.blit_to(&context, &rtv, gpu);
 
                 for pr in &mut self.panes {
                     if !pr.active {
@@ -656,6 +683,8 @@ impl ChartEngine {
             panes: Vec::new(),
             needs_present: true,
             base_dirty: true,
+            last_present_ms: 0.0,
+            target_present_interval_ms: 1000.0 / 60.0,
             last_gpu_prepare_generation: 0,
             slot_origin: [0.0, 0.0],
             cursor: None,
@@ -718,6 +747,9 @@ impl ChartEngine {
 
     pub fn set_present_rate_hz(&mut self, hz: f32) {
         self.present_rate_hz = hz.max(1.0);
+        self.state
+            .borrow_mut()
+            .set_target_present_rate_hz(self.present_rate_hz);
     }
 
     pub fn set_cursor(&mut self, cursor: Option<(usize, f32, f32)>) -> bool {

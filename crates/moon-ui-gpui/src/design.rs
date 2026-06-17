@@ -15,6 +15,21 @@ pub const TOOLBAR_H: f32 = M.toolbar_h;
 pub const STATUS_H: f32 = M.status_h;
 pub const TABLE_HEAD_H: f32 = M.table_header_h;
 pub const TABLE_ROW_H: f32 = M.table_row_h;
+pub const HEADER_PAD_X: f32 = 12.0;
+
+/// Transparent macOS titlebars keep native traffic-light buttons over the client
+/// area. Keep terminal chrome content and drag hitboxes out of that strip.
+pub fn titlebar_leading_inset() -> f32 {
+    if cfg!(target_os = "macos") {
+        76.0
+    } else {
+        HEADER_PAD_X
+    }
+}
+
+pub fn show_custom_window_controls() -> bool {
+    !cfg!(target_os = "macos")
+}
 
 pub const LOGO_SVG: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),

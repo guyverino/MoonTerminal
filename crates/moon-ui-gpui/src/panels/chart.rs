@@ -131,7 +131,8 @@ impl ChartPanel {
             let b = backend.read(cx);
             chart_settings_sig(&b)
         };
-        // Пере-рендер при приходе данных (сигнатура) или изменении UI-настроек чарта.
+        // UI notify при изменении настроек/редкого текста осей. Частые рыночные данные не
+        // идут через notify: backend data drain causally обновляет retained chart state.
         // Time-based TTL панелей обслуживает локальный one-shot timer, не backend data observe.
         cx.observe(&backend, |this, backend, cx| {
             crate::diag::bump(&crate::diag::CHART_OBS_FIRE);
@@ -154,8 +155,8 @@ impl ChartPanel {
             }
             // Троттл notify. Данные gpu_canvas рисует сам по present (форк), notify нужен лишь
             // для GPUI-оверлея осей, а он идёт top-down → дёргает Orders. Поэтому ≤4 Гц для
-            // fast (≥250мс) и ≤1 Гц для addto. GPU data/state уже подготовлены выше/в data pump
-            // без GPUI dirty; notify здесь только для редкого текста осей.
+            // fast (≥250мс) и ≤1 Гц для addto. Частые GPU data/state обновляет
+            // backend data drain без GPUI dirty; notify здесь только для редкого текста осей.
             let floor = if this.fast { 250.0 } else { 1000.0 };
             if sig != this.last_axis_notify_data_sig
                 && now - this.last_adaptive_notify_ms >= floor
@@ -167,7 +168,8 @@ impl ChartPanel {
             }
         })
         .detach();
-        Self::spawn_visible_data_pump(cx);
+        let chart_handle = cx.entity().downgrade();
+        backend.update(cx, |b, _| b.register_chart_consumer(chart_handle));
         Self {
             backend,
             chart,
@@ -243,8 +245,8 @@ impl ChartPanel {
                 this.prepare_observed_data(sig, cx);
             }
             // AddToChart — фоновый/мультичарт: notify (а с ним top-down перерисовка Orders)
-            // ≤1 Гц. GPU data/state готовит data pump; time-based prune делает локальный TTL
-            // timer.
+            // ≤1 Гц. Частые GPU data/state обновляет backend data drain без notify;
+            // time-based prune делает локальный TTL timer.
             if sig != this.last_axis_notify_data_sig
                 && now - this.last_adaptive_notify_ms >= 1000.0
             {
@@ -255,7 +257,8 @@ impl ChartPanel {
             }
         })
         .detach();
-        Self::spawn_visible_data_pump(cx);
+        let chart_handle = cx.entity().downgrade();
+        backend.update(cx, |b, _| b.register_chart_consumer(chart_handle));
         Self {
             backend,
             chart,
@@ -299,26 +302,6 @@ impl ChartPanel {
         self.scene_visible = visible;
     }
 
-    fn spawn_visible_data_pump(cx: &mut Context<Self>) {
-        // Backend drains feed data every ~16ms, but its GPUI notify is intentionally capped
-        // (otherwise Shell/Orders render at chart refresh rate). This task keeps visible chart
-        // resident GPU state fresh without marking any GPUI view dirty.
-        cx.spawn(async move |this, cx| {
-            let executor = cx.update(|cx| cx.background_executor().clone());
-            loop {
-                executor.timer(Duration::from_millis(16)).await;
-                let alive = cx.update(|cx| {
-                    this.update(cx, |this, cx| this.prepare_current_data_if_visible(cx))
-                        .is_ok()
-                });
-                if !alive {
-                    break;
-                }
-            }
-        })
-        .detach();
-    }
-
     fn prepare_observed_data(&mut self, sig: u64, cx: &mut Context<Self>) {
         self.data_sig = sig;
         if self.scene_visible {
@@ -328,7 +311,7 @@ impl ChartPanel {
         }
     }
 
-    fn prepare_current_data_if_visible(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn prepare_current_data_if_visible(&mut self, cx: &mut Context<Self>) {
         if !self.scene_visible {
             return;
         }
