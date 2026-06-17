@@ -1,9 +1,10 @@
 //! Панель «Ордера» — таблица открытых ордеров группы (все ядра), на всю ширину.
-//! Визуальная геометрия выведена из HTML-эталона MoonBot Terminal Design:
-//! MARKET · SIDE · STATUS · QTY · PRICE · FILLED · PNL · TP · SL · AGE · STRATEGY.
+//! Колонки как в оригинале (egui), отрисованные в стиле MoonPalette:
+//! Core · Side · Token · Size · SL · TS · Vstop · Buy · Cur.P · Fill · Strat.
 //!
 //! Сторона: BUY (лонг, ждёт) — зелёным, SHORT (шорт, ждёт) — красным, SELL
 //! (исполнился — позиция открыта/продаётся) — синим. Эмуляторный — «(E)».
+//! SL/TS/Vstop — флаги ON (зелёным) / OFF (тускло).
 //!
 //! Клик по колонке токена открывает чарт монеты на Main НА ЯДРЕ ордера (через
 //! `Backend.open_request`). Поля-списки источника/типа + меню сортировки/фильтра.
@@ -13,10 +14,9 @@ use std::rc::Rc;
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use moon_palette::{
-    DockArea, MoonBadge, MoonBadgeSize, MoonBadgeVariant, MoonButton, MoonButtonSize,
-    MoonButtonVariant, MoonDataCell, MoonDataRow, MoonDataTable, MoonDataTableColumn, MoonDropdown,
-    MoonMenuItem, MoonMenuSize, MoonPalette, MoonText, MoonTone, Panel, PanelEvent, PanelState,
-    h_flex, v_flex,
+    DockArea, MoonButton, MoonButtonSize, MoonButtonVariant, MoonDataCell, MoonDataRow,
+    MoonDataTable, MoonDataTableColumn, MoonDropdown, MoonMenuItem, MoonMenuSize, MoonPalette,
+    MoonText, MoonTone, Panel, PanelEvent, PanelInfo, PanelState, h_flex, v_flex,
 };
 
 use crate::Backend;
@@ -43,6 +43,24 @@ enum PrimarySort {
     Creation,
 }
 
+impl PrimarySort {
+    /// Стабильный код для персиста (docks.json) — порт egui `to_u8`/`from_u8`.
+    fn to_u8(self) -> u8 {
+        match self {
+            PrimarySort::Creation => 0,
+            PrimarySort::SellFirst => 1,
+            PrimarySort::BuyFirst => 2,
+        }
+    }
+    fn from_u8(v: u8) -> Self {
+        match v {
+            1 => PrimarySort::SellFirst,
+            2 => PrimarySort::BuyFirst,
+            _ => PrimarySort::Creation,
+        }
+    }
+}
+
 /// Источник ордеров: все ядра группы или конкретное ядро.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum OrdersSource {
@@ -56,6 +74,24 @@ enum OrderKind {
     All,
     Real,
     Emu,
+}
+
+impl OrderKind {
+    /// Стабильный код для персиста (docks.json) — порт egui `to_u8`/`from_u8`.
+    fn to_u8(self) -> u8 {
+        match self {
+            OrderKind::All => 0,
+            OrderKind::Real => 1,
+            OrderKind::Emu => 2,
+        }
+    }
+    fn from_u8(v: u8) -> Self {
+        match v {
+            1 => OrderKind::Real,
+            2 => OrderKind::Emu,
+            _ => OrderKind::All,
+        }
+    }
 }
 
 /// Состояние вида таблицы (источник + тип + фильтр + сортировка). Своё у панели.
@@ -108,8 +144,6 @@ pub struct OrdersPanel {
     /// Время последней перерисовки (unix мс) — пол 250мс: ордерные ивенты летят часто,
     /// глаз всё равно не успеет, поэтому таблицу обновляем НЕ ЧАЩЕ 4 Гц. Исключение-гейт.
     last_notify_ms: f64,
-    /// Армирован ли 1-Гц тик колонки «Age» (возраст ордера живёт по часам, не по данным).
-    age_timer_armed: bool,
     dock: Option<WeakEntity<DockArea>>,
     focus: FocusHandle,
 }
@@ -138,51 +172,18 @@ impl OrdersPanel {
                 crate::diag::bump(&crate::diag::ORDERS_OBS_NOTIFY);
                 cx.notify();
             }
-            // Появились ордера → завести Age-тик (идемпотентно; гаснет сам, когда их нет).
-            this.arm_age_timer(cx);
         })
         .detach();
-        let mut this = Self {
+        Self {
             backend,
             group,
             view: OrdersViewState::default(),
             last_sig: 0,
             last_sec: 0,
             last_notify_ms: 0.0,
-            age_timer_armed: false,
             dock: None,
             focus: cx.focus_handle(),
-        };
-        this.arm_age_timer(cx);
-        this
-    }
-
-    /// 1-Гц тик для колонки «Age» (возраст ордера): живёт по СВОИМ часам, а не по приходу
-    /// данных. На молчащем рынке backend-пульса нет → без этого Age замирал бы. Тикает лишь
-    /// пока в группе есть ордера; гаснет, когда их нет (не плодим таймер вхолостую).
-    fn arm_age_timer(&mut self, cx: &mut Context<Self>) {
-        if self.age_timer_armed || count_orders(self.backend.read(cx), &self.group) == 0 {
-            return;
         }
-        self.age_timer_armed = true;
-        cx.spawn(async move |this, cx| {
-            let executor = cx.update(|cx| cx.background_executor().clone());
-            executor.timer(std::time::Duration::from_millis(1000)).await;
-            let alive = cx.update(|cx| {
-                this.update(cx, |this, cx| {
-                    this.age_timer_armed = false;
-                    if count_orders(this.backend.read(cx), &this.group) > 0 {
-                        cx.notify();
-                        this.arm_age_timer(cx);
-                    }
-                })
-                .is_ok()
-            });
-            if !alive {
-                return;
-            }
-        })
-        .detach();
     }
 
     /// Открытые ордера ядер группы (с именем ядра и quote) — порт `collect_orders`.
@@ -240,17 +241,58 @@ impl OrdersPanel {
             .collect()
     }
 
-    fn set_source(&mut self, s: OrdersSource, cx: &mut Context<Self>) {
-        if self.view.source != s {
-            self.view.source = s;
-            cx.notify();
+    /// Реконструкция из `docks.json`: как `new`, но применяет сохранённое состояние
+    /// вида (сортировка/тип/фильтр) из `PanelInfo`. `source` (ядро) не персистится —
+    /// сбрасывается на «Все ядра» (как в egui-оригинале).
+    pub fn restored(
+        backend: Entity<Backend>,
+        group: String,
+        info: &PanelInfo,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut this = Self::new(backend, group, window, cx);
+        this.view = view_from_info(info);
+        this
+    }
+
+    /// Единая точка изменения состояния вида: применяет `f`, и ЕСЛИ вид изменился —
+    /// перерисовывает и ПЕРСИСТИТ (дамп дока в `dock_states` + `dock_dirty`). Дамп
+    /// делаем на уровне `App` (вне borrow самой панели) — иначе ре-энтранси при
+    /// `dock.dump()`, который читает в т.ч. эту панель. `OrdersViewState: Copy`.
+    fn mutate(view: &Entity<Self>, app: &mut App, f: impl FnOnce(&mut OrdersViewState)) {
+        let changed = view.update(app, |this, cx| {
+            let mut next = this.view;
+            f(&mut next);
+            if next != this.view {
+                this.view = next;
+                cx.notify();
+                true
+            } else {
+                false
+            }
+        });
+        if changed {
+            Self::persist(view, app);
         }
     }
-    fn set_kind(&mut self, k: OrderKind, cx: &mut Context<Self>) {
-        if self.view.kind != k {
-            self.view.kind = k;
-            cx.notify();
-        }
+
+    /// Дамп текущей раскладки дока окна в backend (→ `docks.json`). Смена вида ордеров
+    /// не эмитит `DockEvent`, поэтому состояние вида сохраняем сами — иначе сортировка
+    /// сбрасывалась при переоткрытии.
+    fn persist(view: &Entity<Self>, app: &mut App) {
+        let (dock, group, backend) = {
+            let p = view.read(app);
+            (p.dock.clone(), p.group.clone(), p.backend.clone())
+        };
+        let Some(dock) = dock.and_then(|d| d.upgrade()) else {
+            return;
+        };
+        let state = dock.read(app).dump(app);
+        backend.update(app, |b, _| {
+            b.dock_states.insert(group, state);
+            b.dock_dirty = true;
+        });
     }
 
     /// Поле-список источника (Все ядра + ядра группы) — порт egui ComboBox.
@@ -276,7 +318,9 @@ impl OrdersPanel {
                     .checked(matches!(self.view.source, OrdersSource::All))
                     .on_click({
                         let view = view.clone();
-                        move |_, _, app| view.update(app, |t, c| t.set_source(OrdersSource::All, c))
+                        move |_, _, app| {
+                            Self::mutate(&view, app, |v| v.source = OrdersSource::All)
+                        }
                     }),
             );
         for (id, name) in cores {
@@ -287,7 +331,7 @@ impl OrdersPanel {
                 MoonMenuItem::with_key(format!("core-{id}"), name.clone())
                     .checked(selected)
                     .on_click(move |_, _, app| {
-                        view.update(app, |t, c| t.set_source(OrdersSource::Core(id), c))
+                        Self::mutate(&view, app, |v| v.source = OrdersSource::Core(id))
                     }),
             );
         }
@@ -318,7 +362,7 @@ impl OrdersPanel {
             menu = menu.item(
                 MoonMenuItem::with_key(format!("kind-{label}"), label)
                     .checked(self.view.kind == k)
-                    .on_click(move |_, _, app| view.update(app, |t, c| t.set_kind(k, c))),
+                    .on_click(move |_, _, app| Self::mutate(&view, app, |v| v.kind = k)),
             );
         }
         menu
@@ -341,12 +385,7 @@ impl OrdersPanel {
                 MoonMenuItem::with_key("m-onlycur", "Только ордера текущего маркета")
                     .checked(cur.only_current_market)
                     .on_click(move |_, _, app| {
-                        v.update(app, |t, c| {
-                            if !t.view.only_current_market {
-                                t.view.only_current_market = true;
-                                c.notify();
-                            }
-                        })
+                        Self::mutate(&v, app, |s| s.only_current_market = true)
                     }),
             );
         let v = view.clone();
@@ -355,12 +394,7 @@ impl OrdersPanel {
                 MoonMenuItem::with_key("m-showall", "Показать все")
                     .checked(!cur.only_current_market)
                     .on_click(move |_, _, app| {
-                        v.update(app, |t, c| {
-                            if t.view.only_current_market {
-                                t.view.only_current_market = false;
-                                c.notify();
-                            }
-                        })
+                        Self::mutate(&v, app, |s| s.only_current_market = false)
                     }),
             )
             .item(MoonMenuItem::separator());
@@ -374,12 +408,7 @@ impl OrdersPanel {
                 MoonMenuItem::with_key(id, label)
                     .checked(cur.primary == variant)
                     .on_click(move |_, _, app| {
-                        v.update(app, |t, c| {
-                            if t.view.primary != variant {
-                                t.view.primary = variant;
-                                c.notify();
-                            }
-                        })
+                        Self::mutate(&v, app, |s| s.primary = variant)
                     }),
             );
         }
@@ -388,12 +417,7 @@ impl OrdersPanel {
             MoonMenuItem::with_key("m-new", "Новые первые")
                 .checked(cur.newest_first)
                 .on_click(move |_, _, app| {
-                    v.update(app, |t, c| {
-                        if !t.view.newest_first {
-                            t.view.newest_first = true;
-                            c.notify();
-                        }
-                    })
+                    Self::mutate(&v, app, |s| s.newest_first = true)
                 }),
         );
         let v = view;
@@ -401,12 +425,7 @@ impl OrdersPanel {
             MoonMenuItem::with_key("m-old", "Старые первые")
                 .checked(!cur.newest_first)
                 .on_click(move |_, _, app| {
-                    v.update(app, |t, c| {
-                        if t.view.newest_first {
-                            t.view.newest_first = false;
-                            c.notify();
-                        }
-                    })
+                    Self::mutate(&v, app, |s| s.newest_first = false)
                 }),
         )
     }
@@ -436,6 +455,27 @@ fn num(v: f64) -> String {
     moon_core::util::fmt::adaptive(v)
 }
 
+/// Восстановить сохранённое состояние вида из `PanelInfo` (docks.json). Отсутствующие
+/// поля → дефолт. `source` не персистится (см. `dump`), всегда «Все ядра».
+fn view_from_info(info: &PanelInfo) -> OrdersViewState {
+    let mut v = OrdersViewState::default();
+    if let PanelInfo::Panel(j) = info {
+        if let Some(p) = j.get("primary").and_then(|x| x.as_u64()) {
+            v.primary = PrimarySort::from_u8(p as u8);
+        }
+        if let Some(k) = j.get("kind").and_then(|x| x.as_u64()) {
+            v.kind = OrderKind::from_u8(k as u8);
+        }
+        if let Some(n) = j.get("newest_first").and_then(|x| x.as_bool()) {
+            v.newest_first = n;
+        }
+        if let Some(o) = j.get("only_current").and_then(|x| x.as_bool()) {
+            v.only_current_market = o;
+        }
+    }
+    v
+}
+
 impl EventEmitter<PanelEvent> for OrdersPanel {}
 impl Focusable for OrdersPanel {
     fn focus_handle(&self, _: &App) -> FocusHandle {
@@ -459,7 +499,19 @@ impl Panel for OrdersPanel {
         SharedString::from("Ордера")
     }
     fn dump(&self, _cx: &App) -> PanelState {
-        crate::dock_persist::panel_state_with_group("Orders", &self.group)
+        // Группа (для реконструкции) + состояние вида: сортировка/тип/фильтр. `source`
+        // (ядро) не сохраняем — id ядра не стабилен между запусками (как в egui).
+        PanelState {
+            panel_name: "Orders".to_string(),
+            children: Vec::new(),
+            info: PanelInfo::panel(serde_json::json!({
+                "group": self.group,
+                "primary": self.view.primary.to_u8(),
+                "kind": self.view.kind.to_u8(),
+                "newest_first": self.view.newest_first,
+                "only_current": self.view.only_current_market,
+            })),
+        }
     }
     fn on_added_to(
         &mut self,
@@ -619,22 +671,21 @@ fn orders_table(entries: Vec<OrderEntry>, cx: &Context<OrdersPanel>) -> impl Int
 }
 
 fn order_columns() -> Vec<MoonDataTableColumn> {
-    // Widths are logical design pixels: they are minimums when the table is
-    // narrow and proportional weights when the table has extra width. Example:
-    // 100 grows twice as much as 50, so the table stays full-width without
-    // losing the designer's column ratios.
+    // Колонки и их порядок — как в оригинале (egui): Core · Side · Token · Size ·
+    // SL · TS · Vstop · Buy · Cur.P · Fill · Strat. Ширина — логические px: минимум,
+    // когда таблица узкая, и пропорциональный вес, когда есть лишняя ширина.
     vec![
-        MoonDataTableColumn::new("market", "Market", 100.0),
-        MoonDataTableColumn::new("side", "Side", 50.0),
-        MoonDataTableColumn::new("status", "Status", 80.0),
-        numeric_column("Qty", 60.0),
-        numeric_column("Price", 90.0),
-        numeric_column("Filled", 60.0),
-        numeric_column("PnL", 60.0),
-        numeric_column("TP", 80.0),
-        numeric_column("SL", 80.0),
-        numeric_column("Age", 50.0),
-        MoonDataTableColumn::new("strategy", "Strategy", 130.0),
+        MoonDataTableColumn::new("core", "Core", 90.0),
+        MoonDataTableColumn::new("side", "Side", 60.0),
+        numeric_column("Token", 70.0),
+        numeric_column("Size", 70.0),
+        MoonDataTableColumn::new("sl", "SL", 46.0),
+        MoonDataTableColumn::new("ts", "TS", 46.0),
+        MoonDataTableColumn::new("vstop", "Vstop", 56.0),
+        numeric_column("Buy", 80.0),
+        numeric_column("Cur.P", 86.0),
+        numeric_column("Fill", 56.0),
+        numeric_column("Strat", 90.0),
     ]
 }
 
@@ -645,65 +696,52 @@ fn numeric_column(title: impl Into<SharedString>, width: f32) -> MoonDataTableCo
 
 fn order_table_row(e: &OrderEntry, view: &Entity<OrdersPanel>, p: MoonPalette) -> MoonDataRow {
     let r = &e.row;
+    // SELL (исполненный лонг) — синим, SHORT — красным, BUY (ждёт) — зелёным; (E) — эмулятор.
     let (side, side_tone) = if is_sell(r) {
         ("SELL", MoonTone::Info)
     } else if r.is_short {
         ("SHORT", MoonTone::Danger)
     } else {
-        ("BUY", MoonTone::Accent)
+        ("BUY", MoonTone::Positive)
     };
     let side = if r.emulator {
         format!("{side}(E)")
     } else {
         side.to_string()
     };
-    let pnl = pnl_value(r);
-    let pnl_tone = if pnl >= 0.0 {
-        MoonTone::Positive
-    } else {
-        MoonTone::Danger
-    };
-    let price = if r.sell_price > 0.0 {
-        r.sell_price
-    } else {
-        r.buy_price
-    };
-    let strategy = if r.strat.is_empty() {
-        e.core_name.clone()
-    } else {
-        r.strat.clone()
-    };
 
     MoonDataRow::new([
-        MoonDataCell::element(market_cell(e, view, p)),
+        MoonDataCell::text(e.core_name.clone()).tone(MoonTone::Muted),
         MoonDataCell::text(side).tone(side_tone).weight(500.0),
-        status_cell(r),
+        MoonDataCell::element(token_cell(e, view, p)),
         MoonDataCell::text(num(r.size)),
-        MoonDataCell::text(num(price)),
+        flag_cell(r.sl_on),
+        flag_cell(r.ts_on),
+        flag_cell(r.vstop_on),
+        MoonDataCell::text(num(r.buy_price)),
+        MoonDataCell::text(num(r.price as f64)),
         MoonDataCell::text(format!("{:.0}%", r.fill_pct)).tone(MoonTone::Muted),
-        MoonDataCell::text(format!("{pnl:+.2}")).tone(pnl_tone),
-        MoonDataCell::text(opt_price(r.take_profit)).tone(MoonTone::Info),
-        MoonDataCell::text(opt_price(r.stop_loss)).tone(MoonTone::Danger),
-        MoonDataCell::text(age(r.create_time_ms)).tone(MoonTone::Muted),
-        MoonDataCell::text(strategy)
-            .tone(MoonTone::Muted)
-            .font_size(10.0)
-            .line_height(13.0)
-            .text_color(p.text_muted),
+        MoonDataCell::text(r.strat.clone()).tone(MoonTone::Muted),
     ])
 }
 
-fn market_cell(
+/// Флаг ON/OFF (SL/TS/Vstop): ON — зелёным, OFF — тускло (порт `cell_onoff`).
+fn flag_cell(on: bool) -> MoonDataCell {
+    if on {
+        MoonDataCell::text("ON").tone(MoonTone::Positive)
+    } else {
+        MoonDataCell::text("OFF").tone(MoonTone::Muted)
+    }
+}
+
+/// Ячейка токена (без quote: `ADAUSDT` → `ADA`), акцентом — намёк, что кликабельна.
+/// Клик открывает чарт монеты на Main НА ЯДРЕ ордера (порт клика по строке egui).
+fn token_cell(
     e: &OrderEntry,
     view: &Entity<OrdersPanel>,
     p: MoonPalette,
 ) -> impl IntoElement + 'static {
-    let base = symbol::base_symbol(&e.row.market, &e.quote);
-    let market_label = if e.quote.is_empty() {
-        e.row.market.clone()
-    } else {
-        format!("{base}/{}", e.quote)
-    };
+    let token = symbol::base_symbol(&e.row.market, &e.quote).to_string();
     let core = e.core;
     let market = e.row.market.clone();
     let uid = e.row.uid;
@@ -711,14 +749,13 @@ fn market_cell(
 
     div()
         .id(SharedString::from(format!("ord-tok-{core}-{uid}")))
-        .w_full()
         .h_full()
         .flex()
         .items_center()
         .cursor_pointer()
         .child(
-            MoonText::new(market_label)
-                .color(p.text)
+            MoonText::new(token)
+                .color(MoonTone::Accent.color(p))
                 .font_size(10.5)
                 .line_height(14.0)
                 .weight(500.0)
@@ -735,61 +772,6 @@ fn market_cell(
                 });
             });
         })
-}
-
-fn status_cell(r: &OrderRow) -> MoonDataCell {
-    let (label, tone) = if r.pending {
-        ("pending", MoonTone::Notice)
-    } else if r.filled || executed(r) {
-        ("live", MoonTone::Positive)
-    } else if r.emulator {
-        ("emu", MoonTone::Muted)
-    } else {
-        ("open", MoonTone::Muted)
-    };
-    MoonDataCell::element(
-        MoonBadge::new(label)
-            .size(MoonBadgeSize::Status)
-            .variant(MoonBadgeVariant::Outline)
-            .tone(tone)
-            .bg_alpha(0.08)
-            .border_alpha(0.27)
-            .weight(400.0)
-            .render(),
-    )
-}
-
-fn pnl_value(r: &OrderRow) -> f64 {
-    if r.buy_price <= 0.0 || r.price <= 0.0 || r.size <= 0.0 {
-        return 0.0;
-    }
-    let cur = r.price as f64;
-    let delta = if r.is_short {
-        r.buy_price - cur
-    } else {
-        cur - r.buy_price
-    };
-    delta * r.size
-}
-
-fn opt_price(v: Option<f64>) -> String {
-    v.filter(|x| *x > 0.0)
-        .map(num)
-        .unwrap_or_else(|| "—".into())
-}
-
-fn age(create_time_ms: f64) -> String {
-    if create_time_ms <= 0.0 {
-        return "—".into();
-    }
-    let secs = ((moon_chart::paint::now_unix_ms() - create_time_ms) * 0.001).max(0.0);
-    if secs < 60.0 {
-        format!("{secs:.0}s")
-    } else if secs < 3600.0 {
-        format!("{:.0}m", secs / 60.0)
-    } else {
-        format!("{:.0}h", secs / 3600.0)
-    }
 }
 
 /// Сигнатура ордеров группы (сумма orders_rev ядер) — растёт при любом изменении

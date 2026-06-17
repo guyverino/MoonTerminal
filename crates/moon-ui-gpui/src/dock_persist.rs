@@ -103,7 +103,8 @@ pub fn register_panels(cx: &mut App, backend: Entity<Backend>, epoch: f64) {
         register_panel(cx, "Orders", move |_state, info, window, cx| {
             let group = group_of(info);
             let backend = backend.clone();
-            Rc::new(cx.new(|cx| OrdersPanel::new(backend, group, window, cx)))
+            // `restored` применяет сохранённое состояние вида (сортировка/тип/фильтр).
+            Rc::new(cx.new(|cx| OrdersPanel::restored(backend, group, info, window, cx)))
         });
     }
     // Ордер: без состояния.
