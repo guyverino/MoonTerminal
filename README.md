@@ -41,6 +41,22 @@ crates/
 **Windows toolchain: MSVC, не GNU.** Собираем таргетом `x86_64-pc-windows-msvc`: его ожидают
 GPUI, DirectX/DWrite/DComp и наш `chartdx` GPU-pass. GNU-таргет (`*-windows-gnu`) не используем.
 
+### Быстро — `make`
+
+```
+make run            # собрать и запустить (debug)
+make build          # собрать
+make release        # собрать release
+make check          # быстрая проверка типов
+make update-forks   # обновить ZedFork/MoonPalette до HEAD веток + перелочить Cargo.lock
+```
+
+`Makefile` сам подставляет MSVC-таргет на Windows и нативный на macOS/Linux.
+**Windows:** запускать `make` из **«x64 Native Tools Command Prompt for VS 2022»** (там настроен
+`vcvars`, иначе линковщик C-зависимостей не найдёт `link.exe`). **macOS/Linux:** просто `make run`.
+
+Ниже — то же вручную (если без `make`).
+
 Требования:
 - **Rust** с MSVC standard library для `x86_64-pc-windows-msvc`.
 - **Visual Studio Build Tools 2022**, компонент *«Разработка на C++ для настольных систем»*
@@ -60,6 +76,28 @@ cmd.exe /d /s /c "`"$vcvars`" && cargo run -p moon-ui-gpui --bin moon-gpui --tar
 Важно: `target\debug\moon-gpui.exe` и `target\x86_64-pc-windows-msvc\debug\moon-gpui.exe` —
 разные output-директории. Если собирали с явным `--target x86_64-pc-windows-msvc`, запускать
 нужно именно из `target\x86_64-pc-windows-msvc\debug\`; другой exe может быть старым.
+
+### macOS / Linux
+
+Нативный таргет, отдельная настройка не нужна — нужен только Rust и доступ к GitHub-зависимостям:
+
+```bash
+cd MoonTerminal
+make run            # или вручную:
+cargo run -p moon-ui-gpui --bin moon-gpui
+```
+
+Бинарь — в `target/debug/moon-gpui`. GPUI на macOS рисует через **Metal**, на Linux — нативным
+GPUI-бэкендом; терминальный `chartdx` GPU-pass кросс-платформенный (DX11/Metal/wgpu).
+
+### Зависимости-форки и `Cargo.lock`
+
+GPUI (`Moonbot-Tech/ZedFork`, ветка `master`) и MoonPalette (`Moonbot-Tech/MoonPalette`, ветка
+`main`) пинятся **по веткам**, а точные rev фиксирует **закоммиченный `Cargo.lock`** — поэтому у
+всех детерминированная сборка. Если после `git pull` сборка падает на отсутствующих API
+(`gpui::GpuCanvas*`, `Panel::show_dock_header` и т.п.) — значит твой `Cargo.lock` устарел:
+`git pull` подтянет актуальный. Обновлять форки осознанно: `make update-forks` → `make build` →
+закоммитить новый `Cargo.lock`.
 
 ### Runtime на чистой Windows
 
