@@ -1,2 +1,4 @@
 /.gitattributes text eol=lf
 *.sh text eol=lf
+# Makefile требует LF (на macOS/Linux make ломается от \r).
+Makefile text eol=lf
