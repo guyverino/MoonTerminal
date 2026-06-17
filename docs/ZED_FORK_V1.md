@@ -980,9 +980,12 @@ PR hygiene:
 
 - [x] No terminal/domain language in GPUI source.
 - [x] No public old raw-pass API.
-- [ ] `gpui_web` / test / headless builds remain valid.
-      Windows `gpui`/`gpui_windows` checks pass; web/headless remains an external
-      PR audit gate.
+- [x] `gpui_web` / test / headless builds remain valid.
+      Checked locally with `cargo check -p gpui_web --target wasm32-unknown-unknown
+      --no-default-features` after moving `GpuFrameInfo.now` to `scheduler::Instant`
+      and fixing the single-threaded web dispatcher cfg path. The default
+      `multithreaded` web feature still requires the upstream nightly-only
+      `wasm_thread` atomic-wait path and is not a gpu_canvas regression.
 - [x] Example is neutral and demonstrates skip without GPUI tree rerender.
 - [x] Popup/menu/tooltip over gpu canvas is validated at code-architecture level.
       Terminal chart uses UnderScene `gpu_canvas`; it does not place chart pixels

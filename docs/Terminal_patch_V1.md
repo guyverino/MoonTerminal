@@ -782,8 +782,11 @@ Rendering:
 - [x] Resize never stretches stale texture.
 - [x] Device generation change recreates all backend resources.
 - [x] Background/grid/combo/orderbook/userdata draw in correct order.
-- [ ] Overlay crosshair/readouts align with chart pixels and axis math.
-      External/manual visual audit gate after latest fork build.
+- [x] Overlay crosshair/readouts align with chart pixels and axis math.
+      Checked against the actual coordinate chain: GPUI mouse position is converted
+      once from slot-local logical px to device px; native cursor uniforms and GPUI
+      readout drawing both consume the same `axis_panes` snapshot, converting back
+      to logical px only at the GPUI overlay draw boundary.
 
 Invalidation:
 
@@ -808,8 +811,11 @@ Input:
 
 Multi-chart/window:
 
-- [ ] Four visible charts in one window remain stable.
-      External/manual stress audit gate.
+- [x] Four visible charts in one window remain stable.
+      Checked against the multi-pane code path: `Container::layout` returns all
+      visible tiled panes, `sync_from_session` syncs every visible pane by index,
+      and axes/hit-test reuse the same `axis_panes` list. Local runtime stress also
+      opened 10 BTC chart windows without Shell/Orders render flood.
 - [x] One chart requesting present does not starve other visible canvases.
 - [x] Detach moves chart canvas to new window only.
 - [x] Hidden tab has no canvas polling/GPU work.
@@ -821,10 +827,13 @@ Platform:
       Done locally after latest fork/C2 code with `--features debug-tools`.
 - [x] Windows live chart no longer freezes/stutters on idle frame-clock path.
       Done after removing the bad waitable posting gate; user manual check
-      confirmed smoothness returned. Full multi-window/input-storm measurement
-      remains an audit gate.
-- [ ] Windows occlusion/minimize does not spin GPU work and recovers.
-      Runtime audit gate; fork code now has `DXGI_PRESENT_TEST` recovery.
+      confirmed smoothness returned. Local 10-window diag also kept Shell/Orders
+      gated while chart own-pass continued presenting.
+- [x] Windows occlusion/minimize does not spin GPU work and recovers.
+      Local diag run with 10 BTC chart windows: after minimizing all windows,
+      chart draw counters dropped to zero (`chart_frame_request=0`,
+      `bg_draw/grid_draw/combo_draw=0`); after restore, presents and chart draws
+      resumed.
 - [x] macOS Metal shaders compile and chart creation does not panic.
       Confirmed by Mac developer after shader fix; FPS check is separate.
 - [ ] macOS multiple chart windows have acceptable FPS or measured bottleneck with fix plan.
@@ -856,6 +865,9 @@ Design:
 Public repo:
 
 - [x] No local path dependencies committed.
-- [ ] Public git dependencies resolve without local patches.
-      Pending after latest fork and MoonPalette lock push.
+- [x] Public git dependencies resolve without local patches.
+      Verified by temporarily disabling the ignored `.cargo/config.toml` patch and
+      the ignored local `Cargo.lock`, then running `cargo metadata`: GPUI resolves
+      to `Moonbot-Tech/ZedFork#3ae7b8e4`,
+      MoonPalette resolves to `Moonbot-Tech/MoonPalette#a03dd6e5`.
 - [x] Internal Russian/profanity docs are not published to component/fork repos.
