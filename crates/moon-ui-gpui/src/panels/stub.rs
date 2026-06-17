@@ -49,6 +49,12 @@ impl Focusable for StubPanel {
     }
 }
 impl Panel for StubPanel {
+    fn closable(&self, _cx: &App) -> bool {
+        true
+    }
+    fn show_dock_header(&self, _cx: &App) -> bool {
+        true
+    }
     fn panel_name(&self) -> &'static str {
         self.name
     }

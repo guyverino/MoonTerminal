@@ -351,6 +351,12 @@ impl Focusable for LogPanel {
     }
 }
 impl Panel for LogPanel {
+    fn closable(&self, _cx: &App) -> bool {
+        true
+    }
+    fn show_dock_header(&self, _cx: &App) -> bool {
+        true
+    }
     fn panel_name(&self) -> &'static str {
         "Log"
     }

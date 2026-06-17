@@ -299,6 +299,24 @@ struct Shell {
     /// тулбар должен менять подпись сразу, даже при троттле Shell observe.
     last_price_scale: Option<f32>,
     pending_detach: Vec<String>,
+    /// Имена панелей, чью × нажали (DockEvent::PanelCloseRequested). Обрабатываются в render
+    /// (нужен window): панель убирается с текущего места и возвращается в нижнюю строку.
+    pending_close: Vec<String>,
+}
+
+/// Имена dock-панелей нижней строки в порядке их «домашних» позиций. Возврат
+/// откреплённой/закрытой панели вставляет её в TabPanel на индекс, сохраняющий этот
+/// порядок (см. [`dock_home_target_ix`]).
+const DOCK_TAB_ORDER: [&str; 4] = ["Orders", "Assets", "Log", "Report"];
+
+/// «Домашний» индекс панели в нижней строке (Orders<Assets<Log<Report). Используется как
+/// позиция вставки при возврате; форк клампит её к числу вкладок, поэтому при частично
+/// откреплённом наборе панель встаёт примерно на своё место (порядок сохраняется).
+fn dock_home_priority(name: &str) -> usize {
+    DOCK_TAB_ORDER
+        .iter()
+        .position(|n| *n == name)
+        .unwrap_or(DOCK_TAB_ORDER.len())
 }
 
 impl Shell {
@@ -457,6 +475,9 @@ impl Shell {
             if let DockEvent::DetachRequested { panel_name } = event {
                 this.pending_detach.push(panel_name.to_string());
             }
+            if let DockEvent::PanelCloseRequested { panel_name } = event {
+                this.pending_close.push(panel_name.to_string());
+            }
             let state = dock.read(cx).dump(cx);
             let group = this.group.clone();
             this.backend.update(cx, |b, _| {
@@ -476,6 +497,7 @@ impl Shell {
             last_follow: true,
             last_price_scale: None,
             pending_detach: Vec::new(),
+            pending_close: Vec::new(),
         }
     }
 }
@@ -503,8 +525,21 @@ impl Render for Shell {
             let backend = self.backend.clone();
             let dock = self.dock.clone();
             if let Some(panel) = detached::build_panel(&panel_name, &group, &backend, window, cx) {
+                let ix = dock_home_priority(&panel_name);
                 dock.update(cx, |area, cx| {
-                    area.add_panel(panel, DockPlacement::Center, None, window, cx);
+                    // Возврат в нижнюю строку вкладок на исходную позицию (а не в Center-корень,
+                    // что схлопнуло бы весь split). Ищем Tabs-узел с dock-панелями и вставляем
+                    // туда по домашнему порядку Orders<Assets<Log<Report. Fallback — если строки
+                    // вкладок нет совсем (все откреплены).
+                    if !area.insert_panel_into_home_tabs(
+                        panel.clone(),
+                        ix,
+                        &DOCK_TAB_ORDER,
+                        window,
+                        cx,
+                    ) {
+                        area.add_panel(panel, DockPlacement::Center, None, window, cx);
+                    }
                 });
             }
             backend.update(cx, |b, _| {
@@ -522,15 +557,46 @@ impl Render for Shell {
                     area.remove_panel_by_name(&panel_name, window, cx);
                 });
                 let spec = detached::DetachedSpec::new(group, panel_name);
-                detached::spawn(cx, &self.backend, &spec);
-                self.backend.update(cx, |b, _| {
-                    if !b
-                        .detached
-                        .iter()
-                        .any(|s| s.group == spec.group && s.panel == spec.panel)
-                    {
-                        b.detached.push(spec);
-                        b.detached_dirty = true;
+                let backend = self.backend.clone();
+                // open_window нельзя звать во время render (arena уже очищается) — отложим.
+                // Это путь дабл-клика/встроенного detach; toolbar-⧉ спавнит из on_click сам.
+                cx.defer(move |cx| {
+                    detached::spawn(cx, &backend, &spec);
+                    backend.update(cx, |b, _| {
+                        if !b
+                            .detached
+                            .iter()
+                            .any(|s| s.group == spec.group && s.panel == spec.panel)
+                        {
+                            b.detached.push(spec);
+                            b.detached_dirty = true;
+                        }
+                    });
+                });
+            }
+        }
+
+        // Закрытие (×) dock-панели: не удаляем, а возвращаем в нижнюю строку на своё место.
+        // Убираем с текущего места (split-слот схлопнётся) и вставляем свежую в home-tabs.
+        let closes = std::mem::take(&mut self.pending_close);
+        for panel_name in closes {
+            if !detached::supports_panel(&panel_name) {
+                continue;
+            }
+            let group = self.group.clone();
+            let backend = self.backend.clone();
+            let ix = dock_home_priority(&panel_name);
+            if let Some(panel) = detached::build_panel(&panel_name, &group, &backend, window, cx) {
+                self.dock.update(cx, |area, cx| {
+                    area.remove_panel_by_name(&panel_name, window, cx);
+                    if !area.insert_panel_into_home_tabs(
+                        panel.clone(),
+                        ix,
+                        &DOCK_TAB_ORDER,
+                        window,
+                        cx,
+                    ) {
+                        area.add_panel(panel, DockPlacement::Center, None, window, cx);
                     }
                 });
             }

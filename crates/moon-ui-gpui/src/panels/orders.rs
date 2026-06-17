@@ -446,6 +446,15 @@ impl Panel for OrdersPanel {
     fn panel_name(&self) -> &'static str {
         "Orders"
     }
+    // × не удаляет панель, а возвращает её в нижнюю строку (см. Shell: PanelCloseRequested).
+    fn closable(&self, _cx: &App) -> bool {
+        true
+    }
+    // Вынесенная в split одиночная панель показывает заголовок (drag-ручка + ×), иначе у неё
+    // нет ни места тянуть, ни кнопки закрыть.
+    fn show_dock_header(&self, _cx: &App) -> bool {
+        true
+    }
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         SharedString::from("Ордера")
     }

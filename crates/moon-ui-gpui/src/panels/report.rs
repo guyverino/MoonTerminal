@@ -340,6 +340,12 @@ impl Focusable for ReportPanel {
     }
 }
 impl Panel for ReportPanel {
+    fn closable(&self, _cx: &App) -> bool {
+        true
+    }
+    fn show_dock_header(&self, _cx: &App) -> bool {
+        true
+    }
     fn panel_name(&self) -> &'static str {
         "Report"
     }
