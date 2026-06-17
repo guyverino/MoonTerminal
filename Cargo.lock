@@ -2381,7 +2381,7 @@ dependencies = [
 [[package]]
 name = "gpui-component"
 version = "0.5.2"
-source = "git+https://github.com/Moonbot-Tech/MoonPalette?branch=main#ec89cbccf4fcb286e007931a189d47d3ffa4d79d"
+source = "git+https://github.com/Moonbot-Tech/MoonPalette?branch=main#3398d803ed5f6687176118b6a86b2bae73ae8685"
 dependencies = [
  "aho-corasick",
  "anyhow",
@@ -2431,7 +2431,7 @@ dependencies = [
 [[package]]
 name = "gpui-component-assets"
 version = "0.5.1"
-source = "git+https://github.com/Moonbot-Tech/MoonPalette?branch=main#ec89cbccf4fcb286e007931a189d47d3ffa4d79d"
+source = "git+https://github.com/Moonbot-Tech/MoonPalette?branch=main#3398d803ed5f6687176118b6a86b2bae73ae8685"
 dependencies = [
  "anyhow",
  "gpui",
@@ -2445,7 +2445,7 @@ dependencies = [
 [[package]]
 name = "gpui-component-macros"
 version = "0.5.1"
-source = "git+https://github.com/Moonbot-Tech/MoonPalette?branch=main#ec89cbccf4fcb286e007931a189d47d3ffa4d79d"
+source = "git+https://github.com/Moonbot-Tech/MoonPalette?branch=main#3398d803ed5f6687176118b6a86b2bae73ae8685"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3939,7 +3939,7 @@ dependencies = [
 [[package]]
 name = "moon-palette"
 version = "0.1.0"
-source = "git+https://github.com/Moonbot-Tech/MoonPalette?branch=main#ec89cbccf4fcb286e007931a189d47d3ffa4d79d"
+source = "git+https://github.com/Moonbot-Tech/MoonPalette?branch=main#3398d803ed5f6687176118b6a86b2bae73ae8685"
 dependencies = [
  "chrono",
  "gpui",
