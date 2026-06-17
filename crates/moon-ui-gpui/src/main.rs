@@ -538,7 +538,10 @@ impl Render for Shell {
                         window,
                         cx,
                     ) {
-                        area.add_panel(panel, DockPlacement::Center, None, window, cx);
+                        // Крайний случай (ни одного соседа в доке): кладём в отдельный
+                        // bottom-dock, а НЕ в Center — add_panel(Center) на split-раскладке
+                        // схлопнул бы её в фулскрин.
+                        area.add_panel(panel, DockPlacement::Bottom, None, window, cx);
                     }
                 });
             }
@@ -596,7 +599,10 @@ impl Render for Shell {
                         window,
                         cx,
                     ) {
-                        area.add_panel(panel, DockPlacement::Center, None, window, cx);
+                        // Крайний случай (ни одного соседа в доке): кладём в отдельный
+                        // bottom-dock, а НЕ в Center — add_panel(Center) на split-раскладке
+                        // схлопнул бы её в фулскрин.
+                        area.add_panel(panel, DockPlacement::Bottom, None, window, cx);
                     }
                 });
             }
