@@ -58,7 +58,10 @@ xcrun --find metal
 Одних Command Line Tools недостаточно: `moon-gpui-macos` компилирует GPUI Metal shaders через
 `xcrun metal`.
 
-Быстрая проверка:
+### Canonical Mac Check
+
+Это основной путь для нормального Mac-стенда и release/stabilization. Он проверяет build-script
+компиляцию GPUI Metal shaders через настоящий `metal`:
 
 ```bash
 TOOLCHAINS=com.apple.dt.toolchain.Metal \
@@ -79,6 +82,44 @@ open -n target/macos/MoonTerminal.app
 
 `scripts/macos-bundle.sh` делает release build, `.app`, stable bundle id `pro.moonbot.terminal`,
 ad-hoc подпись по умолчанию и `codesign --verify --deep --strict`.
+
+### CLT / Rented Mac Fallback
+
+Некоторые арендованные Mac дают только Command Line Tools без рабочего `xcrun metal`. Такой стенд
+годится для проверки Rust/Metal backend кода, но НЕ заменяет canonical Mac check выше.
+
+Fallback-команды:
+
+```bash
+cargo check -p moon-ui-gpui --bin moonterminal --features gpui_platform/runtime_shaders
+cargo build -p moon-ui-gpui --bin moonterminal --features gpui_platform/runtime_shaders
+```
+
+Что этот fallback закрывает:
+- компиляцию terminal + MoonUI на macOS target;
+- типы Metal backend, `RawGpuAccess::Metal`, command buffer / encoder path;
+- линковку macOS dependencies.
+
+Что он НЕ закрывает:
+- build-script компиляцию GPUI Metal shaders через `xcrun metal`;
+- `.app` packaging/codesign;
+- Keychain GUI ACL;
+- визуальную live-проверку графика глазами.
+
+### Fast Remote Dev Loop
+
+Для проверки локальных незапушенных `MoonTerminal` + `MoonUI` на удалённом Mac копируй оба дерева
+рядом и сохраняй ignored `.cargo/config.toml`, чтобы terminal брал локальный `../MoonUI`:
+
+```bash
+rm -rf "$HOME/MoonTerminal" "$HOME/MoonUI"
+tar -xzf /tmp/moon-src-check.tgz -C "$HOME"
+cd "$HOME/MoonTerminal"
+cargo check -p moon-ui-gpui --bin moonterminal --features gpui_platform/runtime_shaders
+```
+
+Если Mac имеет полный Metal toolchain, вместо fallback-команды запускать canonical command с
+`TOOLCHAINS=com.apple.dt.toolchain.Metal`, а для live smoke запускать `.app` через GUI session.
 
 ## Linux
 
