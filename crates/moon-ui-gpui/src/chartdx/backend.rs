@@ -7,6 +7,7 @@ use moon_core::data::{LevelInstance, PriceLinePoint};
 
 use super::types::{
     BackgroundParams, BookStyle, ChartCross, ChartViewGpu, CursorParams, GridParams,
+    ReadoutGlyph, ReadoutRect,
 };
 
 #[cfg(target_os = "macos")]
@@ -16,11 +17,12 @@ use super::wgpu_backend::WgpuLayers;
 
 #[cfg(windows)]
 use super::{
-    background::{BACKGROUND_3DLOGO_PNG, BackgroundLayer},
+    background::{BackgroundLayer, BACKGROUND_3DLOGO_PNG},
     combo::ComboLayer,
     cursor::CursorLayer,
     grid::GridLayer,
     orderbook::OrderBookLayer,
+    readout::ReadoutLayer,
     userdata::UserDataLayer,
 };
 
@@ -38,6 +40,8 @@ pub struct PlatformLayers {
     grid: GridLayer,
     #[cfg(windows)]
     cursor: CursorLayer,
+    #[cfg(windows)]
+    readout: ReadoutLayer,
     #[cfg(windows)]
     orderbook: OrderBookLayer,
     #[cfg(windows)]
@@ -59,6 +63,8 @@ impl PlatformLayers {
             grid: GridLayer::new(),
             #[cfg(windows)]
             cursor: CursorLayer::new(),
+            #[cfg(windows)]
+            readout: ReadoutLayer::new(),
             #[cfg(windows)]
             orderbook: OrderBookLayer::new(),
             #[cfg(windows)]
@@ -176,6 +182,7 @@ impl PlatformLayers {
         orderbook_view: &ChartViewGpu,
         book_style: &BookStyle,
         gpu: &gpui::RawGpuAccess,
+        rebuild_base: bool,
     ) -> anyhow::Result<()> {
         self.wgpu.prepare(
             view,
@@ -185,6 +192,7 @@ impl PlatformLayers {
             orderbook_view,
             book_style,
             gpu,
+            rebuild_base,
         )
     }
 
@@ -198,6 +206,7 @@ impl PlatformLayers {
         orderbook_view: &ChartViewGpu,
         book_style: &BookStyle,
         gpu: &gpui::RawGpuAccess,
+        rebuild_base: bool,
     ) -> anyhow::Result<()> {
         self.metal.prepare(
             view,
@@ -207,7 +216,18 @@ impl PlatformLayers {
             orderbook_view,
             book_style,
             gpu,
+            rebuild_base,
         )
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn needs_base_cache(&self, gpu: &gpui::RawGpuAccess) -> bool {
+        self.wgpu.needs_base_cache(gpu)
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn needs_base_cache(&self, gpu: &gpui::RawGpuAccess) -> bool {
+        self.metal.needs_base_cache(gpu)
     }
 
     #[cfg(windows)]
@@ -243,6 +263,8 @@ impl PlatformLayers {
     pub fn render_cursor_d3d(
         &mut self,
         cursor_params: &CursorParams,
+        readout_rects: &[ReadoutRect],
+        readout_glyphs: &[ReadoutGlyph],
         device: &ID3D11Device,
         context: &ID3D11DeviceContext,
         rtv: &ID3D11RenderTargetView,
@@ -252,6 +274,8 @@ impl PlatformLayers {
             crate::diag::bump(&crate::diag::CHART_CURSOR_DRAW);
         }
         self.cursor.render(cursor_params, device, context, rtv, gpu);
+        self.readout
+            .render(readout_rects, readout_glyphs, device, context, rtv, gpu);
     }
 
     #[cfg(target_os = "linux")]
@@ -261,6 +285,8 @@ impl PlatformLayers {
         background_params: &BackgroundParams,
         grid_params: &GridParams,
         cursor_params: &CursorParams,
+        readout_rects: &[ReadoutRect],
+        readout_glyphs: &[ReadoutGlyph],
         orderbook_view: &ChartViewGpu,
         gpu: &gpui::RawGpuAccess,
     ) -> anyhow::Result<()> {
@@ -269,6 +295,8 @@ impl PlatformLayers {
             background_params,
             grid_params,
             cursor_params,
+            readout_rects,
+            readout_glyphs,
             orderbook_view,
             gpu,
         )
@@ -281,6 +309,8 @@ impl PlatformLayers {
         background_params: &BackgroundParams,
         grid_params: &GridParams,
         cursor_params: &CursorParams,
+        readout_rects: &[ReadoutRect],
+        readout_glyphs: &[ReadoutGlyph],
         orderbook_view: &ChartViewGpu,
         gpu: &gpui::RawGpuAccess,
     ) -> anyhow::Result<()> {
@@ -289,6 +319,8 @@ impl PlatformLayers {
             background_params,
             grid_params,
             cursor_params,
+            readout_rects,
+            readout_glyphs,
             orderbook_view,
             gpu,
         )

@@ -72,8 +72,6 @@ pub struct DrainStats {
     pub any: bool,
     /// Data visible to chart GPU state changed: market ticks/book/price-lines or order lines.
     pub chart_data: bool,
-    /// Compatibility/synthetic path already wrote market payload into `MarketStore`.
-    pub market_store_updated: bool,
     /// Slow GPUI chrome/account state changed and the Backend entity should be notified.
     pub ui_state: bool,
 }
@@ -150,7 +148,6 @@ impl SessionManager {
                             .expect("market store poisoned")
                             .apply_ticks(sess.id, &market, &ticks);
                         stats.chart_data = true;
-                        stats.market_store_updated = true;
                     }
                     FeedMsg::PriceLine {
                         market,
@@ -162,7 +159,6 @@ impl SessionManager {
                             .expect("market store poisoned")
                             .apply_price_line(sess.id, &market, kind, &points);
                         stats.chart_data = true;
-                        stats.market_store_updated = true;
                     }
                     FeedMsg::OrderBook { market, book } => {
                         self.market
@@ -170,7 +166,6 @@ impl SessionManager {
                             .expect("market store poisoned")
                             .apply_book(sess.id, &market, &book);
                         stats.chart_data = true;
-                        stats.market_store_updated = true;
                     }
                     FeedMsg::MarketDataChanged => {
                         stats.chart_data = true;

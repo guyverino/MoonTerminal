@@ -14,15 +14,15 @@ use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC};
 
 use super::gpu::{
-    BlitParams, ChartViewGpu, create_alpha_blend, create_dynamic_cb, create_point_sampler,
-    create_srv, create_structured, d3d_device_ptr, full_viewport, make_ps, make_vs,
-    set_scissor_rect, update_dynamic,
+    create_alpha_blend, create_dynamic_cb, create_point_sampler, create_srv, create_structured,
+    d3d_device_ptr, full_viewport, make_ps, make_vs, set_scissor_rect, update_dynamic, BlitParams,
+    ChartViewGpu,
 };
 pub use super::types::BookStyle;
 
 const BARS_HLSL: &str = include_str!("shaders/bars.hlsl");
 const BLIT_HLSL: &str = include_str!("shaders/blit.hlsl");
-const CAP: u32 = 1 << 12; // уровней стакана (с запасом; реально сотни)
+const INITIAL_LEVEL_CAP: u32 = 256;
 
 struct BookPipe {
     bars_vs: ID3D11VertexShader,
@@ -32,6 +32,7 @@ struct BookPipe {
     blend: ID3D11BlendState,
     buffer: ID3D11Buffer,
     srv: ID3D11ShaderResourceView,
+    level_cap: u32,
     view_cb: ID3D11Buffer,
     style_cb: ID3D11Buffer,
 }
@@ -108,21 +109,20 @@ impl OrderBookLayer {
             self.device_ptr = device_ptr;
         }
         if self.pipe.is_none() {
-            self.pipe = Some(Self::create_pipe(device));
+            self.pipe = Some(Self::create_pipe(device, INITIAL_LEVEL_CAP));
         }
         // Применить новые уровни (если пришли) → инвалидировать кэш текстуры.
         let mut levels_changed = false;
         if let Some(levels) = self.pending.take() {
-            let pipe = self.pipe.as_ref().unwrap();
-            let data: &[LevelInstance] = if levels.len() as u32 > CAP {
-                &levels[..CAP as usize]
-            } else {
-                &levels
-            };
-            if !data.is_empty() {
-                update_dynamic(context, &pipe.buffer, data);
+            let need_cap = next_buffer_cap(levels.len(), INITIAL_LEVEL_CAP);
+            if self.pipe.as_ref().is_none_or(|p| p.level_cap < need_cap) {
+                self.pipe = Some(Self::create_pipe(device, need_cap));
             }
-            self.count = data.len() as u32;
+            if !levels.is_empty() {
+                let pipe = self.pipe.as_ref().unwrap();
+                update_dynamic(context, &pipe.buffer, &levels);
+            }
+            self.count = levels.len() as u32;
             levels_changed = true;
         }
 
@@ -149,12 +149,15 @@ impl OrderBookLayer {
             tex.dirty = true;
         }
 
-        // BAKE: фон+бары в текстуру (texture-local view). Первый раз — обязательно (иначе чёрный
-        // стакан); далее — лишь когда входы сменились И прошло ≥200мс с прошлого bake (троттл
-        // ~5 Гц, как MoonBot bmGlass: книга шлёт ~20 Гц, но глазу столько не нужно — между bake
-        // блитим готовую текстуру). Y-сдвиг редкий (~1/с, гистерезис) → на глаз не страдает.
+        // BAKE: фон+бары в текстуру (texture-local view). Book data may be throttled, but
+        // camera/price-transform changes from user pan/zoom must bake immediately; otherwise
+        // the chart moves while the glass layer visibly lags behind.
         let now_ms = now_unix_ms();
-        if !tex.baked || (tex.dirty && now_ms - tex.last_bake_ms >= 200.0) {
+        let transform_changed = tex.last_price_to_px != view.price_to_px
+            || tex.last_view_price0 != view.view_price0
+            || tex.last_style != *style;
+        let book_data_due = tex.dirty && now_ms - tex.last_bake_ms >= 200.0;
+        if !tex.baked || transform_changed || book_data_due {
             crate::diag::bump(&crate::diag::CHART_BOOK_BAKE);
             // bake-view: зона = весь битмап [0,0,tex_w,tex_h], Y-трансформ тот же.
             let bake_view = ChartViewGpu {
@@ -264,13 +267,17 @@ impl OrderBookLayer {
         }
     }
 
-    fn create_pipe(device: &ID3D11Device) -> BookPipe {
+    fn create_pipe(device: &ID3D11Device, level_cap: u32) -> BookPipe {
         let bars_vs = make_vs(device, BARS_HLSL, "bars_vertex");
         let bars_ps = make_ps(device, BARS_HLSL, "bars_fragment");
         let bg_vs = make_vs(device, BARS_HLSL, "bg_vertex");
         let bg_ps = make_ps(device, BARS_HLSL, "bg_fragment");
         let blend = create_alpha_blend(device);
-        let buffer = create_structured(device, std::mem::size_of::<LevelInstance>() as u32, CAP);
+        let buffer = create_structured(
+            device,
+            std::mem::size_of::<LevelInstance>() as u32,
+            level_cap.max(1),
+        );
         let srv = create_srv(device, &buffer);
         let view_cb = create_dynamic_cb(device, std::mem::size_of::<ChartViewGpu>() as u32);
         let style_cb = create_dynamic_cb(device, std::mem::size_of::<BookStyle>() as u32);
@@ -282,6 +289,7 @@ impl OrderBookLayer {
             blend,
             buffer,
             srv,
+            level_cap: level_cap.max(1),
             view_cb,
             style_cb,
         }
@@ -344,4 +352,8 @@ impl OrderBookLayer {
             last_bake_ms: 0.0,
         }
     }
+}
+
+fn next_buffer_cap(len: usize, floor: u32) -> u32 {
+    (len as u32).max(1).max(floor).next_power_of_two()
 }

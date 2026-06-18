@@ -92,12 +92,10 @@ pub struct ChartPanel {
     /// CPU prepare по data observe: их `gpu_canvas` всё равно не будет опрошен/нарисован.
     scene_visible: bool,
     last_axis_notify_data_sig: u64,
-    last_prepared_data_sig: u64,
-    last_prepared_dev: (u32, u32),
+    last_layout_dev: (u32, u32),
     last_prepared_bounds: Option<Bounds<Pixels>>,
     view_dirty: bool,
     last_adaptive_notify_ms: f64,
-    last_cursor_readout_notify_ms: f64,
     /// Последний scale_factor окна (ставится в render). Нужен data prepare path, у которого
     /// нет window — DPI меняется редко, между сменами берём запомненный.
     last_ppp: f32,
@@ -141,7 +139,7 @@ impl ChartPanel {
             let (sig, settings_sig) = {
                 let b = backend.read(cx);
                 (
-                    this.chart.data_signature(&b.session),
+                    this.chart.notify_signature(&b.session),
                     chart_settings_sig(&b),
                 )
             };
@@ -182,12 +180,10 @@ impl ChartPanel {
             fast: true,
             scene_visible: false,
             last_axis_notify_data_sig: u64::MAX,
-            last_prepared_data_sig: u64::MAX,
-            last_prepared_dev: (0, 0),
+            last_layout_dev: (0, 0),
             last_prepared_bounds: None,
             view_dirty: true,
             last_adaptive_notify_ms: 0.0,
-            last_cursor_readout_notify_ms: 0.0,
             last_ppp: 1.0,
             ttl_timer_armed: false,
             focus: cx.focus_handle(),
@@ -229,7 +225,7 @@ impl ChartPanel {
             let (sig, settings_sig) = {
                 let b = backend.read(cx);
                 (
-                    this.chart.data_signature(&b.session),
+                    this.chart.notify_signature(&b.session),
                     chart_settings_sig(&b),
                 )
             };
@@ -268,12 +264,10 @@ impl ChartPanel {
             fast: false,
             scene_visible: false,
             last_axis_notify_data_sig: u64::MAX,
-            last_prepared_data_sig: u64::MAX,
-            last_prepared_dev: (0, 0),
+            last_layout_dev: (0, 0),
             last_prepared_bounds: None,
             view_dirty: true,
             last_adaptive_notify_ms: 0.0,
-            last_cursor_readout_notify_ms: 0.0,
             last_ppp: 1.0,
             ttl_timer_armed: false,
             focus: cx.focus_handle(),
@@ -297,21 +291,13 @@ impl ChartPanel {
         self.chart.set_scene_visible(visible);
     }
 
-    pub(crate) fn sync_retained_state_if_visible(&mut self, cx: &mut Context<Self>, force: bool) {
+    pub(crate) fn sync_orders_if_visible(&mut self, cx: &mut Context<Self>, force: bool) {
         if !self.scene_visible {
             return;
         }
         let b = self.backend.read(cx);
-        let sig = self.chart.data_signature(&b.session);
-        self.data_sig = sig;
-        if !force && sig == self.last_prepared_data_sig {
-            return;
-        }
-        self.chart.sync_retained_state_if_visible(&b.session, force);
-        self.last_prepared_data_sig = sig;
-        self.last_prepared_dev = self.chart_dev;
-        self.last_prepared_bounds = self.chart_bounds;
-        self.view_dirty = false;
+        self.data_sig = self.chart.notify_signature(&b.session);
+        self.chart.sync_orders_if_visible(&b.session, force);
     }
 
     /// Поставить масштаб ЭТОЙ вкладки (None=Авто). Применяется в render через `set_scale` движка.
@@ -437,15 +423,6 @@ impl ChartPanel {
         self.chart.set_cursor(cursor)
     }
 
-    fn notify_cursor_readout_if_due(&mut self, cx: &mut Context<Self>) {
-        let now = now_unix_ms();
-        if now - self.last_cursor_readout_notify_ms >= 250.0 {
-            self.last_cursor_readout_notify_ms = now;
-            crate::diag::bump(&crate::diag::CHART_CURSOR_READOUT_NOTIFY);
-            cx.notify();
-        }
-    }
-
     /// Подпись вкладки: «Чарт N» для AddToChart, иначе рынок открытой монеты, затем «Main».
     pub fn title_text(&self) -> String {
         if let Some(n) = self.num {
@@ -522,14 +499,16 @@ impl Render for ChartPanel {
             self.view_dirty = true;
         }
 
-        let geometry_changed = self.chart_dev != self.last_prepared_dev
+        let geometry_changed = self.chart_dev != self.last_layout_dev
             || self.chart_bounds != self.last_prepared_bounds;
-        // Render path updates layout/settings. Live market data also enters retained
-        // chart state from gpu_canvas.frame() via MarketDataSource, not from throttled
-        // GPUI notify/render cadence.
+        // Render path only publishes layout/settings dirtiness. Market data is pulled
+        // by gpu_canvas.frame(); account/order overlays have their own narrow sync.
         let view_changed = self.view_dirty;
         if became_visible || geometry_changed || view_changed {
-            self.sync_retained_state_if_visible(cx, true);
+            self.last_layout_dev = self.chart_dev;
+            self.last_prepared_bounds = self.chart_bounds;
+            self.view_dirty = false;
+            self.sync_orders_if_visible(cx, true);
         }
 
         // axis_panes (раскладка панелей + снимок) считаем ОДИН раз за кадр и переиспользуем
@@ -542,8 +521,6 @@ impl Render for ChartPanel {
             .collect();
         self.sync_native_cursor();
         let cross = self.chart.crosshair_style();
-        let cursor_dev = self.input.cursor;
-        let hovered = self.input.hovered_pane;
         // Угловой ✕ закрытия монеты — на КАЖДОЙ панели (и Main, и AddToChart-мультичарт):
         // закрыл монету на Main → вернулись к лого. Позиция из раскладки панелей (девайс-px →
         // лог.px слота); собираем ДО canvas, который забирает axis_panes по move.
@@ -757,7 +734,6 @@ impl Render for ChartPanel {
                     prev_cursor != this.input.cursor || prev_hovered != this.input.hovered_pane;
                 if cursor_changed {
                     this.sync_native_cursor();
-                    this.notify_cursor_readout_if_due(cx);
                 }
                 // Drag меняет камеры/оси, поэтому нужен обычный GPUI notify. Cursor-only move
                 // уходит в chartdx native overlay через gpu_canvas без dirty всего дерева.
@@ -766,14 +742,12 @@ impl Render for ChartPanel {
                     cx.notify();
                 }
             }))
-            .on_hover(cx.listener(|this, hovered: &bool, _window, cx| {
+            .on_hover(cx.listener(|this, hovered: &bool, _window, _cx| {
                 if !*hovered {
                     let changed = this.input.cursor.take().is_some()
                         || this.input.hovered_pane.take().is_some();
                     if changed {
                         this.sync_native_cursor();
-                        crate::diag::bump(&crate::diag::CHART_CURSOR_READOUT_NOTIFY);
-                        cx.notify();
                     }
                 }
             }))
@@ -811,10 +785,10 @@ impl Render for ChartPanel {
                             });
                         }
                         // Оси — ПО КАЖДОЙ панели (Tiled-мультичарт): свой прямоугольник
-                        // (девайс-px → лог.px окна) и снимок. Cursor-lines native; здесь только
-                        // throttled readout chips.
+                        // (девайс-px → лог.px окна) и снимок. Cursor/readout are native;
+                        // GPUI keeps only slow/static axis labels.
                         let palette = MoonPalette::active(cx);
-                        for (idx, rect, snap) in &axis_panes {
+                        for (_idx, rect, snap) in &axis_panes {
                             let sub = Bounds::new(
                                 point(
                                     bounds.origin.x + px(rect.x / sf),
@@ -822,17 +796,7 @@ impl Render for ChartPanel {
                                 ),
                                 gpui::size(px(rect.w / sf), px(rect.h / sf)),
                             );
-                            let cursor = if hovered == Some(*idx) {
-                                cursor_dev.map(|(x, y)| {
-                                    point(
-                                        bounds.origin.x + px(x / sf),
-                                        bounds.origin.y + px(y / sf),
-                                    )
-                                })
-                            } else {
-                                None
-                            };
-                            axes::draw(window, cx, sub, snap, cursor, false, sf, cross, palette);
+                            axes::draw(window, cx, sub, snap, None, false, sf, cross, palette);
                         }
                     },
                 )

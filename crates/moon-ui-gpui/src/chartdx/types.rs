@@ -94,6 +94,27 @@ pub struct CursorParams {
     pub _pad: [f32; 2],
 }
 
+/// Native cursor readout chip background. Coordinates are physical window pixels.
+#[repr(C)]
+#[derive(Clone, Copy, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct ReadoutRect {
+    pub dst: [f32; 4],
+    pub bg: [f32; 4],
+    pub border: [f32; 4],
+    /// x = border width in px.
+    pub m: [f32; 4],
+}
+
+/// One fixed 5x7 bitmap glyph quad for native cursor readouts.
+#[repr(C)]
+#[derive(Clone, Copy, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct ReadoutGlyph {
+    pub dst: [f32; 4],
+    pub color: [f32; 4],
+    /// x = ASCII codepoint.
+    pub m: [u32; 4],
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct BookStyle {

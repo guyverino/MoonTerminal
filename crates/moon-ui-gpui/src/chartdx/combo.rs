@@ -15,13 +15,14 @@ use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC};
 
 use super::gpu::{
-    BlitParams, ChartCross, ChartViewGpu, create_alpha_blend, create_dynamic_cb,
-    create_point_sampler, create_srv, create_srv_range, create_structured, d3d_device_ptr,
-    full_viewport, ring_write_no_overwrite, set_scissor_rect, update_dynamic,
+    create_alpha_blend, create_dynamic_cb, create_point_sampler, create_srv, create_srv_range,
+    create_structured, d3d_device_ptr, full_viewport, ring_write_no_overwrite, set_scissor_rect,
+    update_dynamic, BlitParams, ChartCross, ChartViewGpu,
 };
 
-/// Ёмкость кольца тиков (~131k, плотно под 100k видимых на максимальной плотности).
-const CAP: u32 = 1 << 17;
+/// Ёмкость резидентного кольца истории combo (~131k, плотно под 100k видимых).
+/// Это осознанный хвост тайм-серии, а не общий safety-cap для произвольных слоёв.
+const COMBO_RING_CAP: u32 = 1 << 17;
 const CROSSES_HLSL: &str = include_str!("shaders/crosses.hlsl");
 const BLIT_HLSL: &str = include_str!("shaders/blit.hlsl");
 
@@ -290,13 +291,17 @@ impl ComboLayer {
                 tex.valid = true;
             } else if self.head != tex.last_baked_head {
                 // инкрементально: только новые тики кольца [last_head, head) (с заворотом)
-                let delta = (self.head + CAP - tex.last_baked_head) % CAP;
-                let runs: [(u32, u32); 2] = if tex.last_baked_head + delta <= CAP {
+                let delta =
+                    (self.head + COMBO_RING_CAP - tex.last_baked_head) % COMBO_RING_CAP;
+                let runs: [(u32, u32); 2] = if tex.last_baked_head + delta <= COMBO_RING_CAP {
                     [(tex.last_baked_head, delta), (0, 0)]
                 } else {
                     [
-                        (tex.last_baked_head, CAP - tex.last_baked_head),
-                        (0, delta - (CAP - tex.last_baked_head)),
+                        (
+                            tex.last_baked_head,
+                            COMBO_RING_CAP - tex.last_baked_head,
+                        ),
+                        (0, delta - (COMBO_RING_CAP - tex.last_baked_head)),
                     ]
                 };
                 for (rf, rc) in runs {
@@ -389,28 +394,28 @@ impl ComboLayer {
         }
         if let Some(data) = self.pending_reset.take() {
             // при переполнении оставляем последний хвост ёмкости
-            let data: &[ChartCross] = if data.len() as u32 > CAP {
-                &data[data.len() - CAP as usize..]
+            let data: &[ChartCross] = if data.len() as u32 > COMBO_RING_CAP {
+                &data[data.len() - COMBO_RING_CAP as usize..]
             } else {
                 &data
             };
             update_dynamic(context, &tick_buffer, data);
             self.count = data.len() as u32;
-            self.head = (data.len() as u32) % CAP;
+            self.head = (data.len() as u32) % COMBO_RING_CAP;
             self.reset_volume_scale(data);
             self.volume_scale_dirty = true;
         }
         if !self.pending_append.is_empty() {
             let data = std::mem::take(&mut self.pending_append);
-            let data: &[ChartCross] = if data.len() as u32 > CAP {
-                &data[data.len() - CAP as usize..]
+            let data: &[ChartCross] = if data.len() as u32 > COMBO_RING_CAP {
+                &data[data.len() - COMBO_RING_CAP as usize..]
             } else {
                 &data
             };
             let n = data.len() as u32;
-            ring_write_no_overwrite(context, &tick_buffer, self.head, CAP, data);
-            self.head = (self.head + n) % CAP;
-            self.count = (self.count + n).min(CAP);
+            ring_write_no_overwrite(context, &tick_buffer, self.head, COMBO_RING_CAP, data);
+            self.head = (self.head + n) % COMBO_RING_CAP;
+            self.count = (self.count + n).min(COMBO_RING_CAP);
             if self.update_volume_scale(data) {
                 self.volume_scale_dirty = true;
             }
@@ -471,13 +476,25 @@ impl ComboLayer {
         let price_last_ps = super::gpu::make_ps(device, CROSSES_HLSL, "price_last_fragment");
         let price_mark_ps = super::gpu::make_ps(device, CROSSES_HLSL, "price_mark_fragment");
         let blend = create_alpha_blend(device);
-        let buffer = create_structured(device, std::mem::size_of::<ChartCross>() as u32, CAP);
+        let buffer = create_structured(
+            device,
+            std::mem::size_of::<ChartCross>() as u32,
+            COMBO_RING_CAP,
+        );
         let srv = create_srv(device, &buffer);
         let last_line_buf =
-            create_structured(device, std::mem::size_of::<PriceLinePoint>() as u32, CAP);
+            create_structured(
+                device,
+                std::mem::size_of::<PriceLinePoint>() as u32,
+                COMBO_RING_CAP,
+            );
         let last_line_srv = create_srv(device, &last_line_buf);
         let mark_line_buf =
-            create_structured(device, std::mem::size_of::<PriceLinePoint>() as u32, CAP);
+            create_structured(
+                device,
+                std::mem::size_of::<PriceLinePoint>() as u32,
+                COMBO_RING_CAP,
+            );
         let mark_line_srv = create_srv(device, &mark_line_buf);
         let view_cb = create_dynamic_cb(device, std::mem::size_of::<ChartViewGpu>() as u32);
         CrossPipe {
@@ -564,8 +581,8 @@ fn upload_points(
     buffer: &ID3D11Buffer,
     data: &[PriceLinePoint],
 ) -> u32 {
-    let data = if data.len() as u32 > CAP {
-        &data[data.len() - CAP as usize..]
+    let data = if data.len() as u32 > COMBO_RING_CAP {
+        &data[data.len() - COMBO_RING_CAP as usize..]
     } else {
         data
     };

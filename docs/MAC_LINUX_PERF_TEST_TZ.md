@@ -134,7 +134,7 @@ Expected good signs in `render_diag.log`:
 ```text
 orders_render and shell_render do not jump to monitor/mouse rate
 chart_input_notify stays near zero during pure mousemove
-chart_cursor_readout_notify stays throttled
+no chart_cursor_readout_notify counter/path; readout is native GPU overlay
 chart_present rises during live scroll / cursor movement
 cursor_draw rises during mousemove over an active chart
 ```

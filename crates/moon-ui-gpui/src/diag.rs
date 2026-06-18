@@ -66,7 +66,6 @@ diag_counters!(
     CHART_OPEN_NOTIFY => "chart_open_notify",
     CHART_TTL_NOTIFY  => "chart_ttl_notify",
     CHART_INPUT_NOTIFY => "chart_input_notify",
-    CHART_CURSOR_READOUT_NOTIFY => "chart_cursor_readout_notify",
     CHART_CANVAS_NOTIFY => "chart_canvas_notify",
 );
 

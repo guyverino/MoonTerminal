@@ -182,9 +182,8 @@ struct Backend {
     debug_window: Option<WindowHandle<Root>>,
     #[cfg(any(debug_assertions, moon_profile_debug, feature = "debug-tools"))]
     debug_chart_windows: Vec<WindowHandle<Root>>,
-    /// Visible chart data consumers. Account/synth compatibility updates can still sync
-    /// retained chart state through these handles; live market frames pull `MarketDataSource`
-    /// directly from `gpu_canvas.frame()`.
+    /// Visible chart consumers for account/order overlays. Live market frames pull
+    /// `MarketDataSource` directly from `gpu_canvas.frame()`.
     chart_consumers: Vec<ChartDataHandle>,
     /// Персист чарт-вкладок (масштаб по вкладке + геометрия откреп-окон) — charts.json.
     /// Дебаунс-сейв делает дренаж по `chart_specs_dirty`. См. `chart_persist`.
@@ -1714,8 +1713,9 @@ fn main() -> anyhow::Result<()> {
         .detach();
 
         // Feed event path: feed threads send causal wakes after real MoonProto events.
-        // Market-only wakes update retained chart handles without dirtying Backend/Shell.
-        // Account/status/log/order wakes still notify Backend through the slow 250ms gate.
+        // Market-only wakes update MarketDataSource/store; visible charts pull it from
+        // gpu_canvas.frame() without dirtying Backend/Shell. Account/order wakes still notify
+        // Backend through the slow gate and update only chart order overlays here.
         let data_backend = backend.clone();
         cx.spawn(async move |cx| {
             let executor = cx.update(|cx| cx.background_executor().clone());
@@ -1741,11 +1741,11 @@ fn main() -> anyhow::Result<()> {
                         }
                         if drain.chart_data {
                             let desired = b.desired.clone();
-                            let pulled_market = b.session.refresh_market_data_for_open(&desired);
-                            if pulled_market || drain.market_store_updated || drain.ui_state {
+                            b.session.refresh_market_data_for_open(&desired);
+                            if drain.ui_state {
                                 let chart_consumers = b.live_chart_consumers();
                                 for chart in chart_consumers {
-                                    chart.sync_retained_state_if_visible(&b.session, false);
+                                    chart.sync_orders_if_visible(&b.session, false);
                                 }
                             }
                         }

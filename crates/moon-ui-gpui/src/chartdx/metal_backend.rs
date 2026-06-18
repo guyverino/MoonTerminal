@@ -4,10 +4,10 @@
 use foreign_types::ForeignTypeRef;
 use gpui::RawGpuAccess;
 use metal::{
-    CompileOptions, DeviceRef, MTLBlendFactor, MTLBlendOperation, MTLPixelFormat, MTLPrimitiveType,
-    MTLResourceOptions, MTLSamplerMinMagFilter, MTLScissorRect, MTLSize, MTLTextureUsage,
-    RenderCommandEncoderRef, RenderPipelineDescriptor, RenderPipelineState, SamplerDescriptor,
-    TextureDescriptor,
+    CommandBufferRef, CompileOptions, DeviceRef, MTLBlendFactor, MTLBlendOperation, MTLLoadAction,
+    MTLPixelFormat, MTLPrimitiveType, MTLResourceOptions, MTLSamplerMinMagFilter, MTLScissorRect,
+    MTLSize, MTLStoreAction, MTLTextureUsage, RenderCommandEncoderRef, RenderPipelineDescriptor,
+    RenderPipelineState, SamplerDescriptor, TextureDescriptor,
 };
 use moon_chart::layers::{LineInstance, MarkerInstance, SegInstance, ZoneInstance};
 use moon_core::data::{LevelInstance, PriceLinePoint};
@@ -15,11 +15,12 @@ use std::ffi::c_void;
 
 use super::types::{
     BackgroundParams, BookStyle, ChartCross, ChartViewGpu, CursorParams, GridParams, HLineGpu,
-    MarkerGpu, SegGpu, ZoneGpu,
+    MarkerGpu, ReadoutGlyph, ReadoutRect, SegGpu, ZoneGpu,
 };
 
 const SHADER: &str = include_str!("shaders/chart_native.metal");
 const BACKGROUND_PNG: &[u8] = include_bytes!("../../../../assets/img/3Dlogo_s01.png");
+const COMBO_HISTORY_CAP: usize = 1 << 17;
 
 fn hl_of(h: &LineInstance) -> HLineGpu {
     HLineGpu {
@@ -91,6 +92,8 @@ struct Pipelines {
     background: RenderPipelineState,
     grid: RenderPipelineState,
     cursor: RenderPipelineState,
+    readout_rect: RenderPipelineState,
+    readout_glyph: RenderPipelineState,
     crosses: RenderPipelineState,
     volume: RenderPipelineState,
     price_last: RenderPipelineState,
@@ -108,11 +111,111 @@ struct BackgroundTexture {
     texture: metal::Texture,
 }
 
+struct BaseTexture {
+    texture: metal::Texture,
+    w: u32,
+    h: u32,
+    generation: u64,
+    pixel_format: MTLPixelFormat,
+}
+
+#[derive(Default)]
+struct BaseCache {
+    texture: Option<BaseTexture>,
+    blit_uniform: BufferSlot,
+    valid: bool,
+}
+
+impl BaseCache {
+    fn is_valid_for(&self, gpu: &RawGpuAccess, pixel_format: MTLPixelFormat) -> bool {
+        let w = gpu.width();
+        let h = gpu.height();
+        let generation = gpu.device_generation();
+        self.valid
+            && self.texture.as_ref().is_some_and(|tex| {
+                tex.w == w
+                    && tex.h == h
+                    && tex.generation == generation
+                    && tex.pixel_format == pixel_format
+            })
+    }
+
+    fn needs_rebuild(&self, gpu: &RawGpuAccess, pixel_format: Option<MTLPixelFormat>) -> bool {
+        let Some(pixel_format) = pixel_format else {
+            return true;
+        };
+        !self.is_valid_for(gpu, pixel_format)
+    }
+
+    fn ensure_texture(
+        &mut self,
+        device: &DeviceRef,
+        gpu: &RawGpuAccess,
+        pixel_format: MTLPixelFormat,
+    ) -> &metal::TextureRef {
+        let w = gpu.width().max(1);
+        let h = gpu.height().max(1);
+        let generation = gpu.device_generation();
+        let recreate = self.texture.as_ref().is_none_or(|tex| {
+            tex.w != w
+                || tex.h != h
+                || tex.generation != generation
+                || tex.pixel_format != pixel_format
+        });
+        if recreate {
+            let desc = TextureDescriptor::new();
+            desc.set_texture_type(metal::MTLTextureType::D2);
+            desc.set_pixel_format(pixel_format);
+            desc.set_width(w as u64);
+            desc.set_height(h as u64);
+            desc.set_depth(1);
+            desc.set_mipmap_level_count(1);
+            desc.set_array_length(1);
+            desc.set_usage(MTLTextureUsage::RenderTarget | MTLTextureUsage::ShaderRead);
+            desc.set_storage_mode(metal::MTLStorageMode::Private);
+            let texture = device.new_texture(&desc);
+            self.texture = Some(BaseTexture {
+                texture,
+                w,
+                h,
+                generation,
+                pixel_format,
+            });
+            self.valid = false;
+        }
+        self.texture.as_ref().unwrap().texture.as_ref()
+    }
+
+    fn write_blit_uniform(
+        &mut self,
+        device: &DeviceRef,
+        view: &ChartViewGpu,
+        orderbook_view: &ChartViewGpu,
+        gpu: &RawGpuAccess,
+    ) {
+        let dst = panel_dst(view, orderbook_view, gpu.width(), gpu.height());
+        let w = gpu.width().max(1) as f32;
+        let h = gpu.height().max(1) as f32;
+        let params = BackgroundParams {
+            dst,
+            resolution: [w, h],
+            uv_off: [dst[0] / w, dst[1] / h],
+            uv_scale: [dst[2] / w, dst[3] / h],
+            opacity: 1.0,
+            _pad: 0.0,
+            bg: [0.0, 0.0, 0.0, 1.0],
+        };
+        self.blit_uniform
+            .write(device, "moon_chart_base_blit_uniform", &[params]);
+    }
+}
+
 pub struct MetalLayers {
     device_generation: u64,
     pixel_format: Option<MTLPixelFormat>,
     pipelines: Option<Pipelines>,
     background_texture: Option<BackgroundTexture>,
+    base_cache: BaseCache,
     crosses: Vec<ChartCross>,
     last_line: Vec<PriceLinePoint>,
     mark_line: Vec<PriceLinePoint>,
@@ -126,6 +229,8 @@ pub struct MetalLayers {
     bg_uniform: BufferSlot,
     grid_uniform: BufferSlot,
     cursor_uniform: BufferSlot,
+    readout_rect_buffer: BufferSlot,
+    readout_glyph_buffer: BufferSlot,
     view_uniform: BufferSlot,
     book_view_uniform: BufferSlot,
     book_style_uniform: BufferSlot,
@@ -146,6 +251,7 @@ impl MetalLayers {
             pixel_format: None,
             pipelines: None,
             background_texture: None,
+            base_cache: BaseCache::default(),
             crosses: Vec::new(),
             last_line: Vec::new(),
             mark_line: Vec::new(),
@@ -159,6 +265,8 @@ impl MetalLayers {
             bg_uniform: BufferSlot::default(),
             grid_uniform: BufferSlot::default(),
             cursor_uniform: BufferSlot::default(),
+            readout_rect_buffer: BufferSlot::default(),
+            readout_glyph_buffer: BufferSlot::default(),
             view_uniform: BufferSlot::default(),
             book_view_uniform: BufferSlot::default(),
             book_style_uniform: BufferSlot::default(),
@@ -174,7 +282,7 @@ impl MetalLayers {
     }
 
     pub fn reset_combo(&mut self, data: Vec<ChartCross>) {
-        self.crosses = cap_tail(data, 1 << 17);
+        self.crosses = cap_tail(data, COMBO_HISTORY_CAP);
         self.recalc_volume_scale();
     }
 
@@ -183,20 +291,20 @@ impl MetalLayers {
             return;
         }
         self.crosses.extend_from_slice(data);
-        if self.crosses.len() > (1 << 17) {
-            let drop = self.crosses.len() - (1 << 17);
+        if self.crosses.len() > COMBO_HISTORY_CAP {
+            let drop = self.crosses.len() - COMBO_HISTORY_CAP;
             self.crosses.drain(0..drop);
         }
         self.recalc_volume_scale();
     }
 
     pub fn set_price_lines(&mut self, last: &[PriceLinePoint], mark: &[PriceLinePoint]) {
-        self.last_line = cap_tail(last.to_vec(), 1 << 17);
-        self.mark_line = cap_tail(mark.to_vec(), 1 << 17);
+        self.last_line = cap_tail(last.to_vec(), COMBO_HISTORY_CAP);
+        self.mark_line = cap_tail(mark.to_vec(), COMBO_HISTORY_CAP);
     }
 
     pub fn set_orderbook(&mut self, levels: Vec<LevelInstance>) {
-        self.levels = cap_head(levels, 1 << 12);
+        self.levels = levels;
     }
 
     pub fn set_userdata(
@@ -206,10 +314,14 @@ impl MetalLayers {
         segs: &[SegInstance],
         markers: &[MarkerInstance],
     ) {
-        self.zones = cap_head(zones.iter().map(zone_of).collect(), 1 << 12);
-        self.hlines = cap_head(hlines.iter().map(hl_of).collect(), 1 << 12);
-        self.segs = cap_head(segs.iter().map(seg_of).collect(), 1 << 12);
-        self.markers = cap_head(markers.iter().map(mk_of).collect(), 1 << 12);
+        self.zones = zones.iter().map(zone_of).collect();
+        self.hlines = hlines.iter().map(hl_of).collect();
+        self.segs = segs.iter().map(seg_of).collect();
+        self.markers = markers.iter().map(mk_of).collect();
+    }
+
+    pub fn needs_base_cache(&self, gpu: &RawGpuAccess) -> bool {
+        self.base_cache.needs_rebuild(gpu, self.pixel_format)
     }
 
     pub fn render(
@@ -218,6 +330,8 @@ impl MetalLayers {
         background_params: &BackgroundParams,
         grid_params: &GridParams,
         cursor_params: &CursorParams,
+        readout_rects: &[ReadoutRect],
+        readout_glyphs: &[ReadoutGlyph],
         orderbook_view: &ChartViewGpu,
         gpu: &RawGpuAccess,
     ) -> anyhow::Result<()> {
@@ -231,26 +345,46 @@ impl MetalLayers {
             background_params,
             grid_params,
             cursor_params,
+            readout_rects,
+            readout_glyphs,
         );
-        let pipelines = self.pipelines.as_ref().unwrap();
-        let bg = self.background_texture.as_ref().unwrap();
         let sc = scissor_rect(view, orderbook_view, gpu.width(), gpu.height());
         encoder.set_scissor_rect(sc);
 
+        let pixel_format = self
+            .pixel_format
+            .expect("Metal pixel format must be prepared");
+        if self.base_cache.is_valid_for(gpu, pixel_format) {
+            self.draw_cached_base(device, encoder, view, orderbook_view, gpu);
+        } else {
+            self.draw_base_layers(encoder);
+        }
+        self.draw_cursor_layer(encoder, cursor_params, readout_rects, readout_glyphs);
+        Ok(())
+    }
+
+    fn draw_base_layers(&self, encoder: &RenderCommandEncoderRef) {
+        let pipelines = self.pipelines.as_ref().unwrap();
+        let bg = self.background_texture.as_ref().unwrap();
+
+        crate::diag::bump(&crate::diag::CHART_BG_DRAW);
         set_uniform(encoder, 0, self.bg_uniform.buffer());
         encoder.set_fragment_texture(0, Some(bg.texture.as_ref()));
         encoder.set_fragment_sampler_state(0, Some(pipelines.sampler.as_ref()));
         draw(encoder, &pipelines.background, 6, 1);
 
+        crate::diag::bump(&crate::diag::CHART_GRID_DRAW);
         set_uniform(encoder, 0, self.grid_uniform.buffer());
         draw(encoder, &pipelines.grid, 6, 1);
 
         set_uniform(encoder, 0, self.view_uniform.buffer());
         set_storage(encoder, 1, self.cross_buffer.buffer());
         if !self.crosses.is_empty() {
+            crate::diag::bump(&crate::diag::CHART_COMBO_DRAW);
             draw(encoder, &pipelines.volume, 6, self.crosses.len() as u64);
         }
         if self.last_line.len() > 1 {
+            crate::diag::bump(&crate::diag::CHART_COMBO_DRAW);
             set_storage(encoder, 1, self.last_line_buffer.buffer());
             draw(
                 encoder,
@@ -260,6 +394,7 @@ impl MetalLayers {
             );
         }
         if self.mark_line.len() > 1 {
+            crate::diag::bump(&crate::diag::CHART_COMBO_DRAW);
             set_storage(encoder, 1, self.mark_line_buffer.buffer());
             draw(
                 encoder,
@@ -269,10 +404,12 @@ impl MetalLayers {
             );
         }
         if !self.crosses.is_empty() {
+            crate::diag::bump(&crate::diag::CHART_COMBO_DRAW);
             set_storage(encoder, 1, self.cross_buffer.buffer());
             draw(encoder, &pipelines.crosses, 6, self.crosses.len() as u64);
         }
 
+        crate::diag::bump(&crate::diag::CHART_BOOK_DRAW);
         set_uniform(encoder, 0, self.book_view_uniform.buffer());
         encoder.set_vertex_buffer(1, Some(self.book_style_uniform.buffer()), 0);
         encoder.set_fragment_buffer(1, Some(self.book_style_uniform.buffer()), 0);
@@ -284,27 +421,77 @@ impl MetalLayers {
 
         set_uniform(encoder, 0, self.view_uniform.buffer());
         if !self.zones.is_empty() {
+            crate::diag::bump(&crate::diag::CHART_USER_DRAW);
             set_storage(encoder, 1, self.zone_buffer.buffer());
             draw(encoder, &pipelines.zone, 6, self.zones.len() as u64);
         }
         if !self.hlines.is_empty() {
+            crate::diag::bump(&crate::diag::CHART_USER_DRAW);
             set_storage(encoder, 1, self.hline_buffer.buffer());
             draw(encoder, &pipelines.hline, 6, self.hlines.len() as u64);
         }
         if !self.segs.is_empty() {
+            crate::diag::bump(&crate::diag::CHART_USER_DRAW);
             set_storage(encoder, 1, self.seg_buffer.buffer());
             draw(encoder, &pipelines.seg, 6, self.segs.len() as u64);
         }
         if !self.markers.is_empty() {
+            crate::diag::bump(&crate::diag::CHART_USER_DRAW);
             set_storage(encoder, 1, self.marker_buffer.buffer());
             draw(encoder, &pipelines.marker, 6, self.markers.len() as u64);
         }
+    }
+
+    fn draw_cursor_layer(
+        &self,
+        encoder: &RenderCommandEncoderRef,
+        cursor_params: &CursorParams,
+        readout_rects: &[ReadoutRect],
+        readout_glyphs: &[ReadoutGlyph],
+    ) {
+        let pipelines = self.pipelines.as_ref().unwrap();
         if cursor_params.enabled > 0.0 {
             crate::diag::bump(&crate::diag::CHART_CURSOR_DRAW);
             set_uniform(encoder, 0, self.cursor_uniform.buffer());
             draw(encoder, &pipelines.cursor, 12, 1);
         }
-        Ok(())
+        if !readout_rects.is_empty() {
+            set_storage(encoder, 1, self.readout_rect_buffer.buffer());
+            draw(
+                encoder,
+                &pipelines.readout_rect,
+                6,
+                readout_rects.len() as u64,
+            );
+        }
+        if !readout_glyphs.is_empty() {
+            set_storage(encoder, 1, self.readout_glyph_buffer.buffer());
+            draw(
+                encoder,
+                &pipelines.readout_glyph,
+                6,
+                readout_glyphs.len() as u64,
+            );
+        }
+    }
+
+    fn draw_cached_base(
+        &mut self,
+        device: &DeviceRef,
+        encoder: &RenderCommandEncoderRef,
+        view: &ChartViewGpu,
+        orderbook_view: &ChartViewGpu,
+        gpu: &RawGpuAccess,
+    ) {
+        self.base_cache
+            .write_blit_uniform(device, view, orderbook_view, gpu);
+        let pipelines = self.pipelines.as_ref().unwrap();
+        let texture = self.base_cache.texture.as_ref().unwrap().texture.as_ref();
+        crate::diag::bump(&crate::diag::CHART_BASE_BLIT);
+        set_uniform(encoder, 0, self.base_cache.blit_uniform.buffer());
+        encoder.set_fragment_texture(0, Some(texture));
+        encoder.set_fragment_sampler_state(0, Some(pipelines.sampler.as_ref()));
+        draw(encoder, &pipelines.background, 6, 1);
     }
 
     pub fn prepare(
@@ -316,8 +503,10 @@ impl MetalLayers {
         orderbook_view: &ChartViewGpu,
         book_style: &BookStyle,
         gpu: &RawGpuAccess,
+        rebuild_base: bool,
     ) -> anyhow::Result<()> {
-        let Some((device, pixel_format)) = (unsafe { borrow_metal_prepare(gpu) }) else {
+        let Some((device, command_buffer, pixel_format)) = (unsafe { borrow_metal_prepare(gpu) })
+        else {
             anyhow::bail!("chart Metal prepare received empty Metal raw gpu handles");
         };
         if self.device_generation != gpu.device_generation()
@@ -337,6 +526,49 @@ impl MetalLayers {
             cursor_params,
             book_style,
         );
+        if rebuild_base || self.base_cache.needs_rebuild(gpu, Some(pixel_format)) {
+            self.rebuild_base_cache(
+                device,
+                command_buffer,
+                gpu,
+                pixel_format,
+                view,
+                orderbook_view,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn rebuild_base_cache(
+        &mut self,
+        device: &DeviceRef,
+        command_buffer: &CommandBufferRef,
+        gpu: &RawGpuAccess,
+        pixel_format: MTLPixelFormat,
+        view: &ChartViewGpu,
+        orderbook_view: &ChartViewGpu,
+    ) -> anyhow::Result<()> {
+        let texture = self
+            .base_cache
+            .ensure_texture(device, gpu, pixel_format)
+            .to_owned();
+        let pass = metal::RenderPassDescriptor::new();
+        let color = pass.color_attachments().object_at(0).unwrap();
+        color.set_texture(Some(texture.as_ref()));
+        color.set_load_action(MTLLoadAction::Clear);
+        color.set_store_action(MTLStoreAction::Store);
+        color.set_clear_color(metal::MTLClearColor::new(0.0, 0.0, 0.0, 0.0));
+        let encoder = command_buffer.new_render_command_encoder(pass);
+        encoder.set_scissor_rect(scissor_rect(
+            view,
+            orderbook_view,
+            gpu.width(),
+            gpu.height(),
+        ));
+        self.draw_base_layers(encoder);
+        encoder.end_encoding();
+        self.base_cache.valid = true;
+        crate::diag::bump(&crate::diag::CHART_BASE_BAKE);
         Ok(())
     }
 
@@ -360,6 +592,16 @@ impl MetalLayers {
             .write(device, "moon_chart_grid_uniform", &[*grid_params]);
         self.cursor_uniform
             .write(device, "moon_chart_cursor_uniform", &[*cursor_params]);
+        self.readout_rect_buffer.write(
+            device,
+            "moon_chart_readout_rects",
+            &[] as &[ReadoutRect],
+        );
+        self.readout_glyph_buffer.write(
+            device,
+            "moon_chart_readout_glyphs",
+            &[] as &[ReadoutGlyph],
+        );
         self.view_uniform
             .write(device, "moon_chart_view_uniform", &[view]);
         self.book_view_uniform
@@ -391,6 +633,8 @@ impl MetalLayers {
         background_params: &BackgroundParams,
         grid_params: &GridParams,
         cursor_params: &CursorParams,
+        readout_rects: &[ReadoutRect],
+        readout_glyphs: &[ReadoutGlyph],
     ) {
         let mut view = *view;
         view.volume_buy_inv = 1.0 / self.volume_buy_max.max(1e-6);
@@ -402,6 +646,10 @@ impl MetalLayers {
             .write(device, "moon_chart_grid_uniform", &[*grid_params]);
         self.cursor_uniform
             .write(device, "moon_chart_cursor_uniform", &[*cursor_params]);
+        self.readout_rect_buffer
+            .write(device, "moon_chart_readout_rects", readout_rects);
+        self.readout_glyph_buffer
+            .write(device, "moon_chart_readout_glyphs", readout_glyphs);
         self.view_uniform
             .write(device, "moon_chart_view_uniform", &[view]);
         self.book_view_uniform
@@ -440,7 +688,9 @@ fn draw(
     encoder.draw_primitives_instanced(MTLPrimitiveType::Triangle, 0, vertices, instances);
 }
 
-unsafe fn borrow_metal_prepare<'a>(gpu: &RawGpuAccess) -> Option<(&'a DeviceRef, MTLPixelFormat)> {
+unsafe fn borrow_metal_prepare<'a>(
+    gpu: &RawGpuAccess,
+) -> Option<(&'a DeviceRef, &'a CommandBufferRef, MTLPixelFormat)> {
     let RawGpuAccess::Metal(gpu) = gpu else {
         return None;
     };
@@ -451,6 +701,7 @@ unsafe fn borrow_metal_prepare<'a>(gpu: &RawGpuAccess) -> Option<(&'a DeviceRef,
     // к *mut MTLDevice, как dx11-путь делает через `.as_ptr()`.
     Some((
         unsafe { DeviceRef::from_ptr(gpu.device.as_ptr().cast()) },
+        unsafe { CommandBufferRef::from_ptr(gpu.command_buffer.as_ptr().cast()) },
         unsafe { std::mem::transmute::<u64, MTLPixelFormat>(gpu.render_target_format) },
     ))
 }
@@ -491,6 +742,16 @@ fn scissor_rect(
     }
 }
 
+fn panel_dst(
+    view: &ChartViewGpu,
+    orderbook_view: &ChartViewGpu,
+    width: u32,
+    height: u32,
+) -> [f32; 4] {
+    let sc = scissor_rect(view, orderbook_view, width, height);
+    [sc.x as f32, sc.y as f32, sc.width as f32, sc.height as f32]
+}
+
 fn create_pipelines(device: &DeviceRef, pixel_format: MTLPixelFormat) -> Pipelines {
     let library = device
         .new_library_with_source(SHADER, &CompileOptions::new())
@@ -520,6 +781,20 @@ fn create_pipelines(device: &DeviceRef, pixel_format: MTLPixelFormat) -> Pipelin
             pixel_format,
             "cursor_vertex",
             "cursor_fragment",
+        ),
+        readout_rect: pipeline(
+            device,
+            &library,
+            pixel_format,
+            "readout_rect_vertex",
+            "readout_rect_fragment",
+        ),
+        readout_glyph: pipeline(
+            device,
+            &library,
+            pixel_format,
+            "readout_glyph_vertex",
+            "readout_glyph_fragment",
         ),
         crosses: pipeline(
             device,
@@ -654,13 +929,6 @@ fn create_background_texture(device: &DeviceRef) -> BackgroundTexture {
 fn cap_tail<T>(mut data: Vec<T>, cap: usize) -> Vec<T> {
     if data.len() > cap {
         data.drain(0..data.len() - cap);
-    }
-    data
-}
-
-fn cap_head<T>(mut data: Vec<T>, cap: usize) -> Vec<T> {
-    if data.len() > cap {
-        data.truncate(cap);
     }
     data
 }

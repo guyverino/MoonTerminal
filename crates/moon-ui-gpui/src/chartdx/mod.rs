@@ -1,6 +1,7 @@
 //! Native `gpu_canvas` рендер чарта (замена wgpu-offscreen+readback). Слои по природе данных
 //! chartdx own-pass renderer: Combo (рыночная история) / OrderBook (срез) /
-//! UserData (мутирующее юзерское) + хром (Grid/Background) + native cursor; текст осей — в GPUI.
+//! UserData (мутирующее юзерское) + хром (Grid/Background) + native cursor/readout;
+//! статичный текст осей — в GPUI.
 //!
 //! Доменная специфика чарта живёт ЗДЕСЬ (в терминале); форк gpui отдаёт только generic-хук
 //! `RawGpuAccess`. Файл на слой; здесь — оркестратор `ChartEngine`: prepare данных per pane
@@ -24,6 +25,8 @@ mod metal_backend;
 #[cfg(windows)]
 pub mod orderbook;
 pub mod pane;
+#[cfg(windows)]
+pub mod readout;
 pub mod types;
 #[cfg(windows)]
 pub mod userdata;
@@ -39,7 +42,7 @@ use std::rc::{Rc, Weak};
 use gpui::{
     GpuBackend, GpuCanvasDriver, GpuCanvasHandle, GpuFrameDecision, GpuFrameInfo, RawGpuAccess,
 };
-use moon_chart::axes::AxisSnapshot;
+use moon_chart::axes::{AxisSnapshot, fmt_clock, price_decimals};
 use moon_chart::paint::now_unix_ms;
 use moon_chart::view::Rect;
 use moon_core::config::{ChartTheme, OrdersStyle};
@@ -53,7 +56,10 @@ use windows::Win32::Graphics::Direct3D11::{
 use crate::axes::CrossStyle;
 use backend::PlatformLayers;
 use pane::{Container, ContainerKind, Mode};
-use types::{BackgroundParams, BookStyle, ChartViewGpu, CursorParams, GridParams, cover_uv};
+use types::{
+    BackgroundParams, BookStyle, ChartViewGpu, CursorParams, GridParams, ReadoutGlyph,
+    ReadoutRect, cover_uv,
+};
 
 const CHART_PHOTO_BACKGROUND_ENABLED: bool = false;
 
@@ -75,6 +81,62 @@ fn union_range(a: Option<(f32, f32)>, b: Option<(f32, f32)>) -> Option<(f32, f32
     }
 }
 
+fn push_readout_chip(
+    rects: &mut Vec<ReadoutRect>,
+    glyphs: &mut Vec<ReadoutGlyph>,
+    text: &str,
+    anchor: [f32; 2],
+    align: [f32; 2],
+    scale: f32,
+    resolution: [f32; 2],
+    fg: [f32; 4],
+    bg: [f32; 4],
+    border: [f32; 4],
+    clip: [f32; 4],
+) {
+    let cell = (1.55 * scale).round().max(1.0);
+    let gap = cell;
+    let glyph_w = cell * 5.0;
+    let glyph_h = cell * 7.0;
+    let text_len = text.chars().filter(|c| readout_char_supported(*c)).count();
+    if text_len == 0 {
+        return;
+    }
+    let text_w = glyph_w * text_len as f32 + gap * text_len.saturating_sub(1) as f32;
+    let pad_x = (4.0 * scale).round().max(2.0);
+    let pad_y = (2.0 * scale).round().max(1.0);
+    let rect_w = text_w + pad_x * 2.0;
+    let rect_h = glyph_h + pad_y * 2.0;
+    let min_x = clip[0];
+    let min_y = clip[1];
+    let max_x = (clip[0] + clip[2] - rect_w).max(min_x);
+    let max_y = (clip[1] + clip[3] - rect_h).max(min_y);
+    let x = (anchor[0] - rect_w * align[0]).clamp(min_x, max_x);
+    let y = (anchor[1] - rect_h * align[1]).clamp(min_y, max_y);
+
+    rects.push(ReadoutRect {
+        dst: [x.round(), y.round(), rect_w.round(), rect_h.round()],
+        bg,
+        border,
+        m: [(1.0 * scale).round().max(1.0), resolution[0], resolution[1], 0.0],
+    });
+
+    let mut pen_x = x + pad_x;
+    let glyph_y = y + pad_y;
+    for c in text.chars().filter(|c| readout_char_supported(*c)) {
+        glyphs.push(ReadoutGlyph {
+            dst: [pen_x.round(), glyph_y.round(), glyph_w.round(), glyph_h.round()],
+            color: fg,
+            m: [c as u32, resolution[0].to_bits(), resolution[1].to_bits(), 0],
+        });
+        pen_x += glyph_w + gap;
+    }
+}
+
+fn readout_char_supported(c: char) -> bool {
+    c.is_ascii_digit() || matches!(c, ':' | '.' | '-' | '+' | '/')
+}
+
 #[derive(Clone, Copy, PartialEq)]
 struct CursorState {
     pane: usize,
@@ -91,6 +153,8 @@ struct PaneRender {
     background_params: BackgroundParams,
     grid_params: GridParams,
     cursor_params: CursorParams,
+    readout_rects: Vec<ReadoutRect>,
+    readout_glyphs: Vec<ReadoutGlyph>,
     orderbook_view: ChartViewGpu,
     book_style: BookStyle,
     /// Абсолютный индекс тиков (`total_pushed`), до которого combo уже залит. Сдвиг
@@ -137,6 +201,8 @@ impl PaneRender {
             background_params: BackgroundParams::default(),
             grid_params: GridParams::default(),
             cursor_params: CursorParams::default(),
+            readout_rects: Vec::new(),
+            readout_glyphs: Vec::new(),
             orderbook_view: ChartViewGpu::default(),
             book_style: BookStyle::default(),
             last_total: u64::MAX,
@@ -204,6 +270,7 @@ struct RenderState {
     cursor: Option<CursorState>,
     cursor_color: [f32; 4],
     cursor_thickness: f32,
+    pixel_scale: f32,
     /// Scissor-растеризатор own-pass (lazy, пересоздаётся на смене device): клипует слои к
     /// зоне панели, чтобы стакан/ордера (позиционируются по ЦЕНЕ) не лезли за плот на тулбар/шкалы.
     #[cfg(windows)]
@@ -238,13 +305,11 @@ impl ChartDataHandle {
         self.inner.strong_count() > 0
     }
 
-    pub fn sync_retained_state_if_visible(&self, session: &SessionManager, force: bool) -> bool {
+    pub fn sync_orders_if_visible(&self, session: &SessionManager, force: bool) -> bool {
         let Some(inner) = self.inner.upgrade() else {
             return false;
         };
-        inner
-            .borrow_mut()
-            .sync_retained_state_if_visible(session, force)
+        inner.borrow_mut().sync_orders_if_visible(session, force)
     }
 }
 
@@ -264,9 +329,8 @@ struct ChartDataState {
     present_rate_candidate_hz: f32,
     present_rate_candidate_hits: u8,
     last_ppp: f32,
-    last_prepared_data_sig: u64,
+    last_order_sig: u64,
     last_prepared_market_sig: u64,
-    last_prepared_dev: (u32, u32),
     view_dirty: bool,
 }
 
@@ -292,25 +356,24 @@ impl ChartDataState {
             present_rate_candidate_hz: 0.0,
             present_rate_candidate_hits: 0,
             last_ppp: 1.0,
-            last_prepared_data_sig: u64::MAX,
+            last_order_sig: u64::MAX,
             last_prepared_market_sig: u64::MAX,
-            last_prepared_dev: (0, 0),
             view_dirty: true,
         }
     }
 
-    fn data_signature(&self, session: &SessionManager) -> u64 {
+    fn notify_signature(&self, session: &SessionManager) -> u64 {
+        let mut sig = 0u64;
+        if let Some(source) = &self.market_source {
+            sig = self.market_signature(source);
+        }
+        sig.wrapping_mul(31)
+            .wrapping_add(self.order_signature(session))
+    }
+
+    fn order_signature(&self, session: &SessionManager) -> u64 {
         let mut sig = 0u64;
         for p in &self.container.borrow().panes {
-            session.with_market_view(p.core, &p.market, |data| {
-                if let Some(v) = data {
-                    sig = sig
-                        .wrapping_mul(31)
-                        .wrapping_add(v.ticks_rev)
-                        .wrapping_add(v.price_lines_rev)
-                        .wrapping_add(v.book_rev);
-                }
-            });
             if let Some(core_st) = session.store().core(p.core) {
                 sig = sig.wrapping_mul(31).wrapping_add(core_st.orders_rev);
             }
@@ -318,23 +381,18 @@ impl ChartDataState {
         sig
     }
 
-    fn sync_retained_state_if_visible(&mut self, session: &SessionManager, force: bool) -> bool {
+    fn sync_orders_if_visible(&mut self, session: &SessionManager, force: bool) -> bool {
         if !self.scene_visible {
             return false;
         }
-        let sig = self.data_signature(session);
-        if !force && !self.view_dirty && sig == self.last_prepared_data_sig {
+        let sig = self.order_signature(session);
+        if !force && sig == self.last_order_sig {
             return false;
         }
         crate::diag::bump(&crate::diag::CHART_PREPARE);
-        self.sync_from_session(session);
-        self.last_prepared_data_sig = sig;
-        if let Some(source) = &self.market_source {
-            self.last_prepared_market_sig = self.market_signature(source);
-        }
-        self.last_prepared_dev = (self.w, self.h);
-        self.view_dirty = false;
-        true
+        let changed = self.sync_orders_from_session(session, force);
+        self.last_order_sig = sig;
+        changed
     }
 
     fn market_signature(&self, source: &MarketDataSource) -> u64 {
@@ -420,7 +478,7 @@ impl ChartDataState {
     }
 
     fn pull_market_source_if_visible(&mut self) -> bool {
-        if !self.scene_visible || self.view_dirty {
+        if !self.scene_visible {
             return false;
         }
         let Some(source) = self.market_source.clone() else {
@@ -446,17 +504,20 @@ impl ChartDataState {
         if markets.is_empty() {
             return false;
         }
-        let pulled =
-            source.refresh_markets(markets.iter().map(|(core, market)| (*core, market.as_str())));
+        let pulled = source.refresh_markets(
+            markets
+                .iter()
+                .map(|(core, market)| (*core, market.as_str())),
+        );
         let sig = self.market_signature(&source);
-        if !pulled && sig == self.last_prepared_market_sig {
+        if !self.view_dirty && !pulled && sig == self.last_prepared_market_sig {
             return false;
         }
         self.sync_from_market_source(&source);
         true
     }
 
-    fn sync_from_session(&mut self, session: &SessionManager) {
+    fn sync_orders_from_session(&mut self, session: &SessionManager, force: bool) -> bool {
         let area = Rect {
             x: 0.0,
             y: 0.0,
@@ -465,33 +526,14 @@ impl ChartDataState {
         };
         let layout = self.container.borrow().layout(area);
         let now = now_unix_ms();
-        let res = [self.w as f32, self.h as f32];
         let mut st = self.render.borrow_mut();
         let mut container = self.container.borrow_mut();
         let mut pixels_changed = false;
-        #[cfg(windows)]
-        {
-            let next_bg_color = rgb4(self.theme.bg);
-            if st.window_bg_color != next_bg_color {
-                st.window_bg_color = next_bg_color;
-                pixels_changed = true;
-            }
-        }
-        let was_active: Vec<bool> = st.panes.iter().map(|pane| pane.active).collect();
-        if st.panes.len() != container.panes.len() {
-            pixels_changed = true;
-        }
         st.panes.resize_with(container.panes.len(), PaneRender::new);
-        for pr in &mut st.panes {
-            pr.active = false;
-        }
-        for (idx, rect) in &layout {
+
+        for (idx, _) in &layout {
             let pane = &mut container.panes[*idx];
             let pr = &mut st.panes[*idx];
-            if !was_active.get(*idx).copied().unwrap_or(false) {
-                pixels_changed = true;
-                pr.gpu_prepare_dirty = true;
-            }
             if pr.core != Some(pane.core) || pr.market != pane.market {
                 *pr = PaneRender::new();
                 pr.core = Some(pane.core);
@@ -501,173 +543,23 @@ impl ChartDataState {
             let device_gen = pr.layers.device_gen();
             let device_lost = pr.last_device_gen != device_gen;
             if device_lost {
-                pr.last_book_rev = u64::MAX;
                 pr.last_orders_rev = u64::MAX;
                 pr.gpu_prepare_dirty = true;
                 pixels_changed = true;
             }
-            let price_axis_w = moon_chart::PRICE_AXIS_W * self.last_ppp;
-            let time_axis_h = moon_chart::TIME_AXIS_H * self.last_ppp;
-            let plot_h = (rect.h - time_axis_h).max(1.0);
-            let glass_w = moon_chart::GLASS_ZONE_PX.min(rect.w * 0.5);
-            let chart_area = Rect {
-                x: rect.x + price_axis_w,
-                y: rect.y,
-                w: (rect.w - price_axis_w - glass_w).max(1.0),
-                h: plot_h,
-            };
-            let glass_area = Rect {
-                x: rect.x + (rect.w - glass_w).max(1.0),
-                y: rect.y,
-                w: glass_w,
-                h: plot_h,
-            };
-            pane.view
-                .ensure_default_window(chart_area.w, self.present_rate_hz);
-            pane.view.follow_edge(now, now);
-            let (view_time0, window_ms) = pane.view.visible_x(chart_area.w);
-            let cam_px = ((pane.view.right_time_ms - pane.view.epoch_ms)
-                * pane.view.px_per_ms.max(1e-9) as f64)
-                .round() as i64;
-            if device_lost || cam_px != pr.scan_cam_px {
-                pr.cached_tick_price = session.with_market_view(pane.core, &pane.market, |data| {
-                    data.and_then(|d| {
-                        let margin = pane.view.marker_half_px / pane.view.px_per_ms.max(1e-6);
-                        let (cstart, ccount) = d
-                            .ring
-                            .visible_range(view_time0 - margin, view_time0 + window_ms + margin);
-                        d.ring.price_range_in(cstart, ccount)
-                    })
-                });
-                pr.scan_cam_px = cam_px;
-            }
-            let tick_price = pr.cached_tick_price;
+
             let order_price = session
                 .store()
                 .core(pane.core)
                 .and_then(|core_st| core_st.order_lines.buy_sell_range(&pane.market));
-            pr.cached_order_price = order_price;
-            let last_price =
-                session.with_market_view(pane.core, &pane.market, |data| data.and_then(|d| d.last_price));
-            let visible_price = union_range(
-                union_range(tick_price, order_price),
-                last_price.map(|p| (p, p)),
-            );
-            pane.view.update_y(now, plot_h, visible_price, last_price);
-            let area_win = Rect {
-                x: self.origin.0 + chart_area.x,
-                y: self.origin.1 + chart_area.y,
-                w: chart_area.w,
-                h: chart_area.h,
-            };
-            let next_view = view::view_gpu(&pane.view, area_win, res);
-            if pr.view != next_view {
-                pr.view = next_view;
-                pr.gpu_prepare_dirty = true;
+            if pr.cached_order_price != order_price {
+                pr.cached_order_price = order_price;
+                self.view_dirty = true;
                 pixels_changed = true;
             }
-            pr.epoch_ms = pane.view.epoch_ms;
-            pr.right_margin_frac = pane.view.right_margin_frac;
-            pr.follow = pane.view.follow;
-            pr.last_edge_px = ((pane.view.right_time_ms - pane.view.epoch_ms)
-                * pane.view.px_per_ms.max(1e-9) as f64)
-                .round() as i64;
-            let (bg_uv_off, bg_uv_scale) = cover_uv(chart_area.w, chart_area.h, 1.0);
-            let background_opacity = if CHART_PHOTO_BACKGROUND_ENABLED {
-                self.theme.background_opacity.clamp(0.0, 1.0)
-            } else {
-                0.0
-            };
-            let next_background_params = BackgroundParams {
-                dst: pr.view.bounds,
-                resolution: res,
-                uv_off: bg_uv_off,
-                uv_scale: bg_uv_scale,
-                opacity: background_opacity,
-                _pad: 0.0,
-                bg: rgb4(self.theme.bg),
-            };
-            if pr.background_params != next_background_params {
-                pr.background_params = next_background_params;
-                pixels_changed = true;
-            }
-            let next_grid_params = GridParams {
-                bounds: pr.view.bounds,
-                resolution: res,
-                n_vert: 6.0,
-                price_to_px: pr.view.price_to_px,
-                view_price0: pr.view.view_price0,
-                price_interval: moon_chart::axes::nice_interval(
-                    pane.view.render_range.max(1e-9),
-                    8.0,
-                ),
-                grid_alpha: self.theme.grid_alpha,
-                bg_alpha: if background_opacity > 0.0 { 0.0 } else { 1.0 },
-                bg: rgb4(self.theme.bg),
-                grid_col: rgb4(self.theme.grid),
-            };
-            if pr.grid_params != next_grid_params {
-                pr.grid_params = next_grid_params;
-                pixels_changed = true;
-            }
-            let glass_win = Rect {
-                x: self.origin.0 + glass_area.x,
-                y: self.origin.1 + glass_area.y,
-                w: glass_area.w,
-                h: glass_area.h,
-            };
-            let next_orderbook_view = view::view_gpu(&pane.view, glass_win, res);
-            if pr.orderbook_view != next_orderbook_view {
-                pr.orderbook_view = next_orderbook_view;
-                pr.gpu_prepare_dirty = true;
-                pixels_changed = true;
-            }
-            let next_book_style = BookStyle {
-                book_bg: rgb4(self.theme.book_bg),
-                bid: rgb4(self.theme.book_bid),
-                ask: rgb4(self.theme.book_ask),
-            };
-            if pr.book_style != next_book_style {
-                pr.book_style = next_book_style;
-                pr.gpu_prepare_dirty = true;
-                pixels_changed = true;
-            }
-            session.with_market_view(pane.core, &pane.market, |data| {
-                if let Some(d) = data {
-                    let half = pane.view.render_range.max(1e-9) * 0.5;
-                    let (lo, hi) = (
-                        pane.view.render_center - half,
-                        pane.view.render_center + half,
-                    );
-                    if pr.last_book_rev != d.book_rev
-                        || pr.last_book_lo != lo
-                        || pr.last_book_hi != hi
-                    {
-                        let mut levels = Vec::new();
-                        d.book.build_instances(lo, hi, &mut levels);
-                        pr.layers.set_orderbook(levels);
-                        pr.last_book_rev = d.book_rev;
-                        pr.last_book_lo = lo;
-                        pr.last_book_hi = hi;
-                        pr.gpu_prepare_dirty = true;
-                        pixels_changed = true;
-                    }
-                } else if pr.last_book_rev != u64::MAX {
-                    pr.layers.set_orderbook(Vec::new());
-                    pr.last_book_rev = u64::MAX;
-                    pr.last_book_lo = f32::NAN;
-                    pr.last_book_hi = f32::NAN;
-                    pr.gpu_prepare_dirty = true;
-                    pixels_changed = true;
-                }
-            });
-            let edge_rel = view_time0 + (chart_area.w + glass_w) / pane.view.px_per_ms.max(1e-6);
-            if pr.view.pad != edge_rel {
-                pr.view.pad = edge_rel;
-                pixels_changed = true;
-            }
+
             if let Some(core_st) = session.store().core(pane.core) {
-                if pr.last_orders_rev != core_st.orders_rev {
+                if force || pr.last_orders_rev != core_st.orders_rev {
                     let mut hlines = Vec::new();
                     let mut segs = Vec::new();
                     let mut markers = Vec::new();
@@ -691,68 +583,22 @@ impl ChartDataState {
                     pr.gpu_prepare_dirty = true;
                     pixels_changed = true;
                 }
-            } else if pr.last_orders_rev != u64::MAX {
+            } else if force || pr.last_orders_rev != u64::MAX {
                 pr.layers.set_userdata(&[], &[], &[], &[]);
                 pr.last_orders_rev = u64::MAX;
                 pr.gpu_prepare_dirty = true;
                 pixels_changed = true;
             }
-            session.with_market_view(pane.core, &pane.market, |data| {
-                if let Some(d) = data {
-                    if pr.last_price_lines_rev != d.price_lines_rev {
-                        pr.layers
-                            .set_price_lines(d.last_line.points(), d.mark_line.points());
-                        pr.last_price_lines_rev = d.price_lines_rev;
-                        pr.gpu_prepare_dirty = true;
-                        pixels_changed = true;
-                    }
-                    let total = d.ring.total_pushed();
-                    let avail_from = d.ring.dropped();
-                    if device_lost || pr.last_total > total || pr.last_total < avail_from {
-                        pr.layers.reset_combo(view::collect_all(&d.ring));
-                        pr.layers
-                            .set_price_lines(d.last_line.points(), d.mark_line.points());
-                        pr.last_price_lines_rev = d.price_lines_rev;
-                        pr.last_total = total;
-                        pr.gpu_prepare_dirty = true;
-                        pixels_changed = true;
-                    } else if total > pr.last_total {
-                        pr.layers
-                            .append_combo(&view::collect_since(&d.ring, pr.last_total));
-                        pr.last_total = total;
-                        pr.gpu_prepare_dirty = true;
-                        pixels_changed = true;
-                    }
-                } else if pr.last_price_lines_rev != u64::MAX {
-                    pr.layers.set_price_lines(&[], &[]);
-                    pr.last_price_lines_rev = u64::MAX;
-                    pr.gpu_prepare_dirty = true;
-                    pixels_changed = true;
-                }
-            });
             pr.last_device_gen = device_gen;
-            pr.active = true;
         }
-        for (idx, was_active) in was_active.into_iter().enumerate() {
-            if was_active && !st.panes.get(idx).is_some_and(|pr| pr.active) {
-                pixels_changed = true;
-            }
-        }
-        let prev_cursor_params: Vec<CursorParams> =
-            st.panes.iter().map(|pr| pr.cursor_params).collect();
-        st.sync_cursor_params();
-        let cursor_changed = st.cursor.is_some()
-            && st
-                .panes
-                .iter()
-                .zip(prev_cursor_params.iter())
-                .any(|(pr, prev)| pr.cursor_params != *prev);
+
         if pixels_changed {
             st.base_dirty = true;
         }
-        if pixels_changed || cursor_changed {
+        if pixels_changed {
             st.needs_present = true;
         }
+        pixels_changed
     }
 
     fn sync_from_market_source(&mut self, source: &MarketDataSource) {
@@ -801,6 +647,7 @@ impl ChartDataState {
             let device_lost = pr.last_device_gen != device_gen;
             if device_lost {
                 pr.last_book_rev = u64::MAX;
+                pr.last_orders_rev = u64::MAX;
                 pr.gpu_prepare_dirty = true;
                 pixels_changed = true;
             }
@@ -840,8 +687,9 @@ impl ChartDataState {
                 pr.scan_cam_px = cam_px;
             }
             let tick_price = pr.cached_tick_price;
-            let last_price =
-                source.with_market_view(pane.core, &pane.market, |data| data.and_then(|d| d.last_price));
+            let last_price = source.with_market_view(pane.core, &pane.market, |data| {
+                data.and_then(|d| d.last_price)
+            });
             let visible_price = union_range(
                 union_range(tick_price, pr.cached_order_price),
                 last_price.map(|p| (p, p)),
@@ -1015,7 +863,6 @@ impl ChartDataState {
         if pixels_changed || cursor_changed {
             st.needs_present = true;
         }
-        self.last_prepared_dev = (self.w, self.h);
         drop(container);
         drop(st);
         self.last_prepared_market_sig = self.market_signature(source);
@@ -1108,6 +955,17 @@ impl RenderState {
         }
     }
 
+    fn set_pixel_scale(&mut self, scale: f32) {
+        let scale = scale.max(0.1);
+        if (self.pixel_scale - scale).abs() > 0.001 {
+            self.pixel_scale = scale;
+            self.sync_cursor_params();
+            if self.cursor.is_some() {
+                self.needs_present = true;
+            }
+        }
+    }
+
     fn set_cursor(&mut self, cursor: Option<CursorState>) -> bool {
         if self.cursor == cursor {
             return false;
@@ -1151,6 +1009,77 @@ impl RenderState {
             if changed {
                 pr.gpu_prepare_dirty = true;
             }
+        }
+        self.sync_readout_params();
+    }
+
+    fn sync_readout_params(&mut self) {
+        let tz_offset_sec = crate::axes::local_offset_sec();
+        let scale = self.pixel_scale.max(0.75);
+        for (idx, pr) in self.panes.iter_mut().enumerate() {
+            pr.readout_rects.clear();
+            pr.readout_glyphs.clear();
+            if !pr.active {
+                continue;
+            }
+            let Some(cursor) = self.cursor.filter(|c| c.pane == idx) else {
+                continue;
+            };
+            let plot = pr.view.bounds;
+            let x = self.slot_origin[0] + cursor.local[0];
+            let y = self.slot_origin[1] + cursor.local[1];
+            if x < plot[0] || x > plot[0] + plot[2] || y < plot[1] || y > plot[1] + plot[3] {
+                continue;
+            }
+
+            let fg = [
+                self.cursor_color[0],
+                self.cursor_color[1],
+                self.cursor_color[2],
+                1.0,
+            ];
+            let mut border = fg;
+            border[3] = 0.58;
+            let mut bg = pr.book_style.book_bg;
+            bg[3] = 0.94;
+            let clip = [plot[0], plot[1], plot[2], plot[3]];
+
+            let price =
+                pr.view.view_price0 + (plot[1] + plot[3] - y) / pr.view.price_to_px.max(1e-6);
+            let center = pr.view.view_price0 + (plot[3] * 0.5) / pr.view.price_to_px.max(1e-6);
+            let dec = price_decimals(center);
+            let price_text = format!("{price:.dec$}");
+            push_readout_chip(
+                &mut pr.readout_rects,
+                &mut pr.readout_glyphs,
+                &price_text,
+                [plot[0] + 4.0 * scale, y],
+                [0.0, 0.5],
+                scale,
+                pr.view.resolution,
+                fg,
+                bg,
+                border,
+                clip,
+            );
+
+            let unix = pr.epoch_ms
+                + pr.view.view_time0 as f64
+                + (x - plot[0]) as f64 / pr.view.time_to_px.max(1e-6) as f64;
+            let time_text = fmt_clock(unix, tz_offset_sec, true);
+            push_readout_chip(
+                &mut pr.readout_rects,
+                &mut pr.readout_glyphs,
+                &time_text,
+                [x, plot[1] + plot[3] - 4.0 * scale],
+                [0.5, 1.0],
+                scale,
+                pr.view.resolution,
+                fg,
+                bg,
+                border,
+                clip,
+            );
         }
     }
 
@@ -1229,41 +1158,81 @@ impl RenderState {
             }
             #[cfg(target_os = "linux")]
             GpuBackend::Wgpu => {
+                let res = [width as f32, height as f32];
+                let rebuild_base = self.base_dirty;
                 for pr in &mut self.panes {
-                    if !pr.active || !pr.gpu_prepare_dirty {
+                    if !pr.active {
                         continue;
                     }
+                    let needs_base = rebuild_base || pr.layers.needs_base_cache(gpu);
+                    if !pr.gpu_prepare_dirty && !needs_base {
+                        continue;
+                    }
+                    let mut view = pr.view;
+                    let mut background_params = pr.background_params;
+                    let mut grid_params = pr.grid_params;
+                    let mut cursor_params = pr.cursor_params;
+                    let mut orderbook_view = pr.orderbook_view;
+                    view.resolution = res;
+                    background_params.resolution = res;
+                    grid_params.resolution = res;
+                    cursor_params.resolution = res;
+                    orderbook_view.resolution = res;
                     crate::diag::bump(&crate::diag::CHART_GPU_PREPARE);
                     pr.layers.prepare_wgpu(
-                        &pr.view,
-                        &pr.background_params,
-                        &pr.grid_params,
-                        &pr.cursor_params,
-                        &pr.orderbook_view,
+                        &view,
+                        &background_params,
+                        &grid_params,
+                        &cursor_params,
+                        &orderbook_view,
                         &pr.book_style,
                         gpu,
+                        needs_base,
                     )?;
                     pr.gpu_prepare_dirty = false;
+                }
+                if rebuild_base {
+                    self.base_dirty = false;
                 }
                 Ok(())
             }
             #[cfg(target_os = "macos")]
             GpuBackend::Metal => {
+                let res = [width as f32, height as f32];
+                let rebuild_base = self.base_dirty;
                 for pr in &mut self.panes {
-                    if !pr.active || !pr.gpu_prepare_dirty {
+                    if !pr.active {
                         continue;
                     }
+                    let needs_base = rebuild_base || pr.layers.needs_base_cache(gpu);
+                    if !pr.gpu_prepare_dirty && !needs_base {
+                        continue;
+                    }
+                    let mut view = pr.view;
+                    let mut background_params = pr.background_params;
+                    let mut grid_params = pr.grid_params;
+                    let mut cursor_params = pr.cursor_params;
+                    let mut orderbook_view = pr.orderbook_view;
+                    view.resolution = res;
+                    background_params.resolution = res;
+                    grid_params.resolution = res;
+                    cursor_params.resolution = res;
+                    orderbook_view.resolution = res;
                     crate::diag::bump(&crate::diag::CHART_GPU_PREPARE);
                     pr.layers.prepare_metal(
-                        &pr.view,
-                        &pr.background_params,
-                        &pr.grid_params,
-                        &pr.cursor_params,
-                        &pr.orderbook_view,
+                        &view,
+                        &background_params,
+                        &grid_params,
+                        &cursor_params,
+                        &orderbook_view,
                         &pr.book_style,
                         gpu,
+                        needs_base,
                     )?;
                     pr.gpu_prepare_dirty = false;
+                }
+                if rebuild_base {
+                    self.base_dirty = false;
                 }
                 Ok(())
             }
@@ -1417,7 +1386,15 @@ impl RenderState {
                         panel_clip[3],
                     );
                     pr.layers
-                        .render_cursor_d3d(&cursor_params, &device, &context, &rtv, gpu);
+                        .render_cursor_d3d(
+                            &cursor_params,
+                            &pr.readout_rects,
+                            &pr.readout_glyphs,
+                            &device,
+                            &context,
+                            &rtv,
+                            gpu,
+                        );
                 }
                 unsafe {
                     context.RSSetState(prev_rs.as_ref());
@@ -1444,6 +1421,8 @@ impl RenderState {
                             &background_params,
                             &grid_params,
                             &cursor_params,
+                            &pr.readout_rects,
+                            &pr.readout_glyphs,
                             &orderbook_view,
                             gpu,
                         )?;
@@ -1471,6 +1450,8 @@ impl RenderState {
                             &background_params,
                             &grid_params,
                             &cursor_params,
+                            &pr.readout_rects,
+                            &pr.readout_glyphs,
                             &orderbook_view,
                             gpu,
                         )?;
@@ -1524,6 +1505,7 @@ impl ChartEngine {
                 c
             },
             cursor_thickness: theme.cross_thickness.max(1.0),
+            pixel_scale: 1.0,
             #[cfg(windows)]
             scissor_rs: None,
             #[cfg(windows)]
@@ -1624,24 +1606,17 @@ impl ChartEngine {
             }))
     }
 
-    /// ПОДГОТОВКА кадра (вместо wgpu submit+readback): обновляет вид и данные слоёв каждой
-    /// видимой панели. НЕ рисует — рисование делает `gpu_canvas.draw()`. Дёшево:
-    /// математика вида + конверт новых тиков; тяжёлое (bake/blit) — на GPU в callback.
-    /// Sync app/session data into retained chart state. Live market data can also
-    /// enter through `gpu_canvas.frame()` via `MarketDataSource`; this method remains
-    /// for layout/settings, orders, synthetic data and compatibility wakes.
-    pub fn sync_retained_state_if_visible(
-        &mut self,
-        session: &SessionManager,
-        force: bool,
-    ) -> bool {
+    /// Sync only account/order overlays that still live in `SessionManager`.
+    /// Market ticks, price lines and orderbook data are pulled exclusively from
+    /// `gpu_canvas.frame()` through `MarketDataSource`.
+    pub fn sync_orders_if_visible(&mut self, session: &SessionManager, force: bool) -> bool {
         self.data
             .borrow_mut()
-            .sync_retained_state_if_visible(session, force)
+            .sync_orders_if_visible(session, force)
     }
 
-    pub fn data_signature(&self, session: &SessionManager) -> u64 {
-        self.data.borrow().data_signature(session)
+    pub fn notify_signature(&self, session: &SessionManager) -> u64 {
+        self.data.borrow().notify_signature(session)
     }
 
     pub fn set_scene_visible(&mut self, visible: bool) {
@@ -1649,7 +1624,9 @@ impl ChartEngine {
     }
 
     pub fn set_last_ppp(&mut self, ppp: f32) {
-        self.data.borrow_mut().last_ppp = ppp.max(0.1);
+        let ppp = ppp.max(0.1);
+        self.data.borrow_mut().last_ppp = ppp;
+        self.state.borrow_mut().set_pixel_scale(ppp);
     }
 
     // ── Настройки (порт из старого chart.rs::ChartGpu) ───────────────────────────

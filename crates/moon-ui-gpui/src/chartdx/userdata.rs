@@ -13,13 +13,16 @@ use windows::Win32::Graphics::Direct3D::D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
 use windows::Win32::Graphics::Direct3D11::*;
 
 use super::gpu::{
-    ChartViewGpu, create_alpha_blend, create_dynamic_cb, create_srv, create_structured,
-    d3d_device_ptr, full_viewport, make_ps, make_vs, update_dynamic,
+    create_alpha_blend, create_dynamic_cb, create_srv, create_structured, d3d_device_ptr,
+    full_viewport, make_ps, make_vs, update_dynamic, ChartViewGpu,
 };
 use super::types::{HLineGpu, MarkerGpu, SegGpu, ZoneGpu};
 
 const HLSL: &str = include_str!("shaders/order_lines.hlsl");
-const CAP: u32 = 1 << 12; // ордерных примитивов с запасом (реально десятки)
+const INITIAL_ZONE_CAP: u32 = 64;
+const INITIAL_HLINE_CAP: u32 = 256;
+const INITIAL_SEG_CAP: u32 = 512;
+const INITIAL_MARKER_CAP: u32 = 512;
 
 fn hl_of(h: &LineInstance) -> HLineGpu {
     HLineGpu {
@@ -61,12 +64,16 @@ struct UdPipe {
     view_cb: ID3D11Buffer,
     zone_buf: ID3D11Buffer,
     zone_srv: ID3D11ShaderResourceView,
+    zone_cap: u32,
     hl_buf: ID3D11Buffer,
     hl_srv: ID3D11ShaderResourceView,
+    hl_cap: u32,
     seg_buf: ID3D11Buffer,
     seg_srv: ID3D11ShaderResourceView,
+    seg_cap: u32,
     mk_buf: ID3D11Buffer,
     mk_srv: ID3D11ShaderResourceView,
+    mk_cap: u32,
 }
 
 #[derive(Default)]
@@ -135,14 +142,33 @@ impl UserDataLayer {
             self.device_ptr = device_ptr;
         }
         if self.pipe.is_none() {
-            self.pipe = Some(Self::create_pipe(device));
+            self.pipe = Some(Self::create_pipe(
+                device,
+                INITIAL_ZONE_CAP,
+                INITIAL_HLINE_CAP,
+                INITIAL_SEG_CAP,
+                INITIAL_MARKER_CAP,
+            ));
         }
-        let pipe = self.pipe.as_ref().unwrap();
         if let Some(p) = self.pending.take() {
-            self.zone_count = upload_capped(context, &pipe.zone_buf, &p.zone);
-            self.hl_count = upload_capped(context, &pipe.hl_buf, &p.hl);
-            self.seg_count = upload_capped(context, &pipe.seg_buf, &p.seg);
-            self.mk_count = upload_capped(context, &pipe.mk_buf, &p.mk);
+            let zone_cap = next_buffer_cap(p.zone.len(), INITIAL_ZONE_CAP);
+            let hl_cap = next_buffer_cap(p.hl.len(), INITIAL_HLINE_CAP);
+            let seg_cap = next_buffer_cap(p.seg.len(), INITIAL_SEG_CAP);
+            let mk_cap = next_buffer_cap(p.mk.len(), INITIAL_MARKER_CAP);
+            let needs_resize = self.pipe.as_ref().is_none_or(|pipe| {
+                pipe.zone_cap < zone_cap
+                    || pipe.hl_cap < hl_cap
+                    || pipe.seg_cap < seg_cap
+                    || pipe.mk_cap < mk_cap
+            });
+            if needs_resize {
+                self.pipe = Some(Self::create_pipe(device, zone_cap, hl_cap, seg_cap, mk_cap));
+            }
+            let pipe = self.pipe.as_ref().unwrap();
+            self.zone_count = upload_all(context, &pipe.zone_buf, &p.zone);
+            self.hl_count = upload_all(context, &pipe.hl_buf, &p.hl);
+            self.seg_count = upload_all(context, &pipe.seg_buf, &p.seg);
+            self.mk_count = upload_all(context, &pipe.mk_buf, &p.mk);
         }
     }
 
@@ -197,11 +223,21 @@ impl UserDataLayer {
         }
     }
 
-    fn create_pipe(device: &ID3D11Device) -> UdPipe {
-        let hl_buf = create_structured(device, std::mem::size_of::<HLineGpu>() as u32, CAP);
-        let zone_buf = create_structured(device, std::mem::size_of::<ZoneGpu>() as u32, CAP);
-        let seg_buf = create_structured(device, std::mem::size_of::<SegGpu>() as u32, CAP);
-        let mk_buf = create_structured(device, std::mem::size_of::<MarkerGpu>() as u32, CAP);
+    fn create_pipe(
+        device: &ID3D11Device,
+        zone_cap: u32,
+        hl_cap: u32,
+        seg_cap: u32,
+        mk_cap: u32,
+    ) -> UdPipe {
+        let zone_cap = zone_cap.max(1);
+        let hl_cap = hl_cap.max(1);
+        let seg_cap = seg_cap.max(1);
+        let mk_cap = mk_cap.max(1);
+        let hl_buf = create_structured(device, std::mem::size_of::<HLineGpu>() as u32, hl_cap);
+        let zone_buf = create_structured(device, std::mem::size_of::<ZoneGpu>() as u32, zone_cap);
+        let seg_buf = create_structured(device, std::mem::size_of::<SegGpu>() as u32, seg_cap);
+        let mk_buf = create_structured(device, std::mem::size_of::<MarkerGpu>() as u32, mk_cap);
         UdPipe {
             zone_vs: make_vs(device, HLSL, "zone_vertex"),
             zone_ps: make_ps(device, HLSL, "zone_fragment"),
@@ -214,9 +250,13 @@ impl UserDataLayer {
             blend: create_alpha_blend(device),
             view_cb: create_dynamic_cb(device, std::mem::size_of::<ChartViewGpu>() as u32),
             zone_srv: create_srv(device, &zone_buf),
+            zone_cap,
             hl_srv: create_srv(device, &hl_buf),
+            hl_cap,
             seg_srv: create_srv(device, &seg_buf),
+            seg_cap,
             mk_srv: create_srv(device, &mk_buf),
+            mk_cap,
             zone_buf,
             hl_buf,
             seg_buf,
@@ -225,14 +265,13 @@ impl UserDataLayer {
     }
 }
 
-fn upload_capped<T: Copy>(context: &ID3D11DeviceContext, buf: &ID3D11Buffer, data: &[T]) -> u32 {
-    let data: &[T] = if data.len() as u32 > CAP {
-        &data[..CAP as usize]
-    } else {
-        data
-    };
+fn upload_all<T: Copy>(context: &ID3D11DeviceContext, buf: &ID3D11Buffer, data: &[T]) -> u32 {
     if !data.is_empty() {
         update_dynamic(context, buf, data);
     }
     data.len() as u32
+}
+
+fn next_buffer_cap(len: usize, floor: u32) -> u32 {
+    (len as u32).max(1).max(floor).next_power_of_two()
 }
