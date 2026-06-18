@@ -81,7 +81,61 @@ fn chart_background_policy_keeps_gpu_canvas_under_scene() {
         "main chart dock/root path must keep NoFill policies"
     );
     assert!(
+        main.contains(
+            "Root::new(host, window, cx).background_policy(MoonBackgroundPolicy::NoFill)"
+        ) && chart_tabs.contains(
+            "Root::new(host, window, cx).background_policy(MoonBackgroundPolicy::NoFill)"
+        ),
+        "detached/debug chart windows must keep NoFill roots so UnderScene gpu_canvas stays visible"
+    );
+    assert!(
+        !main.contains(".bg(rgb(p.shell))\n                    .child(self.panel.clone())")
+            && !chart_tabs
+                .contains(".bg(rgb(p.shell))\n                    .child(self.panel.clone())"),
+        "chart window body must not paint an opaque GPUI quad over UnderScene gpu_canvas"
+    );
+    assert!(
         detached.contains(".background_policy(MoonBackgroundPolicy::Opaque)"),
         "detached non-chart windows must paint an explicit opaque root"
+    );
+}
+
+#[test]
+fn terminal_windows_use_closed_window_frame_api() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut sources = Vec::new();
+    rust_sources(&root, &mut sources);
+
+    let mut violations = Vec::new();
+    for path in sources {
+        let text = fs::read_to_string(&path)
+            .unwrap_or_else(|err| panic!("failed to read {}: {err}", path.display()));
+        let rel = path.strip_prefix(&root).unwrap_or(&path);
+        let rel_text = rel.to_string_lossy().replace('\\', "/");
+        for (line_ix, line) in text.lines().enumerate() {
+            let trimmed = line.trim();
+            let is_windowing = rel_text == "windowing.rs";
+            let is_design = rel_text == "design.rs";
+            if trimmed.contains("MoonWindowChrome::new")
+                || trimmed.contains("MoonWindowChromeButton")
+                || trimmed.contains("WindowControlArea::Drag")
+                || trimmed.contains("start_window_move")
+                || trimmed.contains("titlebar_double_click")
+                || (!is_design
+                    && (trimmed.contains("logo_sized(")
+                        || trimmed.contains("logo_mark(")
+                        || trimmed.contains("design::logo_sized")
+                        || trimmed.contains("design::logo_mark")))
+                || (!is_windowing && trimmed.contains("WindowOptions {"))
+            {
+                violations.push(format!("{}:{}: {}", path.display(), line_ix + 1, trimmed));
+            }
+        }
+    }
+
+    assert!(
+        violations.is_empty(),
+        "terminal windows must go through windowing.rs + MoonWindowFrame instead of ad-hoc chrome/window options:\n{}",
+        violations.join("\n")
     );
 }

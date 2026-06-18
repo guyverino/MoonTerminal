@@ -218,7 +218,11 @@ pub fn sanitize_label(name: &str) -> String {
             }
         })
         .collect();
-    if s.is_empty() { "core".to_string() } else { s }
+    if s.is_empty() {
+        "core".to_string()
+    } else {
+        s
+    }
 }
 
 /// Файловый писатель лога одного источника с дневной ротацией: пишет в

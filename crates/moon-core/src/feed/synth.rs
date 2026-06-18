@@ -10,6 +10,7 @@ use super::{
     ConnStatus, CoreCmd, DetectRow, ExchangeId, FeedMsg, FeedTx, Level, OrderBook, Side, Tick,
 };
 use crate::config::ServerConfig;
+use crate::market::SharedMarketStore;
 
 fn now_ms() -> f64 {
     std::time::SystemTime::now()
@@ -46,7 +47,12 @@ impl Lcg {
 }
 
 /// Сигнатура под `feed::spawn` (как live::run, но без сети/reports).
-pub fn run(_server: &ServerConfig, tx: &FeedTx, cmd_rx: &Receiver<CoreCmd>) -> anyhow::Result<()> {
+pub fn run(
+    server: &ServerConfig,
+    tx: &FeedTx,
+    cmd_rx: &Receiver<CoreCmd>,
+    market_store: Option<&SharedMarketStore>,
+) -> anyhow::Result<()> {
     let windows = env_usize("MOON_STRESS_WINDOWS", 10).max(1);
     let charts = env_usize("MOON_STRESS_CHARTS", 5).max(1);
     let n = env_usize("MOON_SYNTH_MARKETS", charts).max(1);
@@ -116,7 +122,12 @@ pub fn run(_server: &ServerConfig, tx: &FeedTx, cmd_rx: &Receiver<CoreCmd>) -> a
                     qty: (rng.unit() * 10.0 + 0.25) as f32,
                     side,
                 };
-                if tx
+                if let Some(store) = market_store {
+                    store
+                        .write()
+                        .expect("synthetic market store poisoned")
+                        .apply_ticks(server.id, m, &[tick]);
+                } else if tx
                     .send(FeedMsg::Ticks {
                         market: m.clone(),
                         ticks: vec![tick],
@@ -144,7 +155,12 @@ pub fn run(_server: &ServerConfig, tx: &FeedTx, cmd_rx: &Receiver<CoreCmd>) -> a
                         qty: (rng.unit() * 10.0 + 1.0) as f32,
                     });
                 }
-                if tx
+                if let Some(store) = market_store {
+                    store
+                        .write()
+                        .expect("synthetic market store poisoned")
+                        .apply_book(server.id, m, &OrderBook { bids, asks });
+                } else if tx
                     .send(FeedMsg::OrderBook {
                         market: m.clone(),
                         book: OrderBook { bids, asks },

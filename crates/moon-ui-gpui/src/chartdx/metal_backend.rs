@@ -20,7 +20,7 @@ use super::types::{
 
 const SHADER: &str = include_str!("shaders/chart_native.metal");
 const BACKGROUND_PNG: &[u8] = include_bytes!("../../../../assets/img/3Dlogo_s01.png");
-const COMBO_HISTORY_CAP: usize = 1 << 17;
+const MIN_COMBO_CAPACITY: usize = 1;
 
 fn hl_of(h: &LineInstance) -> HLineGpu {
     HLineGpu {
@@ -219,6 +219,8 @@ pub struct MetalLayers {
     crosses: Vec<ChartCross>,
     last_line: Vec<PriceLinePoint>,
     mark_line: Vec<PriceLinePoint>,
+    combo_capacity: usize,
+    price_line_capacity: usize,
     levels: Vec<LevelInstance>,
     zones: Vec<ZoneGpu>,
     hlines: Vec<HLineGpu>,
@@ -242,6 +244,10 @@ pub struct MetalLayers {
     hline_buffer: BufferSlot,
     seg_buffer: BufferSlot,
     marker_buffer: BufferSlot,
+    combo_buffers_dirty: bool,
+    price_line_buffers_dirty: bool,
+    book_buffer_dirty: bool,
+    userdata_buffers_dirty: bool,
 }
 
 impl MetalLayers {
@@ -255,6 +261,8 @@ impl MetalLayers {
             crosses: Vec::new(),
             last_line: Vec::new(),
             mark_line: Vec::new(),
+            combo_capacity: MIN_COMBO_CAPACITY,
+            price_line_capacity: MIN_COMBO_CAPACITY,
             levels: Vec::new(),
             zones: Vec::new(),
             hlines: Vec::new(),
@@ -278,12 +286,45 @@ impl MetalLayers {
             hline_buffer: BufferSlot::default(),
             seg_buffer: BufferSlot::default(),
             marker_buffer: BufferSlot::default(),
+            combo_buffers_dirty: true,
+            price_line_buffers_dirty: true,
+            book_buffer_dirty: true,
+            userdata_buffers_dirty: true,
         }
     }
 
-    pub fn reset_combo(&mut self, data: Vec<ChartCross>) {
-        self.crosses = cap_tail(data, COMBO_HISTORY_CAP);
+    pub fn set_combo_capacity(&mut self, combo_capacity: usize, price_line_capacity: usize) {
+        let combo_capacity = sanitize_capacity(combo_capacity);
+        let price_line_capacity = sanitize_capacity(price_line_capacity);
+        if self.combo_capacity == combo_capacity && self.price_line_capacity == price_line_capacity
+        {
+            return;
+        }
+        self.combo_capacity = combo_capacity;
+        self.price_line_capacity = price_line_capacity;
+        if self.crosses.len() > self.combo_capacity {
+            let drop = self.crosses.len() - self.combo_capacity;
+            self.crosses.drain(0..drop);
+        }
+        if self.last_line.len() > self.price_line_capacity {
+            let drop = self.last_line.len() - self.price_line_capacity;
+            self.last_line.drain(0..drop);
+        }
+        if self.mark_line.len() > self.price_line_capacity {
+            let drop = self.mark_line.len() - self.price_line_capacity;
+            self.mark_line.drain(0..drop);
+        }
         self.recalc_volume_scale();
+        self.combo_buffers_dirty = true;
+        self.price_line_buffers_dirty = true;
+        self.base_cache.valid = false;
+    }
+
+    pub fn reset_combo(&mut self, data: Vec<ChartCross>) {
+        self.crosses = cap_tail(data, self.combo_capacity);
+        self.recalc_volume_scale();
+        self.combo_buffers_dirty = true;
+        self.base_cache.valid = false;
     }
 
     pub fn append_combo(&mut self, data: &[ChartCross]) {
@@ -291,20 +332,26 @@ impl MetalLayers {
             return;
         }
         self.crosses.extend_from_slice(data);
-        if self.crosses.len() > COMBO_HISTORY_CAP {
-            let drop = self.crosses.len() - COMBO_HISTORY_CAP;
+        if self.crosses.len() > self.combo_capacity {
+            let drop = self.crosses.len() - self.combo_capacity;
             self.crosses.drain(0..drop);
         }
         self.recalc_volume_scale();
+        self.combo_buffers_dirty = true;
+        self.base_cache.valid = false;
     }
 
     pub fn set_price_lines(&mut self, last: &[PriceLinePoint], mark: &[PriceLinePoint]) {
-        self.last_line = cap_tail(last.to_vec(), COMBO_HISTORY_CAP);
-        self.mark_line = cap_tail(mark.to_vec(), COMBO_HISTORY_CAP);
+        self.last_line = cap_tail(last.to_vec(), self.price_line_capacity);
+        self.mark_line = cap_tail(mark.to_vec(), self.price_line_capacity);
+        self.price_line_buffers_dirty = true;
+        self.base_cache.valid = false;
     }
 
     pub fn set_orderbook(&mut self, levels: Vec<LevelInstance>) {
         self.levels = levels;
+        self.book_buffer_dirty = true;
+        self.base_cache.valid = false;
     }
 
     pub fn set_userdata(
@@ -318,6 +365,8 @@ impl MetalLayers {
         self.hlines = hlines.iter().map(hl_of).collect();
         self.segs = segs.iter().map(seg_of).collect();
         self.markers = markers.iter().map(mk_of).collect();
+        self.userdata_buffers_dirty = true;
+        self.base_cache.valid = false;
     }
 
     pub fn needs_base_cache(&self, gpu: &RawGpuAccess) -> bool {
@@ -592,11 +641,8 @@ impl MetalLayers {
             .write(device, "moon_chart_grid_uniform", &[*grid_params]);
         self.cursor_uniform
             .write(device, "moon_chart_cursor_uniform", &[*cursor_params]);
-        self.readout_rect_buffer.write(
-            device,
-            "moon_chart_readout_rects",
-            &[] as &[ReadoutRect],
-        );
+        self.readout_rect_buffer
+            .write(device, "moon_chart_readout_rects", &[] as &[ReadoutRect]);
         self.readout_glyph_buffer.write(
             device,
             "moon_chart_readout_glyphs",
@@ -608,21 +654,41 @@ impl MetalLayers {
             .write(device, "moon_chart_book_view_uniform", &[*orderbook_view]);
         self.book_style_uniform
             .write(device, "moon_chart_book_style_uniform", &[*book_style]);
-        self.cross_buffer
-            .write(device, "moon_chart_crosses", &self.crosses);
-        self.last_line_buffer
-            .write(device, "moon_chart_last_line", &self.last_line);
-        self.mark_line_buffer
-            .write(device, "moon_chart_mark_line", &self.mark_line);
-        self.level_buffer
-            .write(device, "moon_chart_book_levels", &self.levels);
-        self.zone_buffer
-            .write(device, "moon_chart_zones", &self.zones);
-        self.hline_buffer
-            .write(device, "moon_chart_hlines", &self.hlines);
-        self.seg_buffer.write(device, "moon_chart_segs", &self.segs);
-        self.marker_buffer
-            .write(device, "moon_chart_markers", &self.markers);
+        if self.combo_buffers_dirty || self.cross_buffer.buffer.is_none() {
+            self.cross_buffer
+                .write(device, "moon_chart_crosses", &self.crosses);
+            self.combo_buffers_dirty = false;
+        }
+        if self.price_line_buffers_dirty
+            || self.last_line_buffer.buffer.is_none()
+            || self.mark_line_buffer.buffer.is_none()
+        {
+            self.last_line_buffer
+                .write(device, "moon_chart_last_line", &self.last_line);
+            self.mark_line_buffer
+                .write(device, "moon_chart_mark_line", &self.mark_line);
+            self.price_line_buffers_dirty = false;
+        }
+        if self.book_buffer_dirty || self.level_buffer.buffer.is_none() {
+            self.level_buffer
+                .write(device, "moon_chart_book_levels", &self.levels);
+            self.book_buffer_dirty = false;
+        }
+        if self.userdata_buffers_dirty
+            || self.zone_buffer.buffer.is_none()
+            || self.hline_buffer.buffer.is_none()
+            || self.seg_buffer.buffer.is_none()
+            || self.marker_buffer.buffer.is_none()
+        {
+            self.zone_buffer
+                .write(device, "moon_chart_zones", &self.zones);
+            self.hline_buffer
+                .write(device, "moon_chart_hlines", &self.hlines);
+            self.seg_buffer.write(device, "moon_chart_segs", &self.segs);
+            self.marker_buffer
+                .write(device, "moon_chart_markers", &self.markers);
+            self.userdata_buffers_dirty = false;
+        }
     }
 
     fn upload_frame_uniforms(
@@ -824,7 +890,7 @@ fn create_pipelines(device: &DeviceRef, pixel_format: MTLPixelFormat) -> Pipelin
             "price_line_vertex",
             "price_mark_fragment",
         ),
-        book_bg: pipeline(
+        book_bg: opaque_pipeline(
             device,
             &library,
             pixel_format,
@@ -871,6 +937,27 @@ fn pipeline(
     vertex: &str,
     fragment: &str,
 ) -> RenderPipelineState {
+    pipeline_with_blend(device, library, pixel_format, vertex, fragment, true)
+}
+
+fn opaque_pipeline(
+    device: &DeviceRef,
+    library: &metal::Library,
+    pixel_format: MTLPixelFormat,
+    vertex: &str,
+    fragment: &str,
+) -> RenderPipelineState {
+    pipeline_with_blend(device, library, pixel_format, vertex, fragment, false)
+}
+
+fn pipeline_with_blend(
+    device: &DeviceRef,
+    library: &metal::Library,
+    pixel_format: MTLPixelFormat,
+    vertex: &str,
+    fragment: &str,
+    alpha_blend: bool,
+) -> RenderPipelineState {
     let vertex_fn = library
         .get_function(vertex, None)
         .expect("chart vertex function exists");
@@ -882,13 +969,15 @@ fn pipeline(
     descriptor.set_fragment_function(Some(fragment_fn.as_ref()));
     let color = descriptor.color_attachments().object_at(0).unwrap();
     color.set_pixel_format(pixel_format);
-    color.set_blending_enabled(true);
-    color.set_rgb_blend_operation(MTLBlendOperation::Add);
-    color.set_alpha_blend_operation(MTLBlendOperation::Add);
-    color.set_source_rgb_blend_factor(MTLBlendFactor::SourceAlpha);
-    color.set_source_alpha_blend_factor(MTLBlendFactor::One);
-    color.set_destination_rgb_blend_factor(MTLBlendFactor::OneMinusSourceAlpha);
-    color.set_destination_alpha_blend_factor(MTLBlendFactor::One);
+    color.set_blending_enabled(alpha_blend);
+    if alpha_blend {
+        color.set_rgb_blend_operation(MTLBlendOperation::Add);
+        color.set_alpha_blend_operation(MTLBlendOperation::Add);
+        color.set_source_rgb_blend_factor(MTLBlendFactor::SourceAlpha);
+        color.set_source_alpha_blend_factor(MTLBlendFactor::One);
+        color.set_destination_rgb_blend_factor(MTLBlendFactor::OneMinusSourceAlpha);
+        color.set_destination_alpha_blend_factor(MTLBlendFactor::One);
+    }
     device
         .new_render_pipeline_state(&descriptor)
         .expect("chart render pipeline must build")
@@ -931,4 +1020,8 @@ fn cap_tail<T>(mut data: Vec<T>, cap: usize) -> Vec<T> {
         data.drain(0..data.len() - cap);
     }
     data
+}
+
+fn sanitize_capacity(capacity: usize) -> usize {
+    capacity.max(MIN_COMBO_CAPACITY)
 }

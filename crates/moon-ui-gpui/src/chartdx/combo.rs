@@ -15,14 +15,12 @@ use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC};
 
 use super::gpu::{
-    create_alpha_blend, create_dynamic_cb, create_point_sampler, create_srv, create_srv_range,
-    create_structured, d3d_device_ptr, full_viewport, ring_write_no_overwrite, set_scissor_rect,
-    update_dynamic, BlitParams, ChartCross, ChartViewGpu,
+    BlitParams, ChartCross, ChartViewGpu, create_alpha_blend, create_dynamic_cb,
+    create_point_sampler, create_srv, create_srv_range, create_structured, d3d_device_ptr,
+    full_viewport, ring_write_no_overwrite, set_scissor_rect, update_dynamic,
 };
 
-/// Ёмкость резидентного кольца истории combo (~131k, плотно под 100k видимых).
-/// Это осознанный хвост тайм-серии, а не общий safety-cap для произвольных слоёв.
-const COMBO_RING_CAP: u32 = 1 << 17;
+const MIN_COMBO_CAPACITY: u32 = 1;
 const CROSSES_HLSL: &str = include_str!("shaders/crosses.hlsl");
 const BLIT_HLSL: &str = include_str!("shaders/blit.hlsl");
 
@@ -83,6 +81,8 @@ pub struct ComboLayer {
     pending_lines: Option<(Vec<PriceLinePoint>, Vec<PriceLinePoint>)>,
     last_line_count: u32,
     mark_line_count: u32,
+    cross_capacity: u32,
+    price_line_capacity: u32,
     /// Raw-указатель device, на котором созданы ресурсы. Сменился → device-lost, сбрасываем.
     device_ptr: *mut c_void,
     /// Поколение device: ++ при пересоздании (device-lost). Оркестратор сравнивает со своим
@@ -105,6 +105,8 @@ impl ComboLayer {
             pending_lines: None,
             last_line_count: 0,
             mark_line_count: 0,
+            cross_capacity: MIN_COMBO_CAPACITY,
+            price_line_capacity: MIN_COMBO_CAPACITY,
             device_ptr: std::ptr::null_mut(),
             device_gen: 0,
             volume_buy_max: 1e-6,
@@ -117,6 +119,24 @@ impl ComboLayer {
     /// last_device_gen: сменилось → кольцо пустое, нужна полная перезаливка истории.
     pub fn device_gen(&self) -> u64 {
         self.device_gen
+    }
+
+    pub fn set_capacity(&mut self, cross_capacity: usize, price_line_capacity: usize) {
+        let cross_capacity = sanitize_capacity(cross_capacity);
+        let price_line_capacity = sanitize_capacity(price_line_capacity);
+        if self.cross_capacity == cross_capacity && self.price_line_capacity == price_line_capacity
+        {
+            return;
+        }
+        self.cross_capacity = cross_capacity;
+        self.price_line_capacity = price_line_capacity;
+        self.pipe = None;
+        self.tex = None;
+        self.count = 0;
+        self.head = 0;
+        self.last_line_count = 0;
+        self.mark_line_count = 0;
+        self.pending_append.clear();
     }
 
     /// Полная перезаливка набора тиков (reload истории монеты). Сбрасывает append.
@@ -163,7 +183,7 @@ impl ComboLayer {
             self.device_gen = self.device_gen.wrapping_add(1);
         }
         if self.pipe.is_none() {
-            self.pipe = Some(Self::create_pipe(device));
+            self.pipe = Some(self.create_pipe(device));
         }
         self.apply_uploads(context);
         if self.volume_scale_dirty {
@@ -291,17 +311,14 @@ impl ComboLayer {
                 tex.valid = true;
             } else if self.head != tex.last_baked_head {
                 // инкрементально: только новые тики кольца [last_head, head) (с заворотом)
-                let delta =
-                    (self.head + COMBO_RING_CAP - tex.last_baked_head) % COMBO_RING_CAP;
-                let runs: [(u32, u32); 2] = if tex.last_baked_head + delta <= COMBO_RING_CAP {
+                let cap = self.cross_capacity;
+                let delta = (self.head + cap - tex.last_baked_head) % cap;
+                let runs: [(u32, u32); 2] = if tex.last_baked_head + delta <= cap {
                     [(tex.last_baked_head, delta), (0, 0)]
                 } else {
                     [
-                        (
-                            tex.last_baked_head,
-                            COMBO_RING_CAP - tex.last_baked_head,
-                        ),
-                        (0, delta - (COMBO_RING_CAP - tex.last_baked_head)),
+                        (tex.last_baked_head, cap - tex.last_baked_head),
+                        (0, delta - (cap - tex.last_baked_head)),
                     ]
                 };
                 for (rf, rc) in runs {
@@ -389,33 +406,37 @@ impl ComboLayer {
             )
         };
         if let Some((last, mark)) = self.pending_lines.take() {
-            self.last_line_count = upload_points(context, &last_line_buf, &last);
-            self.mark_line_count = upload_points(context, &mark_line_buf, &mark);
+            self.last_line_count =
+                upload_points(context, &last_line_buf, &last, self.price_line_capacity);
+            self.mark_line_count =
+                upload_points(context, &mark_line_buf, &mark, self.price_line_capacity);
         }
         if let Some(data) = self.pending_reset.take() {
             // при переполнении оставляем последний хвост ёмкости
-            let data: &[ChartCross] = if data.len() as u32 > COMBO_RING_CAP {
-                &data[data.len() - COMBO_RING_CAP as usize..]
+            let cap = self.cross_capacity;
+            let data: &[ChartCross] = if data.len() as u32 > cap {
+                &data[data.len() - cap as usize..]
             } else {
                 &data
             };
             update_dynamic(context, &tick_buffer, data);
             self.count = data.len() as u32;
-            self.head = (data.len() as u32) % COMBO_RING_CAP;
+            self.head = (data.len() as u32) % cap;
             self.reset_volume_scale(data);
             self.volume_scale_dirty = true;
         }
         if !self.pending_append.is_empty() {
             let data = std::mem::take(&mut self.pending_append);
-            let data: &[ChartCross] = if data.len() as u32 > COMBO_RING_CAP {
-                &data[data.len() - COMBO_RING_CAP as usize..]
+            let cap = self.cross_capacity;
+            let data: &[ChartCross] = if data.len() as u32 > cap {
+                &data[data.len() - cap as usize..]
             } else {
                 &data
             };
             let n = data.len() as u32;
-            ring_write_no_overwrite(context, &tick_buffer, self.head, COMBO_RING_CAP, data);
-            self.head = (self.head + n) % COMBO_RING_CAP;
-            self.count = (self.count + n).min(COMBO_RING_CAP);
+            ring_write_no_overwrite(context, &tick_buffer, self.head, cap, data);
+            self.head = (self.head + n) % cap;
+            self.count = (self.count + n).min(cap);
             if self.update_volume_scale(data) {
                 self.volume_scale_dirty = true;
             }
@@ -467,7 +488,7 @@ impl ComboLayer {
         }
     }
 
-    fn create_pipe(device: &ID3D11Device) -> CrossPipe {
+    fn create_pipe(&self, device: &ID3D11Device) -> CrossPipe {
         let cross_vs = super::gpu::make_vs(device, CROSSES_HLSL, "crosses_vertex");
         let cross_ps = super::gpu::make_ps(device, CROSSES_HLSL, "crosses_fragment");
         let volume_vs = super::gpu::make_vs(device, CROSSES_HLSL, "volume_vertex");
@@ -479,22 +500,20 @@ impl ComboLayer {
         let buffer = create_structured(
             device,
             std::mem::size_of::<ChartCross>() as u32,
-            COMBO_RING_CAP,
+            self.cross_capacity,
         );
         let srv = create_srv(device, &buffer);
-        let last_line_buf =
-            create_structured(
-                device,
-                std::mem::size_of::<PriceLinePoint>() as u32,
-                COMBO_RING_CAP,
-            );
+        let last_line_buf = create_structured(
+            device,
+            std::mem::size_of::<PriceLinePoint>() as u32,
+            self.price_line_capacity,
+        );
         let last_line_srv = create_srv(device, &last_line_buf);
-        let mark_line_buf =
-            create_structured(
-                device,
-                std::mem::size_of::<PriceLinePoint>() as u32,
-                COMBO_RING_CAP,
-            );
+        let mark_line_buf = create_structured(
+            device,
+            std::mem::size_of::<PriceLinePoint>() as u32,
+            self.price_line_capacity,
+        );
         let mark_line_srv = create_srv(device, &mark_line_buf);
         let view_cb = create_dynamic_cb(device, std::mem::size_of::<ChartViewGpu>() as u32);
         CrossPipe {
@@ -580,9 +599,10 @@ fn upload_points(
     context: &ID3D11DeviceContext,
     buffer: &ID3D11Buffer,
     data: &[PriceLinePoint],
+    cap: u32,
 ) -> u32 {
-    let data = if data.len() as u32 > COMBO_RING_CAP {
-        &data[data.len() - COMBO_RING_CAP as usize..]
+    let data = if data.len() as u32 > cap {
+        &data[data.len() - cap as usize..]
     } else {
         data
     };
@@ -590,4 +610,8 @@ fn upload_points(
         update_dynamic(context, buffer, data);
     }
     data.len() as u32
+}
+
+fn sanitize_capacity(capacity: usize) -> u32 {
+    capacity.clamp(MIN_COMBO_CAPACITY as usize, u32::MAX as usize) as u32
 }

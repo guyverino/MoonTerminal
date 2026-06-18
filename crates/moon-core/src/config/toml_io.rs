@@ -4,8 +4,8 @@
 use std::path::Path;
 
 use anyhow::Context;
-use serde::Serialize;
 use serde::de::DeserializeOwned;
+use serde::Serialize;
 
 /// Прочитать TOML в `T`. Нет файла → дефолт (первый запуск). Битый файл →
 /// лог, `on_corrupt(path)` (например, увод в `.bak`) и дефолт — не падаем и

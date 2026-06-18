@@ -1,6 +1,5 @@
-//! Модель стакана для glass-слоя в стиле стенда: кумулятивная глубина
-//! (полупрозрачный bar = накопленный объём от спреда наружу) + тонкая
-//! линия индивидуального объёма на каждый уровень.
+//! Модель стакана для glass-слоя: кумулятивная глубина прямоугольниками
+//! от одного ценового уровня до следующего + отдельные level-lines.
 //!
 //! Нормировка длины баров — НЕ по всей книге, а по максимуму среди уровней,
 //! попавших в видимое ценовое окно панели (`build_instances`). Иначе при мелком
@@ -10,7 +9,7 @@
 
 use crate::feed::OrderBook;
 
-/// Инстанс прямоугольника стакана. Совпадает с glass.wgsl.
+/// Инстанс прямоугольника стакана. Совпадает с нативными book-шейдерами.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct LevelInstance {
@@ -20,7 +19,7 @@ pub struct LevelInstance {
     pub span: f32,
     /// Длина полосы 0..1 (доля ширины зоны).
     pub len_norm: f32,
-    /// 0 = bid fill, 1 = ask fill, 2 = bid line, 3 = ask line.
+    /// 0 = bid fill, 1 = ask fill, 2 = bid level line, 3 = ask level line.
     pub kind: f32,
 }
 
@@ -32,7 +31,7 @@ struct RawLevel {
     /// Signed-delta до второго ценового края полосы. Лучший bid/ask тянется
     /// вглубь книги, а не в спред.
     span: f32,
-    /// Индивидуальный объём уровня (для тонкой линии).
+    /// Индивидуальный объём уровня (для отдельной линии уровня).
     qty: f32,
     /// Кумулятив от спреда до этого уровня (для полосы глубины).
     cum: f32,
@@ -41,8 +40,7 @@ struct RawLevel {
 
 #[derive(Default)]
 pub struct OrderBookModel {
-    /// Биды (по убыванию цены), затем аски (по возрастанию) — порядок задаёт
-    /// порядок отрисовки: fill-полосы под line-линиями.
+    /// Биды (по убыванию цены), затем аски (по возрастанию).
     raw: Vec<RawLevel>,
 }
 
@@ -75,18 +73,19 @@ impl OrderBookModel {
     pub fn build_instances(&self, lo: f32, hi: f32, out: &mut Vec<LevelInstance>) {
         out.clear();
 
-        // Знаменатели по видимому окну — общие для bid/ask, чтобы стенки сторон
-        // были визуально сравнимы.
+        // Знаменатель по видимому окну — общий для bid/ask, чтобы стенки сторон
+        // были визуально сравнимы. Невидимые уровни не попадают в GPU buffer:
+        // стакан рисуется обычными непрозрачными прямоугольниками по видимой цене.
         let mut max_qty = 1e-6_f32;
         let mut max_cum = 1e-6_f32;
         for r in &self.raw {
-            if level_overlaps(r, lo, hi) {
-                max_qty = max_qty.max(r.qty);
-                max_cum = max_cum.max(r.cum);
+            if !level_overlaps(r, lo, hi) {
+                continue;
             }
+            max_qty = max_qty.max(r.qty);
+            max_cum = max_cum.max(r.cum);
         }
 
-        // Сначала все fill (полупрозрачные кумулятив-полосы), потом все line.
         for r in &self.raw {
             if !level_overlaps(r, lo, hi) {
                 continue;
@@ -98,6 +97,7 @@ impl OrderBookModel {
                 kind: if r.is_ask { 1.0 } else { 0.0 },
             });
         }
+
         for r in &self.raw {
             if !level_overlaps(r, lo, hi) {
                 continue;
@@ -140,11 +140,19 @@ fn push_side(out: &mut Vec<RawLevel>, levels: &[crate::feed::Level], is_ask: boo
             neighbor - levels[i].price
         } else {
             let width = (l.price.abs() * 0.0005).max(1e-6);
-            if is_ask { width } else { -width }
+            if is_ask {
+                width
+            } else {
+                -width
+            }
         }
         .clamp(-f32::MAX, f32::MAX);
         let span = if span.abs() < 1e-6 {
-            if is_ask { 1e-6 } else { -1e-6 }
+            if is_ask {
+                1e-6
+            } else {
+                -1e-6
+            }
         } else {
             span
         };

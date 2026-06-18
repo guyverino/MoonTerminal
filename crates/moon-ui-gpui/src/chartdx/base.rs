@@ -9,8 +9,8 @@ use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC};
 
 use super::gpu::{
-    create_dynamic_cb, create_no_scissor_rasterizer, create_point_sampler, full_viewport, make_ps,
-    make_vs, update_dynamic, BlitParams,
+    BlitParams, create_dynamic_cb, create_no_scissor_rasterizer, create_point_sampler,
+    full_viewport, make_ps, make_vs, update_dynamic,
 };
 
 const BLIT_HLSL: &str = include_str!("shaders/blit.hlsl");

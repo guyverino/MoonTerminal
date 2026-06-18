@@ -3,9 +3,7 @@
 //! Кнопка «⧉» откпрепляет панель в отдельное окно (убирает из дока + окно открепления).
 
 use gpui::*;
-use moon_ui::{
-    DockArea, MoonButton, MoonButtonSize, MoonPalette, Panel, PanelEvent, PanelState,
-};
+use moon_ui::{DockArea, MoonButton, MoonButtonSize, MoonPalette, Panel, PanelEvent, PanelState};
 
 use crate::Backend;
 use crate::detached::DetachedSpec;
@@ -98,7 +96,7 @@ impl Panel for StubPanel {
                     }
                     // Открыть окно открепления + записать спеку.
                     let spec = DetachedSpec::new(group.clone(), name.to_string());
-                    crate::detached::spawn(app, &backend, &spec);
+                    crate::detached::spawn(app, &backend, &spec, Some(window.window_handle()));
                     backend.update(app, |b, _| {
                         b.detached.push(spec);
                         b.detached_dirty = true;

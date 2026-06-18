@@ -585,11 +585,10 @@ impl SettingsView {
             .child(separator(MoonPalette::active(cx), cx))
             // Path (trail / змейка) — свой сворачиваемый блок.
             .child({
-                let mut section = v_flex().w_full().gap(design::ui_px(cx, 6.0)).child(self.collapse_header(
-                    cx,
-                    "path",
-                    "Path (trail / змейка)",
-                ));
+                let mut section = v_flex()
+                    .w_full()
+                    .gap(design::ui_px(cx, 6.0))
+                    .child(self.collapse_header(cx, "path", "Path (trail / змейка)"));
                 if path_open {
                     section = section.child(
                         v_flex()

@@ -16,8 +16,8 @@ use super::gpu::{
 use super::types::{ReadoutGlyph, ReadoutRect};
 
 const HLSL: &str = include_str!("shaders/readout.hlsl");
-const INITIAL_RECT_CAP: u32 = 4;
-const INITIAL_GLYPH_CAP: u32 = 64;
+const INITIAL_READOUT_RECT_BUFFER_CAPACITY: u32 = 4;
+const INITIAL_READOUT_GLYPH_BUFFER_CAPACITY: u32 = 64;
 
 struct ReadoutPipe {
     rect_vs: ID3D11VertexShader,
@@ -64,10 +64,14 @@ impl ReadoutLayer {
             self.device_ptr = device_ptr;
         }
         if self.pipe.is_none() {
-            self.pipe = Some(Self::create_pipe(device, INITIAL_RECT_CAP, INITIAL_GLYPH_CAP));
+            self.pipe = Some(Self::create_pipe(
+                device,
+                INITIAL_READOUT_RECT_BUFFER_CAPACITY,
+                INITIAL_READOUT_GLYPH_BUFFER_CAPACITY,
+            ));
         }
-        let rect_cap = next_buffer_cap(rects.len(), INITIAL_RECT_CAP);
-        let glyph_cap = next_buffer_cap(glyphs.len(), INITIAL_GLYPH_CAP);
+        let rect_cap = next_buffer_cap(rects.len(), INITIAL_READOUT_RECT_BUFFER_CAPACITY);
+        let glyph_cap = next_buffer_cap(glyphs.len(), INITIAL_READOUT_GLYPH_BUFFER_CAPACITY);
         if self
             .pipe
             .as_ref()
@@ -107,8 +111,11 @@ impl ReadoutLayer {
     fn create_pipe(device: &ID3D11Device, rect_cap: u32, glyph_cap: u32) -> ReadoutPipe {
         let rect_buf =
             create_structured(device, std::mem::size_of::<ReadoutRect>() as u32, rect_cap);
-        let glyph_buf =
-            create_structured(device, std::mem::size_of::<ReadoutGlyph>() as u32, glyph_cap);
+        let glyph_buf = create_structured(
+            device,
+            std::mem::size_of::<ReadoutGlyph>() as u32,
+            glyph_cap,
+        );
         ReadoutPipe {
             rect_vs: make_vs(device, HLSL, "readout_rect_vertex"),
             rect_ps: make_ps(device, HLSL, "readout_rect_fragment"),

@@ -40,6 +40,8 @@ pub struct ChartTheme {
     pub book_bid: [u8; 3],
     /// Цвет ask-стороны (продажи), sRGB.
     pub book_ask: [u8; 3],
+    /// Яркость/opacity отдельных линий уровней стакана 0..1.
+    pub book_level_alpha: f32,
 
     // Стиль линий ордеров (цвета/толщины/маркеры) вынесен в отдельный orders.toml
     // (см. config::orders::OrdersStyle) — не дублируем его в теме.
@@ -65,9 +67,10 @@ impl Default for ChartTheme {
             cross_thickness: 1.0,
             halo_radius: 44.0,
             halo_intensity: 0.14,
-            book_bg: palette::BG,          // как фон чарта
-            book_bid: palette::GREEN,      // --long (зелёный)
-            book_ask: palette::ORANGE,     // --short (оранжевый)
+            book_bg: palette::BG,      // как фон чарта
+            book_bid: palette::GREEN,  // --long (зелёный)
+            book_ask: palette::ORANGE, // --short (оранжевый)
+            book_level_alpha: 0.5,
             panel_bg: palette::BG,         // --bg
             closed_bg: palette::SURFACE_1, // --surface-1 (нейтральный контейнер)
         }

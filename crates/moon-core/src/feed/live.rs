@@ -4,11 +4,11 @@
 //! Поток: event-driven. `MoonEventSink` будит backend thread после реального события;
 //! market data остаётся в immutable read-model snapshot, сюда идёт только лёгкий сигнал.
 
-use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use moonproto::state::{OrderTraceChartPoint, OrderTraceLine};
+use moonproto::state::{MarketHistorySizing, OrderTraceChartPoint, OrderTraceLine};
 use moonproto::{
     ClientConfig, ConnectConfig, Event, InitConfig, InitialStrategies, LifecycleEvent, MoonClient,
     MoonEventSink, TradesStreamMode, TransportMode,
@@ -69,6 +69,7 @@ impl Drop for ClientSlotGuard {
 
 pub fn run(
     server: &ServerConfig,
+    chart_memory_percent: u16,
     tx: &FeedTx,
     cmd_rx: &Receiver<CoreCmd>,
     wake_tx: &Sender<()>,
@@ -94,7 +95,10 @@ pub fn run(
     log::info!("live connect {host}:{port} market={}", server.market);
 
     let client_cfg = ClientConfig::new(host, port, info.keys.master_key, info.keys.mac_key)
-        .with_transport_mode(transport);
+        .with_transport_mode(transport)
+        .with_market_history(MarketHistorySizing::auto_with_budget_percent(
+            chart_memory_percent,
+        ));
 
     // 3. Init БЕЗ рыночных подписок. Рыночную роль ядра задаёт координатор командой
     //    SetMarket после того, как узнает биржу ядра (Identity) и изберёт провайдера:
@@ -705,9 +709,7 @@ pub fn run(
         force_market_sample = false;
 
         match wake_rx.recv() {
-            Ok(()) => {
-                while wake_rx.try_recv().is_ok() {}
-            }
+            Ok(()) => while wake_rx.try_recv().is_ok() {},
             Err(std::sync::mpsc::RecvError) => {
                 let _ = client.disconnect();
                 return Ok(());

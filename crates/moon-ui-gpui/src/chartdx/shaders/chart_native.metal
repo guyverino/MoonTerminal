@@ -66,6 +66,7 @@ struct BookStyle {
     float4 book_bg;
     float4 bid;
     float4 ask;
+    float4 level;
 };
 
 struct Cross {
@@ -372,18 +373,16 @@ vertex BookOut book_bars_vertex(uint vid [[vertex_id]], uint iid [[instance_id]]
     if (bot - top < 1.0) bot = top + 1.0;
     float cy = (top + bot) * 0.5;
     float hh = bot - top;
-    if (lv.kind >= 2.0) { cy = round(y_price); hh = 1.5; }
+    if (lv.kind >= 2.0) { cy = round(y_price); hh = max(bs.level.y, 1.0); }
     float2 px = float2(cx + CORNERS_PM[vid].x * seg_len * 0.5, cy + CORNERS_PM[vid].y * hh * 0.5);
     return { to_clip(px, cv.resolution), lv.kind };
 }
 
 fragment float4 book_bars_fragment(BookOut in [[stage_in]], constant BookStyle& bs [[buffer(1)]]) {
-    float3 bid_line = min(bs.bid.rgb * 1.25, float3(1.0));
-    float3 ask_line = min(bs.ask.rgb * 1.25, float3(1.0));
-    if (in.kind < 0.5) return float4(bs.bid.rgb, 0.82);
-    if (in.kind < 1.5) return float4(bs.ask.rgb, 0.82);
-    if (in.kind < 2.5) return float4(bid_line, 1.0);
-    return float4(ask_line, 1.0);
+    if (in.kind < 0.5) return float4(bs.bid.rgb, 1.0);
+    if (in.kind < 1.5) return float4(bs.ask.rgb, 1.0);
+    if (in.kind < 2.5) return float4(min(bs.bid.rgb * 1.25, float3(1.0)), bs.level.x);
+    return float4(min(bs.ask.rgb * 1.25, float3(1.0)), bs.level.x);
 }
 
 vertex PriceOut book_bg_vertex(uint vid [[vertex_id]], constant ChartView& cv [[buffer(0)]]) {

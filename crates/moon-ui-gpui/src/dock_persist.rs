@@ -16,9 +16,9 @@ use moon_ui::{DockAreaState, PanelInfo, PanelState, register_panel};
 
 use moon_core::config::paths;
 
-use crate::{Backend, default_focus_market};
 use crate::chart_tabs::ChartTabs;
 use crate::panels::{DetectsPanel, LogPanel, OrderPanel, OrdersPanel, ReportPanel, StubPanel};
+use crate::{Backend, default_focus_market};
 
 /// Версия схемы раскладки доков. Поднимаем при несовместимом изменении структуры
 /// панелей → старый `docks.json` игнорируется (откат к дефолтной раскладке).
@@ -84,9 +84,7 @@ pub fn register_panels(cx: &mut App, backend: Entity<Backend>, epoch: f64) {
             let theme = backend.read(cx).config.theme.clone();
             let backend = backend.clone();
             let focus = default_focus_market(&backend.read(cx).config, &group);
-            Rc::new(cx.new(|cx| {
-                ChartTabs::new(backend, group, focus, epoch, theme, window, cx)
-            }))
+            Rc::new(cx.new(|cx| ChartTabs::new(backend, group, focus, epoch, theme, window, cx)))
         });
     }
     // Лента детектов: группа из state.

@@ -33,8 +33,8 @@ const RANGE_HYST: f32 = 1.15;
 const CENTER_SNAP_PX: f32 = 8.0;
 /// Если правый live-якорь ближе этого расстояния к now, считаем вид снова live.
 const LIVE_REJOIN_FRAC: f32 = 0.05;
-/// Максимальное видимое окно времени, мс (зум по X не растягивает больше). 1 час.
-const MAX_WINDOW_MS: f32 = 3_600_000.0;
+/// Максимальное видимое окно времени, мс (Delphi MaxTimeRange=360 минут = 6 часов).
+const MAX_WINDOW_MS: f32 = 21_600_000.0;
 /// Дефолтное видимое окно, к которому выбираем пиксельно-гладкий live scale.
 const DEFAULT_WINDOW_MS: f32 = 60_000.0;
 

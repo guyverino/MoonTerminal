@@ -61,6 +61,8 @@ pub struct AppConfig {
     pub ui_font_delta: f32,
     /// Общий масштаб геометрии UI. Дефолт 1.0.
     pub ui_scale: f32,
+    /// Множитель RAM-budget для retained market history. 100 = авто-база, 800 = 8x.
+    pub chart_memory_percent: u16,
     /// Тема оформления чарта (отдельный переносимый theme.toml).
     pub theme: ChartTheme,
     /// Стиль линий ордеров (отдельный переносимый orders.toml).
@@ -73,6 +75,9 @@ impl AppConfig {
         // независимо от серверов/групп.
         let theme = ChartTheme::load();
         let orders = OrdersStyle::load();
+        if let Some(cfg) = Self::load_plaintext_env(theme.clone(), orders.clone())? {
+            return Ok(cfg);
+        }
         if paths::servers_path().exists() {
             let sf = store::read_servers()?;
             let meta = store::read_settings();
@@ -87,6 +92,7 @@ impl AppConfig {
                 log_retention_days: merged.log_retention_days,
                 ui_font_delta: merged.ui_font_delta,
                 ui_scale: merged.ui_scale,
+                chart_memory_percent: merged.chart_memory_percent,
                 theme,
                 orders,
             };
@@ -115,6 +121,7 @@ impl AppConfig {
             cfg.log_retention_days = 14;
             cfg.ui_font_delta = schema::default_ui_font_delta();
             cfg.ui_scale = schema::default_ui_scale();
+            cfg.chart_memory_percent = schema::default_chart_memory_percent();
             cfg.save()?;
             log::info!("мигрировано из config.enc → servers.enc + settings.toml");
             return Ok(cfg);
@@ -128,6 +135,7 @@ impl AppConfig {
             cfg.log_retention_days = 14;
             cfg.ui_font_delta = schema::default_ui_font_delta();
             cfg.ui_scale = schema::default_ui_scale();
+            cfg.chart_memory_percent = schema::default_chart_memory_percent();
             cfg.save()?;
             log::info!("мигрировано из config.toml → servers.enc + settings.toml");
             return Ok(cfg);
@@ -142,8 +150,70 @@ impl AppConfig {
             log_retention_days: 14,
             ui_font_delta: schema::default_ui_font_delta(),
             ui_scale: schema::default_ui_scale(),
+            chart_memory_percent: schema::default_chart_memory_percent(),
             ..Self::default()
         })
+    }
+
+    fn load_plaintext_env(theme: ChartTheme, orders: OrdersStyle) -> anyhow::Result<Option<Self>> {
+        if std::env::var_os("MOON_CONFIG_PLAINTEXT").is_none() {
+            return Ok(None);
+        }
+
+        let key = match std::env::var("MOON_CONFIG_PLAINTEXT_KEY") {
+            Ok(key) if !key.trim().is_empty() => key,
+            _ => {
+                let path = std::env::var("MOON_CONFIG_PLAINTEXT_KEY_FILE").map_err(|_| {
+                    anyhow::anyhow!(
+                        "MOON_CONFIG_PLAINTEXT=1 задан, но нет MOON_CONFIG_PLAINTEXT_KEY \
+                         или MOON_CONFIG_PLAINTEXT_KEY_FILE"
+                    )
+                })?;
+                std::fs::read_to_string(&path).map_err(|e| {
+                    anyhow::anyhow!("не прочитал MOON_CONFIG_PLAINTEXT_KEY_FILE {path}: {e}")
+                })?
+            }
+        };
+        let key = key.trim().to_string();
+        if key.is_empty() {
+            anyhow::bail!("MOON_CONFIG_PLAINTEXT key пустой");
+        }
+
+        let name = std::env::var("MOON_CONFIG_PLAINTEXT_NAME").unwrap_or_else(|_| "default".into());
+        let group = std::env::var("MOON_CONFIG_PLAINTEXT_GROUP")
+            .unwrap_or_else(|_| servers::default_group());
+        let market = std::env::var("MOON_CONFIG_PLAINTEXT_MARKET")
+            .unwrap_or_else(|_| servers::default_market());
+
+        log::warn!(
+            "MOON_CONFIG_PLAINTEXT=1: тестовый plaintext-конфиг, servers.enc/keyring пропущены"
+        );
+        Ok(Some(Self {
+            servers: vec![ServerConfig {
+                id: 1,
+                uid: 1,
+                name,
+                active: true,
+                show_window: true,
+                feed: FeedFlags::default(),
+                key: Secret::new(key),
+                group,
+                market,
+                color: servers::default_color(),
+                synthetic: false,
+            }],
+            groups: Vec::new(),
+            language: Language::default(),
+            market_mode: MarketDataMode::default(),
+            charts_split_by_core: true,
+            log_to_file: true,
+            log_retention_days: servers::default_log_retention_days(),
+            ui_font_delta: schema::default_ui_font_delta(),
+            ui_scale: schema::default_ui_scale(),
+            chart_memory_percent: schema::default_chart_memory_percent(),
+            theme,
+            orders,
+        }))
     }
 
     /// Сохраняет в два файла. Проставляет стабильные uid, валидирует уникальность
@@ -162,6 +232,7 @@ impl AppConfig {
             self.log_retention_days,
             self.ui_font_delta,
             self.ui_scale,
+            self.chart_memory_percent,
         );
         store::write_servers(&sf)?;
         store::write_settings(&meta)?;
@@ -212,6 +283,7 @@ impl AppConfig {
             14,
             schema::default_ui_font_delta(),
             schema::default_ui_scale(),
+            schema::default_chart_memory_percent(),
         );
         let a = toml::to_string(&sf).unwrap_or_default();
         let b = toml::to_string(&meta).unwrap_or_default();

@@ -18,7 +18,8 @@ use crate::market::MarketDataMode;
 /// v2: добавлено поле `language`. v3: добавлено `market_mode`.
 /// v4: добавлено `charts_split_by_core`. v5: добавлены `log_to_file` + `log_retention_days`.
 /// v6: добавлены `ui_font_delta` + `ui_scale`.
-pub const SCHEMA_VERSION: u32 = 6;
+/// v7: добавлен `chart_memory_percent`.
+pub const SCHEMA_VERSION: u32 = 7;
 
 /// Старые файлы без поля `version` читаются как 0 → меньше SCHEMA_VERSION →
 /// триггерят досейв с дослоением новых дефолтов.
@@ -32,6 +33,14 @@ pub fn default_ui_font_delta() -> f32 {
 
 pub fn default_ui_scale() -> f32 {
     1.0
+}
+
+pub fn default_chart_memory_percent() -> u16 {
+    100
+}
+
+pub fn clamp_chart_memory_percent(value: u16) -> u16 {
+    value.clamp(100, 800)
 }
 
 /// Запись сервера в servers.enc (секрет + стабильный uid).
@@ -107,6 +116,10 @@ pub struct SettingsFile {
     /// font_delta, чтобы компонентная тема имела один источник правды.
     #[serde(default = "default_ui_scale")]
     pub ui_scale: f32,
+    /// Множитель бюджета retained chart history относительно RAM-based базы.
+    /// 100 = авто-база, 800 = 8x, как Delphi UseMemForCharts.
+    #[serde(default = "default_chart_memory_percent")]
+    pub chart_memory_percent: u16,
     #[serde(default)]
     pub groups: Vec<GroupConfig>,
     #[serde(default)]

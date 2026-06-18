@@ -3,9 +3,9 @@
 
 use aes_gcm::aead::Aead;
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
-use anyhow::{Context, anyhow};
-use base64::Engine;
+use anyhow::{anyhow, Context};
 use base64::engine::general_purpose::STANDARD as B64;
+use base64::Engine;
 
 const KEYRING_SERVICE: &str = "moon-terminal";
 const KEYRING_USER: &str = "config-key-v1";

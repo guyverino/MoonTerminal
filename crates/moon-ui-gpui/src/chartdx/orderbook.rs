@@ -1,5 +1,6 @@
 //! Слой стакана (OrderBook): СВОЯ зона справа (не временной ряд, без combo). Фон зоны +
-//! кумулятивные бары глубины + линии уровней ЗАПЕКАЮТСЯ в офскрин-текстуру `BookTex` (наш
+//! кумулятивные fill-прямоугольники глубины и отдельные level-lines запекаются в
+//! офскрин-текстуру `BookTex` (наш
 //! аналог MoonBot `bmGlass`) и блитятся каждый present. Перепечатка текстуры — ТОЛЬКО при
 //! смене уровней/Y-трансформа, НЕ каждый кадр: на статике и mouse-move стакан = дешёвый
 //! блит готовой текстуры, а не повторная отрисовка сотен баров инстансами 240 раз/с.
@@ -14,15 +15,15 @@ use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC};
 
 use super::gpu::{
-    create_alpha_blend, create_dynamic_cb, create_point_sampler, create_srv, create_structured,
-    d3d_device_ptr, full_viewport, make_ps, make_vs, set_scissor_rect, update_dynamic, BlitParams,
-    ChartViewGpu,
+    BlitParams, ChartViewGpu, create_alpha_blend, create_dynamic_cb, create_point_sampler,
+    create_srv, create_structured, d3d_device_ptr, full_viewport, make_ps, make_vs,
+    set_scissor_rect, update_dynamic,
 };
 pub use super::types::BookStyle;
 
 const BARS_HLSL: &str = include_str!("shaders/bars.hlsl");
 const BLIT_HLSL: &str = include_str!("shaders/blit.hlsl");
-const INITIAL_LEVEL_CAP: u32 = 256;
+const INITIAL_LEVEL_BUFFER_CAPACITY: u32 = 256;
 
 struct BookPipe {
     bars_vs: ID3D11VertexShader,
@@ -109,12 +110,12 @@ impl OrderBookLayer {
             self.device_ptr = device_ptr;
         }
         if self.pipe.is_none() {
-            self.pipe = Some(Self::create_pipe(device, INITIAL_LEVEL_CAP));
+            self.pipe = Some(Self::create_pipe(device, INITIAL_LEVEL_BUFFER_CAPACITY));
         }
         // Применить новые уровни (если пришли) → инвалидировать кэш текстуры.
         let mut levels_changed = false;
         if let Some(levels) = self.pending.take() {
-            let need_cap = next_buffer_cap(levels.len(), INITIAL_LEVEL_CAP);
+            let need_cap = next_buffer_cap(levels.len(), INITIAL_LEVEL_BUFFER_CAPACITY);
             if self.pipe.as_ref().is_none_or(|p| p.level_cap < need_cap) {
                 self.pipe = Some(Self::create_pipe(device, need_cap));
             }
@@ -193,13 +194,14 @@ impl OrderBookLayer {
                 context.VSSetConstantBuffers(0, Some(&[Some(pipe.view_cb.clone())]));
                 context.VSSetConstantBuffers(1, Some(&[Some(pipe.style_cb.clone())]));
                 context.PSSetConstantBuffers(1, Some(&[Some(pipe.style_cb.clone())]));
-                context.OMSetBlendState(&pipe.blend, None, 0xFFFFFFFF);
+                context.OMSetBlendState(None, None, 0xFFFFFFFF);
                 // Фон зоны (всегда, даже при пустой книге) — opaque book_bg.
                 context.VSSetShader(&pipe.bg_vs, None);
                 context.PSSetShader(&pipe.bg_ps, None);
                 context.Draw(6, 0);
-                // Бары/линии уровней.
+                // Fill-прямоугольники и отдельные level-lines.
                 if count > 0 {
+                    context.OMSetBlendState(&pipe.blend, None, 0xFFFFFFFF);
                     context.VSSetShaderResources(1, Some(&[Some(pipe.srv.clone())]));
                     context.VSSetShader(&pipe.bars_vs, None);
                     context.PSSetShader(&pipe.bars_ps, None);
@@ -231,9 +233,6 @@ impl OrderBookLayer {
         if !tex.baked || view.bounds[2] <= 0.0 || view.bounds[3] <= 0.0 {
             return;
         }
-        let Some(pipe) = self.pipe.as_ref() else {
-            return;
-        };
         // BLIT: готовая текстура → зона стакана backbuffer (1:1, full UV). Scissor = panel_clip
         // (восстанавливаем после bake-scissor — иначе userdata-слой после нас обрежется к зоне).
         let bp = BlitParams {
@@ -262,7 +261,7 @@ impl OrderBookLayer {
             context.PSSetConstantBuffers(0, Some(&[Some(tex.blit_cb.clone())]));
             context.PSSetShaderResources(0, Some(&[Some(tex.srv.clone())]));
             context.PSSetSamplers(0, Some(&[Some(tex.sampler.clone())]));
-            context.OMSetBlendState(&pipe.blend, None, 0xFFFFFFFF);
+            context.OMSetBlendState(None, None, 0xFFFFFFFF);
             context.Draw(6, 0);
         }
     }

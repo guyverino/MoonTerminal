@@ -58,8 +58,7 @@ fn moonui_rev_from_lock(lock_path: &std::path::Path) -> Option<String> {
             in_moon_gpui = true;
             continue;
         }
-        if in_moon_gpui
-            && line.starts_with("source = \"git+https://github.com/Moonbot-Tech/MoonUI")
+        if in_moon_gpui && line.starts_with("source = \"git+https://github.com/Moonbot-Tech/MoonUI")
         {
             return line
                 .rsplit_once('#')

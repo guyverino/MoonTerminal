@@ -394,7 +394,7 @@ impl Panel for LogPanel {
                         });
                     }
                     let spec = DetachedSpec::new(group.clone(), "Log".to_string());
-                    crate::detached::spawn(app, &backend, &spec);
+                    crate::detached::spawn(app, &backend, &spec, Some(window.window_handle()));
                     backend.update(app, |b, _| {
                         b.detached.push(spec);
                         b.detached_dirty = true;

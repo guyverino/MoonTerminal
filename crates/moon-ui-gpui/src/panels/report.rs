@@ -18,8 +18,8 @@ use moon_ui::{
 use rusqlite::Connection;
 use rusqlite::types::Value;
 
-use crate::{Backend, design};
 use crate::detached::DetachedSpec;
+use crate::{Backend, design};
 use moon_core::db::{self, ReportFilter, ReportTable, SideFilter};
 
 /// Data cap для отчёта. UI ниже виртуализирован, так что 100k строк не превращаются
@@ -383,7 +383,7 @@ impl Panel for ReportPanel {
                         });
                     }
                     let spec = DetachedSpec::new(group.clone(), "Report".to_string());
-                    crate::detached::spawn(app, &backend, &spec);
+                    crate::detached::spawn(app, &backend, &spec, Some(window.window_handle()));
                     backend.update(app, |b, _| {
                         b.detached.push(spec);
                         b.detached_dirty = true;

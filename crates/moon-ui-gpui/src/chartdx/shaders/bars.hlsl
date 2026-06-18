@@ -1,4 +1,5 @@
-// Стакан (orderbook) own-pass: фон зоны + кумулятивные бары глубины + линии уровней.
+// Стакан (orderbook) own-pass: фон зоны + кумулятивные прямоугольники глубины
+// + отдельные линии уровней поверх fill.
 // Своя зона СПРАВА (НЕ временной ряд, без combo). Бары тянутся ВЛЕВО от правого края,
 // длина = len_norm·zone; нормировка/геометрия считаются на CPU (book.build_instances).
 // Порт moon-chart/shaders/glass.wgsl. cbuffer ChartView — тот же, что у крестов (b0),
@@ -20,13 +21,14 @@ cbuffer BookStyle : register(b1) {
     float4 bs_book_bg; // фон зоны
     float4 bs_bid;     // bid rgb
     float4 bs_ask;     // ask rgb
+    float4 bs_level;   // x = level-line opacity, y = level-line height px
 };
 
 struct Level {
     float price;
     float span;     // signed-delta цены до второго края fill-полосы
     float len_norm; // 0..1 доля ширины зоны
-    float kind;     // 0 bid fill / 1 ask fill / 2 bid line / 3 ask line
+    float kind;     // 0 bid fill / 1 ask fill / 2 bid level / 3 ask level
 };
 StructuredBuffer<Level> levels : register(t1);
 
@@ -38,7 +40,7 @@ static const float2 CORNERS[6] = {
 // Таргет = B8G8R8A8_UNORM (НЕ sRGB): пишем sRGB-значения НАПРЯМУЮ, как GPUI/кресты.
 // Конверсии в linear НЕТ — иначе цвета раздавливаются в тёмное (см. grid.hlsl).
 
-// ── Бары/линии уровней (instanced) ─────────────────────────────────────────
+// ── Fill-прямоугольники и отдельные level-lines (instanced) ─────────────────
 struct BarOut {
     float4 pos : SV_Position;
     nointerpolation float kind : TEXCOORD0;
@@ -64,8 +66,8 @@ BarOut bars_vertex(uint vid : SV_VertexID, uint iid : SV_InstanceID) {
     float cy = (top + bot) * 0.5;
     float hh = bot - top;
     if (lv.kind >= 2.0) {
-        cy = round(y_price);              // линия объёма — тонкая по центру цены
-        hh = 1.5;
+        cy = round(y_price);
+        hh = max(bs_level.y, 1.0);
     }
 
     float2 corner = CORNERS[vid];
@@ -77,18 +79,14 @@ BarOut bars_vertex(uint vid : SV_VertexID, uint iid : SV_InstanceID) {
 }
 
 float4 bars_fragment(BarOut i) : SV_Target {
-    float3 bid = bs_bid.rgb;
-    float3 ask = bs_ask.rgb;
-    float3 bid_line = min(bs_bid.rgb * 1.25, 1.0.xxx);
-    float3 ask_line = min(bs_ask.rgb * 1.25, 1.0.xxx);
     if (i.kind < 0.5) {
-        return float4(bid, 0.82);
+        return float4(bs_bid.rgb, 1.0);
     } else if (i.kind < 1.5) {
-        return float4(ask, 0.82);
+        return float4(bs_ask.rgb, 1.0);
     } else if (i.kind < 2.5) {
-        return float4(bid_line, 1.0);
+        return float4(min(bs_bid.rgb * 1.25, 1.0.xxx), bs_level.x);
     }
-    return float4(ask_line, 1.0);
+    return float4(min(bs_ask.rgb * 1.25, 1.0.xxx), bs_level.x);
 }
 
 // ── Фон зоны стакана (fullscreen quad над зоной) ────────────────────────────

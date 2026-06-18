@@ -5,15 +5,15 @@
 //! Шейдеры компилируются из ВКОМПИЛЕННОЙ строки (`include_str!` → `D3DCompile`), а не из
 //! файла на диске — бинарь самодостаточен при деплое (нет внешних .hlsl рядом с exe).
 
-use std::ffi::{c_void, CString};
+use std::ffi::{CString, c_void};
 
 use gpui::RawGpuAccess;
-use windows::core::{Interface, PCSTR};
 use windows::Win32::Foundation::RECT;
 use windows::Win32::Graphics::Direct3D::Fxc::D3DCompile;
-use windows::Win32::Graphics::Direct3D::{ID3DBlob, D3D11_SRV_DIMENSION_BUFFER};
+use windows::Win32::Graphics::Direct3D::{D3D11_SRV_DIMENSION_BUFFER, ID3DBlob};
 use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_UNKNOWN;
+use windows::core::{Interface, PCSTR};
 
 pub use super::types::{BlitParams, ChartCross, ChartViewGpu};
 

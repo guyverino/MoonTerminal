@@ -18,8 +18,8 @@ use gpui::*;
 use moon_ui::{
     MoonBackgroundPolicy, MoonButton, MoonButtonSize, MoonButtonVariant, MoonCheckbox,
     MoonCheckboxSize, MoonDropdown, MoonInput, MoonInputEvent, MoonInputState, MoonMenuItem,
-    MoonMenuSize, MoonPalette, MoonRect, MoonTextArea, MoonTextAreaEvent, MoonTextAreaState,
-    MoonTone, MoonWindowChrome, MoonWindowChromeButton, Root, h_flex, rgba_from, v_flex,
+    MoonMenuSize, MoonPalette, MoonTextArea, MoonTextAreaEvent, MoonTextAreaState, MoonTone,
+    MoonWindowFrame, Root, h_flex, rgba_from, v_flex,
 };
 
 use crate::{Backend, design};
@@ -1553,7 +1553,13 @@ impl Render for StrategiesView {
         if let Some(overlay) = overlay {
             root = root.child(overlay);
         }
-        root = root.child(strategies_window_chrome(chrome_width));
+        root = root.child(
+            MoonWindowFrame::tool("strategies-window-frame-hit", chrome_width)
+                .header_height(STRATEGIES_HEADER_H)
+                .leading_inset(design::titlebar_leading_inset())
+                .show_controls(design::show_custom_window_controls())
+                .hit_overlay(),
+        );
         root
     }
 }
@@ -1572,92 +1578,20 @@ fn strategies_header(p: MoonPalette, cx: &App) -> impl IntoElement {
         .border_b(px(1.0))
         .border_color(moon_alpha(p.border, 1.0))
         .child(
-            h_flex()
-                .gap(design::ui_px(cx, 8.0))
-                .child(
-                    div()
-                        .w(design::ui_px(cx, 7.0))
-                        .h(design::ui_px(cx, 7.0))
-                        .rounded(design::ui_px(cx, 999.0))
-                        .bg(moon(p.accent))
-                        .shadow(vec![moon_ui::foundation::box_shadow(
-                            px(0.0),
-                            px(0.0),
-                            design::ui_px(cx, 8.0),
-                            px(0.0),
-                            moon_alpha(p.accent, 0.36),
-                        )]),
-                )
-                .child(
-                    div()
-                        .font_family("Inter")
-                        .text_size(design::text_px(cx, 12.0))
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(moon(p.text))
-                        .child("Стратегии"),
-                ),
+            MoonWindowFrame::tool("strategies-titlebar-title", 0.0)
+                .title_cluster("Стратегии", cx)
+                .h_full()
+                .flex_1()
+                .min_w_0(),
         )
         .when(design::show_custom_window_controls(), |this| {
-            this.child(strategies_window_buttons(p, cx))
+            this.child(
+                MoonWindowFrame::tool("strategies-window-frame-visual", 0.0)
+                    .header_height(STRATEGIES_HEADER_H)
+                    .show_controls(true)
+                    .visual_controls(cx),
+            )
         })
-}
-
-fn strategies_window_buttons(p: MoonPalette, cx: &App) -> impl IntoElement {
-    h_flex()
-        .h(design::fit_h_px(cx, 22.0, 11.0, 5.5))
-        .gap(design::ui_px(cx, 2.0))
-        .font_family("Geist Mono")
-        .text_size(design::text_px(cx, 11.0))
-        .child(strategies_window_button("—", p.text_soft, cx))
-        .child(strategies_window_button("×", p.orange, cx))
-}
-
-fn strategies_window_button(label: &'static str, color: u32, cx: &App) -> impl IntoElement {
-    div()
-        .w(design::ui_px(cx, 26.0))
-        .h(design::fit_h_px(cx, 22.0, 11.0, 5.5))
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded(design::ui_px(cx, 4.0))
-        .text_color(moon(color))
-        .hover(|s| s.bg(moon_alpha(0xFFFFFF, 0.055)))
-        .child(label)
-}
-
-fn strategies_window_chrome(width: f32) -> impl IntoElement {
-    let controls_w = 52.0;
-    let controls_x = (width - controls_w - 12.0).max(0.0);
-    let drag_x = design::titlebar_leading_inset();
-    let drag_w = if design::show_custom_window_controls() {
-        (width - controls_w - 20.0).max(0.0)
-    } else {
-        (width - drag_x).max(0.0)
-    };
-
-    let chrome = MoonWindowChrome::new(
-        "strategies-window-chrome",
-        MoonRect::new(0.0, 0.0, width, STRATEGIES_HEADER_H),
-    )
-    .drag_bounds(MoonRect::new(drag_x, 0.0, drag_w, STRATEGIES_HEADER_H));
-
-    if design::show_custom_window_controls() {
-        chrome
-            .controls_bounds(MoonRect::new(
-                controls_x,
-                0.0,
-                controls_w,
-                STRATEGIES_HEADER_H,
-            ))
-            .button_width(26.0)
-            .buttons([
-                MoonWindowChromeButton::Minimize,
-                MoonWindowChromeButton::Close,
-            ])
-            .render()
-    } else {
-        chrome.no_controls().render()
-    }
 }
 
 // ── Чистые помощники (порт `strategies/mod.rs`) ──────────────────────────────
@@ -1966,7 +1900,7 @@ fn folder_counts(
 }
 
 /// Открыть окно «Стратегии» (отдельное ОС-окно). Дедуп окон — в `Backend`.
-pub fn open(backend: Entity<Backend>, cx: &mut App) {
+pub fn open(backend: Entity<Backend>, owner: Option<AnyWindowHandle>, cx: &mut App) {
     // Уже открыто → сфокусировать.
     if let Some(handle) = backend.read(cx).strategies_window {
         if handle
@@ -1976,22 +1910,15 @@ pub fn open(backend: Entity<Backend>, cx: &mut App) {
             return;
         }
     }
-    let opts = WindowOptions {
-        window_bounds: Some(WindowBounds::Windowed(Bounds {
+    let opts = crate::windowing::tool_window_options(
+        "MoonTerminal — Стратегии",
+        WindowBounds::Windowed(Bounds {
             origin: point(px(120.0), px(90.0)),
             size: size(px(1180.0), px(680.0)),
-        })),
-        titlebar: Some(TitlebarOptions {
-            title: Some("MoonTerminal — Стратегии".into()),
-            appears_transparent: true,
-            ..Default::default()
         }),
-        kind: WindowKind::Floating,
-        app_id: Some("MoonTerminal".to_string()),
-        window_min_size: Some(size(px(920.0), px(560.0))),
-        window_decorations: design::platform_window_decorations(),
-        ..Default::default()
-    };
+        Some(size(px(920.0), px(560.0))),
+        owner,
+    );
     let b = backend.clone();
     if let Ok(handle) = cx.open_window(opts, move |window, cx| {
         let view = cx.new(|cx| StrategiesView::new(b, window, cx));

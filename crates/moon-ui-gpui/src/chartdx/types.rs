@@ -121,6 +121,8 @@ pub struct BookStyle {
     pub book_bg: [f32; 4],
     pub bid: [f32; 4],
     pub ask: [f32; 4],
+    /// x = level-line opacity, y = level-line height in physical px.
+    pub level: [f32; 4],
 }
 
 impl Default for BookStyle {
@@ -129,6 +131,7 @@ impl Default for BookStyle {
             book_bg: [0.0745, 0.0784, 0.0863, 1.0],
             bid: [0.1294, 0.5137, 0.1922, 1.0],
             ask: [1.0, 0.4980, 0.3137, 1.0],
+            level: [0.5, 1.5, 0.0, 0.0],
         }
     }
 }

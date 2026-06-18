@@ -17,6 +17,7 @@ use moonproto::MoonClient;
 
 use crate::config::ServerConfig;
 use crate::db::ReportTx;
+use crate::market::SharedMarketStore;
 
 pub type FeedRx = Receiver<FeedMsg>;
 pub type FeedWakeTx = Sender<()>;
@@ -143,8 +144,10 @@ fn jittered(d: Duration) -> Duration {
 /// `reports` — канал к SQLite-writer'у (None = БД недоступна, отчёты не пишем).
 pub fn spawn(
     server: ServerConfig,
+    chart_memory_percent: u16,
     reports: Option<ReportTx>,
     wake: Option<FeedWakeTx>,
+    market: Option<SharedMarketStore>,
 ) -> FeedHandle {
     let (data_tx, rx) = std::sync::mpsc::channel();
     let tx = FeedTx::new(data_tx, wake);
@@ -162,7 +165,7 @@ pub fn spawn(
             // Штатный выход (Ok = координатор/UI ушёл) — завершаемся.
             // Синт-ядро бенчмарка: гоним synth::run (без сети/реконнекта).
             if server.synthetic {
-                let _ = synth::run(&server, &tx, &cmd_rx);
+                let _ = synth::run(&server, &tx, &cmd_rx, market.as_ref());
                 return;
             }
             let mut backoff = BACKOFF_MIN;
@@ -170,6 +173,7 @@ pub fn spawn(
                 let started = Instant::now();
                 match live::run(
                     &server,
+                    chart_memory_percent,
                     &tx,
                     &cmd_rx,
                     &run_wake_tx,
@@ -199,9 +203,7 @@ pub fn spawn(
                             break; // UI закрыт
                         }
                         match run_wake_rx.recv_timeout(wait) {
-                            Ok(()) => {
-                                while run_wake_rx.try_recv().is_ok() {}
-                            }
+                            Ok(()) => while run_wake_rx.try_recv().is_ok() {},
                             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
                             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
                         }

@@ -14,7 +14,7 @@ pub const GLASS_ZONE_PX: f32 = 220.0;
 
 pub mod axes;
 pub mod container;
-// `data` (TickRing/OrderBookModel) живёт в moon-core. Ре-экспорт под прежним путём.
+// `data` / market-source models live in moon-core. Ре-экспорт под прежним путём.
 pub use moon_core::data;
 pub mod layers;
 pub mod paint;

@@ -4,11 +4,13 @@
 //! один раз привязываемся по `name` и тут же проставляем свежий uid: после этого
 //! переименование сервера больше НЕ теряет его галки (привязка идёт по uid).
 
-use super::ServerConfig;
 use super::groups::GroupConfig;
 use super::lang::Language;
-use super::schema::{SCHEMA_VERSION, ServerEntry, ServerMeta, ServersFile, SettingsFile};
+use super::schema::{
+    clamp_chart_memory_percent, ServerEntry, ServerMeta, ServersFile, SettingsFile, SCHEMA_VERSION,
+};
 use super::servers;
+use super::ServerConfig;
 use crate::market::MarketDataMode;
 
 /// Результат слияния двух файлов в рантайм.
@@ -29,6 +31,8 @@ pub struct Merged {
     pub ui_font_delta: f32,
     /// Общий масштаб геометрии UI.
     pub ui_scale: f32,
+    /// Множитель бюджета retained chart history.
+    pub chart_memory_percent: u16,
     /// Нужно пере-сохранить на диск: присвоены новые uid и/или версия схемы
     /// устарела (надо дослоить дефолты новых полей в settings.toml).
     pub dirty: bool,
@@ -46,6 +50,7 @@ pub fn merge(sf: ServersFile, meta: SettingsFile) -> Merged {
     let log_retention_days = meta.log_retention_days;
     let ui_font_delta = meta.ui_font_delta;
     let ui_scale = meta.ui_scale;
+    let chart_memory_percent = clamp_chart_memory_percent(meta.chart_memory_percent);
 
     let servers = sf
         .servers
@@ -97,6 +102,7 @@ pub fn merge(sf: ServersFile, meta: SettingsFile) -> Merged {
         log_retention_days,
         ui_font_delta,
         ui_scale,
+        chart_memory_percent,
         dirty,
     }
 }
@@ -113,6 +119,7 @@ pub fn split(
     log_retention_days: u32,
     ui_font_delta: f32,
     ui_scale: f32,
+    chart_memory_percent: u16,
 ) -> (ServersFile, SettingsFile) {
     let sf = ServersFile {
         servers: servers
@@ -133,6 +140,7 @@ pub fn split(
         log_retention_days,
         ui_font_delta,
         ui_scale,
+        chart_memory_percent: clamp_chart_memory_percent(chart_memory_percent),
         groups: groups.to_vec(),
         servers: servers
             .iter()

@@ -16,8 +16,7 @@ use crate::market::MarketDataMode;
 const UNSUB_DELAY: Duration = Duration::from_secs(5);
 
 fn market_diag_enabled() -> bool {
-    std::env::var_os("MOON_MARKET_DIAG").is_some()
-        || std::env::var_os("MOON_RENDER_DIAG").is_some()
+    std::env::var_os("MOON_MARKET_DIAG").is_some() || std::env::var_os("MOON_RENDER_DIAG").is_some()
 }
 
 fn market_diag(msg: impl std::fmt::Display) {

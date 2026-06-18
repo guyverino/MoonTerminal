@@ -10,8 +10,8 @@ use std::rc::Rc;
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use moon_ui::{
-    MoonBackgroundPolicy, MoonPalette, MoonRect, MoonTabItem, MoonTabStrip, Panel, PanelEvent,
-    PanelState, Root, h_flex, v_flex,
+    MoonBackgroundPolicy, MoonPalette, MoonRect, MoonTabItem, MoonTabStrip, MoonWindowFrame,
+    MoonWindowFrameControls, Panel, PanelEvent, PanelState, Root, h_flex, v_flex,
 };
 
 use crate::Backend;
@@ -87,6 +87,13 @@ impl ChartTabs {
             )
         });
         let initial_sig = chart_tabs_sig(backend.read(cx), &group);
+        #[cfg(any(debug_assertions, moon_profile_debug, feature = "debug-tools"))]
+        {
+            let main_handle = main.read(cx).debug_data_handle();
+            backend.update(cx, |b, _| {
+                b.register_debug_main_chart(group.clone(), main_handle);
+            });
+        }
         // Из charts.json: масштаб Main (num=0) и список откреп-вкладок этой группы на
         // восстановление (создадим пустыми на первом render → ждут детект).
         let (main_scale, restore_pending): (Option<f32>, Vec<_>) = {
@@ -158,6 +165,40 @@ impl ChartTabs {
                 .update(cx, |p, pcx| p.open_market(core, market, pcx));
             self.active = Tab::Main;
             self.last_sig = chart_tabs_sig(self.backend.read(cx), self.group.as_str());
+        }
+    }
+
+    #[cfg(any(debug_assertions, moon_profile_debug, feature = "debug-tools"))]
+    fn drain_debug_fill_main_chart(&mut self, cx: &mut Context<Self>) {
+        let requested = self.backend.update(cx, |b, _| {
+            if b.debug_fill_main_chart_group.as_deref() == Some(self.group.as_str()) {
+                b.debug_fill_main_chart_group = None;
+                Some(b.debug_fill_main_chart_rev)
+            } else {
+                None
+            }
+        });
+        if requested.is_some() {
+            let rev = requested.unwrap_or_default();
+            let filled = self
+                .main
+                .update(cx, |panel, pcx| panel.debug_fill_history_to_capacity(pcx));
+            if filled {
+                log::info!(
+                    "debug fill main chart: delivered group={} rev={} result=ok",
+                    self.group,
+                    rev
+                );
+            } else {
+                log::warn!(
+                    "debug fill main chart: delivered group={} rev={} result=failed",
+                    self.group,
+                    rev
+                );
+            }
+            self.active = Tab::Main;
+            self.last_sig = chart_tabs_sig(self.backend.read(cx), self.group.as_str());
+            cx.notify();
         }
     }
 
@@ -269,7 +310,7 @@ impl ChartTabs {
     }
 
     /// Отцепить AddToChart-вкладку в отдельное ОС-окно (убрать из стрипа).
-    fn detach(&mut self, tab: Tab, cx: &mut Context<Self>) {
+    fn detach(&mut self, tab: Tab, owner: Option<AnyWindowHandle>, cx: &mut Context<Self>) {
         let Tab::Add(n, core) = tab else { return };
         let Some(pos) = self
             .add
@@ -297,7 +338,7 @@ impl ChartTabs {
             "[detach] n={n} core={core:?} → detached=Some({},{},{},{})",
             geom.x, geom.y, geom.w, geom.h
         ));
-        self.open_chart_window(n, core, panel, geom, false, cx);
+        self.open_chart_window(n, core, panel, geom, false, owner, cx);
         cx.notify();
     }
 
@@ -313,6 +354,7 @@ impl ChartTabs {
         panel: Entity<ChartPanel>,
         geom: chart_persist::WinGeom,
         restored: bool,
+        owner: Option<AnyWindowHandle>,
         cx: &mut Context<Self>,
     ) {
         self.detached.push((n, core, panel.clone()));
@@ -327,19 +369,15 @@ impl ChartTabs {
             .into_iter()
             .find(|d| d.bounds().contains(&origin))
             .map(|d| d.id());
-        let opts = WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(Bounds {
+        let opts = crate::windowing::detached_window_options(
+            format!("MoonTerminal — Чарт {n}"),
+            WindowBounds::Windowed(Bounds {
                 origin,
                 size: size(px(geom.w as f32), px(geom.h as f32)),
-            })),
-            display_id,
-            titlebar: Some(TitlebarOptions {
-                title: Some(format!("MoonTerminal — Чарт {n}").into()),
-                ..Default::default()
             }),
-            window_decorations: design::platform_window_decorations(),
-            ..Default::default()
-        };
+            display_id,
+            owner,
+        );
         let backend = self.backend.clone();
         let group = self.group.clone();
         // Для восстановленного окна — сохранённый логический размер, чтобы скорректировать
@@ -359,7 +397,7 @@ impl ChartTabs {
                     cx,
                 )
             });
-            cx.new(|cx| Root::new(host, window, cx).background_policy(MoonBackgroundPolicy::Opaque))
+            cx.new(|cx| Root::new(host, window, cx).background_policy(MoonBackgroundPolicy::NoFill))
         });
         if let Ok(handle) = opened {
             let group = self.group.clone();
@@ -498,7 +536,7 @@ impl ChartTabs {
                     if scale.is_some() {
                         panel.update(cx, |p, pcx| p.set_scale(scale, pcx));
                     }
-                    this.open_chart_window(n, core, panel, geom, true, cx);
+                    this.open_chart_window(n, core, panel, geom, true, None, cx);
                 }
                 cx.notify();
             });
@@ -566,6 +604,12 @@ fn chart_tabs_sig(b: &Backend, group: &str) -> u64 {
     sig = sig
         .wrapping_mul(31)
         .wrapping_add(u64::from(b.config.charts_split_by_core));
+    #[cfg(any(debug_assertions, moon_profile_debug, feature = "debug-tools"))]
+    if b.debug_fill_main_chart_group.as_deref() == Some(group) {
+        sig = sig
+            .wrapping_mul(31)
+            .wrapping_add(b.debug_fill_main_chart_rev);
+    }
     let store = b.session.store();
     for s in b.session.sessions().iter().filter(|s| s.group == group) {
         if let Some(d) = store.core(s.id) {
@@ -606,6 +650,8 @@ impl Panel for ChartTabs {
 
 impl Render for ChartTabs {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(any(debug_assertions, moon_profile_debug, feature = "debug-tools"))]
+        self.drain_debug_fill_main_chart(cx);
         self.handle_open_request(cx);
         self.ingest(window, cx);
         self.sync_inactive_chart_visibility(cx);
@@ -698,13 +744,14 @@ impl Render for ChartTabs {
             .on_click({
                 let tab_keys = tab_keys.clone();
                 let view = view.clone();
-                move |ix, event, _window, app| {
+                move |ix, event, window, app| {
                     let Some(tab_id) = tab_keys.get(ix).copied() else {
                         return;
                     };
+                    let owner = window.window_handle();
                     view.update(app, |this, cx| {
                         if !matches!(tab_id, Tab::Main) && event.click_count() >= 2 {
-                            this.detach(tab_id, cx);
+                            this.detach(tab_id, Some(owner), cx);
                         } else if matches!(tab_id, Tab::Main)
                             || this.add.iter().any(|(n, c, _)| Tab::Add(*n, *c) == tab_id)
                         {
@@ -873,11 +920,14 @@ impl Render for DetachedChartHost {
             Some(core) => format!("{} · Чарт {} · {core:?}", self.group, self.num),
             None => format!("{} · Чарт {}", self.group, self.num),
         };
+        let frame = MoonWindowFrame::detached_chart("detached-chart-window-frame", 0.0)
+            .header_height(34.0)
+            .controls(MoonWindowFrameControls::Close)
+            .show_controls(design::show_custom_window_controls());
         // Шапка — ТОЛЬКО у выносных окон вкладок (в основном доке её нет): масштаб слева,
         // «закрыть все графики» справа.
         v_flex()
             .size_full()
-            .bg(rgb(p.shell))
             .child(
                 h_flex()
                     .h(design::fit_h_px(cx, 34.0, 13.0, 10.5))
@@ -890,33 +940,18 @@ impl Render for DetachedChartHost {
                     .border_color(rgb(p.border))
                     .bg(rgb(p.shell_high))
                     .child(
-                        h_flex()
+                        frame
+                            .title_cluster(title, cx)
                             .h_full()
                             .flex_1()
                             .min_w_0()
-                            .items_center()
-                            .gap(design::ui_px(cx, 8.0))
-                            .window_control_area(WindowControlArea::Drag)
-                            .on_mouse_down(MouseButton::Left, |event, window, _cx| {
-                                if event.click_count >= 2 {
-                                    window.titlebar_double_click();
-                                } else {
-                                    window.start_window_move();
-                                }
-                            })
-                            .child(design::logo_mark())
-                            .child(design::vline(16.0, p))
-                            .child(
-                                div()
-                                    .min_w_0()
-                                    .overflow_hidden()
-                                    .font_family(design::mono())
-                                    .text_size(design::text_px(cx, 11.0))
-                                    .text_color(rgb(p.text_soft))
-                                    .child(title),
-                            ),
+                            .items_center(),
                     )
-                    .child(crate::controls::scale_dropdown_for_panel(scale, panel.clone(), p))
+                    .child(crate::controls::scale_dropdown_for_panel(
+                        scale,
+                        panel.clone(),
+                        p,
+                    ))
                     .child(
                         div()
                             .id("detached-close-all")
@@ -937,26 +972,7 @@ impl Render for DetachedChartHost {
                             }),
                     )
                     .when(design::show_custom_window_controls(), |this| {
-                        this.child(
-                            div()
-                                .id("detached-window-close")
-                                .w(px(28.0))
-                                .h(design::fit_h_px(cx, 22.0, 13.0, 4.5))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .rounded(design::ui_px(cx, 3.0))
-                                .text_size(design::text_px(cx, 13.0))
-                                .text_color(rgb(p.text_soft))
-                                .bg(rgba(0x00000059))
-                                .cursor_pointer()
-                                .hover(|s| s.bg(rgba(0xE04848CC)).text_color(rgb(0xFFFFFF)))
-                                .child("×")
-                                .on_mouse_down(MouseButton::Left, |_e, window, cx| {
-                                    cx.stop_propagation();
-                                    window.remove_window();
-                                }),
-                        )
+                        this.child(frame.visual_controls(cx))
                     }),
             )
             .child(
@@ -964,7 +980,6 @@ impl Render for DetachedChartHost {
                     .flex_1()
                     .w_full()
                     .overflow_hidden()
-                    .bg(rgb(p.shell))
                     .child(self.panel.clone()),
             )
     }

@@ -6,7 +6,7 @@
 
 use gpui::prelude::FluentBuilder;
 use gpui::*;
-use moon_ui::{MoonPalette, h_flex};
+use moon_ui::{MoonPalette, MoonWindowFrame, h_flex};
 
 use crate::{Backend, design, settings, strategies};
 
@@ -25,21 +25,19 @@ pub fn header(
         .gap(design::ui_px(cx, 12.0))
         .bg(rgb(p.shell_high))
         .child(
-            h_flex()
+            MoonWindowFrame::main("terminal-header-brand-drag", 0.0)
+                .brand_cluster(cx)
                 .flex_none()
-                .gap(design::ui_px(cx, 8.0))
-                .items_center()
-                .window_control_area(WindowControlArea::Drag)
-                .child(design::logo_sized(86.0))
-                .child(design::vline(16.0, p)),
+                .h_full(),
         )
         .child(
-            h_flex()
+            MoonWindowFrame::main("terminal-header-metrics-drag", 0.0)
+                .drag_handle()
+                .flex()
                 .gap(design::ui_px(cx, 10.0))
                 .items_center()
                 .min_w_0()
                 .overflow_hidden()
-                .window_control_area(WindowControlArea::Drag)
                 .child(design::top_pill(
                     "strat-pill",
                     format!("{} · {}", group, market_label.into()),
@@ -52,10 +50,11 @@ pub fn header(
                 .child(risk_meter(p, cx)),
         )
         .child(
-            div()
+            MoonWindowFrame::main("terminal-header-spacer-drag", 0.0)
+                .drag_handle()
                 .h_full()
                 .flex_1()
-                .window_control_area(WindowControlArea::Drag),
+                .flex(),
         )
         .child(
             h_flex()
@@ -70,7 +69,9 @@ pub fn header(
                     "Стратегии",
                     {
                         let backend = backend.clone();
-                        move |_, _, cx| strategies::open(backend.clone(), cx)
+                        move |_, window, cx| {
+                            strategies::open(backend.clone(), Some(window.window_handle()), cx)
+                        }
                     },
                     p,
                     cx,
@@ -80,13 +81,19 @@ pub fn header(
                     "⚙",
                     {
                         let backend = backend.clone();
-                        move |_, _, cx| settings::open(backend.clone(), cx)
+                        move |_, window, cx| {
+                            settings::open(backend.clone(), Some(window.window_handle()), cx)
+                        }
                     },
                     p,
                     cx,
                 ))
                 .when(design::show_custom_window_controls(), |this| {
-                    this.child(window_controls(p, cx))
+                    this.child(
+                        MoonWindowFrame::main("terminal-header-controls", 0.0)
+                            .show_controls(true)
+                            .visual_controls(cx),
+                    )
                 }),
         )
 }
@@ -173,30 +180,6 @@ fn balance_label(p: MoonPalette, cx: &App) -> impl IntoElement {
                 .child("50.00"),
         )
         .child(div().text_color(rgb(p.text_muted)).child(" /50 USDT"))
-}
-
-fn window_controls(p: MoonPalette, cx: &App) -> impl IntoElement {
-    h_flex()
-        .h(design::fit_h_px(cx, 22.0, 11.0, 5.5))
-        .gap(design::ui_px(cx, 2.0))
-        .font_family(design::mono())
-        .text_size(design::text_px(cx, 11.0))
-        .child(win_btn("—", p.text_soft, cx))
-        .child(win_btn("□", p.text_soft, cx))
-        .child(win_btn("×", p.orange, cx))
-}
-
-fn win_btn(label: &'static str, color: u32, cx: &App) -> impl IntoElement {
-    div()
-        .w(design::ui_px(cx, 26.0))
-        .h(design::fit_h_px(cx, 22.0, 11.0, 5.5))
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded(design::ui_px(cx, 4.0))
-        .text_color(rgb(color))
-        .hover(|s| s.bg(design::alpha(0xFFFFFF, 0x08)))
-        .child(label)
 }
 
 fn header_action(

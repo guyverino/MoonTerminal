@@ -13,20 +13,16 @@ use std::sync::{Arc, RwLock};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::data::{OrderBookModel, PriceLineRing, TickRing};
+use crate::data::OrderBookModel;
 use crate::feed::{OrderBook, PriceLineKind, PricePoint, Tick};
 use crate::session::CoreId;
 
-pub use source::MarketDataSource;
+pub use source::{ChartHistoryBuffers, ChartHistoryCursor, ChartHistoryRead, MarketDataSource};
 
 /// Shared market buffer owned by moon-core, not by a GPUI entity. Live feeds only wake
 /// consumers; `SessionManager` pulls provider snapshots into this buffer for visible
 /// charts. Synthetic/compat feed messages can still publish here directly.
 pub type SharedMarketStore = Arc<RwLock<MarketStore>>;
-
-/// Ёмкость кольца крестиков на один (провайдер, рынок).
-const TICK_CAP: usize = 200_000;
-const PRICE_LINE_CAP: usize = 200_000;
 
 /// Режим источника рыночных данных (рубильник из настроек). Хранится в settings.toml
 /// кодом ("dedup"/"percore"); неизвестный код откатывается на дефолт.
@@ -73,9 +69,6 @@ impl<'de> Deserialize<'de> for MarketDataMode {
 /// Рыночные данные одного рынка от одного провайдера: крестики + стакан.
 /// Поля совпадают по имени с тем, что читает chart-рендер (раньше брал из CoreData).
 pub struct MarketView {
-    pub ring: TickRing,
-    pub last_line: PriceLineRing,
-    pub mark_line: PriceLineRing,
     pub book: OrderBookModel,
     pub last_price: Option<f32>,
     /// Время последнего тика (unix ms) — правый край графика следует за ним.
@@ -86,11 +79,8 @@ pub struct MarketView {
 }
 
 impl MarketView {
-    fn new(epoch_ms: f64) -> Self {
+    fn new() -> Self {
         Self {
-            ring: TickRing::new(epoch_ms, TICK_CAP),
-            last_line: PriceLineRing::new(epoch_ms, PRICE_LINE_CAP),
-            mark_line: PriceLineRing::new(epoch_ms, PRICE_LINE_CAP),
             book: OrderBookModel::default(),
             last_price: None,
             last_tick_ms: None,
@@ -105,7 +95,6 @@ impl MarketView {
             self.last_price = Some(t.price);
             self.last_tick_ms = Some(t.time_ms);
         }
-        self.ring.push_many(ticks);
         self.ticks_rev = self.ticks_rev.wrapping_add(1);
     }
 
@@ -113,10 +102,7 @@ impl MarketView {
         if points.is_empty() {
             return;
         }
-        match kind {
-            PriceLineKind::Last => self.last_line.push_many(points),
-            PriceLineKind::Mark => self.mark_line.push_many(points),
-        }
+        let _ = kind;
         self.price_lines_rev = self.price_lines_rev.wrapping_add(1);
     }
 
@@ -129,7 +115,6 @@ impl MarketView {
 /// Рыночные данные всех провайдеров: провайдер → (рынок → данные).
 pub struct MarketStore {
     by_provider: HashMap<CoreId, HashMap<String, MarketView>>,
-    epoch_ms: f64,
 }
 
 impl MarketStore {
@@ -137,10 +122,9 @@ impl MarketStore {
         Arc::new(RwLock::new(Self::new(epoch_ms)))
     }
 
-    pub fn new(epoch_ms: f64) -> Self {
+    pub fn new(_epoch_ms: f64) -> Self {
         Self {
             by_provider: HashMap::new(),
-            epoch_ms,
         }
     }
 
@@ -152,11 +136,10 @@ impl MarketStore {
     /// Сбросить рынок провайдера на чистый: новое открытие или смена провайдера
     /// (провайдер заново выгрузит retained-историю с начала кольца).
     pub fn reset(&mut self, provider: CoreId, market: &str) {
-        let epoch = self.epoch_ms;
         self.by_provider
             .entry(provider)
             .or_default()
-            .insert(market.to_string(), MarketView::new(epoch));
+            .insert(market.to_string(), MarketView::new());
     }
 
     /// Рынок больше никто не смотрит — освобождаем (после linger-задержки).

@@ -318,9 +318,7 @@ impl OrdersPanel {
                     .checked(matches!(self.view.source, OrdersSource::All))
                     .on_click({
                         let view = view.clone();
-                        move |_, _, app| {
-                            Self::mutate(&view, app, |v| v.source = OrdersSource::All)
-                        }
+                        move |_, _, app| Self::mutate(&view, app, |v| v.source = OrdersSource::All)
                     }),
             );
         for (id, name) in cores {
@@ -407,26 +405,20 @@ impl OrdersPanel {
             menu = menu.item(
                 MoonMenuItem::with_key(id, label)
                     .checked(cur.primary == variant)
-                    .on_click(move |_, _, app| {
-                        Self::mutate(&v, app, |s| s.primary = variant)
-                    }),
+                    .on_click(move |_, _, app| Self::mutate(&v, app, |s| s.primary = variant)),
             );
         }
         let v = view.clone();
         menu = menu.item(MoonMenuItem::separator()).item(
             MoonMenuItem::with_key("m-new", "Новые первые")
                 .checked(cur.newest_first)
-                .on_click(move |_, _, app| {
-                    Self::mutate(&v, app, |s| s.newest_first = true)
-                }),
+                .on_click(move |_, _, app| Self::mutate(&v, app, |s| s.newest_first = true)),
         );
         let v = view;
         menu.item(
             MoonMenuItem::with_key("m-old", "Старые первые")
                 .checked(!cur.newest_first)
-                .on_click(move |_, _, app| {
-                    Self::mutate(&v, app, |s| s.newest_first = false)
-                }),
+                .on_click(move |_, _, app| Self::mutate(&v, app, |s| s.newest_first = false)),
         )
     }
 }
@@ -541,7 +533,7 @@ impl Panel for OrdersPanel {
                         });
                     }
                     let spec = DetachedSpec::new(group.clone(), "Orders".to_string());
-                    crate::detached::spawn(app, &backend, &spec);
+                    crate::detached::spawn(app, &backend, &spec, Some(window.window_handle()));
                     backend.update(app, |b, _| {
                         b.detached.push(spec);
                         b.detached_dirty = true;

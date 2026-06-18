@@ -22,9 +22,8 @@ use gpui::prelude::FluentBuilder;
 use gpui::*;
 use moon_ui::{
     IndexPath, MoonBackgroundPolicy, MoonButton, MoonButtonSize, MoonButtonVariant,
-    MoonColorPicker, MoonColorPickerState, MoonPalette, MoonRect, MoonSelectEvent, MoonSelectItem,
-    MoonSelectState, MoonSlider, MoonSliderState, MoonWindowChrome, MoonWindowChromeButton, Root,
-    h_flex, rgba_from, v_flex,
+    MoonColorPicker, MoonColorPickerState, MoonPalette, MoonSelectEvent, MoonSelectItem,
+    MoonSelectState, MoonSlider, MoonSliderState, MoonWindowFrame, Root, h_flex, rgba_from, v_flex,
 };
 
 use crate::icons::IconSet;
@@ -466,7 +465,13 @@ impl Render for SettingsView {
             .child(tabs)
             .child(body)
             .child(footer)
-            .child(settings_window_chrome(chrome_width))
+            .child(
+                MoonWindowFrame::tool("settings-window-frame-hit", chrome_width)
+                    .header_height(SETTINGS_HEADER_H)
+                    .leading_inset(design::titlebar_leading_inset())
+                    .show_controls(design::show_custom_window_controls())
+                    .hit_overlay(),
+            )
     }
 }
 
@@ -484,58 +489,20 @@ fn settings_header(p: MoonPalette, cx: &App) -> impl IntoElement {
         .border_b(px(1.0))
         .border_color(rgba_from(p.border, 1.0))
         .child(
-            h_flex()
-                .gap(design::ui_px(cx, 8.0))
-                .items_center()
-                .child(
-                    div()
-                        .w(design::ui_px(cx, 7.0))
-                        .h(design::ui_px(cx, 7.0))
-                        .rounded(design::ui_px(cx, 999.0))
-                        .bg(rgba_from(p.blue, 1.0))
-                        .shadow(vec![moon_ui::foundation::box_shadow(
-                            px(0.0),
-                            px(0.0),
-                            design::ui_px(cx, 8.0),
-                            px(0.0),
-                            rgba_from(p.blue, 0.34),
-                        )]),
-                )
-                .child(
-                    div()
-                        .font_family("Inter")
-                        .text_size(design::text_px(cx, 12.0))
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(rgba_from(p.text, 1.0))
-                        .child("Настройки"),
-                ),
+            MoonWindowFrame::tool("settings-titlebar-title", 0.0)
+                .title_cluster("Настройки", cx)
+                .h_full()
+                .flex_1()
+                .min_w_0(),
         )
         .when(design::show_custom_window_controls(), |this| {
-            this.child(settings_window_buttons(p, cx))
+            this.child(
+                MoonWindowFrame::tool("settings-window-frame-visual", 0.0)
+                    .header_height(SETTINGS_HEADER_H)
+                    .show_controls(true)
+                    .visual_controls(cx),
+            )
         })
-}
-
-fn settings_window_buttons(p: MoonPalette, cx: &App) -> impl IntoElement {
-    h_flex()
-        .h(design::fit_h_px(cx, 22.0, 11.0, 5.5))
-        .gap(design::ui_px(cx, 2.0))
-        .font_family("Geist Mono")
-        .text_size(design::text_px(cx, 11.0))
-        .child(settings_window_button("—", p.text_soft, cx))
-        .child(settings_window_button("×", p.orange, cx))
-}
-
-fn settings_window_button(label: &'static str, color: u32, cx: &App) -> impl IntoElement {
-    div()
-        .w(design::ui_px(cx, 26.0))
-        .h(design::fit_h_px(cx, 22.0, 11.0, 5.5))
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded(design::ui_px(cx, 4.0))
-        .text_color(rgba_from(color, 1.0))
-        .hover(|s| s.bg(rgba_from(0xFFFFFF, 0.055)))
-        .child(label)
 }
 
 fn settings_sig(b: &Backend) -> u64 {
@@ -593,45 +560,10 @@ fn settings_sig(b: &Backend) -> u64 {
     h.finish()
 }
 
-fn settings_window_chrome(width: f32) -> impl IntoElement {
-    let controls_w = 52.0;
-    let controls_x = (width - controls_w - 12.0).max(0.0);
-    let drag_x = design::titlebar_leading_inset();
-    let drag_w = if design::show_custom_window_controls() {
-        (width - controls_w - 20.0).max(0.0)
-    } else {
-        (width - drag_x).max(0.0)
-    };
-
-    let chrome = MoonWindowChrome::new(
-        "settings-window-chrome",
-        MoonRect::new(0.0, 0.0, width, SETTINGS_HEADER_H),
-    )
-    .drag_bounds(MoonRect::new(drag_x, 0.0, drag_w, SETTINGS_HEADER_H));
-
-    if design::show_custom_window_controls() {
-        chrome
-            .controls_bounds(MoonRect::new(
-                controls_x,
-                0.0,
-                controls_w,
-                SETTINGS_HEADER_H,
-            ))
-            .button_width(26.0)
-            .buttons([
-                MoonWindowChromeButton::Minimize,
-                MoonWindowChromeButton::Close,
-            ])
-            .render()
-    } else {
-        chrome.no_controls().render()
-    }
-}
-
 /// Открыть окно настроек (отдельное ОС-окно). Заводит draft = копия config (его
 /// правят вкладки, чарт показывает его живьём). Повторный клик при уже открытом
 /// окне игнорируем (draft уже есть) — иначе два окна делили бы один draft.
-pub fn open(backend: Entity<Backend>, cx: &mut App) {
+pub fn open(backend: Entity<Backend>, owner: Option<AnyWindowHandle>, cx: &mut App) {
     if let Some(handle) = backend.read(cx).settings_window {
         if handle
             .update(cx, |_, window, _| window.activate_window())
@@ -644,22 +576,15 @@ pub fn open(backend: Entity<Backend>, cx: &mut App) {
         return;
     }
     backend.update(cx, |b, _| b.preview = Some(b.config.clone()));
-    let opts = WindowOptions {
-        window_bounds: Some(WindowBounds::Windowed(Bounds {
+    let opts = crate::windowing::tool_window_options(
+        "MoonTerminal — Настройки",
+        WindowBounds::Windowed(Bounds {
             origin: point(px(160.0), px(120.0)),
             size: size(px(860.0), px(620.0)),
-        })),
-        titlebar: Some(TitlebarOptions {
-            title: Some("MoonTerminal — Настройки".into()),
-            appears_transparent: true,
-            ..Default::default()
         }),
-        kind: WindowKind::Floating,
-        app_id: Some("MoonTerminal".to_string()),
-        window_min_size: Some(size(px(620.0), px(420.0))),
-        window_decorations: design::platform_window_decorations(),
-        ..Default::default()
-    };
+        Some(size(px(620.0), px(420.0))),
+        owner,
+    );
     let b = backend.clone();
     match cx.open_window(opts, move |window, cx| {
         let view = cx.new(|cx| SettingsView::new(b, window, cx));

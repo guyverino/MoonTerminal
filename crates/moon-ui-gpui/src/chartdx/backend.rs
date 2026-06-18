@@ -6,8 +6,8 @@ use moon_chart::layers::{LineInstance, MarkerInstance, SegInstance, ZoneInstance
 use moon_core::data::{LevelInstance, PriceLinePoint};
 
 use super::types::{
-    BackgroundParams, BookStyle, ChartCross, ChartViewGpu, CursorParams, GridParams,
-    ReadoutGlyph, ReadoutRect,
+    BackgroundParams, BookStyle, ChartCross, ChartViewGpu, CursorParams, GridParams, ReadoutGlyph,
+    ReadoutRect,
 };
 
 #[cfg(target_os = "macos")]
@@ -17,7 +17,7 @@ use super::wgpu_backend::WgpuLayers;
 
 #[cfg(windows)]
 use super::{
-    background::{BackgroundLayer, BACKGROUND_3DLOGO_PNG},
+    background::{BACKGROUND_3DLOGO_PNG, BackgroundLayer},
     combo::ComboLayer,
     cursor::CursorLayer,
     grid::GridLayer,
@@ -83,6 +83,21 @@ impl PlatformLayers {
         }
         #[allow(unreachable_code)]
         0
+    }
+
+    pub fn set_combo_capacity(&mut self, cross_capacity: usize, price_line_capacity: usize) {
+        #[cfg(windows)]
+        self.combo.set_capacity(cross_capacity, price_line_capacity);
+        #[cfg(target_os = "linux")]
+        self.wgpu
+            .set_combo_capacity(cross_capacity, price_line_capacity);
+        #[cfg(target_os = "macos")]
+        self.metal
+            .set_combo_capacity(cross_capacity, price_line_capacity);
+        #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
+        {
+            let _ = (cross_capacity, price_line_capacity);
+        }
     }
 
     pub fn reset_combo(&mut self, data: Vec<ChartCross>) {

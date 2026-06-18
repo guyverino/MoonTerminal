@@ -49,10 +49,6 @@ pub fn solid(hex: u32) -> Rgba {
     rgb(hex)
 }
 
-pub fn alpha(hex: u32, a: u32) -> Rgba {
-    rgba((hex << 8) | (a & 0xff))
-}
-
 pub fn mono() -> SharedString {
     SharedString::from("Geist Mono")
 }
@@ -91,36 +87,6 @@ pub fn line_px(cx: &App, value: f32) -> Pixels {
 
 pub fn fit_h_px(cx: &App, base_height: f32, base_line_height: f32, base_pad_y: f32) -> Pixels {
     px(fit_h_value(cx, base_height, base_line_height, base_pad_y))
-}
-
-pub fn logo_mark() -> impl IntoElement {
-    logo_mark_sized(18.0)
-}
-
-pub fn logo_sized(width: f32) -> impl IntoElement {
-    img(Arc::new(Image::from_bytes(
-        ImageFormat::Svg,
-        LOGO_GLOW_SVG_RAW.as_bytes().to_vec(),
-    )))
-    .w(px(width))
-    .h(px(width * (LOGO_SRC_H / LOGO_SRC_W)))
-}
-
-pub fn logo_mark_sized(size: f32) -> impl IntoElement {
-    let paths = LOGO_GLOW_SVG_RAW
-        .split_once(r#"<g clip-path="url(#clip0_3800_3393)">"#)
-        .and_then(|(_, rest)| rest.split_once("</g>"))
-        .map(|(paths, _)| paths)
-        .unwrap_or("");
-    let svg = format!(
-        r#"<svg width="43" height="43" viewBox="0 0 43.5 43" fill="none" xmlns="http://www.w3.org/2000/svg">{paths}</svg>"#
-    );
-    img(Arc::new(Image::from_bytes(
-        ImageFormat::Svg,
-        svg.into_bytes(),
-    )))
-    .w(px(size))
-    .h(px(size))
 }
 
 pub fn logo_glow_sized(width: f32) -> impl IntoElement {

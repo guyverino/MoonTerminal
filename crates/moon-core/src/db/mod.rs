@@ -18,13 +18,13 @@ mod parse;
 
 pub use parse::parse_report_sql;
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use rusqlite::Connection;
 use rusqlite::types::Value;
+use rusqlite::Connection;
 
 use crate::config::paths;
 

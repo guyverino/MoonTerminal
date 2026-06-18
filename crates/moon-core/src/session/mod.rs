@@ -18,6 +18,9 @@ pub use store::{CoreId, CoreStore};
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
+use moonproto::state::{LastPricePoint, MarkPricePoint, SeqRingReader, TradeHistoryRow};
+use moonproto::MoonClient;
+
 use crate::config::AppConfig;
 use crate::db::ReportTx;
 use crate::feed::{self, ConnStatus, CoreCmd, ExchangeId, FeedHandle, FeedMsg, FeedWakeTx};
@@ -76,6 +79,96 @@ pub struct DrainStats {
     pub ui_state: bool,
 }
 
+fn log_diag_market_history_after_fill(client: &MoonClient, market: &str, provider: CoreId) {
+    let Some(snapshot) = client.snapshot_versioned() else {
+        log::warn!("diag history fill verify: no snapshot provider={provider} market={market}");
+        return;
+    };
+    let revision = client.snapshot_revision().unwrap_or(0);
+    let Some(readers) = snapshot.market_history_readers(market) else {
+        log::warn!(
+            "diag history fill verify: no history readers provider={provider} market={market} rev={revision}"
+        );
+        return;
+    };
+    log::info!(
+        "diag history fill verify: provider={provider} market={market} rev={revision} {} {} {}",
+        trade_reader_summary("futures_trades", readers.futures_trades),
+        trade_reader_summary("spot_trades", readers.spot_trades),
+        price_reader_summary("last", readers.last_prices),
+    );
+    log::info!(
+        "diag history fill verify: provider={provider} market={market} rev={revision} {}",
+        mark_reader_summary("mark", readers.mark_prices),
+    );
+}
+
+fn trade_reader_summary(name: &str, reader: Option<SeqRingReader<TradeHistoryRow>>) -> String {
+    let Some(reader) = reader else {
+        return format!("{name}=none");
+    };
+    let bounds = reader.bounds();
+    let first = (bounds.len > 0)
+        .then(|| reader.read_at_seq(bounds.oldest_seq))
+        .flatten()
+        .map(|r| format!("{}:{:.4}", r.unix_millis(), r.price))
+        .unwrap_or_else(|| "-".to_string());
+    let mut last = Vec::new();
+    reader.copy_last(1, &mut last);
+    let last = last
+        .last()
+        .map(|r| format!("{}:{:.4}", r.unix_millis(), r.price))
+        .unwrap_or_else(|| "-".to_string());
+    format!(
+        "{name}=len:{}/{} seq:[{}..{}) first:{} last:{}",
+        bounds.len, bounds.capacity, bounds.oldest_seq, bounds.next_seq, first, last
+    )
+}
+
+fn price_reader_summary(name: &str, reader: Option<SeqRingReader<LastPricePoint>>) -> String {
+    let Some(reader) = reader else {
+        return format!("{name}=none");
+    };
+    let bounds = reader.bounds();
+    let first = (bounds.len > 0)
+        .then(|| reader.read_at_seq(bounds.oldest_seq))
+        .flatten()
+        .map(|r| format!("{}:{:.4}", r.unix_millis(), r.price()))
+        .unwrap_or_else(|| "-".to_string());
+    let mut last = Vec::new();
+    reader.copy_last(1, &mut last);
+    let last = last
+        .last()
+        .map(|r| format!("{}:{:.4}", r.unix_millis(), r.price()))
+        .unwrap_or_else(|| "-".to_string());
+    format!(
+        "{name}=len:{}/{} seq:[{}..{}) first:{} last:{}",
+        bounds.len, bounds.capacity, bounds.oldest_seq, bounds.next_seq, first, last
+    )
+}
+
+fn mark_reader_summary(name: &str, reader: Option<SeqRingReader<MarkPricePoint>>) -> String {
+    let Some(reader) = reader else {
+        return format!("{name}=none");
+    };
+    let bounds = reader.bounds();
+    let first = (bounds.len > 0)
+        .then(|| reader.read_at_seq(bounds.oldest_seq))
+        .flatten()
+        .map(|r| format!("{}:{:.4}", r.unix_millis(), r.price()))
+        .unwrap_or_else(|| "-".to_string());
+    let mut last = Vec::new();
+    reader.copy_last(1, &mut last);
+    let last = last
+        .last()
+        .map(|r| format!("{}:{:.4}", r.unix_millis(), r.price()))
+        .unwrap_or_else(|| "-".to_string());
+    format!(
+        "{name}=len:{}/{} seq:[{}..{}) first:{} last:{}",
+        bounds.len, bounds.capacity, bounds.oldest_seq, bounds.next_seq, first, last
+    )
+}
+
 impl SessionManager {
     /// Поднимает live-сессии по всем серверам конфига. Нет серверов — нет сессий.
     /// `reports` — общий канал к SQLite-writer'у (клонируется на каждое ядро).
@@ -99,7 +192,13 @@ impl SessionManager {
             let id = s.id;
             let name = s.name.clone();
             let group = s.group.clone();
-            let handle = feed::spawn(s, reports.cloned(), feed_wake.clone());
+            let handle = feed::spawn(
+                s,
+                config.chart_memory_percent,
+                reports.cloned(),
+                feed_wake.clone(),
+                Some(market.clone()),
+            );
             market_source.set_client(id, handle.client.clone());
             sessions.push(CoreSession {
                 id,
@@ -196,6 +295,51 @@ impl SessionManager {
         self.market_source.refresh_for_open(desired)
     }
 
+    /// Diagnostics-only stress fixture: ask the MoonProto provider for `core` to
+    /// fill every retained history ring for `market` to its effective capacity.
+    /// This deliberately stays behind the session boundary: GPUI/debug UI should
+    /// not talk to MoonProto clients directly.
+    pub fn diag_fill_market_history_to_capacity(
+        &self,
+        core: CoreId,
+        market: &str,
+        now_ms: i64,
+        span_ms: i64,
+    ) -> bool {
+        let provider = self.core_provider.get(&core).copied().unwrap_or(core);
+        let Some(sess) = self.sessions.iter().find(|s| s.id == provider) else {
+            log::warn!(
+                "diag history fill: no provider session for core={core} provider={provider}"
+            );
+            return false;
+        };
+        let Some(client) = sess.handle.client.get() else {
+            log::warn!("diag history fill: no MoonProto client for provider={provider}");
+            return false;
+        };
+        match client.diag_fill_market_history_to_capacity(market, now_ms, span_ms) {
+            Ok(true) => {
+                log::info!(
+                    "diag history fill: market={market} core={core} provider={provider} span_ms={span_ms}"
+                );
+                log_diag_market_history_after_fill(&client, market, provider);
+                true
+            }
+            Ok(false) => {
+                log::warn!(
+                    "diag history fill: MoonProto returned false for market={market} provider={provider}"
+                );
+                false
+            }
+            Err(err) => {
+                log::warn!(
+                    "diag history fill: MoonProto error for market={market} provider={provider}: {err}"
+                );
+                false
+            }
+        }
+    }
+
     /// Снимок статусов подключения всех ядер (id → статус) — для бейджей в окне
     /// Настроек. Владеющая копия, чтобы не держать заём на сессию.
     pub fn status_map(&self) -> HashMap<CoreId, ConnStatus> {
@@ -238,7 +382,14 @@ impl SessionManager {
         }
         let name = server.name.clone();
         let group = server.group.clone();
-        let handle = feed::spawn(server, reports.cloned(), self.feed_wake.clone());
+        let handle = feed::spawn(
+            server,
+            config.chart_memory_percent,
+            reports.cloned(),
+            self.feed_wake.clone(),
+            Some(self.market.clone()),
+        );
+        self.market_source.set_client(id, handle.client.clone());
         match self.sessions.iter_mut().find(|s| s.id == id) {
             Some(sess) => sess.handle = handle, // дроп старого хэндла → старый поток завершится
             None => self.sessions.push(CoreSession {

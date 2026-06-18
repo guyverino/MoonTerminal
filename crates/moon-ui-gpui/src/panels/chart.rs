@@ -4,7 +4,7 @@
 //!
 //! Рендер: `ChartEngine.canvas()` отдаёт GPUI `gpu_canvas` ПОД сценой (рисует combo/слои в
 //! backbuffer GPUI без readback), `prepare` обновляет вид и заливает новые тики.
-//! Текст осей — GPUI-оверлей ПОВЕРХ; перекрестие — native chartdx cursor layer без GPUI notify.
+//! Текст осей/readout — GPUI-оверлей ПОВЕРХ; линии перекрестия — native chartdx cursor layer.
 
 use std::time::Duration;
 
@@ -48,6 +48,8 @@ fn chart_bootstrap_present_rate_hz() -> f32 {
     let refresh = monitor_refresh_hz().clamp(30, 360);
     refresh as f32
 }
+
+const DEBUG_HISTORY_FILL_SPAN_MS: i64 = 3_600_000;
 
 #[derive(Clone, PartialEq)]
 struct ChartSettingsSig {
@@ -284,6 +286,11 @@ impl ChartPanel {
         self.scale
     }
 
+    #[cfg(any(debug_assertions, moon_profile_debug, feature = "debug-tools"))]
+    pub fn debug_data_handle(&self) -> crate::chartdx::ChartDataHandle {
+        self.chart.data_handle()
+    }
+
     /// Mark whether this panel is part of the currently rendered GPUI scene. This only gates
     /// CPU-side data prepare; the `gpu_canvas` element lifetime is still owned by GPUI scene replay.
     pub fn set_scene_visible(&mut self, visible: bool) {
@@ -433,6 +440,38 @@ impl ChartPanel {
             .filter(|m| !m.is_empty())
             .or_else(|| self.market.clone())
             .unwrap_or_else(|| "Main".into())
+    }
+
+    #[cfg(any(debug_assertions, moon_profile_debug, feature = "debug-tools"))]
+    pub fn debug_fill_history_to_capacity(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some((core, market)) = self.chart.active_target() else {
+            log::warn!("debug history fill: current chart has no active market");
+            return false;
+        };
+        let now_ms = now_unix_ms();
+        log::info!(
+            "debug history fill: requesting core={core} market={market} span_ms={DEBUG_HISTORY_FILL_SPAN_MS}"
+        );
+        let filled = self
+            .backend
+            .read(cx)
+            .session
+            .diag_fill_market_history_to_capacity(
+                core,
+                &market,
+                now_ms.round() as i64,
+                DEBUG_HISTORY_FILL_SPAN_MS,
+            );
+        if !filled {
+            log::warn!("debug history fill: failed core={core} market={market}");
+            return false;
+        }
+        self.chart.force_history_reupload();
+        self.view_dirty = true;
+        crate::diag::bump(&crate::diag::CHART_INPUT_NOTIFY);
+        cx.notify();
+        log::info!("debug history fill: force reupload core={core} market={market}");
+        true
     }
 }
 
@@ -735,19 +774,21 @@ impl Render for ChartPanel {
                 if cursor_changed {
                     this.sync_native_cursor();
                 }
-                // Drag меняет камеры/оси, поэтому нужен обычный GPUI notify. Cursor-only move
-                // уходит в chartdx native overlay через gpu_canvas без dirty всего дерева.
-                if dragging {
+                // Drag меняет камеры/оси; cursor_changed нужен для GPUI readout-плашек осей.
+                // Частые линии креста всё равно остаются в native chartdx overlay.
+                if dragging || cursor_changed {
                     crate::diag::bump(&crate::diag::CHART_INPUT_NOTIFY);
                     cx.notify();
                 }
             }))
-            .on_hover(cx.listener(|this, hovered: &bool, _window, _cx| {
+            .on_hover(cx.listener(|this, hovered: &bool, _window, cx| {
                 if !*hovered {
                     let changed = this.input.cursor.take().is_some()
                         || this.input.hovered_pane.take().is_some();
                     if changed {
                         this.sync_native_cursor();
+                        crate::diag::bump(&crate::diag::CHART_INPUT_NOTIFY);
+                        cx.notify();
                     }
                 }
             }))
@@ -768,6 +809,8 @@ impl Render for ChartPanel {
                 let entity = cx.entity();
                 let measured = self.chart_dev;
                 let prev_bounds = self.chart_bounds;
+                let cursor_pos = self.input.cursor;
+                let hovered_pane = self.input.hovered_pane;
                 canvas(
                     move |bounds, _, _| bounds,
                     move |bounds, _, window, cx| {
@@ -785,10 +828,10 @@ impl Render for ChartPanel {
                             });
                         }
                         // Оси — ПО КАЖДОЙ панели (Tiled-мультичарт): свой прямоугольник
-                        // (девайс-px → лог.px окна) и снимок. Cursor/readout are native;
-                        // GPUI keeps only slow/static axis labels.
+                        // (девайс-px → лог.px окна) и снимок. Линии креста native, readout-
+                        // плашки GPUI, чтобы размер/шрифт совпадали с остальными осями.
                         let palette = MoonPalette::active(cx);
-                        for (_idx, rect, snap) in &axis_panes {
+                        for (idx, rect, snap) in &axis_panes {
                             let sub = Bounds::new(
                                 point(
                                     bounds.origin.x + px(rect.x / sf),
@@ -796,7 +839,16 @@ impl Render for ChartPanel {
                                 ),
                                 gpui::size(px(rect.w / sf), px(rect.h / sf)),
                             );
-                            axes::draw(window, cx, sub, snap, None, false, sf, cross, palette);
+                            let cursor =
+                                cursor_pos
+                                    .filter(|_| hovered_pane == Some(*idx))
+                                    .map(|(x, y)| {
+                                        point(
+                                            bounds.origin.x + px(x / sf),
+                                            bounds.origin.y + px(y / sf),
+                                        )
+                                    });
+                            axes::draw(window, cx, sub, snap, cursor, false, sf, cross, palette);
                         }
                     },
                 )

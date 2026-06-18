@@ -11,12 +11,14 @@
 
 use std::rc::Rc;
 
+use gpui::prelude::FluentBuilder;
 use gpui::*;
-use moon_ui::{MoonBackgroundPolicy, MoonPalette, PanelView, Root};
+use moon_ui::{
+    MoonBackgroundPolicy, MoonPalette, MoonWindowFrame, PanelView, Root, h_flex, v_flex,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::Backend;
-use crate::design;
 use crate::panels::{LogPanel, OrdersPanel, ReportPanel, StubPanel};
 use moon_core::config::paths;
 
@@ -186,30 +188,78 @@ impl Render for DetachedWindow {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::diag::bump(&crate::diag::DETACHED_RENDER);
         let p = MoonPalette::active(cx);
-        div()
+        let title = format!("{} · {}", panel_title(&self.panel), self.group);
+        v_flex()
             .size_full()
             .bg(rgb(p.shell))
             .text_color(rgb(p.text))
-            .child(self.content.clone())
+            .child(
+                h_flex()
+                    .h(crate::design::fit_h_px(cx, 34.0, 13.0, 10.5))
+                    .w_full()
+                    .items_center()
+                    .gap(crate::design::ui_px(cx, 8.0))
+                    .pl(crate::design::ui_px(
+                        cx,
+                        crate::design::titlebar_leading_inset(),
+                    ))
+                    .pr(crate::design::ui_px(cx, 6.0))
+                    .border_b_1()
+                    .border_color(rgb(p.border))
+                    .bg(rgb(p.shell_high))
+                    .child(
+                        MoonWindowFrame::detached_panel("detached-panel-title-drag", 0.0)
+                            .title_cluster(title, cx)
+                            .h_full()
+                            .flex_1()
+                            .min_w_0()
+                            .items_center(),
+                    )
+                    .when(crate::design::show_custom_window_controls(), |this| {
+                        this.child(
+                            MoonWindowFrame::detached_panel("detached-panel-window-controls", 0.0)
+                                .header_height(34.0)
+                                .show_controls(true)
+                                .visual_controls(cx),
+                        )
+                    }),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .w_full()
+                    .overflow_hidden()
+                    .child(self.content.clone()),
+            )
     }
 }
 
 /// Открыть окно открепления для спеки (на старте — по каждой сохранённой спеке; при
 /// клике «⧉» — по новой). Контент — свежая панель; геометрия — из спеки.
-pub fn spawn(app: &mut App, backend: &Entity<Backend>, spec: &DetachedSpec) {
+pub fn spawn(
+    app: &mut App,
+    backend: &Entity<Backend>,
+    spec: &DetachedSpec,
+    owner: Option<AnyWindowHandle>,
+) {
+    let owner = owner.or_else(|| {
+        backend
+            .read(app)
+            .group_windows
+            .get(&spec.group)
+            .copied()
+            .map(Into::into)
+    });
     let bounds = Bounds {
         origin: point(px(spec.x as f32), px(spec.y as f32)),
         size: size(px(spec.w as f32), px(spec.h as f32)),
     };
-    let opts = WindowOptions {
-        window_bounds: Some(WindowBounds::Windowed(bounds)),
-        titlebar: Some(TitlebarOptions {
-            title: Some(format!("{} — MoonTerminal", panel_title(&spec.panel)).into()),
-            ..Default::default()
-        }),
-        window_decorations: design::platform_window_decorations(),
-        ..Default::default()
-    };
+    let opts = crate::windowing::detached_window_options(
+        format!("{} — MoonTerminal", panel_title(&spec.panel)),
+        WindowBounds::Windowed(bounds),
+        None,
+        owner,
+    );
     let backend = backend.clone();
     let spec = spec.clone();
     app.open_window(opts, move |window, cx| {

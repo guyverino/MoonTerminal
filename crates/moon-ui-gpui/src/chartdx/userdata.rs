@@ -13,16 +13,16 @@ use windows::Win32::Graphics::Direct3D::D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
 use windows::Win32::Graphics::Direct3D11::*;
 
 use super::gpu::{
-    create_alpha_blend, create_dynamic_cb, create_srv, create_structured, d3d_device_ptr,
-    full_viewport, make_ps, make_vs, update_dynamic, ChartViewGpu,
+    ChartViewGpu, create_alpha_blend, create_dynamic_cb, create_srv, create_structured,
+    d3d_device_ptr, full_viewport, make_ps, make_vs, update_dynamic,
 };
 use super::types::{HLineGpu, MarkerGpu, SegGpu, ZoneGpu};
 
 const HLSL: &str = include_str!("shaders/order_lines.hlsl");
-const INITIAL_ZONE_CAP: u32 = 64;
-const INITIAL_HLINE_CAP: u32 = 256;
-const INITIAL_SEG_CAP: u32 = 512;
-const INITIAL_MARKER_CAP: u32 = 512;
+const INITIAL_ZONE_BUFFER_CAPACITY: u32 = 64;
+const INITIAL_HLINE_BUFFER_CAPACITY: u32 = 256;
+const INITIAL_SEG_BUFFER_CAPACITY: u32 = 512;
+const INITIAL_MARKER_BUFFER_CAPACITY: u32 = 512;
 
 fn hl_of(h: &LineInstance) -> HLineGpu {
     HLineGpu {
@@ -144,17 +144,17 @@ impl UserDataLayer {
         if self.pipe.is_none() {
             self.pipe = Some(Self::create_pipe(
                 device,
-                INITIAL_ZONE_CAP,
-                INITIAL_HLINE_CAP,
-                INITIAL_SEG_CAP,
-                INITIAL_MARKER_CAP,
+                INITIAL_ZONE_BUFFER_CAPACITY,
+                INITIAL_HLINE_BUFFER_CAPACITY,
+                INITIAL_SEG_BUFFER_CAPACITY,
+                INITIAL_MARKER_BUFFER_CAPACITY,
             ));
         }
         if let Some(p) = self.pending.take() {
-            let zone_cap = next_buffer_cap(p.zone.len(), INITIAL_ZONE_CAP);
-            let hl_cap = next_buffer_cap(p.hl.len(), INITIAL_HLINE_CAP);
-            let seg_cap = next_buffer_cap(p.seg.len(), INITIAL_SEG_CAP);
-            let mk_cap = next_buffer_cap(p.mk.len(), INITIAL_MARKER_CAP);
+            let zone_cap = next_buffer_cap(p.zone.len(), INITIAL_ZONE_BUFFER_CAPACITY);
+            let hl_cap = next_buffer_cap(p.hl.len(), INITIAL_HLINE_BUFFER_CAPACITY);
+            let seg_cap = next_buffer_cap(p.seg.len(), INITIAL_SEG_BUFFER_CAPACITY);
+            let mk_cap = next_buffer_cap(p.mk.len(), INITIAL_MARKER_BUFFER_CAPACITY);
             let needs_resize = self.pipe.as_ref().is_none_or(|pipe| {
                 pipe.zone_cap < zone_cap
                     || pipe.hl_cap < hl_cap

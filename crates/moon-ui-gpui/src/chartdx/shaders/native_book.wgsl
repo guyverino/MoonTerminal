@@ -17,13 +17,14 @@ struct BookStyle {
     book_bg: vec4<f32>,
     bid: vec4<f32>,
     ask: vec4<f32>,
+    level: vec4<f32>,
 };
 
 struct Level {
     price: f32,
     span: f32,
     len_norm: f32,
-    kind: f32,
+    kind: f32, // 0 = bid fill, 1 = ask fill, 2 = bid level, 3 = ask level
 };
 
 const CORNERS_01: array<vec2<f32>, 6> = array<vec2<f32>, 6>(
@@ -68,7 +69,7 @@ fn book_bars_vertex(@builtin(vertex_index) vid: u32, @builtin(instance_index) ii
     var hh = bot - top;
     if lv.kind >= 2.0 {
         cy = round(y_price);
-        hh = 1.5;
+        hh = max(bs.level.y, 1.0);
     }
     let corner = CORNERS_PM[vid];
     let px = vec2<f32>(cx + corner.x * seg_len * 0.5, cy + corner.y * hh * 0.5);
@@ -80,18 +81,14 @@ fn book_bars_vertex(@builtin(vertex_index) vid: u32, @builtin(instance_index) ii
 
 @fragment
 fn book_bars_fragment(in: BookOut) -> @location(0) vec4<f32> {
-    let bid = bs.bid.rgb;
-    let ask = bs.ask.rgb;
-    let bid_line = min(bs.bid.rgb * 1.25, vec3<f32>(1.0));
-    let ask_line = min(bs.ask.rgb * 1.25, vec3<f32>(1.0));
     if in.kind < 0.5 {
-        return vec4<f32>(bid, 0.82);
+        return vec4<f32>(bs.bid.rgb, 1.0);
     } else if in.kind < 1.5 {
-        return vec4<f32>(ask, 0.82);
+        return vec4<f32>(bs.ask.rgb, 1.0);
     } else if in.kind < 2.5 {
-        return vec4<f32>(bid_line, 1.0);
+        return vec4<f32>(min(bs.bid.rgb * 1.25, vec3<f32>(1.0)), bs.level.x);
     }
-    return vec4<f32>(ask_line, 1.0);
+    return vec4<f32>(min(bs.ask.rgb * 1.25, vec3<f32>(1.0)), bs.level.x);
 }
 
 struct PlainOut {

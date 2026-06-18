@@ -26,6 +26,7 @@ pub(super) struct Iface {
     book_bg: Entity<MoonColorPickerState>,
     book_bid: Entity<MoonColorPickerState>,
     book_ask: Entity<MoonColorPickerState>,
+    book_level_alpha: Entity<MoonSliderState>,
     panel_bg: Entity<MoonColorPickerState>,
     closed_bg: Entity<MoonColorPickerState>,
 }
@@ -201,6 +202,15 @@ pub(super) fn build(
         book_bg: color_field(backend, window, cx, |t| t.book_bg, |t, v| t.book_bg = v),
         book_bid: color_field(backend, window, cx, |t| t.book_bid, |t, v| t.book_bid = v),
         book_ask: color_field(backend, window, cx, |t| t.book_ask, |t, v| t.book_ask = v),
+        book_level_alpha: num_field(
+            backend,
+            cx,
+            |t| t.book_level_alpha,
+            |t, v| t.book_level_alpha = v,
+            0.0,
+            1.0,
+            0.01,
+        ),
         panel_bg: color_field(backend, window, cx, |t| t.panel_bg, |t, v| t.panel_bg = v),
         closed_bg: color_field(backend, window, cx, |t| t.closed_bg, |t, v| t.closed_bg = v),
     }
@@ -239,6 +249,7 @@ impl SettingsView {
             .child(color_row("Фон стакана", &i.book_bg, p, cx))
             .child(color_row("Цвет покупок (bid)", &i.book_bid, p, cx))
             .child(color_row("Цвет продаж (ask)", &i.book_ask, p, cx))
+            .child(slider_row("Яркость линий уровней", &i.book_level_alpha, cx))
             .child(separator(p, cx))
             // Панели
             .child(section("Панели", p, cx))
