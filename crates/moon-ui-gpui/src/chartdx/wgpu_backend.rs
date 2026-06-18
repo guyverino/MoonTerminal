@@ -423,6 +423,33 @@ impl WgpuLayers {
         self.base_cache.needs_rebuild(gpu)
     }
 
+    fn reset_gpu_objects(&mut self) {
+        self.pipelines = None;
+        self.background_texture = None;
+        self.prepared_binds = None;
+        self.base_cache = BaseCache::default();
+        self.bg_uniform = BufferSlot::default();
+        self.grid_uniform = BufferSlot::default();
+        self.cursor_uniform = BufferSlot::default();
+        self.readout_rect_buffer = BufferSlot::default();
+        self.readout_glyph_buffer = BufferSlot::default();
+        self.view_uniform = BufferSlot::default();
+        self.book_view_uniform = BufferSlot::default();
+        self.book_style_uniform = BufferSlot::default();
+        self.cross_buffer = BufferSlot::default();
+        self.last_line_buffer = BufferSlot::default();
+        self.mark_line_buffer = BufferSlot::default();
+        self.level_buffer = BufferSlot::default();
+        self.zone_buffer = BufferSlot::default();
+        self.hline_buffer = BufferSlot::default();
+        self.seg_buffer = BufferSlot::default();
+        self.marker_buffer = BufferSlot::default();
+        self.combo_buffers_dirty = true;
+        self.price_line_buffers_dirty = true;
+        self.book_buffer_dirty = true;
+        self.userdata_buffers_dirty = true;
+    }
+
     pub fn render(
         &mut self,
         view: &ChartViewGpu,
@@ -639,9 +666,9 @@ impl WgpuLayers {
         if self.device_generation != gpu.device_generation() || self.format != Some(format) {
             self.device_generation = gpu.device_generation();
             self.format = Some(format);
+            self.reset_gpu_objects();
             self.pipelines = Some(create_pipelines(device, format));
             self.background_texture = Some(create_background_texture(device, queue));
-            self.prepared_binds = None;
         }
         self.upload_common(
             device,
