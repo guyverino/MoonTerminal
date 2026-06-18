@@ -6,7 +6,7 @@
 #   make check          быстрая проверка типов
 #   make fmt            cargo fmt
 #   make clean          очистить target
-#   make update-moon-ui обновить MoonUI до HEAD ветки + перелочить Cargo.lock
+#   make update-moon-ui обновить локальный Cargo.lock до HEAD зависимостей
 #
 # Windows: таргет ВСЕГДА MSVC (x86_64-pc-windows-msvc), не GNU — его ожидают GPUI/DirectX/
 # chartdx. Запускать `make` из «x64 Native Tools Command Prompt for VS 2022» (там настроен
@@ -47,11 +47,11 @@ fmt:
 clean:
 	cargo clean
 
-# MoonUI пинится по ветке master; Cargo.lock закоммичен и фиксирует точный rev.
-# Обновление — ОСОЗНАННОЕ: подтянуть HEAD ветки, проверить сборку, закоммитить lock.
+# Cargo.lock локальный и не коммитится. Fresh checkout резолвит текущий MoonUI master.
+# В уже собранной рабочей копии этот target обновляет локальный lock до HEAD зависимостей.
 update-moon-ui:
 	cargo update
-	@echo ">> MoonUI обновлён. Теперь: make build  →  git add Cargo.lock && git commit"
+	@echo ">> Локальный Cargo.lock обновлён. Теперь: make build"
 
 # Backward-compatible alias for old local scripts.
 update-forks: update-moon-ui

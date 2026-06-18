@@ -117,7 +117,7 @@ cargo build --release -p moon-ui-gpui --bin moonterminal --target x86_64-pc-wind
 | `make build` | собрать (debug) |
 | `make release` | собрать (release) |
 | `make check` | быстрая проверка типов |
-| `make update-moon-ui` | обновить MoonUI + перелочить `Cargo.lock` |
+| `make update-moon-ui` | обновить локальный `Cargo.lock` до актуальных Git-зависимостей |
 
 Makefile сам подставляет MSVC-таргет на Windows и нативный на macOS/Linux.
 
@@ -126,11 +126,12 @@ Makefile сам подставляет MSVC-таргет на Windows и нат�
 ## MoonUI
 
 GPUI runtime и UI-компоненты приходят из **`Moonbot-Tech/MoonUI`** (ветка `master`).
-Точные версии зафиксированы в закоммиченном **`Cargo.lock`** — сборка детерминированная.
+`Cargo.lock` не коммитится: свежий checkout резолвит текущую голову Git-зависимостей.
+После первой сборки Cargo создаёт локальный ignored `Cargo.lock`; это нормально.
 
 Если после `git pull` сборка падает на отсутствующих API (`gpui::GpuCanvas*`,
-`Panel::show_dock_header` и т.п.) — подтянулся старый `Cargo.lock`; повтори `git pull`.
-Обновление MoonUI осознанное: `make update-moon-ui` → `make build` → закоммитить `Cargo.lock`.
+`Panel::show_dock_header` и т.п.) — обнови локальный lock:
+`make update-moon-ui` → `make build`.
 
 Для одновременной локальной разработки терминала и MoonUI держи репозитории рядом:
 
@@ -141,7 +142,7 @@ workspace/
 ```
 
 В `MoonTerminal/.cargo/config.toml` можно включить локальную подмену Git-зависимости без правки
-публичных `Cargo.toml` и без перелочивания `Cargo.lock`:
+публичных `Cargo.toml`:
 
 ```toml
 paths = [
@@ -153,7 +154,7 @@ paths = [
 
 Файл `.cargo/config.toml` локальный и не коммитится.
 Cargo может вывести warning про `path override`; это ожидаемо для локальной разработки.
-`Cargo.lock` при этом не должен меняться.
+`Cargo.lock` при этом остаётся локальным ignored-файлом.
 
 ---
 

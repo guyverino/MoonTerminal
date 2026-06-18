@@ -1,12 +1,13 @@
 /target
 /.cargo/
+/Cargo.lock
 # Локальные конфиги с ключами — НИКОГДА не коммитим.
 /config.toml
 /config.enc
 /servers.enc
 /settings.toml
-# Cargo.lock коммитим (bin-проект): фиксируем точные rev MoonUI и внешних зависимостей,
-# чтобы у всех был детерминированный набор и не было рассинхрона локального/public source.
+# Cargo.lock локальный и ignored: терминал берёт текущие Git-зависимости
+# из публичных Cargo.toml, а локальная разработка может подменять MoonUI через .cargo/config.toml.
 /legasy
 *.log
 /docAi
