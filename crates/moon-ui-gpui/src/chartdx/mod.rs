@@ -1,5 +1,5 @@
 //! Native `gpu_canvas` рендер чарта (замена wgpu-offscreen+readback). Слои по природе данных
-//! (см. `docs/RENDER_PLAN.md`): Combo (рыночная история) / OrderBook (срез) /
+//! chartdx own-pass renderer: Combo (рыночная история) / OrderBook (срез) /
 //! UserData (мутирующее юзерское) + хром (Grid/Background) + native cursor; текст осей — в GPUI.
 //!
 //! Доменная специфика чарта живёт ЗДЕСЬ (в терминале); форк gpui отдаёт только generic-хук
@@ -260,6 +260,9 @@ struct ChartDataState {
     origin: (f32, f32),
     scene_visible: bool,
     market_source: Option<MarketDataSource>,
+    last_frame_tick_ms: f64,
+    present_rate_candidate_hz: f32,
+    present_rate_candidate_hits: u8,
     last_ppp: f32,
     last_prepared_data_sig: u64,
     last_prepared_market_sig: u64,
@@ -285,6 +288,9 @@ impl ChartDataState {
             origin: (0.0, 0.0),
             scene_visible: false,
             market_source: None,
+            last_frame_tick_ms: 0.0,
+            present_rate_candidate_hz: 0.0,
+            present_rate_candidate_hits: 0,
             last_ppp: 1.0,
             last_prepared_data_sig: u64::MAX,
             last_prepared_market_sig: u64::MAX,
@@ -365,10 +371,52 @@ impl ChartDataState {
     }
 
     fn frame(&mut self, info: GpuFrameInfo) -> GpuFrameDecision {
+        let now_ms = now_unix_ms();
+        if self.observe_present_rate(now_ms) {
+            if let Some(source) = self.market_source.clone() {
+                crate::diag::bump(&crate::diag::CHART_PREPARE);
+                self.sync_from_market_source(&source);
+            } else {
+                self.view_dirty = true;
+            }
+        }
         if self.pull_market_source_if_visible() {
             crate::diag::bump(&crate::diag::CHART_PREPARE);
         }
         self.render.borrow_mut().frame(info)
+    }
+
+    fn observe_present_rate(&mut self, now_ms: f64) -> bool {
+        let prev_tick_ms = std::mem::replace(&mut self.last_frame_tick_ms, now_ms);
+        if prev_tick_ms <= 0.0 {
+            return false;
+        }
+        let dt_ms = now_ms - prev_tick_ms;
+        if !(2.0..=40.0).contains(&dt_ms) {
+            self.present_rate_candidate_hits = 0;
+            return false;
+        }
+        let sample_hz = (1000.0 / dt_ms).round().clamp(30.0, 360.0) as f32;
+        if (sample_hz - self.present_rate_hz).abs() < 0.5 {
+            self.present_rate_candidate_hits = 0;
+            self.present_rate_candidate_hz = 0.0;
+            return false;
+        }
+        if (sample_hz - self.present_rate_candidate_hz).abs() < 0.5 {
+            self.present_rate_candidate_hits = self.present_rate_candidate_hits.saturating_add(1);
+        } else {
+            self.present_rate_candidate_hz = sample_hz;
+            self.present_rate_candidate_hits = 1;
+        }
+        if self.present_rate_candidate_hits < 6 {
+            return false;
+        }
+        self.present_rate_candidate_hits = 0;
+        self.present_rate_hz = sample_hz;
+        self.render
+            .borrow_mut()
+            .set_target_present_rate_hz(self.present_rate_hz);
+        true
     }
 
     fn pull_market_source_if_visible(&mut self) -> bool {

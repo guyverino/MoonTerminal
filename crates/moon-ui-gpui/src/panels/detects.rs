@@ -9,7 +9,7 @@ use std::time::Duration;
 use gpui::*;
 use moon_ui::{MoonPalette, Panel, PanelEvent, PanelState, h_flex, v_flex};
 
-use crate::{Backend, hex};
+use crate::{Backend, design, hex};
 use moon_chart::paint::now_unix_ms;
 use moon_core::session::CoreId;
 
@@ -281,11 +281,11 @@ impl Render for DetectsPanel {
                 div()
                     .id(SharedString::from(format!("det-{i}")))
                     .w_full()
-                    .h(px(34.0))
+                    .h(design::fit_h_px(cx, 34.0, 14.0, 10.0))
                     .px_2()
                     .py_1()
                     .cursor_pointer()
-                    .rounded(px(4.0))
+                    .rounded(design::ui_px(cx, 4.0))
                     .border_1()
                     .border_color(rgb(p.border))
                     .bg(grad(top, bottom))

@@ -16,7 +16,7 @@ pub mod store;
 pub use store::{CoreId, CoreStore};
 
 use std::collections::{HashMap, HashSet};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use crate::config::AppConfig;
 use crate::db::ReportTx;
@@ -91,26 +91,17 @@ impl SessionManager {
         let market_source = MarketDataSource::new(market.clone());
         let mut store = CoreStore::default();
         let mut sessions = Vec::new();
-        for (i, s) in config
+        for s in config
             .servers
             .iter()
             .filter(|s| s.active && config.group(&s.group).active)
             .cloned()
-            .enumerate()
         {
             store.ensure(s.id);
             let id = s.id;
             let name = s.name.clone();
             let group = s.group.clone();
-            // Стаггер начального коннекта: ядра уходят в сеть веером (150мс шаг,
-            // потолок ~4с), а не залпом — иначе всплеск соединений/UDP-bind на старте.
-            let startup_delay = Self::startup_stagger(i);
-            let handle = feed::spawn(
-                s,
-                reports.cloned(),
-                startup_delay,
-                feed_wake.clone(),
-            );
+            let handle = feed::spawn(s, reports.cloned(), feed_wake.clone());
             market_source.set_client(id, handle.client.clone());
             sessions.push(CoreSession {
                 id,
@@ -118,7 +109,7 @@ impl SessionManager {
                 group,
                 handle,
             });
-            log::info!("session up: core={id} (delay {startup_delay:?})");
+            log::info!("session up: core={id}");
         }
         if sessions.is_empty() {
             log::warn!("нет серверов в конфиге — добавь ядра в Настройках");
@@ -137,15 +128,6 @@ impl SessionManager {
             pending_drop: HashMap::new(),
             last_cmd: HashMap::new(),
         }
-    }
-
-    /// Задержка перед первым коннектом i-го ядра при старте сессии: линейный шаг
-    /// 150мс с потолком 4с (чтобы 200 ядер не растягивались на полминуты). Разносит
-    /// первичные коннекты во времени — меньше всплеск соединений и UDP-bind на старте.
-    fn startup_stagger(index: usize) -> Duration {
-        const STEP_MS: u64 = 150;
-        const CAP: Duration = Duration::from_secs(4);
-        Duration::from_millis(STEP_MS * index as u64).min(CAP)
     }
 
     /// Дренирует все каналы ядер. Аккаунтные сообщения → CoreStore; рыночные →
@@ -261,13 +243,7 @@ impl SessionManager {
         }
         let name = server.name.clone();
         let group = server.group.clone();
-        // Ручной реконнект — мгновенно, без стаггера.
-        let handle = feed::spawn(
-            server,
-            reports.cloned(),
-            Duration::ZERO,
-            self.feed_wake.clone(),
-        );
+        let handle = feed::spawn(server, reports.cloned(), self.feed_wake.clone());
         match self.sessions.iter_mut().find(|s| s.id == id) {
             Some(sess) => sess.handle = handle, // дроп старого хэндла → старый поток завершится
             None => self.sessions.push(CoreSession {

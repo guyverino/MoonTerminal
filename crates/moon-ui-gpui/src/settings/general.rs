@@ -9,6 +9,7 @@ use moon_ui::{
 };
 
 use super::SettingsView;
+use crate::design;
 
 impl SettingsView {
     /// Изменить срок хранения логов (клампим 0..=365), правит draft.
@@ -62,7 +63,7 @@ impl SettingsView {
                     ),
             )
             .child(hint("Применяется после сохранения."))
-            .child(super::separator(p))
+            .child(super::separator(p, cx))
             // Отдельная чарт-вкладка на каждое ядро.
             .child(
                 MoonCheckbox::new("split")
@@ -88,7 +89,7 @@ impl SettingsView {
                     })),
             )
             .child(hint("AddToChart: вкл — 1-HL-ядро (своя вкладка на ядро), выкл — все ядра в одной 1-HL."))
-            .child(super::separator(p))
+            .child(super::separator(p, cx))
             // Логи в файлы + срок хранения.
             .child(
                 MoonCheckbox::new("logf")
@@ -119,7 +120,7 @@ impl SettingsView {
             // значение/подписи тусклые, пока «Писать лог в файлы» выключено.
             .child(
                 h_flex()
-                    .gap(px(8.0))
+                    .gap(design::ui_px(cx, 8.0))
                     .items_center()
                     .child(div().text_color(if logf { rgba_from(p.text, 1.0) } else { muted }).child("Хранить лог, дней"))
                     .child(

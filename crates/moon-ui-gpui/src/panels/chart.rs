@@ -13,7 +13,7 @@ use gpui::*;
 use moon_ui::{MoonBackgroundPolicy, MoonPalette, Panel, PanelEvent};
 
 use crate::chartdx::ChartEngine;
-use crate::{Backend, axes, input};
+use crate::{Backend, axes, design, input};
 use moon_chart::container::ContainerKind;
 use moon_chart::paint::now_unix_ms;
 use moon_core::config::{ChartTheme, OrdersStyle};
@@ -44,7 +44,7 @@ fn monitor_refresh_hz() -> u32 {
     60
 }
 
-fn chart_present_rate_hz() -> f32 {
+fn chart_bootstrap_present_rate_hz() -> f32 {
     let refresh = monitor_refresh_hz().clamp(30, 360);
     refresh as f32
 }
@@ -488,7 +488,9 @@ impl Render for ChartPanel {
         // Запоминаем DPI для data prepare path (у него нет window). DPI меняется редко.
         self.last_ppp = ppp;
         self.chart.set_last_ppp(ppp);
-        let monitor_rate_hz = chart_present_rate_hz();
+        // Bootstrap only: chartdx refines this from real `gpu_canvas.frame()` cadence,
+        // so macOS/Linux do not depend on this fallback staying exact forever.
+        let monitor_rate_hz = chart_bootstrap_present_rate_hz();
         let fast_divisor = (monitor_rate_hz / 60.0).round().max(1.0) as u32;
         let effective_present_rate_hz = if self.fast {
             monitor_rate_hz / fast_divisor as f32
@@ -847,8 +849,8 @@ impl Render for ChartPanel {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .rounded(px(3.0))
-                    .text_size(px(11.0))
+                    .rounded(design::ui_px(cx, 3.0))
+                    .text_size(design::text_px(cx, 11.0))
                     .text_color(rgba(0xC8CCD0FF))
                     .bg(rgba(0x00000059))
                     .cursor_pointer()

@@ -10,7 +10,7 @@ use moon_ui::{
 };
 
 use super::{SettingsView, hsla_u8, separator, slider_row};
-use crate::{Backend, hex};
+use crate::{Backend, design, hex};
 use moon_core::config::OrdersStyle;
 
 /// Чекбокс ордер-стиля: (id, подпись, геттер, сеттер) — для тела блока линии.
@@ -266,10 +266,10 @@ impl SettingsView {
             .id(key)
             .cursor_pointer()
             .w_full()
-            .h(px(26.0))
-            .gap(px(8.0))
-            .px(px(8.0))
-            .rounded(px(4.0))
+            .h(design::fit_h_px(cx, 26.0, 14.0, 6.0))
+            .gap(design::ui_px(cx, 8.0))
+            .px(design::ui_px(cx, 8.0))
+            .rounded(design::ui_px(cx, 4.0))
             .border_1()
             .border_color(rgba_from(p.border, if open { 1.0 } else { 0.74 }))
             .bg(rgba_from(p.shell_high, if open { 0.98 } else { 0.72 }))
@@ -327,7 +327,7 @@ impl SettingsView {
             .child(chk(0));
         if markers {
             col = col
-                .child(separator(p))
+                .child(separator(p, cx))
                 .child(chk(1))
                 .child(chk(2))
                 .child(slider_row("cross size", &ed.marker_size, cx))
@@ -351,7 +351,7 @@ impl SettingsView {
         let open = self.open_lines.contains(key);
         let mut section = v_flex()
             .w_full()
-            .gap(px(6.0))
+            .gap(design::ui_px(cx, 6.0))
             .child(self.collapse_header(cx, key, title));
         if open {
             section = section.child(self.line_body(cx, ed, markers, checks));
@@ -582,10 +582,10 @@ impl SettingsView {
                 false,
                 &[("liq-d", "dashed", |o| o.liq.dashed, |o, v| o.liq.dashed = v)],
             ))
-            .child(separator(MoonPalette::active(cx)))
+            .child(separator(MoonPalette::active(cx), cx))
             // Path (trail / змейка) — свой сворачиваемый блок.
             .child({
-                let mut section = v_flex().w_full().gap(px(6.0)).child(self.collapse_header(
+                let mut section = v_flex().w_full().gap(design::ui_px(cx, 6.0)).child(self.collapse_header(
                     cx,
                     "path",
                     "Path (trail / змейка)",
@@ -621,7 +621,7 @@ impl SettingsView {
                 }
                 section
             })
-            .child(separator(MoonPalette::active(cx)))
+            .child(separator(MoonPalette::active(cx), cx))
             .child(div().mt_1().font_bold().child("Global"))
             .child(slider_row("active alpha", &l.active_alpha, cx))
             .child(slider_row(

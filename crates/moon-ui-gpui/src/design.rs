@@ -5,7 +5,7 @@
 //! no terminal logic, no chart renderer state.
 
 use gpui::*;
-use moon_ui::{MoonMetrics, MoonPalette};
+use moon_ui::{MoonMetrics, MoonPalette, MoonTheme};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -65,6 +65,38 @@ pub fn mono() -> SharedString {
 
 pub fn ui_font() -> SharedString {
     SharedString::from("Inter")
+}
+
+pub fn ui_value(cx: &App, value: f32) -> f32 {
+    MoonTheme::active_tokens(cx).ui(value)
+}
+
+pub fn font_value(cx: &App, value: f32) -> f32 {
+    MoonTheme::active_tokens(cx).font(value)
+}
+
+pub fn line_value(cx: &App, value: f32) -> f32 {
+    MoonTheme::active_tokens(cx).line_height(value)
+}
+
+pub fn fit_h_value(cx: &App, base_height: f32, base_line_height: f32, base_pad_y: f32) -> f32 {
+    MoonTheme::active_tokens(cx).fit_height(base_height, base_line_height, base_pad_y)
+}
+
+pub fn ui_px(cx: &App, value: f32) -> Pixels {
+    px(ui_value(cx, value))
+}
+
+pub fn text_px(cx: &App, value: f32) -> Pixels {
+    px(font_value(cx, value))
+}
+
+pub fn line_px(cx: &App, value: f32) -> Pixels {
+    px(line_value(cx, value))
+}
+
+pub fn fit_h_px(cx: &App, base_height: f32, base_line_height: f32, base_pad_y: f32) -> Pixels {
+    px(fit_h_value(cx, base_height, base_line_height, base_pad_y))
 }
 
 pub fn logo() -> impl IntoElement {
@@ -127,28 +159,29 @@ pub fn top_pill(
     id: impl Into<SharedString>,
     label: impl Into<SharedString>,
     p: MoonPalette,
+    cx: &App,
 ) -> Stateful<Div> {
     div()
         .id(id.into())
-        .h(px(24.0))
+        .h(fit_h_px(cx, 24.0, 13.0, 5.5))
         .flex()
         .items_center()
-        .gap(px(6.0))
-        .px(px(10.0))
-        .rounded(px(999.0))
+        .gap(ui_px(cx, 6.0))
+        .px(ui_px(cx, 10.0))
+        .rounded(ui_px(cx, 999.0))
         .border_1()
         .border_color(rgb(p.border))
         .bg(rgb(p.panel))
-        .text_size(px(11.0))
+        .text_size(text_px(cx, 11.0))
         .font_family(mono())
         .text_color(rgb(p.text_soft))
         .child(label.into())
 }
 
-pub fn status_dot(color: u32) -> impl IntoElement {
+pub fn status_dot(color: u32, cx: &App) -> impl IntoElement {
     div()
-        .w(px(5.0))
-        .h(px(5.0))
-        .rounded(px(999.0))
+        .w(ui_px(cx, 5.0))
+        .h(ui_px(cx, 5.0))
+        .rounded(ui_px(cx, 999.0))
         .bg(solid(color))
 }

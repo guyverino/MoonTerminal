@@ -5,7 +5,7 @@
 //! market data остаётся в immutable read-model snapshot, сюда идёт только лёгкий сигнал.
 
 use std::sync::Arc;
-use std::sync::mpsc::{Receiver, TryRecvError};
+use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use moonproto::state::{OrderTraceChartPoint, OrderTraceLine};
@@ -71,6 +71,8 @@ pub fn run(
     server: &ServerConfig,
     tx: &FeedTx,
     cmd_rx: &Receiver<CoreCmd>,
+    wake_tx: &Sender<()>,
+    wake_rx: &Receiver<()>,
     reports: Option<&ReportTx>,
     client_slot: SharedMoonClient,
 ) -> anyhow::Result<()> {
@@ -106,7 +108,7 @@ pub fn run(
 
     // connect (не blocking) + connect_timeout, чтобы зависший шаг init пришёл
     // как ConnectFailed с причиной, а не молчал.
-    let (event_wake_tx, event_wake_rx) = std::sync::mpsc::channel::<()>();
+    let event_wake_tx = wake_tx.clone();
     let (event_sink, event_queue) = MoonEventSink::queue_with_waker(move || {
         let _ = event_wake_tx.send(());
     });
@@ -672,12 +674,11 @@ pub fn run(
         }
         force_market_sample = false;
 
-        match event_wake_rx.recv_timeout(Duration::from_millis(50)) {
+        match wake_rx.recv() {
             Ok(()) => {
-                while event_wake_rx.try_recv().is_ok() {}
+                while wake_rx.try_recv().is_ok() {}
             }
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            Err(std::sync::mpsc::RecvError) => {
                 let _ = client.disconnect();
                 return Ok(());
             }

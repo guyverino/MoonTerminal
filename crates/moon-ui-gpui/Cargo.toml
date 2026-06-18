@@ -5,7 +5,10 @@ edition = "2024"
 description = "MoonTerminal GPUI shell over moon-core and MoonUI."
 
 [features]
+default = ["linux-x11", "linux-wayland"]
 debug-tools = []
+linux-x11 = ["gpui_platform/x11"]
+linux-wayland = ["gpui_platform/wayland"]
 
 [[bin]]
 name = "moonterminal"
@@ -27,7 +30,7 @@ bytemuck = { version = "1", features = ["derive"] }
 # Canonical Moon UI source: standalone GPUI runtime + Moon components.
 # Local development overrides this Git source through untracked `.cargo/config.toml`.
 gpui = { package = "moon-gpui", git = "https://github.com/Moonbot-Tech/MoonUI", branch = "master" }
-gpui_platform = { package = "moon-gpui-platform", git = "https://github.com/Moonbot-Tech/MoonUI", branch = "master", features = ["font-kit", "wayland", "x11"] }
+gpui_platform = { package = "moon-gpui-platform", git = "https://github.com/Moonbot-Tech/MoonUI", branch = "master", features = ["font-kit"] }
 moon-ui = { package = "moon-ui", git = "https://github.com/Moonbot-Tech/MoonUI", branch = "master" }
 
 anyhow = "1"

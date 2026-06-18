@@ -84,6 +84,16 @@ fn embedded_fonts() -> Vec<Cow<'static, [u8]>> {
     ]
 }
 
+pub(crate) fn moon_theme_config_for(cfg: &AppConfig) -> MoonThemeConfig {
+    MoonThemeConfig::moon_terminal()
+        .with_font_delta(cfg.ui_font_delta)
+        .with_ui_scale(cfg.ui_scale)
+}
+
+pub(crate) fn install_moon_theme_for_config(cfg: &AppConfig, cx: &mut App) {
+    MoonTheme::install_config(moon_theme_config_for(cfg), cx);
+}
+
 /// Общий backend: живёт в одном `Entity`, дренится таймером, будит окна по notify.
 struct Backend {
     session: SessionManager,
@@ -719,13 +729,14 @@ impl Render for Shell {
             // own-pass (UnderScene). Хром (хедер/тулбар/панели/статус) красит свой фон сам.
             .font_family(design::mono())
             .text_color(rgb(p.text))
-            .text_size(px(11.0))
+            .text_size(design::text_px(cx, 11.0))
             // ── Header ──────────────────────────────────────────────
             .child(terminal_chrome::header(
                 &self.group,
                 market_label,
                 self.backend.clone(),
                 p,
+                cx,
             ))
             // ── Тулбар: тонкая фикс. полоса (Размеры/Продажа/Масштаб+Live), порт верхней
             //    полосы стенда. Не dock-панель — единый ряд на высоту кнопки. ──
@@ -915,12 +926,12 @@ impl Shell {
                     .absolute()
                     .right(px(82.0))
                     .top(px(3.0))
-                    .px(px(6.0))
-                    .h(px(16.0))
-                    .rounded(px(3.0))
+                    .px(design::ui_px(cx, 6.0))
+                    .h(design::fit_h_px(cx, 16.0, 10.0, 3.0))
+                    .rounded(design::ui_px(cx, 3.0))
                     .cursor_pointer()
                     .font_family(design::mono())
-                    .text_size(px(10.0))
+                    .text_size(design::text_px(cx, 10.0))
                     .text_color(rgb(p.amber))
                     .bg(rgba(0x00000044))
                     .hover(|s| s.bg(rgba(0x2A2520EE)).text_color(rgb(0xF7C663)))
@@ -971,25 +982,25 @@ impl Focusable for DebugChartHost {
 
 #[cfg(any(debug_assertions, moon_profile_debug, feature = "debug-tools"))]
 impl Render for DebugChartHost {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let title = self.title.clone();
         v_flex()
             .size_full()
             .track_focus(&self.focus)
             .child(
                 h_flex()
-                    .h(px(30.0))
+                    .h(design::fit_h_px(cx, 30.0, 13.0, 8.5))
                     .w_full()
                     .items_center()
-                    .gap(px(8.0))
-                    .px(px(8.0))
+                    .gap(design::ui_px(cx, 8.0))
+                    .px(design::ui_px(cx, 8.0))
                     .bg(rgba(0x121416F2))
                     .window_control_area(WindowControlArea::Drag)
                     .child(
                         div()
                             .flex_1()
                             .font_family(design::mono())
-                            .text_size(px(11.0))
+                            .text_size(design::text_px(cx, 11.0))
                             .text_color(rgba(0xD6D9DDFF))
                             .child(title),
                     )
@@ -997,12 +1008,12 @@ impl Render for DebugChartHost {
                         div()
                             .id("debug-chart-close")
                             .w(px(22.0))
-                            .h(px(20.0))
+                            .h(design::fit_h_px(cx, 20.0, 13.0, 3.5))
                             .flex()
                             .items_center()
                             .justify_center()
-                            .rounded(px(3.0))
-                            .text_size(px(13.0))
+                            .rounded(design::ui_px(cx, 3.0))
+                            .text_size(design::text_px(cx, 13.0))
                             .text_color(rgba(0xC8CCD0FF))
                             .bg(rgba(0x00000059))
                             .cursor_pointer()
@@ -1028,10 +1039,15 @@ impl DebugPerfWindow {
         }
     }
 
-    fn stat_row(label: &'static str, value: impl Into<String>, p: MoonPalette) -> impl IntoElement {
+    fn stat_row(
+        label: &'static str,
+        value: impl Into<String>,
+        p: MoonPalette,
+        cx: &App,
+    ) -> impl IntoElement {
         h_flex()
             .w_full()
-            .gap(px(8.0))
+            .gap(design::ui_px(cx, 8.0))
             .child(
                 div()
                     .w(px(150.0))
@@ -1094,10 +1110,10 @@ impl Render for DebugPerfWindow {
             .id("debug-perf-window")
             .size_full()
             .track_focus(&self.focus)
-            .gap(px(8.0))
+            .gap(design::ui_px(cx, 8.0))
             .p_4()
             .bg(rgb(p.shell))
-            .text_size(px(12.0))
+            .text_size(design::text_px(cx, 12.0))
             .text_color(rgb(p.text))
             .child(
                 h_flex()
@@ -1107,13 +1123,13 @@ impl Render for DebugPerfWindow {
                     .child(
                         div()
                             .font_family(design::mono())
-                            .text_size(px(13.0))
+                            .text_size(design::text_px(cx, 13.0))
                             .text_color(rgb(p.amber))
                             .child("MoonTerminal debug stats"),
                     )
                     .child(
                         h_flex()
-                            .gap(px(6.0))
+                            .gap(design::ui_px(cx, 6.0))
                             .child(
                                 MoonButton::new("debug-open-10-btc")
                                     .width(230.0)
@@ -1142,6 +1158,7 @@ impl Render for DebugPerfWindow {
                 "connections",
                 format!("{ready}/{total} ready"),
                 p,
+                cx,
             ))
             .child(Self::stat_row(
                 "cpu",
@@ -1150,24 +1167,28 @@ impl Render for DebugPerfWindow {
                     snap.cpu_process, snap.cpu_system
                 ),
                 p,
+                cx,
             ))
             .child(Self::stat_row(
                 "ram",
                 format!("{:.0} MB ({:+.1} MB/5s)", snap.mem_mb, snap.mem_delta_mb),
                 p,
+                cx,
             ))
-            .child(Self::stat_row("desired markets", desired.to_string(), p))
+            .child(Self::stat_row("desired markets", desired.to_string(), p, cx))
             .child(Self::stat_row(
                 "group windows",
                 group_windows.to_string(),
                 p,
+                cx,
             ))
             .child(Self::stat_row(
                 "chart windows",
                 format!("{detached_chart_windows} detached / {debug_windows} debug"),
                 p,
+                cx,
             ))
-            .child(Self::stat_row("cwd", cwd, p))
+            .child(Self::stat_row("cwd", cwd, p, cx))
             .child(Self::stat_row(
                 "render diag",
                 if std::env::var_os("MOON_RENDER_DIAG").is_some() {
@@ -1176,11 +1197,12 @@ impl Render for DebugPerfWindow {
                     "MOON_RENDER_DIAG=off"
                 },
                 p,
+                cx,
             ))
             .child(
                 v_flex()
                     .w_full()
-                    .gap(px(4.0))
+                    .gap(design::ui_px(cx, 4.0))
                     .mt(px(4.0))
                     .child(
                         div()
@@ -1191,10 +1213,10 @@ impl Render for DebugPerfWindow {
                         div()
                             .w_full()
                             .p_2()
-                            .rounded(px(4.0))
+                            .rounded(design::ui_px(cx, 4.0))
                             .bg(rgba(0x00000055))
                             .font_family(design::mono())
-                            .text_size(px(10.5))
+                            .text_size(design::text_px(cx, 10.5))
                             .text_color(rgb(p.text_soft))
                             .child(diag_tail),
                     ),
@@ -1488,13 +1510,19 @@ fn main() -> anyhow::Result<()> {
     // Строим env_logger как Logger (не .init()) и оборачиваем в TeeLogger — он
     // дублирует напечатанные записи в in-memory кольцо вкладки «Лог» (порт egui main).
     let env = env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or("warn,moon_gpui=info,moon_core=info"),
+        env_logger::Env::default()
+            .default_filter_or("warn,moon_ui_gpui=info,moon_gpui=info,moon_core=info"),
     )
     .build();
     log::set_max_level(env.filter());
     if let Err(e) = log::set_boxed_logger(Box::new(moon_core::applog::TeeLogger::new(env))) {
         eprintln!("не удалось установить логгер: {e}");
     }
+    log::info!(
+        "build: moonterminal={} moonui={}",
+        option_env!("MOONTERMINAL_GIT_REV").unwrap_or("unknown"),
+        option_env!("MOONUI_GIT_REV").unwrap_or("unknown")
+    );
 
     // Паник-хук: GUI-приложение без консоли → stderr с сообщением паники теряется (и при
     // panic=abort это выглядит как нативный краш 0xc0000409 в ucrtbase). Пишем место+сообщение
@@ -1542,7 +1570,7 @@ fn main() -> anyhow::Result<()> {
     let app = gpui_platform::application();
     app.run(move |cx| {
         init_moon_ui(cx);
-        MoonTheme::install_config(MoonThemeConfig::moon_terminal(), cx);
+        install_moon_theme_for_config(&cfg, cx);
         cx.text_system()
             .add_fonts(embedded_fonts())
             .expect("failed to add embedded MoonBot fonts");

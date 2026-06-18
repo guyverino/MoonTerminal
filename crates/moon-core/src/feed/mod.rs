@@ -9,7 +9,7 @@ pub mod types;
 
 pub use types::*;
 
-use std::sync::mpsc::{Receiver, SendError, Sender, TryRecvError};
+use std::sync::mpsc::{Receiver, SendError, Sender};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
@@ -91,10 +91,34 @@ pub enum CoreCmd {
     },
 }
 
+#[derive(Clone)]
+pub struct CoreCmdTx {
+    data: Sender<CoreCmd>,
+    wake: Sender<()>,
+}
+
+impl CoreCmdTx {
+    fn new(data: Sender<CoreCmd>, wake: Sender<()>) -> Self {
+        Self { data, wake }
+    }
+
+    pub fn send(&self, cmd: CoreCmd) -> Result<(), SendError<CoreCmd>> {
+        self.data.send(cmd)?;
+        let _ = self.wake.send(());
+        Ok(())
+    }
+}
+
+impl Drop for CoreCmdTx {
+    fn drop(&mut self) {
+        let _ = self.wake.send(());
+    }
+}
+
 /// Хэндл backend-потока. Дроп закрывает каналы → поток завершается.
 pub struct FeedHandle {
     pub rx: FeedRx,
-    pub cmd_tx: Sender<CoreCmd>,
+    pub cmd_tx: CoreCmdTx,
     pub client: SharedMoonClient,
     _join: std::thread::JoinHandle<()>,
 }
@@ -117,29 +141,21 @@ fn jittered(d: Duration) -> Duration {
 
 /// Поднимает live-backend для одного ядра (подключение есть всегда; подписка — по команде).
 /// `reports` — канал к SQLite-writer'у (None = БД недоступна, отчёты не пишем).
-/// `startup_delay` — пауза перед ПЕРВЫМ коннектом: на старте сессии ядра разносятся
-/// веером (см. `SessionManager::start`), чтобы не бить в сеть/UDP-bind все разом.
-/// Ручной реконнект передаёт `Duration::ZERO` — он должен срабатывать мгновенно.
 pub fn spawn(
     server: ServerConfig,
     reports: Option<ReportTx>,
-    startup_delay: Duration,
     wake: Option<FeedWakeTx>,
 ) -> FeedHandle {
     let (data_tx, rx) = std::sync::mpsc::channel();
     let tx = FeedTx::new(data_tx, wake);
-    let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<CoreCmd>();
+    let (cmd_data_tx, cmd_rx) = std::sync::mpsc::channel::<CoreCmd>();
+    let (run_wake_tx, run_wake_rx) = std::sync::mpsc::channel::<()>();
+    let cmd_tx = CoreCmdTx::new(cmd_data_tx, run_wake_tx.clone());
     let client = SharedMoonClient::default();
     let thread_client = client.clone();
     let join = std::thread::Builder::new()
         .name(format!("feed-{}", server.id))
         .spawn(move || {
-            // Стаггер начального коннекта: спим ДО первой попытки. Каждый поток ждёт
-            // сам по себе, поэтому цикл start() не блокируется — коннекты расходятся
-            // во времени. Нулевая задержка (ручной реконнект) = сразу в дело.
-            if !startup_delay.is_zero() {
-                std::thread::sleep(startup_delay);
-            }
             // Авто-реконнект на уровне приложения: если live::run упал (например,
             // НЕ удалось первичное подключение — moonproto умеет реконнект только
             // ПОСЛЕ успешного connect), повторяем с нарастающим backoff + джиттер.
@@ -152,7 +168,15 @@ pub fn spawn(
             let mut backoff = BACKOFF_MIN;
             loop {
                 let started = Instant::now();
-                match live::run(&server, &tx, &cmd_rx, reports.as_ref(), thread_client.clone()) {
+                match live::run(
+                    &server,
+                    &tx,
+                    &cmd_rx,
+                    &run_wake_tx,
+                    &run_wake_rx,
+                    reports.as_ref(),
+                    thread_client.clone(),
+                ) {
                     Ok(()) => break,
                     Err(e) => {
                         // Коннект продержался долго перед падением → не штормящий хост,
@@ -174,11 +198,13 @@ pub fn spawn(
                         {
                             break; // UI закрыт
                         }
-                        // Координатор/сессия ушли (cmd-канал закрыт) → не крутимся.
-                        if matches!(cmd_rx.try_recv(), Err(TryRecvError::Disconnected)) {
-                            break;
+                        match run_wake_rx.recv_timeout(wait) {
+                            Ok(()) => {
+                                while run_wake_rx.try_recv().is_ok() {}
+                            }
+                            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
                         }
-                        std::thread::sleep(wait);
                         backoff = (backoff * 2).min(BACKOFF_MAX);
                     }
                 }

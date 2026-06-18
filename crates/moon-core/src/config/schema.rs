@@ -17,12 +17,21 @@ use crate::market::MarketDataMode;
 /// и хочешь, чтобы старые файлы один раз пере-сохранились с его дефолтом.
 /// v2: добавлено поле `language`. v3: добавлено `market_mode`.
 /// v4: добавлено `charts_split_by_core`. v5: добавлены `log_to_file` + `log_retention_days`.
-pub const SCHEMA_VERSION: u32 = 5;
+/// v6: добавлены `ui_font_delta` + `ui_scale`.
+pub const SCHEMA_VERSION: u32 = 6;
 
 /// Старые файлы без поля `version` читаются как 0 → меньше SCHEMA_VERSION →
 /// триггерят досейв с дослоением новых дефолтов.
 pub fn default_version() -> u32 {
     0
+}
+
+pub fn default_ui_font_delta() -> f32 {
+    2.0
+}
+
+pub fn default_ui_scale() -> f32 {
+    1.0
 }
 
 /// Запись сервера в servers.enc (секрет + стабильный uid).
@@ -90,6 +99,14 @@ pub struct SettingsFile {
     /// Сколько дней хранить файлы лога; старее — удаляются. 0 = хранить всё. Дефолт 14.
     #[serde(default = "servers::default_log_retention_days")]
     pub log_retention_days: u32,
+    /// Прибавка к базовым размерам UI-шрифтов в logical px. Дефолт +2: на 1x
+    /// дизайнерский 10px текст становится 12px, без полного zoom интерфейса.
+    #[serde(default = "default_ui_font_delta")]
+    pub ui_font_delta: f32,
+    /// Общий масштаб геометрии UI. Пока без публичной ручки, но хранится рядом с
+    /// font_delta, чтобы компонентная тема имела один источник правды.
+    #[serde(default = "default_ui_scale")]
+    pub ui_scale: f32,
     #[serde(default)]
     pub groups: Vec<GroupConfig>,
     #[serde(default)]

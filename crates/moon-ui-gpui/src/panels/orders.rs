@@ -621,7 +621,7 @@ impl Render for OrdersPanel {
             .overflow_hidden()
             .track_focus(&self.focus)
             .font_family(design::mono())
-            .text_size(px(10.5))
+            .text_size(design::text_px(cx, 10.5))
             .bg(rgb(p.table_body))
             .child(controls)
             .child(div().w_full().h(px(1.0)).flex_none().bg(rgb(p.border)))
@@ -663,7 +663,7 @@ fn orders_table(entries: Vec<OrderEntry>, cx: &Context<OrdersPanel>) -> impl Int
                     .flex()
                     .items_center()
                     .font_family(design::mono())
-                    .text_size(px(10.5))
+                    .text_size(design::text_px(cx, 10.5))
                     .text_color(rgb(p.text_muted))
                     .child("нет открытых ордеров"),
             )

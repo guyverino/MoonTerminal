@@ -76,10 +76,14 @@ pub(super) fn slider_row(label: &str, st: &Entity<MoonSliderState>, cx: &App) ->
     let val = st.read(cx).value().end();
     h_flex()
         .w_full()
-        .min_h(px(28.0))
-        .gap(px(10.0))
+        .min_h(design::fit_h_px(cx, 28.0, 14.0, 7.0))
+        .gap(design::ui_px(cx, 10.0))
         .items_center()
-        .child(div().w(px(180.0)).child(MoonSlider::new(st).height(22.0)))
+        .child(
+            div()
+                .w(px(180.0))
+                .child(MoonSlider::new(st).height(design::ui_value(cx, 22.0))),
+        )
         .child(
             div()
                 .w(px(210.0))
@@ -98,15 +102,18 @@ pub(super) fn slider_row(label: &str, st: &Entity<MoonSliderState>, cx: &App) ->
 }
 
 /// Разделитель секций (порт egui `ui.separator()`).
-pub(super) fn separator(p: MoonPalette) -> impl IntoElement {
-    div().my(px(8.0)).h(px(1.0)).bg(rgba_from(p.border, 1.0))
+pub(super) fn separator(p: MoonPalette, cx: &App) -> impl IntoElement {
+    div()
+        .my(design::ui_px(cx, 8.0))
+        .h(px(1.0))
+        .bg(rgba_from(p.border, 1.0))
 }
 
 /// Секционный заголовок (порт egui `section()`): жирная подпись с отступом сверху.
-pub(super) fn section(title: &str, p: MoonPalette) -> impl IntoElement {
+pub(super) fn section(title: &str, p: MoonPalette, cx: &App) -> impl IntoElement {
     div()
-        .mt(px(10.0))
-        .mb(px(4.0))
+        .mt(design::ui_px(cx, 10.0))
+        .mb(design::ui_px(cx, 4.0))
         .font_weight(FontWeight::SEMIBOLD)
         .text_color(rgba_from(p.text, 1.0))
         .child(title.to_string())
@@ -117,10 +124,11 @@ pub(super) fn color_row(
     label: &str,
     st: &Entity<MoonColorPickerState>,
     p: MoonPalette,
+    cx: &App,
 ) -> impl IntoElement {
     h_flex()
-        .min_h(px(28.0))
-        .gap(px(10.0))
+        .min_h(design::fit_h_px(cx, 28.0, 14.0, 7.0))
+        .gap(design::ui_px(cx, 10.0))
         .items_center()
         .child(MoonColorPicker::new(st))
         .child(
@@ -235,6 +243,7 @@ impl SettingsView {
         // (отмена несохранённых правок) — как egui (draft discarded on close).
         cx.on_release(|this, app| {
             this.backend.update(app, |b, cx| {
+                crate::install_moon_theme_for_config(&b.config, cx);
                 b.preview = None;
                 b.settings_window = None;
                 cx.notify();
@@ -301,6 +310,12 @@ impl SettingsView {
         let struct_changed = before.structural_sig() != after.structural_sig();
         let mode_changed = before.market_mode != after.market_mode;
         let split_changed = before.charts_split_by_core != after.charts_split_by_core;
+        let ui_theme_changed =
+            before.ui_font_delta != after.ui_font_delta || before.ui_scale != after.ui_scale;
+
+        if ui_theme_changed {
+            crate::install_moon_theme_for_config(&after, cx);
+        }
 
         if struct_changed {
             // Рестарт сессий по новому конфигу + пересоздание окон групп (их число/состав
@@ -357,9 +372,9 @@ impl Render for SettingsView {
         // ── Полоска вкладок ─────────────────────────────────────────────────
         let mut tabs = h_flex()
             .w_full()
-            .h(px(34.0))
-            .gap(px(6.0))
-            .px(px(8.0))
+            .h(design::fit_h_px(cx, 34.0, 13.0, 10.5))
+            .gap(design::ui_px(cx, 6.0))
+            .px(design::ui_px(cx, 8.0))
             .bg(rgba_from(p.shell_high, 1.0))
             .border_b_1()
             .border_color(rgba_from(p.border, 1.0));
@@ -404,7 +419,13 @@ impl Render for SettingsView {
             .w_full()
             .overflow_y_scroll()
             .bg(rgba_from(p.shell, 1.0))
-            .child(v_flex().w_full().p(px(18.0)).gap(px(10.0)).child(content));
+            .child(
+                v_flex()
+                    .w_full()
+                    .p(design::ui_px(cx, 18.0))
+                    .gap(design::ui_px(cx, 10.0))
+                    .child(content),
+            );
 
         // ── Подвал: Сохранить + статус ──────────────────────────────────────
         let status_el = match &self.status {
@@ -415,9 +436,9 @@ impl Render for SettingsView {
         };
         let footer = h_flex()
             .w_full()
-            .h(px(42.0))
-            .gap(px(10.0))
-            .px(px(10.0))
+            .h(design::fit_h_px(cx, 42.0, 14.0, 14.0))
+            .gap(design::ui_px(cx, 10.0))
+            .px(design::ui_px(cx, 10.0))
             .items_center()
             .bg(rgba_from(p.shell_high, 1.0))
             .border_t_1()
@@ -438,10 +459,10 @@ impl Render for SettingsView {
             .relative()
             .bg(rgba_from(p.shell, 1.0))
             .font_family("Geist Mono")
-            .text_size(px(11.0))
-            .line_height(px(14.0))
+            .text_size(design::text_px(cx, 11.0))
+            .line_height(design::line_px(cx, 14.0))
             .text_color(rgba_from(p.text, 1.0))
-            .child(settings_header(p))
+            .child(settings_header(p, cx))
             .child(tabs)
             .child(body)
             .child(footer)
@@ -449,33 +470,33 @@ impl Render for SettingsView {
     }
 }
 
-fn settings_header(p: MoonPalette) -> impl IntoElement {
+fn settings_header(p: MoonPalette, cx: &App) -> impl IntoElement {
     h_flex()
         .id("settings-window-header")
         .relative()
         .flex_none()
         .w_full()
-        .h(px(SETTINGS_HEADER_H))
+        .h(design::fit_h_px(cx, SETTINGS_HEADER_H, 14.0, 8.0))
         .justify_between()
-        .pl(px(design::titlebar_leading_inset()))
-        .pr(px(design::HEADER_PAD_X))
+        .pl(design::ui_px(cx, design::titlebar_leading_inset()))
+        .pr(design::ui_px(cx, design::HEADER_PAD_X))
         .bg(rgba_from(p.shell_high, 1.0))
         .border_b(px(1.0))
         .border_color(rgba_from(p.border, 1.0))
         .child(
             h_flex()
-                .gap(px(8.0))
+                .gap(design::ui_px(cx, 8.0))
                 .items_center()
                 .child(
                     div()
-                        .w(px(7.0))
-                        .h(px(7.0))
-                        .rounded(px(999.0))
+                        .w(design::ui_px(cx, 7.0))
+                        .h(design::ui_px(cx, 7.0))
+                        .rounded(design::ui_px(cx, 999.0))
                         .bg(rgba_from(p.blue, 1.0))
                         .shadow(vec![moon_ui::foundation::box_shadow(
                             px(0.0),
                             px(0.0),
-                            px(8.0),
+                            design::ui_px(cx, 8.0),
                             px(0.0),
                             rgba_from(p.blue, 0.34),
                         )]),
@@ -483,35 +504,35 @@ fn settings_header(p: MoonPalette) -> impl IntoElement {
                 .child(
                     div()
                         .font_family("Inter")
-                        .text_size(px(12.0))
+                        .text_size(design::text_px(cx, 12.0))
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(rgba_from(p.text, 1.0))
                         .child("Настройки"),
                 ),
         )
         .when(design::show_custom_window_controls(), |this| {
-            this.child(settings_window_buttons(p))
+            this.child(settings_window_buttons(p, cx))
         })
 }
 
-fn settings_window_buttons(p: MoonPalette) -> impl IntoElement {
+fn settings_window_buttons(p: MoonPalette, cx: &App) -> impl IntoElement {
     h_flex()
-        .h(px(22.0))
-        .gap(px(2.0))
+        .h(design::fit_h_px(cx, 22.0, 11.0, 5.5))
+        .gap(design::ui_px(cx, 2.0))
         .font_family("Geist Mono")
-        .text_size(px(11.0))
-        .child(settings_window_button("—", p.text_soft))
-        .child(settings_window_button("×", p.orange))
+        .text_size(design::text_px(cx, 11.0))
+        .child(settings_window_button("—", p.text_soft, cx))
+        .child(settings_window_button("×", p.orange, cx))
 }
 
-fn settings_window_button(label: &'static str, color: u32) -> impl IntoElement {
+fn settings_window_button(label: &'static str, color: u32, cx: &App) -> impl IntoElement {
     div()
-        .w(px(26.0))
-        .h(px(22.0))
+        .w(design::ui_px(cx, 26.0))
+        .h(design::fit_h_px(cx, 22.0, 11.0, 5.5))
         .flex()
         .items_center()
         .justify_center()
-        .rounded(px(4.0))
+        .rounded(design::ui_px(cx, 4.0))
         .text_color(rgba_from(color, 1.0))
         .hover(|s| s.bg(rgba_from(0xFFFFFF, 0.055)))
         .child(label)
@@ -526,6 +547,8 @@ fn settings_sig(b: &Backend) -> u64 {
     cfg.charts_split_by_core.hash(&mut h);
     cfg.log_to_file.hash(&mut h);
     cfg.log_retention_days.hash(&mut h);
+    cfg.ui_font_delta.to_bits().hash(&mut h);
+    cfg.ui_scale.to_bits().hash(&mut h);
     format!("{:?}", cfg.theme).hash(&mut h);
     format!("{:?}", cfg.orders).hash(&mut h);
 

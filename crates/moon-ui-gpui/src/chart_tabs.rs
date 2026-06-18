@@ -873,11 +873,11 @@ impl Render for DetachedChartHost {
             .size_full()
             .child(
                 h_flex()
-                    .h(px(34.0))
+                    .h(design::fit_h_px(cx, 34.0, 13.0, 10.5))
                     .w_full()
                     .items_center()
-                    .gap(px(8.0))
-                    .px(px(8.0))
+                    .gap(design::ui_px(cx, 8.0))
+                    .px(design::ui_px(cx, 8.0))
                     .bg(rgba(0x121416E6))
                     .child(crate::controls::scale_dropdown_for_panel(
                         scale,
@@ -888,13 +888,13 @@ impl Render for DetachedChartHost {
                     .child(
                         div()
                             .id("detached-close-all")
-                            .px(px(8.0))
-                            .h(px(22.0))
+                            .px(design::ui_px(cx, 8.0))
+                            .h(design::fit_h_px(cx, 22.0, 13.0, 4.5))
                             .flex()
                             .items_center()
                             .justify_center()
-                            .rounded(px(3.0))
-                            .text_size(px(11.0))
+                            .rounded(design::ui_px(cx, 3.0))
+                            .text_size(design::text_px(cx, 11.0))
                             .text_color(rgba(0xC8CCD0FF))
                             .bg(rgba(0x00000059))
                             .cursor_pointer()

@@ -18,7 +18,7 @@ use moon_ui::{
 use rusqlite::Connection;
 use rusqlite::types::Value;
 
-use crate::Backend;
+use crate::{Backend, design};
 use crate::detached::DetachedSpec;
 use moon_core::db::{self, ReportFilter, ReportTable, SideFilter};
 
@@ -495,7 +495,7 @@ impl Render for ReportPanel {
                             .absolute()
                             .left(px(10.0))
                             .top(px(25.0))
-                            .h(px(24.0))
+                            .h(design::fit_h_px(cx, 24.0, 12.0, 6.0))
                             .flex()
                             .items_center()
                             .text_xs()

@@ -451,9 +451,9 @@ impl StrategiesView {
                 div()
                     .id(SharedString::from(format!("core-{cid}")))
                     .w_full()
-                    .h(px(24.0))
-                    .px(px(6.0))
-                    .rounded(px(3.0))
+                    .h(design::fit_h_px(cx, 24.0, 14.0, 5.0))
+                    .px(design::ui_px(cx, 6.0))
+                    .rounded(design::ui_px(cx, 3.0))
                     .flex()
                     .items_center()
                     .cursor_pointer()
@@ -513,17 +513,17 @@ impl StrategiesView {
             .h_full()
             .bg(moon(p.shell_high))
             .font_family("Geist Mono")
-            .text_size(px(11.0))
-            .line_height(px(14.0))
+            .text_size(design::text_px(cx, 11.0))
+            .line_height(design::line_px(cx, 14.0))
             .border_r_1()
             .border_color(border)
             // ── Фильтры сверху ──
             .child(
                 v_flex()
                     .w_full()
-                    .px(px(10.0))
-                    .py(px(10.0))
-                    .gap(px(7.0))
+                    .px(design::ui_px(cx, 10.0))
+                    .py(design::ui_px(cx, 10.0))
+                    .gap(design::ui_px(cx, 7.0))
                     .child(
                         div().w_full().child(
                             MoonInput::new("strat-search")
@@ -535,7 +535,7 @@ impl StrategiesView {
                     .child(
                         h_flex()
                             .w_full()
-                            .gap(px(7.0))
+                            .gap(design::ui_px(cx, 7.0))
                             .items_center()
                             .child(self.combo_kind(kind_text, kinds, cx))
                             .child(self.combo_dir(dir_text, cx)),
@@ -761,9 +761,9 @@ impl StrategiesView {
                 div()
                     .id(SharedString::from(format!("folder-{core_id}-{path_key}")))
                     .w_full()
-                    .h(px(23.0))
-                    .px(px(6.0))
-                    .rounded(px(3.0))
+                    .h(design::fit_h_px(cx, 23.0, 14.0, 4.5))
+                    .px(design::ui_px(cx, 6.0))
+                    .rounded(design::ui_px(cx, 3.0))
                     .flex()
                     .items_center()
                     .cursor_pointer()
@@ -823,9 +823,9 @@ impl StrategiesView {
             .id(SharedString::from(format!("strat-{core}-{}", r.id)))
             .flex_1()
             .min_w_0()
-            .h(px(23.0))
-            .px(px(6.0))
-            .rounded(px(3.0))
+            .h(design::fit_h_px(cx, 23.0, 14.0, 4.5))
+            .px(design::ui_px(cx, 6.0))
+            .rounded(design::ui_px(cx, 3.0))
             .border_1()
             .border_color(moon_alpha(p.border, 0.0))
             .cursor_pointer()
@@ -867,8 +867,8 @@ impl StrategiesView {
         h_flex()
             .w_full()
             .items_center()
-            .gap(px(6.0))
-            .py(px(1.0))
+            .gap(design::ui_px(cx, 6.0))
+            .py(design::ui_px(cx, 1.0))
             .child(
                 MoonCheckbox::new(SharedString::from(format!("chk-{core}-{}", r.id)))
                     .checked(val)
@@ -901,13 +901,13 @@ impl StrategiesView {
             .h_full()
             .bg(moon(p.shell_high))
             .font_family("Geist Mono")
-            .text_size(px(11.0))
-            .line_height(px(14.0))
+            .text_size(design::text_px(cx, 11.0))
+            .line_height(design::line_px(cx, 14.0))
             .border_r_1()
             .border_color(border)
-            .px(px(10.0))
-            .py(px(12.0))
-            .gap(px(7.0))
+            .px(design::ui_px(cx, 10.0))
+            .py(design::ui_px(cx, 12.0))
+            .gap(design::ui_px(cx, 7.0))
             .child(div().font_weight(FontWeight::SEMIBOLD).child("Разделы"))
             .child(div().w_full().h(px(1.0)).bg(border));
 
@@ -949,9 +949,9 @@ impl StrategiesView {
             let mut row = div()
                 .id(SharedString::from(format!("sec-{i}")))
                 .w_full()
-                .h(px(24.0))
-                .px(px(6.0))
-                .rounded(px(3.0))
+                .h(design::fit_h_px(cx, 24.0, 14.0, 5.0))
+                .px(design::ui_px(cx, 6.0))
+                .rounded(design::ui_px(cx, 3.0))
                 .border_1()
                 .border_color(moon_alpha(p.border, 0.0))
                 .flex()
@@ -1026,12 +1026,12 @@ impl StrategiesView {
             .flex_1()
             .h_full()
             .min_w(px(420.0))
-            .px(px(24.0))
-            .py(px(18.0))
-            .gap(px(10.0))
+            .px(design::ui_px(cx, 24.0))
+            .py(design::ui_px(cx, 18.0))
+            .gap(design::ui_px(cx, 10.0))
             .font_family("Geist Mono")
-            .text_size(px(11.0))
-            .line_height(px(14.0));
+            .text_size(design::text_px(cx, 11.0))
+            .line_height(design::line_px(cx, 14.0));
 
         let ParamsPanelModel::Content {
             section,
@@ -1062,7 +1062,7 @@ impl StrategiesView {
         let dirty = self.field_edits.len();
         let mut header = h_flex()
             .w_full()
-            .h(px(28.0))
+            .h(design::fit_h_px(cx, 28.0, 14.0, 7.0))
             .items_center()
             .justify_between()
             .child(
@@ -1120,7 +1120,7 @@ impl StrategiesView {
             .child(div().w_full().h(px(1.0)).bg(moon(p.border)));
 
         // Порядок полей — как в схеме. Значения берём из снимка по имени.
-        let mut list = v_flex().w_full().gap(px(2.0));
+        let mut list = v_flex().w_full().gap(design::ui_px(cx, 2.0));
         for f in &section.fields {
             let lname = f.name.to_lowercase();
             if multi && lname == "strategyname" {
@@ -1307,14 +1307,14 @@ impl StrategiesView {
             .id(SharedString::from(format!("field-row-{row_id}")))
             .w_full()
             .items_start()
-            .gap(px(14.0))
-            .min_h(px(30.0))
-            .py(px(4.0))
+            .gap(design::ui_px(cx, 14.0))
+            .min_h(design::fit_h_px(cx, 30.0, 14.0, 8.0))
+            .py(design::ui_px(cx, 4.0))
             .border_l(px(2.0))
             .border_color(moon_alpha(p.amber, if dirty { 0.72 } else { 0.0 }))
             .pl(px(8.0))
             .pr_2()
-            .rounded(px(3.0))
+            .rounded(design::ui_px(cx, 3.0))
             .when(dirty, |s| s.bg(moon_alpha(p.amber, 0.06)))
             .hover(move |s| s.bg(moon_alpha(p.panel, 0.46)))
             .child(
@@ -1354,25 +1354,25 @@ impl StrategiesView {
                 v_flex()
                     .id(SharedString::from(format!("helper-{label}")))
                     .w_full()
-                    .rounded(px(4.0))
+                    .rounded(design::ui_px(cx, 4.0))
                     .border_1()
                     .border_color(moon(p.border))
                     .bg(moon(p.panel))
-                    .px(px(8.0))
-                    .py(px(6.0))
+                    .px(design::ui_px(cx, 8.0))
+                    .py(design::ui_px(cx, 6.0))
                     .cursor_pointer()
                     .hover(move |s| s.border_color(moon_alpha(p.amber, 0.72)))
                     .child(
                         div()
                             .font_family("Geist Mono")
-                            .text_size(px(11.0))
+                            .text_size(design::text_px(cx, 11.0))
                             .text_color(moon(p.text))
                             .child(label),
                     )
                     .child(
                         div()
                             .font_family("Geist Mono")
-                            .text_size(px(10.0))
+                            .text_size(design::text_px(cx, 10.0))
                             .text_color(moon(p.text_muted))
                             .child(detail),
                     )
@@ -1386,9 +1386,9 @@ impl StrategiesView {
                 .w(px(280.0))
                 .h_full()
                 .flex_none()
-                .gap(px(10.0))
-                .px(px(16.0))
-                .py(px(14.0))
+                .gap(design::ui_px(cx, 10.0))
+                .px(design::ui_px(cx, 16.0))
+                .py(design::ui_px(cx, 14.0))
                 .bg(moon(p.shell_high))
                 .border_l_1()
                 .border_color(moon(p.border))
@@ -1422,7 +1422,7 @@ impl StrategiesView {
                         .bg(moon(p.shell_high))
                         .border_1()
                         .border_color(moon(p.border))
-                        .rounded(px(6.0))
+                        .rounded(design::ui_px(cx, 6.0))
                         .child(
                             h_flex()
                                 .w_full()
@@ -1537,10 +1537,10 @@ impl Render for StrategiesView {
             .bg(moon(p.shell))
             .text_color(moon(p.text))
             .font_family("Geist Mono")
-            .text_size(px(11.0))
-            .line_height(px(14.0))
+            .text_size(design::text_px(cx, 11.0))
+            .line_height(design::line_px(cx, 14.0))
             .track_focus(&self.focus)
-            .child(strategies_header(p))
+            .child(strategies_header(p, cx))
             .child(
                 h_flex()
                     .flex_1()
@@ -1558,32 +1558,32 @@ impl Render for StrategiesView {
     }
 }
 
-fn strategies_header(p: MoonPalette) -> impl IntoElement {
+fn strategies_header(p: MoonPalette, cx: &App) -> impl IntoElement {
     h_flex()
         .id("strategies-window-header")
         .relative()
         .flex_none()
         .w_full()
-        .h(px(STRATEGIES_HEADER_H))
+        .h(design::fit_h_px(cx, STRATEGIES_HEADER_H, 14.0, 9.0))
         .justify_between()
-        .pl(px(design::titlebar_leading_inset()))
-        .pr(px(design::HEADER_PAD_X))
+        .pl(design::ui_px(cx, design::titlebar_leading_inset()))
+        .pr(design::ui_px(cx, design::HEADER_PAD_X))
         .bg(moon(p.shell_high))
         .border_b(px(1.0))
         .border_color(moon_alpha(p.border, 1.0))
         .child(
             h_flex()
-                .gap(px(8.0))
+                .gap(design::ui_px(cx, 8.0))
                 .child(
                     div()
-                        .w(px(7.0))
-                        .h(px(7.0))
-                        .rounded(px(999.0))
+                        .w(design::ui_px(cx, 7.0))
+                        .h(design::ui_px(cx, 7.0))
+                        .rounded(design::ui_px(cx, 999.0))
                         .bg(moon(p.accent))
                         .shadow(vec![moon_ui::foundation::box_shadow(
                             px(0.0),
                             px(0.0),
-                            px(8.0),
+                            design::ui_px(cx, 8.0),
                             px(0.0),
                             moon_alpha(p.accent, 0.36),
                         )]),
@@ -1591,35 +1591,35 @@ fn strategies_header(p: MoonPalette) -> impl IntoElement {
                 .child(
                     div()
                         .font_family("Inter")
-                        .text_size(px(12.0))
+                        .text_size(design::text_px(cx, 12.0))
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(moon(p.text))
                         .child("Стратегии"),
                 ),
         )
         .when(design::show_custom_window_controls(), |this| {
-            this.child(strategies_window_buttons(p))
+            this.child(strategies_window_buttons(p, cx))
         })
 }
 
-fn strategies_window_buttons(p: MoonPalette) -> impl IntoElement {
+fn strategies_window_buttons(p: MoonPalette, cx: &App) -> impl IntoElement {
     h_flex()
-        .h(px(22.0))
-        .gap(px(2.0))
+        .h(design::fit_h_px(cx, 22.0, 11.0, 5.5))
+        .gap(design::ui_px(cx, 2.0))
         .font_family("Geist Mono")
-        .text_size(px(11.0))
-        .child(strategies_window_button("—", p.text_soft))
-        .child(strategies_window_button("×", p.orange))
+        .text_size(design::text_px(cx, 11.0))
+        .child(strategies_window_button("—", p.text_soft, cx))
+        .child(strategies_window_button("×", p.orange, cx))
 }
 
-fn strategies_window_button(label: &'static str, color: u32) -> impl IntoElement {
+fn strategies_window_button(label: &'static str, color: u32, cx: &App) -> impl IntoElement {
     div()
-        .w(px(26.0))
-        .h(px(22.0))
+        .w(design::ui_px(cx, 26.0))
+        .h(design::fit_h_px(cx, 22.0, 11.0, 5.5))
         .flex()
         .items_center()
         .justify_center()
-        .rounded(px(4.0))
+        .rounded(design::ui_px(cx, 4.0))
         .text_color(moon(color))
         .hover(|s| s.bg(moon_alpha(0xFFFFFF, 0.055)))
         .child(label)

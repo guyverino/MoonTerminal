@@ -126,8 +126,13 @@ Makefile сам подставляет MSVC-таргет на Windows и нат�
 ## MoonUI
 
 GPUI runtime и UI-компоненты приходят из **`Moonbot-Tech/MoonUI`** (ветка `master`).
-`Cargo.lock` не коммитится: свежий checkout резолвит текущую голову Git-зависимостей.
-После первой сборки Cargo создаёт локальный ignored `Cargo.lock`; это нормально.
+`Cargo.lock` не коммитится: это осознанная rolling-master политика dev-ветки. Свежий checkout
+резолвит текущую голову MoonUI, чтобы терминал и компоненты во время активной разработки всегда
+собирались против актуального состояния, а не против вчерашнего pinned-среза.
+
+Это не “забытый lock”: сборки в разные дни могут взять разные MoonUI SHA. Для диагностики терминал
+пишет в лог строку `build: moonterminal=... moonui=...`, чтобы сразу видеть, на каком срезе собран
+бинарь. После первой сборки Cargo создаёт локальный ignored `Cargo.lock`; это нормально.
 
 Если после `git pull` сборка падает на отсутствующих API (`gpui::GpuCanvas*`,
 `Panel::show_dock_header` и т.п.) — обнови локальный lock:
@@ -141,19 +146,18 @@ workspace/
   MoonUI/
 ```
 
-В `MoonTerminal/.cargo/config.toml` можно включить локальную подмену Git-зависимости без правки
-публичных `Cargo.toml`:
+В `MoonTerminal/.cargo/config.toml` можно включить локальную подмену Git-зависимостей без правки
+публичных `Cargo.toml`. Используй `[patch]`, а не `paths`: Cargo должен подменять тот же git-source,
+а не делать грубый path override.
 
 ```toml
-paths = [
-    "../MoonUI/crates/moon-gpui",
-    "../MoonUI/crates/moon-gpui-platform",
-    "../MoonUI/crates/moon-ui",
-]
+[patch."https://github.com/Moonbot-Tech/MoonUI"]
+moon-gpui = { path = "../MoonUI/crates/moon-gpui" }
+moon-gpui-platform = { path = "../MoonUI/crates/moon-gpui-platform" }
+moon-ui = { path = "../MoonUI/crates/moon-ui" }
 ```
 
 Файл `.cargo/config.toml` локальный и не коммитится.
-Cargo может вывести warning про `path override`; это ожидаемо для локальной разработки.
 `Cargo.lock` при этом остаётся локальным ignored-файлом.
 
 ---
@@ -173,12 +177,12 @@ Cargo может вывести warning про `path override`; это ожид�
 crates/
   moon-core      backend: feed / session / market / config / БД отчётов (UI-агностик)
   moon-chart     чарт-математика: view (зум/пан/Y), axes, геометрия ордеров
-  moon-ui-gpui   бинарь moonterminal: GPUI-оболочка + own-pass DX11 рендер чарта
+  moon-ui-gpui   бинарь moonterminal: GPUI-оболочка + own-pass chartdx backend
 ```
 
-Подробнее: [docs/ARCHITECTURE_MULTICORE.md](docs/ARCHITECTURE_MULTICORE.md),
-[docs/REFACTOR_RENDER.md](docs/REFACTOR_RENDER.md),
-[docs/RENDER_INVALIDATION.md](docs/RENDER_INVALIDATION.md).
+Подробнее: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md),
+[docs/GOALS_STATUS.md](docs/GOALS_STATUS.md),
+[docs/MAC_LINUX_PERF_TEST_TZ.md](docs/MAC_LINUX_PERF_TEST_TZ.md).
 
 ---
 

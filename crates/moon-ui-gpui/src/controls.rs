@@ -51,9 +51,9 @@ fn toolbar_metric(
 }
 
 /// Мелкая тусклая подпись группы (`size`/`sell`/`МАСШТАБ`) — стендовый `.strip-label`.
-fn strip_label(text: &'static str, p: MoonPalette) -> impl IntoElement {
+fn strip_label(text: &'static str, p: MoonPalette, cx: &App) -> impl IntoElement {
     div()
-        .text_size(px(9.5))
+        .text_size(design::text_px(cx, 9.5))
         .font_family(design::ui_font())
         .text_color(rgb(p.text_muted))
         .child(text)
@@ -202,10 +202,10 @@ pub fn toolbar(backend: &Entity<Backend>, cx: &App) -> impl IntoElement {
     let mut row = h_flex()
         .id("toolbar")
         .w_full()
-        .h(px(TOOLBAR_H))
+        .h(design::fit_h_px(cx, TOOLBAR_H, 13.0, 9.5))
         .items_center()
-        .gap(px(6.0))
-        .px(px(12.0))
+        .gap(design::ui_px(cx, 6.0))
+        .px(design::ui_px(cx, 12.0))
         .bg(rgb(p.shell_high))
         .border_b_1()
         .border_color(rgb(p.border));
@@ -215,10 +215,10 @@ pub fn toolbar(backend: &Entity<Backend>, cx: &App) -> impl IntoElement {
         .child(toolbar_metric("toolbar-sl", "SL", "-2.0%", p.red, 74.6, p))
         .child(toolbar_metric("toolbar-lev", "Lev", "×1", p.text, 61.6, p))
         .child(divider(p))
-        .child(strip_label("size", p))
+        .child(strip_label("size", p, cx))
         .child(size_strip())
         .child(divider(p))
-        .child(strip_label("sell", p))
+        .child(strip_label("sell", p, cx))
         .child(sell_strip())
         .child(divider(p))
         .child(scale_dropdown(scale, backend.clone(), p));

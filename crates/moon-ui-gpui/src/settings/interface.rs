@@ -10,10 +10,11 @@ use moon_ui::{
 
 use super::{SettingsView, color_row, hsla_u8, section, separator, slider_row};
 use crate::{Backend, hex};
-use moon_core::config::ChartTheme;
+use moon_core::config::{AppConfig, ChartTheme};
 
 /// Состояние редактора темы: по entity на каждое поле.
 pub(super) struct Iface {
+    ui_font_delta: Entity<MoonSliderState>,
     bg: Entity<MoonColorPickerState>,
     grid: Entity<MoonColorPickerState>,
     grid_alpha: Entity<MoonSliderState>,
@@ -27,6 +28,46 @@ pub(super) struct Iface {
     book_ask: Entity<MoonColorPickerState>,
     panel_bg: Entity<MoonColorPickerState>,
     closed_bg: Entity<MoonColorPickerState>,
+}
+
+/// Слайдер f32, привязанный к общему AppConfig, а не к теме чарта.
+fn app_num_field(
+    backend: &Entity<Backend>,
+    cx: &mut Context<SettingsView>,
+    get: fn(&AppConfig) -> f32,
+    set: fn(&mut AppConfig, f32),
+    min: f32,
+    max: f32,
+    step: f32,
+) -> Entity<MoonSliderState> {
+    let cur = {
+        let b = backend.read(cx);
+        get(b.preview.as_ref().unwrap_or(&b.config))
+    };
+    let st = cx.new(|_| {
+        MoonSliderState::new()
+            .min(min)
+            .max(max)
+            .step(step)
+            .default_value(cur)
+    });
+    cx.subscribe(&st, move |this, _emitter, ev: &MoonSliderEvent, cx| {
+        let MoonSliderEvent::Change(f) = ev else {
+            return;
+        };
+        let f = f.end();
+        this.backend.update(cx, |b, cx| {
+            if let Some(p) = b.preview.as_mut() {
+                if get(p) != f {
+                    set(p, f);
+                    crate::install_moon_theme_for_config(p, cx);
+                    cx.notify();
+                }
+            }
+        });
+    })
+    .detach();
+    st
 }
 
 /// Color-picker, привязанный к полю темы: init из текущего config, на изменение —
@@ -100,6 +141,15 @@ pub(super) fn build(
     cx: &mut Context<SettingsView>,
 ) -> Iface {
     Iface {
+        ui_font_delta: app_num_field(
+            backend,
+            cx,
+            |c| c.ui_font_delta,
+            |c, v| c.ui_font_delta = v,
+            -2.0,
+            6.0,
+            1.0,
+        ),
         bg: color_field(backend, window, cx, |t| t.bg, |t, v| t.bg = v),
         grid: color_field(backend, window, cx, |t| t.grid, |t, v| t.grid = v),
         grid_alpha: num_field(
@@ -166,37 +216,42 @@ impl SettingsView {
         v_flex()
             .w_full()
             .gap_1()
+            // UI: шрифты и масштаб
+            .child(section("Интерфейс: шрифт", p, cx))
+            .child(slider_row("Прибавка к размеру шрифта", &i.ui_font_delta, cx))
+            .child(separator(p, cx))
             // График: фон и сетка
-            .child(section("График: фон и сетка", p))
-            .child(color_row("Цвет фона графика", &i.bg, p))
-            .child(color_row("Цвет сетки", &i.grid, p))
+            .child(section("График: фон и сетка", p, cx))
+            .child(color_row("Цвет фона графика", &i.bg, p, cx))
+            .child(color_row("Цвет сетки", &i.grid, p, cx))
             .child(slider_row("Видимость сетки", &i.grid_alpha, cx))
-            .child(separator(p))
+            .child(separator(p, cx))
             // График: перекрестие
-            .child(section("График: перекрестие", p))
-            .child(color_row("Цвет перекрестия", &i.cross, p))
+            .child(section("График: перекрестие", p, cx))
+            .child(color_row("Цвет перекрестия", &i.cross, p, cx))
             .child(slider_row("Прозрачность линий", &i.cross_alpha, cx))
             .child(slider_row("Толщина линий", &i.cross_thickness, cx))
             .child(slider_row("Радиус ореола", &i.halo_radius, cx))
             .child(slider_row("Яркость ореола", &i.halo_intensity, cx))
-            .child(separator(p))
+            .child(separator(p, cx))
             // Стакан
-            .child(section("Стакан", p))
-            .child(color_row("Фон стакана", &i.book_bg, p))
-            .child(color_row("Цвет покупок (bid)", &i.book_bid, p))
-            .child(color_row("Цвет продаж (ask)", &i.book_ask, p))
-            .child(separator(p))
+            .child(section("Стакан", p, cx))
+            .child(color_row("Фон стакана", &i.book_bg, p, cx))
+            .child(color_row("Цвет покупок (bid)", &i.book_bid, p, cx))
+            .child(color_row("Цвет продаж (ask)", &i.book_ask, p, cx))
+            .child(separator(p, cx))
             // Панели
-            .child(section("Панели", p))
+            .child(section("Панели", p, cx))
             .child(color_row(
                 "Фон панелей (тулбар, ордер, док, статус)",
                 &i.panel_bg,
                 p,
+                cx,
             ))
-            .child(separator(p))
+            .child(separator(p, cx))
             // Закрытый график
-            .child(section("Закрытый график", p))
-            .child(color_row("Фон пустого контейнера", &i.closed_bg, p))
+            .child(section("Закрытый график", p, cx))
+            .child(color_row("Фон пустого контейнера", &i.closed_bg, p, cx))
             .child(
                 div()
                     .mt_2()

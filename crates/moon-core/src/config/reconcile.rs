@@ -25,6 +25,10 @@ pub struct Merged {
     pub log_to_file: bool,
     /// Срок хранения файлов лога (дней; 0 = хранить всё).
     pub log_retention_days: u32,
+    /// Прибавка к базовым размерам UI-шрифтов в logical px.
+    pub ui_font_delta: f32,
+    /// Общий масштаб геометрии UI.
+    pub ui_scale: f32,
     /// Нужно пере-сохранить на диск: присвоены новые uid и/или версия схемы
     /// устарела (надо дослоить дефолты новых полей в settings.toml).
     pub dirty: bool,
@@ -40,6 +44,8 @@ pub fn merge(sf: ServersFile, meta: SettingsFile) -> Merged {
     let charts_split_by_core = meta.charts_split_by_core;
     let log_to_file = meta.log_to_file;
     let log_retention_days = meta.log_retention_days;
+    let ui_font_delta = meta.ui_font_delta;
+    let ui_scale = meta.ui_scale;
 
     let servers = sf
         .servers
@@ -89,6 +95,8 @@ pub fn merge(sf: ServersFile, meta: SettingsFile) -> Merged {
         charts_split_by_core,
         log_to_file,
         log_retention_days,
+        ui_font_delta,
+        ui_scale,
         dirty,
     }
 }
@@ -103,6 +111,8 @@ pub fn split(
     charts_split_by_core: bool,
     log_to_file: bool,
     log_retention_days: u32,
+    ui_font_delta: f32,
+    ui_scale: f32,
 ) -> (ServersFile, SettingsFile) {
     let sf = ServersFile {
         servers: servers
@@ -121,6 +131,8 @@ pub fn split(
         charts_split_by_core,
         log_to_file,
         log_retention_days,
+        ui_font_delta,
+        ui_scale,
         groups: groups.to_vec(),
         servers: servers
             .iter()

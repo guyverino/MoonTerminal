@@ -15,7 +15,7 @@ use moon_ui::{
 };
 
 use super::{SettingsView, hsla_u8};
-use crate::{Backend, hex};
+use crate::{Backend, design, hex};
 use moon_core::config::{FeedFlags, GroupConfig, Secret, ServerConfig};
 use moon_core::feed::ConnStatus;
 use moon_core::session::CoreId;
@@ -572,8 +572,14 @@ impl SettingsView {
             let nm_eye = name.clone();
             let nm_pick = name.clone();
             let ico_el: AnyElement = match icon_tex.get(icon).and_then(|t| t.clone()) {
-                Some(arc) => img(arc).w(px(20.0)).h(px(20.0)).into_any_element(),
-                None => div().w(px(20.0)).h(px(20.0)).into_any_element(),
+                Some(arc) => img(arc)
+                    .w(design::ui_px(cx, 20.0))
+                    .h(design::ui_px(cx, 20.0))
+                    .into_any_element(),
+                None => div()
+                    .w(design::ui_px(cx, 20.0))
+                    .h(design::ui_px(cx, 20.0))
+                    .into_any_element(),
             };
             groups_col = groups_col.child(
                 h_flex()
@@ -650,7 +656,10 @@ impl SettingsView {
             let mut grid = h_flex().w_full().flex_wrap().gap_1();
             for id in pick_ids {
                 let cell: AnyElement = match icon_tex.get(&id).and_then(|t| t.clone()) {
-                    Some(arc) => img(arc).w(px(22.0)).h(px(22.0)).into_any_element(),
+                    Some(arc) => img(arc)
+                        .w(design::ui_px(cx, 22.0))
+                        .h(design::ui_px(cx, 22.0))
+                        .into_any_element(),
                     None => continue,
                 };
                 let nm = pick.clone();
@@ -659,7 +668,7 @@ impl SettingsView {
                         .id(SharedString::from(format!("ico-{id}")))
                         .p_0p5()
                         .cursor_pointer()
-                        .rounded(px(4.0))
+                        .rounded(design::ui_px(cx, 4.0))
                         .hover(move |s| s.bg(rgb(p.panel_high)))
                         .child(cell)
                         .on_click(cx.listener(move |this, _, _, cx| {

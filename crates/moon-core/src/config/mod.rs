@@ -57,6 +57,10 @@ pub struct AppConfig {
     pub log_to_file: bool,
     /// Срок хранения файлов лога, дней; 0 = хранить всё (settings.toml). Дефолт 14.
     pub log_retention_days: u32,
+    /// Прибавка к базовым размерам UI-шрифтов в logical px. Дефолт +2.
+    pub ui_font_delta: f32,
+    /// Общий масштаб геометрии UI. Дефолт 1.0.
+    pub ui_scale: f32,
     /// Тема оформления чарта (отдельный переносимый theme.toml).
     pub theme: ChartTheme,
     /// Стиль линий ордеров (отдельный переносимый orders.toml).
@@ -81,6 +85,8 @@ impl AppConfig {
                 charts_split_by_core: merged.charts_split_by_core,
                 log_to_file: merged.log_to_file,
                 log_retention_days: merged.log_retention_days,
+                ui_font_delta: merged.ui_font_delta,
+                ui_scale: merged.ui_scale,
                 theme,
                 orders,
             };
@@ -107,6 +113,8 @@ impl AppConfig {
             cfg.charts_split_by_core = true;
             cfg.log_to_file = true;
             cfg.log_retention_days = 14;
+            cfg.ui_font_delta = schema::default_ui_font_delta();
+            cfg.ui_scale = schema::default_ui_scale();
             cfg.save()?;
             log::info!("мигрировано из config.enc → servers.enc + settings.toml");
             return Ok(cfg);
@@ -118,6 +126,8 @@ impl AppConfig {
             cfg.charts_split_by_core = true;
             cfg.log_to_file = true;
             cfg.log_retention_days = 14;
+            cfg.ui_font_delta = schema::default_ui_font_delta();
+            cfg.ui_scale = schema::default_ui_scale();
             cfg.save()?;
             log::info!("мигрировано из config.toml → servers.enc + settings.toml");
             return Ok(cfg);
@@ -130,6 +140,8 @@ impl AppConfig {
             charts_split_by_core: true, // дефолт — отдельная вкладка на ядро
             log_to_file: true,
             log_retention_days: 14,
+            ui_font_delta: schema::default_ui_font_delta(),
+            ui_scale: schema::default_ui_scale(),
             ..Self::default()
         })
     }
@@ -148,6 +160,8 @@ impl AppConfig {
             self.charts_split_by_core,
             self.log_to_file,
             self.log_retention_days,
+            self.ui_font_delta,
+            self.ui_scale,
         );
         store::write_servers(&sf)?;
         store::write_settings(&meta)?;
@@ -196,6 +210,8 @@ impl AppConfig {
             true, // нейтрализуем: тумблер чартов не влияет на структуру (без ребилда)
             true, // лог-настройки тоже не структурные (без реконнекта/ребилда)
             14,
+            schema::default_ui_font_delta(),
+            schema::default_ui_scale(),
         );
         let a = toml::to_string(&sf).unwrap_or_default();
         let b = toml::to_string(&meta).unwrap_or_default();
