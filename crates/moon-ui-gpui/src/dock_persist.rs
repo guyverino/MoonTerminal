@@ -16,7 +16,7 @@ use moon_ui::{DockAreaState, PanelInfo, PanelState, register_panel};
 
 use moon_core::config::paths;
 
-use crate::Backend;
+use crate::{Backend, default_focus_market};
 use crate::chart_tabs::ChartTabs;
 use crate::panels::{DetectsPanel, LogPanel, OrderPanel, OrdersPanel, ReportPanel, StubPanel};
 
@@ -83,9 +83,10 @@ pub fn register_panels(cx: &mut App, backend: Entity<Backend>, epoch: f64) {
             let group = group_of(info);
             let theme = backend.read(cx).config.theme.clone();
             let backend = backend.clone();
-            // Main стартует ПУСТЫМ (только лого): фокус-монета не авто-открывается. Монета на
-            // Main появляется по дабл-клику/детекту (open_market). См. spawn_group_window.
-            Rc::new(cx.new(|cx| ChartTabs::new(backend, group, None, epoch, theme, window, cx)))
+            let focus = default_focus_market(&backend.read(cx).config, &group);
+            Rc::new(cx.new(|cx| {
+                ChartTabs::new(backend, group, focus, epoch, theme, window, cx)
+            }))
         });
     }
     // Лента детектов: группа из state.

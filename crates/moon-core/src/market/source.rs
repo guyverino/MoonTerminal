@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::{Duration, Instant};
 
 use moonproto::state::{OrderBookKind, SeqRingCursor};
@@ -13,6 +13,38 @@ use super::{MarketView, SharedMarketStore};
 
 const MARKET_PULL_BATCH: usize = 8192;
 const ORDERBOOK_PULL_FLOOR: Duration = Duration::from_millis(50);
+const MARKET_DIAG_FLOOR: Duration = Duration::from_millis(1000);
+
+fn market_diag_enabled() -> bool {
+    std::env::var_os("MOON_MARKET_DIAG").is_some()
+        || std::env::var_os("MOON_RENDER_DIAG").is_some()
+}
+
+fn market_diag_due(key: impl Into<String>, floor: Duration) -> bool {
+    if !market_diag_enabled() {
+        return false;
+    }
+    static LAST: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
+    let key = key.into();
+    let now = Instant::now();
+    let mut last = LAST
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .expect("market diag lock poisoned");
+    match last.get(&key).copied() {
+        Some(prev) if now.duration_since(prev) < floor => false,
+        _ => {
+            last.insert(key, now);
+            true
+        }
+    }
+}
+
+fn market_diag(msg: impl std::fmt::Display) {
+    if market_diag_enabled() {
+        log::info!("[market_diag] {msg}");
+    }
+}
 
 #[derive(Default)]
 struct MarketPullCursor {
@@ -88,6 +120,7 @@ impl MarketDataSource {
             inner.cursors.remove(&(provider, market.to_string()));
             inner.store.clone()
         };
+        market_diag(format!("reset_market provider={provider} market={market}"));
         store
             .write()
             .expect("market store poisoned")
@@ -157,15 +190,37 @@ impl MarketDataSource {
         let (provider, client, store) = {
             let inner = self.inner.read().expect("market source poisoned");
             let Some(provider) = inner.core_provider.get(&core).copied() else {
+                if market_diag_due(
+                    format!("no-provider:{core}:{market}"),
+                    MARKET_DIAG_FLOOR,
+                ) {
+                    market_diag(format!("refresh core={core} market={market}: no provider"));
+                }
                 return false;
             };
             let Some(client) = inner.clients.get(&provider).and_then(SharedMoonClient::get) else {
+                if market_diag_due(
+                    format!("no-client:{provider}:{market}"),
+                    MARKET_DIAG_FLOOR,
+                ) {
+                    market_diag(format!(
+                        "refresh core={core} provider={provider} market={market}: no client"
+                    ));
+                }
                 return false;
             };
             (provider, client, inner.store.clone())
         };
 
         let Some(snapshot) = client.snapshot_versioned() else {
+            if market_diag_due(
+                format!("no-snapshot:{provider}:{market}"),
+                MARKET_DIAG_FLOOR,
+            ) {
+                market_diag(format!(
+                    "refresh core={core} provider={provider} market={market}: no snapshot"
+                ));
+            }
             return false;
         };
 
@@ -174,6 +229,10 @@ impl MarketDataSource {
         let mut last_points: Vec<PricePoint> = Vec::new();
         let mut mark_points: Vec<PricePoint> = Vec::new();
         let mut book_update: Option<OrderBook> = None;
+        let mut has_trades_reader = false;
+        let mut has_last_reader = false;
+        let mut has_mark_reader = false;
+        let mut has_book_snapshot = false;
 
         {
             let mut inner = self.inner.write().expect("market source poisoned");
@@ -186,6 +245,7 @@ impl MarketDataSource {
                 .market_history_readers(market)
                 .and_then(|r| r.futures_trades)
             {
+                has_trades_reader = true;
                 let cur = cursor
                     .trades
                     .get_or_insert_with(|| reader.cursor_from_oldest());
@@ -203,6 +263,7 @@ impl MarketDataSource {
                 .market_history_readers(market)
                 .and_then(|r| r.last_prices)
             {
+                has_last_reader = true;
                 let cur = cursor
                     .last_prices
                     .get_or_insert_with(|| reader.cursor_from_oldest());
@@ -218,6 +279,7 @@ impl MarketDataSource {
                 .market_history_readers(market)
                 .and_then(|r| r.mark_prices)
             {
+                has_mark_reader = true;
                 let cur = cursor
                     .mark_prices
                     .get_or_insert_with(|| reader.cursor_from_oldest());
@@ -234,6 +296,7 @@ impl MarketDataSource {
                 .is_none_or(|last| last.elapsed() >= ORDERBOOK_PULL_FLOOR);
             if book_due {
                 if let Some(book) = snapshot.order_book(market, OrderBookKind::Futures) {
+                    has_book_snapshot = true;
                     book_update = Some(OrderBook {
                         bids: book
                             .buys
@@ -259,6 +322,22 @@ impl MarketDataSource {
 
         let mut store = store.write().expect("market store poisoned");
         if store.view(provider, market).is_none() {
+            if market_diag_due(
+                format!("no-view:{provider}:{market}"),
+                MARKET_DIAG_FLOOR,
+            ) {
+                market_diag(format!(
+                    "refresh core={core} provider={provider} market={market}: no store view \
+                     readers trades={has_trades_reader} last={has_last_reader} mark={has_mark_reader} \
+                     book={has_book_snapshot} pulled ticks={} last={} mark={} book={:?}",
+                    ticks.len(),
+                    last_points.len(),
+                    mark_points.len(),
+                    book_update
+                        .as_ref()
+                        .map(|b| (b.bids.len(), b.asks.len()))
+                ));
+            }
             return false;
         }
 
@@ -278,6 +357,24 @@ impl MarketDataSource {
         if let Some(book) = book_update {
             store.apply_book(provider, market, &book);
             changed = true;
+        }
+        if market_diag_due(
+            format!("refresh:{provider}:{market}"),
+            MARKET_DIAG_FLOOR,
+        ) {
+            let (ring_len, ring_total, book_len, last_price) = store
+                .view(provider, market)
+                .map(|v| (v.ring.len(), v.ring.total_pushed(), v.book.len(), v.last_price))
+                .unwrap_or((0, 0, 0, None));
+            market_diag(format!(
+                "refresh core={core} provider={provider} market={market}: changed={changed} \
+                 readers trades={has_trades_reader} last={has_last_reader} mark={has_mark_reader} \
+                 book={has_book_snapshot} pulled ticks={} last={} mark={} \
+                 view ring_len={ring_len} ring_total={ring_total} book_len={book_len} last_price={last_price:?}",
+                ticks.len(),
+                last_points.len(),
+                mark_points.len()
+            ));
         }
         changed
     }

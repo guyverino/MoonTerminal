@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use gpui::prelude::FluentBuilder;
 use gpui::*;
 use moon_ui::{
     MoonBackgroundPolicy, MoonPalette, MoonRect, MoonTabItem, MoonTabStrip, Panel, PanelEvent,
@@ -358,7 +359,7 @@ impl ChartTabs {
                     cx,
                 )
             });
-            cx.new(|cx| Root::new(host, window, cx).background_policy(MoonBackgroundPolicy::NoFill))
+            cx.new(|cx| Root::new(host, window, cx).background_policy(MoonBackgroundPolicy::Opaque))
         });
         if let Ok(handle) = opened {
             let group = self.group.clone();
@@ -867,24 +868,55 @@ impl Render for DetachedChartHost {
         // Масштаб — СВОЙ у этой панели (по-вкладочно), правится прямо в неё.
         let scale = self.panel.read(cx).scale();
         let panel = self.panel.clone();
+        let close_all_panel = self.panel.clone();
+        let title = match self.core {
+            Some(core) => format!("{} · Чарт {} · {core:?}", self.group, self.num),
+            None => format!("{} · Чарт {}", self.group, self.num),
+        };
         // Шапка — ТОЛЬКО у выносных окон вкладок (в основном доке её нет): масштаб слева,
         // «закрыть все графики» справа.
         v_flex()
             .size_full()
+            .bg(rgb(p.shell))
             .child(
                 h_flex()
                     .h(design::fit_h_px(cx, 34.0, 13.0, 10.5))
                     .w_full()
                     .items_center()
                     .gap(design::ui_px(cx, 8.0))
-                    .px(design::ui_px(cx, 8.0))
-                    .bg(rgba(0x121416E6))
-                    .child(crate::controls::scale_dropdown_for_panel(
-                        scale,
-                        self.panel.clone(),
-                        p,
-                    ))
-                    .child(div().flex_1())
+                    .pl(design::ui_px(cx, design::titlebar_leading_inset()))
+                    .pr(design::ui_px(cx, 6.0))
+                    .border_b_1()
+                    .border_color(rgb(p.border))
+                    .bg(rgb(p.shell_high))
+                    .child(
+                        h_flex()
+                            .h_full()
+                            .flex_1()
+                            .min_w_0()
+                            .items_center()
+                            .gap(design::ui_px(cx, 8.0))
+                            .window_control_area(WindowControlArea::Drag)
+                            .on_mouse_down(MouseButton::Left, |event, window, _cx| {
+                                if event.click_count >= 2 {
+                                    window.titlebar_double_click();
+                                } else {
+                                    window.start_window_move();
+                                }
+                            })
+                            .child(design::logo_mark())
+                            .child(design::vline(16.0, p))
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .overflow_hidden()
+                                    .font_family(design::mono())
+                                    .text_size(design::text_px(cx, 11.0))
+                                    .text_color(rgb(p.text_soft))
+                                    .child(title),
+                            ),
+                    )
+                    .child(crate::controls::scale_dropdown_for_panel(scale, panel.clone(), p))
                     .child(
                         div()
                             .id("detached-close-all")
@@ -901,10 +933,39 @@ impl Render for DetachedChartHost {
                             .hover(|s| s.bg(rgba(0xE04848CC)).text_color(rgb(0xFFFFFF)))
                             .child("Закрыть все графики")
                             .on_mouse_down(MouseButton::Left, move |_e, _w, app| {
-                                panel.update(app, |p, cx| p.close_all_panes(cx));
+                                close_all_panel.update(app, |p, cx| p.close_all_panes(cx));
                             }),
-                    ),
+                    )
+                    .when(design::show_custom_window_controls(), |this| {
+                        this.child(
+                            div()
+                                .id("detached-window-close")
+                                .w(px(28.0))
+                                .h(design::fit_h_px(cx, 22.0, 13.0, 4.5))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .rounded(design::ui_px(cx, 3.0))
+                                .text_size(design::text_px(cx, 13.0))
+                                .text_color(rgb(p.text_soft))
+                                .bg(rgba(0x00000059))
+                                .cursor_pointer()
+                                .hover(|s| s.bg(rgba(0xE04848CC)).text_color(rgb(0xFFFFFF)))
+                                .child("×")
+                                .on_mouse_down(MouseButton::Left, |_e, window, cx| {
+                                    cx.stop_propagation();
+                                    window.remove_window();
+                                }),
+                        )
+                    }),
             )
-            .child(div().flex_1().w_full().child(self.panel.clone()))
+            .child(
+                div()
+                    .flex_1()
+                    .w_full()
+                    .overflow_hidden()
+                    .bg(rgb(p.shell))
+                    .child(self.panel.clone()),
+            )
     }
 }

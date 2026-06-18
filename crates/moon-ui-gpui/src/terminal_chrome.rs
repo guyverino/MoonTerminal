@@ -26,13 +26,20 @@ pub fn header(
         .bg(rgb(p.shell_high))
         .child(
             h_flex()
-                .gap(design::ui_px(cx, 12.0))
+                .flex_none()
+                .gap(design::ui_px(cx, 8.0))
+                .items_center()
+                .window_control_area(WindowControlArea::Drag)
+                .child(design::logo_sized(86.0))
+                .child(design::vline(16.0, p)),
+        )
+        .child(
+            h_flex()
+                .gap(design::ui_px(cx, 10.0))
                 .items_center()
                 .min_w_0()
                 .overflow_hidden()
                 .window_control_area(WindowControlArea::Drag)
-                .child(design::logo())
-                .child(design::vline(16.0, p))
                 .child(design::top_pill(
                     "strat-pill",
                     format!("{} · {}", group, market_label.into()),

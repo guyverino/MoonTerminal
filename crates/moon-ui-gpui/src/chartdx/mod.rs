@@ -35,9 +35,12 @@ pub mod view;
 mod wgpu_backend;
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 #[cfg(windows)]
 use std::ffi::c_void;
 use std::rc::{Rc, Weak};
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use gpui::{
     GpuBackend, GpuCanvasDriver, GpuCanvasHandle, GpuFrameDecision, GpuFrameInfo, RawGpuAccess,
@@ -78,6 +81,37 @@ fn union_range(a: Option<(f32, f32)>, b: Option<(f32, f32)>) -> Option<(f32, f32
         (Some((alo, ahi)), Some((blo, bhi))) => Some((alo.min(blo), ahi.max(bhi))),
         (Some(r), None) | (None, Some(r)) => Some(r),
         (None, None) => None,
+    }
+}
+
+fn chart_market_diag_enabled() -> bool {
+    std::env::var_os("MOON_MARKET_DIAG").is_some()
+        || std::env::var_os("MOON_RENDER_DIAG").is_some()
+}
+
+fn chart_market_diag_due(key: impl Into<String>) -> bool {
+    if !chart_market_diag_enabled() {
+        return false;
+    }
+    static LAST: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
+    let key = key.into();
+    let now = Instant::now();
+    let mut last = LAST
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .expect("chart market diag lock poisoned");
+    match last.get(&key).copied() {
+        Some(prev) if now.duration_since(prev) < Duration::from_millis(1000) => false,
+        _ => {
+            last.insert(key, now);
+            true
+        }
+    }
+}
+
+fn chart_market_diag(msg: impl std::fmt::Display) {
+    if chart_market_diag_enabled() {
+        log::info!("[chart_market_diag] {msg}");
     }
 }
 
@@ -780,18 +814,38 @@ impl ChartDataState {
                         pane.view.render_center - half,
                         pane.view.render_center + half,
                     );
+                    let mut diag_levels_len = None;
                     if pr.last_book_rev != d.book_rev
                         || pr.last_book_lo != lo
                         || pr.last_book_hi != hi
                     {
                         let mut levels = Vec::new();
                         d.book.build_instances(lo, hi, &mut levels);
+                        diag_levels_len = Some(levels.len());
                         pr.layers.set_orderbook(levels);
                         pr.last_book_rev = d.book_rev;
                         pr.last_book_lo = lo;
                         pr.last_book_hi = hi;
                         pr.gpu_prepare_dirty = true;
                         pixels_changed = true;
+                    }
+                    if chart_market_diag_due(format!(
+                        "book:{}:{}:{}",
+                        pane.core, pane.market, idx
+                    )) {
+                        chart_market_diag(format!(
+                            "pane={} core={} market={} book_rev={} book_len={} levels={:?} \
+                             y=[{lo:.8},{hi:.8}] center={:.8} range={:.8} book_bounds={:?}",
+                            idx,
+                            pane.core,
+                            pane.market,
+                            d.book_rev,
+                            d.book.len(),
+                            diag_levels_len,
+                            pane.view.render_center,
+                            pane.view.render_range,
+                            pr.orderbook_view.bounds
+                        ));
                     }
                 } else if pr.last_book_rev != u64::MAX {
                     pr.layers.set_orderbook(Vec::new());
@@ -809,6 +863,12 @@ impl ChartDataState {
             }
             source.with_market_view(pane.core, &pane.market, |data| {
                 if let Some(d) = data {
+                    let (visible_start, visible_count) =
+                        d.ring.visible_range(view_time0, view_time0 + window_ms);
+                    let mut uploaded = "none";
+                    let mut uploaded_len = 0usize;
+                    let mut first_cross = None;
+                    let mut last_cross = None;
                     if pr.last_price_lines_rev != d.price_lines_rev {
                         pr.layers
                             .set_price_lines(d.last_line.points(), d.mark_line.points());
@@ -819,7 +879,12 @@ impl ChartDataState {
                     let total = d.ring.total_pushed();
                     let avail_from = d.ring.dropped();
                     if device_lost || pr.last_total > total || pr.last_total < avail_from {
-                        pr.layers.reset_combo(view::collect_all(&d.ring));
+                        let all = view::collect_all(&d.ring);
+                        uploaded = "reset";
+                        uploaded_len = all.len();
+                        first_cross = all.first().map(|c| (c.time_rel, c.price));
+                        last_cross = all.last().map(|c| (c.time_rel, c.price));
+                        pr.layers.reset_combo(all);
                         pr.layers
                             .set_price_lines(d.last_line.points(), d.mark_line.points());
                         pr.last_price_lines_rev = d.price_lines_rev;
@@ -827,11 +892,38 @@ impl ChartDataState {
                         pr.gpu_prepare_dirty = true;
                         pixels_changed = true;
                     } else if total > pr.last_total {
-                        pr.layers
-                            .append_combo(&view::collect_since(&d.ring, pr.last_total));
+                        let tail = view::collect_since(&d.ring, pr.last_total);
+                        uploaded = "append";
+                        uploaded_len = tail.len();
+                        first_cross = tail.first().map(|c| (c.time_rel, c.price));
+                        last_cross = tail.last().map(|c| (c.time_rel, c.price));
+                        pr.layers.append_combo(&tail);
                         pr.last_total = total;
                         pr.gpu_prepare_dirty = true;
                         pixels_changed = true;
+                    }
+                    if chart_market_diag_due(format!(
+                        "combo:{}:{}:{}",
+                        pane.core, pane.market, idx
+                    )) {
+                        chart_market_diag(format!(
+                            "pane={} core={} market={} ring_len={} total={} dropped={} \
+                             visible_start={} visible_count={} window=[{:.1},{:.1}] \
+                             uploaded={uploaded} uploaded_len={uploaded_len} first={first_cross:?} \
+                             last={last_cross:?} last_price={:?} view_bounds={:?}",
+                            idx,
+                            pane.core,
+                            pane.market,
+                            d.ring.len(),
+                            total,
+                            avail_from,
+                            visible_start,
+                            visible_count,
+                            view_time0,
+                            view_time0 + window_ms,
+                            d.last_price,
+                            pr.view.bounds
+                        ));
                     }
                 } else if pr.last_price_lines_rev != u64::MAX {
                     pr.layers.set_price_lines(&[], &[]);

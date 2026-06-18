@@ -83,6 +83,44 @@ open -n target/macos/MoonTerminal.app
 `scripts/macos-bundle.sh` делает release build, `.app`, stable bundle id `pro.moonbot.terminal`,
 ad-hoc подпись по умолчанию и `codesign --verify --deep --strict`.
 
+### Fresh Mac Live Smoke
+
+Первичная миграция старого `config.toml` читает файл из current working directory, а новые
+`servers.enc/settings.toml` пишутся рядом с executable. Поэтому на свежем Mac первый live-run с
+legacy `config.toml` делай из `Contents/MacOS`, через GUI session:
+
+```bash
+cd "$HOME/MoonTerminal/target/macos/MoonTerminal.app/Contents/MacOS"
+MOON_RENDER_DIAG=1 ./MoonTerminal
+```
+
+Если macOS показывает Keychain prompt `MoonTerminal wants to access key "moon-terminal"`:
+
+```text
+Password: <login password>
+Button: Always Allow
+```
+
+После этого должны появиться:
+
+```text
+servers.enc
+settings.toml
+theme.toml
+orders.toml
+```
+
+Дальше штатный packaging smoke:
+
+```bash
+open -n "$HOME/MoonTerminal/target/macos/MoonTerminal.app"
+```
+
+Для env-driven debug smoke (`MOON_RENDER_DIAG_OPEN_10_BTC=1`) на арендованных Mac проще снова
+запустить бинарь из GUI Terminal/`.command`; `launchctl asuser ... setenv` может быть запрещён
+провайдером. SSH-run не считается валидным Keychain/live smoke: он может падать с
+`User interaction is not allowed`, хотя `.app` в GUI работает.
+
 ### CLT / Rented Mac Fallback
 
 Некоторые арендованные Mac дают только Command Line Tools без рабочего `xcrun metal`. Такой стенд
@@ -156,6 +194,26 @@ eval "$(gnome-keyring-daemon --start --components=secrets)"
 secret-tool store --label=moonterminal-test service moon-terminal-test key ping
 secret-tool lookup service moon-terminal-test key ping
 openbox --sm-disable &
+```
+
+Если `secret-tool store` поднимает `org.gnome.keyring.SystemPrompter` или висит на GUI password
+prompt, значит текущий keyring пользователя не разблокирован этим паролем. Для одноразового
+тестового VPS, где старые secrets не нужны, проще сбросить keyring пользователя и создать новый:
+
+```bash
+mv ~/.local/share/keyrings ~/.local/share/keyrings.bak.$(date +%s) 2>/dev/null || true
+mkdir -p ~/.local/share/keyrings
+chmod 700 ~/.local/share/keyrings
+
+dbus-run-session -- bash -lc '
+  set -euo pipefail
+  export DISPLAY=:1
+  export XAUTHORITY="$HOME/.Xauthority"
+  printf "%s\n" Moon | gnome-keyring-daemon --unlock --components=secrets
+  eval "$(gnome-keyring-daemon --start --components=secrets)"
+  printf secret | secret-tool store --label=moon-test service moon-terminal-test key ping
+  secret-tool lookup service moon-terminal-test key ping
+'
 ```
 
 На Linux терминал должен показывать только нашу шапку окна. Проверка X11:

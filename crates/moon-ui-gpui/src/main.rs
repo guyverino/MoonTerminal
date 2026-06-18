@@ -35,6 +35,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
+use gpui::prelude::FluentBuilder;
 use gpui::*;
 
 use chart_tabs::ChartTabs;
@@ -282,6 +283,9 @@ impl Backend {
         // still false during early startup, which made MOON_RENDER_DIAG_OPEN_10_BTC
         // silently do nothing and broke automated perf runs.
         if self.session.sessions().is_empty() {
+            return false;
+        }
+        if debug_order_market_target(self).is_none() {
             return false;
         }
         self.diag_open_10_btc_done = true;
@@ -982,49 +986,81 @@ impl Focusable for DebugChartHost {
 #[cfg(any(debug_assertions, moon_profile_debug, feature = "debug-tools"))]
 impl Render for DebugChartHost {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let p = MoonPalette::active(cx);
         let title = self.title.clone();
         v_flex()
             .size_full()
             .track_focus(&self.focus)
+            .bg(rgb(p.shell))
             .child(
                 h_flex()
-                    .h(design::fit_h_px(cx, 30.0, 13.0, 8.5))
+                    .h(design::fit_h_px(cx, 34.0, 13.0, 10.5))
                     .w_full()
                     .items_center()
                     .gap(design::ui_px(cx, 8.0))
-                    .px(design::ui_px(cx, 8.0))
-                    .bg(rgba(0x121416F2))
-                    .window_control_area(WindowControlArea::Drag)
+                    .pl(design::ui_px(cx, design::titlebar_leading_inset()))
+                    .pr(design::ui_px(cx, 6.0))
+                    .border_b_1()
+                    .border_color(rgb(p.border))
+                    .bg(rgb(p.shell_high))
                     .child(
-                        div()
+                        h_flex()
+                            .h_full()
                             .flex_1()
-                            .font_family(design::mono())
-                            .text_size(design::text_px(cx, 11.0))
-                            .text_color(rgba(0xD6D9DDFF))
-                            .child(title),
-                    )
-                    .child(
-                        div()
-                            .id("debug-chart-close")
-                            .w(px(22.0))
-                            .h(design::fit_h_px(cx, 20.0, 13.0, 3.5))
-                            .flex()
+                            .min_w_0()
                             .items_center()
-                            .justify_center()
-                            .rounded(design::ui_px(cx, 3.0))
-                            .text_size(design::text_px(cx, 13.0))
-                            .text_color(rgba(0xC8CCD0FF))
-                            .bg(rgba(0x00000059))
-                            .cursor_pointer()
-                            .hover(|s| s.bg(rgba(0xE04848CC)).text_color(rgb(0xFFFFFF)))
-                            .child("×")
-                            .on_mouse_down(MouseButton::Left, |_e, window, cx| {
-                                cx.stop_propagation();
-                                window.remove_window();
-                            }),
-                    ),
+                            .gap(design::ui_px(cx, 8.0))
+                            .window_control_area(WindowControlArea::Drag)
+                            .on_mouse_down(MouseButton::Left, |event, window, _cx| {
+                                if event.click_count >= 2 {
+                                    window.titlebar_double_click();
+                                } else {
+                                    window.start_window_move();
+                                }
+                            })
+                            .child(design::logo_mark())
+                            .child(design::vline(16.0, p))
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .overflow_hidden()
+                                    .font_family(design::mono())
+                                    .text_size(design::text_px(cx, 11.0))
+                                    .text_color(rgb(p.text_soft))
+                                    .child(title),
+                            ),
+                    )
+                    .when(design::show_custom_window_controls(), |this| {
+                        this.child(
+                            div()
+                                .id("debug-chart-close")
+                                .w(px(28.0))
+                                .h(design::fit_h_px(cx, 22.0, 13.0, 4.5))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .rounded(design::ui_px(cx, 3.0))
+                                .text_size(design::text_px(cx, 13.0))
+                                .text_color(rgb(p.text_soft))
+                                .bg(rgba(0x00000059))
+                                .cursor_pointer()
+                                .hover(|s| s.bg(rgba(0xE04848CC)).text_color(rgb(0xFFFFFF)))
+                                .child("×")
+                                .on_mouse_down(MouseButton::Left, |_e, window, cx| {
+                                    cx.stop_propagation();
+                                    window.remove_window();
+                                }),
+                        )
+                    }),
             )
-            .child(div().flex_1().w_full().child(self.panel.clone()))
+            .child(
+                div()
+                    .flex_1()
+                    .w_full()
+                    .overflow_hidden()
+                    .bg(rgb(p.shell))
+                    .child(self.panel.clone()),
+            )
     }
 }
 
@@ -1136,7 +1172,7 @@ impl Render for DebugPerfWindow {
                                     .size(MoonButtonSize::Toolbar)
                                     .label("Открыть 10 BTC графиков")
                                     .on_click(move |_, _, cx| {
-                                        spawn_debug_btc_chart_windows(cx, open_backend.clone());
+                                        spawn_debug_chart_windows(cx, open_backend.clone());
                                     })
                                     .render(),
                             )
@@ -1275,25 +1311,62 @@ fn open_debug_perf_window(cx: &mut App, backend: Entity<Backend>) {
 }
 
 #[cfg(any(debug_assertions, moon_profile_debug, feature = "debug-tools"))]
-fn spawn_debug_btc_chart_windows(cx: &mut App, backend: Entity<Backend>) {
-    const DEBUG_MARKET: &str = "BTCUSDT";
-    let Some((core, group, epoch, theme)) = ({
+fn debug_order_market_target(b: &Backend) -> Option<(CoreId, String)> {
+    let store = b.session.store();
+    for s in b.session.sessions() {
+        if let Some(d) = store.core(s.id)
+            && let Some(o) = d.orders.iter().find(|o| !o.market.trim().is_empty())
+        {
+            return Some((s.id, o.market.clone()));
+        }
+    }
+    None
+}
+
+#[cfg(any(debug_assertions, moon_profile_debug, feature = "debug-tools"))]
+fn debug_chart_target(b: &Backend) -> Option<(CoreId, String)> {
+    if let Some(target) = debug_order_market_target(b) {
+        return Some(target);
+    }
+    b.session.sessions().first().map(|s| {
+        let market = b
+            .config
+            .servers
+            .iter()
+            .find(|sv| sv.id == s.id)
+            .map(|sv| sv.market.clone())
+            .filter(|m| !m.trim().is_empty())
+            .unwrap_or_else(|| "BTCUSDT".to_string());
+        (s.id, market)
+    })
+}
+
+#[cfg(any(debug_assertions, moon_profile_debug, feature = "debug-tools"))]
+fn spawn_debug_chart_windows(cx: &mut App, backend: Entity<Backend>) {
+    let Some((core, group, market, epoch, theme)) = ({
         let b = backend.read(cx);
-        b.session
-            .sessions()
-            .first()
-            .map(|s| (s.id, s.group.clone(), b.epoch, b.config.theme.clone()))
+        debug_chart_target(&b).map(|(core, market)| {
+            let group = b
+                .session
+                .sessions()
+                .iter()
+                .find(|s| s.id == core)
+                .map(|s| s.group.clone())
+                .unwrap_or_else(|| "default".to_string());
+            (core, group, market, b.epoch, b.config.theme.clone())
+        })
     }) else {
-        log::warn!("debug charts: no live sessions; cannot open {DEBUG_MARKET}");
+        log::warn!("debug charts: no live sessions/markets; cannot open charts");
         return;
     };
+    log::info!("debug charts: opening 10 windows for core={core} market={market}");
 
     let mut opened = Vec::new();
     for i in 0..10 {
         let backend_for_panel = backend.clone();
-        let market = DEBUG_MARKET.to_string();
+        let market = market.clone();
         let theme = theme.clone();
-        let title = format!("MoonTerminal Debug BTC {}", i + 1);
+        let title = format!("MoonTerminal Debug {market} {}", i + 1);
         let opts = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(Bounds {
                 origin: point(px(90.0 + i as f32 * 24.0), px(90.0 + i as f32 * 24.0)),
@@ -1304,7 +1377,6 @@ fn spawn_debug_btc_chart_windows(cx: &mut App, backend: Entity<Backend>) {
                 appears_transparent: true,
                 ..Default::default()
             }),
-            kind: WindowKind::PopUp,
             focus: false,
             is_minimizable: false,
             app_id: Some("MoonTerminal".to_string()),
@@ -1326,7 +1398,7 @@ fn spawn_debug_btc_chart_windows(cx: &mut App, backend: Entity<Backend>) {
                 )
             });
             let host = cx.new(|cx| DebugChartHost::new(panel, title, cx));
-            cx.new(|cx| Root::new(host, window, cx).background_policy(MoonBackgroundPolicy::NoFill))
+            cx.new(|cx| Root::new(host, window, cx).background_policy(MoonBackgroundPolicy::Opaque))
         });
         match opened_window {
             Ok(handle) => opened.push(handle),
@@ -1378,6 +1450,18 @@ pub(crate) fn groups(cfg: &AppConfig) -> Vec<String> {
     out
 }
 
+pub(crate) fn default_focus_market(cfg: &AppConfig, group: &str) -> Option<(CoreId, String)> {
+    cfg.servers.iter().find_map(|server| {
+        let market = server.market.trim();
+        (server.active
+            && server.show_window
+            && server.group == group
+            && cfg.group(&server.group).active
+            && !market.is_empty())
+        .then(|| (server.id, market.to_string()))
+    })
+}
+
 /// Открыть (или сфокусировать, если уже открыто) окно группы. Используется на старте
 /// по окну на группу и по кнопке 👁 «показать группу» в настройках (порт egui
 /// `App::show_group`). Геометрия — из сохранённой раскладки, иначе каскад по `offset`.
@@ -1399,10 +1483,7 @@ pub(crate) fn spawn_group_window(
             return;
         }
     }
-    // Main при загрузке — ПУСТОЙ (только брендовое лого, без графика): монета на Main
-    // открывается по действию пользователя (дабл-клик по детекту → open_market), а не
-    // авто-подхватом фокус-монеты. Закрыть монету на Main можно угловым ✕ → снова лого.
-    let focus: Option<(CoreId, String)> = None;
+    let focus = default_focus_market(cfg, &group);
     let saved = layout.groups.get(&group);
     let win_bounds = match saved {
         Some(g) => Bounds {
@@ -1810,8 +1891,8 @@ fn main() -> anyhow::Result<()> {
 
                     #[cfg(any(debug_assertions, moon_profile_debug, feature = "debug-tools"))]
                     if open_debug_10 {
-                        log::info!("diag auto-open: spawning 10 BTC chart windows");
-                        spawn_debug_btc_chart_windows(cx, coord_backend.clone());
+                        log::info!("diag auto-open: spawning 10 live-market chart windows");
+                        spawn_debug_chart_windows(cx, coord_backend.clone());
                     }
                     for g in show_reqs {
                         spawn_group_window(

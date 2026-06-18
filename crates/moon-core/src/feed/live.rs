@@ -171,12 +171,42 @@ pub fn run(
                     // Диф обслуживаемых рынков: новым подписываем стакан, убранным — отписываем.
                     for m in &markets {
                         if !wanted.iter().any(|w| w == m) {
-                            let _ = client.streams().subscribe_orderbook(m.clone());
+                            match client.streams().subscribe_orderbook(m.clone()) {
+                                Ok(()) => {
+                                    if std::env::var_os("MOON_MARKET_DIAG").is_some()
+                                        || std::env::var_os("MOON_RENDER_DIAG").is_some()
+                                    {
+                                        log::info!(
+                                            "[market_diag] core {} subscribe_orderbook({m})",
+                                            server.id
+                                        );
+                                    }
+                                }
+                                Err(error) => log::warn!(
+                                    "core {} subscribe_orderbook({m}) failed: {error}",
+                                    server.id
+                                ),
+                            }
                         }
                     }
                     for m in &wanted {
                         if !markets.iter().any(|x| x == m) {
-                            let _ = client.streams().unsubscribe_orderbook(m.clone());
+                            match client.streams().unsubscribe_orderbook(m.clone()) {
+                                Ok(()) => {
+                                    if std::env::var_os("MOON_MARKET_DIAG").is_some()
+                                        || std::env::var_os("MOON_RENDER_DIAG").is_some()
+                                    {
+                                        log::info!(
+                                            "[market_diag] core {} unsubscribe_orderbook({m})",
+                                            server.id
+                                        );
+                                    }
+                                }
+                                Err(error) => log::warn!(
+                                    "core {} unsubscribe_orderbook({m}) failed: {error}",
+                                    server.id
+                                ),
+                            }
                         }
                     }
                     wanted = markets;

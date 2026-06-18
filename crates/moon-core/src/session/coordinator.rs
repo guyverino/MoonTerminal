@@ -15,6 +15,17 @@ use crate::market::MarketDataMode;
 /// быстрое переоткрытие не рвало подписку/чтение и не перевыгружало историю заново.
 const UNSUB_DELAY: Duration = Duration::from_secs(5);
 
+fn market_diag_enabled() -> bool {
+    std::env::var_os("MOON_MARKET_DIAG").is_some()
+        || std::env::var_os("MOON_RENDER_DIAG").is_some()
+}
+
+fn market_diag(msg: impl std::fmt::Display) {
+    if market_diag_enabled() {
+        log::info!("[market_diag] {msg}");
+    }
+}
+
 impl SessionManager {
     /// Сообщает, какой рынок открыт у каждого ядра (ядро → рынок). Зовётся каждый
     /// кадр. Перевыбирает провайдеров, считает обслуживаемые рынки на провайдера и
@@ -40,6 +51,7 @@ impl SessionManager {
             for m in mkts {
                 self.pending_drop.remove(&(*p, m.clone()));
                 if w.insert(m.clone()) {
+                    market_diag(format!("set_open reset provider={p} market={m}"));
                     self.market_source.reset_market(*p, m);
                 }
             }
@@ -97,6 +109,9 @@ impl SessionManager {
         }
         for (id, provider, markets) in cmds {
             if let Some(s) = self.sessions.iter().find(|s| s.id == id) {
+                market_diag(format!(
+                    "set_open send core={id} provider={provider} markets={markets:?}"
+                ));
                 let _ = s
                     .handle
                     .cmd_tx
