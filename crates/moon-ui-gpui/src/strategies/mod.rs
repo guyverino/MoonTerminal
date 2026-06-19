@@ -332,7 +332,15 @@ impl StrategiesView {
         cx: &mut Context<Self>,
     ) -> Entity<MoonInputState> {
         if let Some(state) = self.field_inputs.get(&id) {
-            return state.clone();
+            let state = state.clone();
+            // Кэш мог устареть: значение в сторе изменилось (эхо сервера / правка в другом
+            // выборе), а `value` уже актуально (учитывает черновик). Синхронизируем ТИХО
+            // (`sync_value` не эмитит Change → не зациклится и не наделает ложных правок),
+            // иначе поле показывает залипшее старое значение (мульти-выбор: 62 вместо 60).
+            if state.read(cx).value().as_ref() != value {
+                state.update(cx, |s, cx| s.sync_value(value.clone(), cx));
+            }
+            return state;
         }
         let state = cx.new(|cx| MoonInputState::new(window, cx).default_value(value));
         cx.subscribe(&state, move |this, state, ev: &MoonInputEvent, cx| {
@@ -356,7 +364,12 @@ impl StrategiesView {
         cx: &mut Context<Self>,
     ) -> Entity<MoonTextAreaState> {
         if let Some(state) = self.field_memos.get(&id) {
-            return state.clone();
+            let state = state.clone();
+            // См. field_input_state: тихо синхронизируем кэш со свежим значением.
+            if state.read(cx).value().as_ref() != value {
+                state.update(cx, |s, cx| s.sync_value(value.clone(), cx));
+            }
+            return state;
         }
         let state = cx.new(|cx| MoonTextAreaState::new(window, cx).default_value(value));
         cx.subscribe(&state, move |this, state, ev: &MoonTextAreaEvent, cx| {
