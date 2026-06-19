@@ -1,0 +1,497 @@
+//! Левая панель окна «Стратегии»: дерево ядро→папка→стратегия с поиском/фильтрами
+//! (вид/L/S), чекбоксами-стейджингом и кнопками старт/стоп («Применить»). Это методы
+//! `impl StrategiesView`; состояние и чистые помощники — в [`super`]/[`super::logic`].
+
+use super::*;
+
+impl StrategiesView {
+    pub(super) fn tree_panel(
+        &self,
+        store: &CoreStore,
+        cores: &[(CoreId, String)],
+        order: &Arc<Vec<Key>>,
+        built: &mut Vec<Key>,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let p = MoonPalette::active(cx);
+        let accent = moon(p.blue);
+        let border = moon(p.border);
+
+        // Поиск временно раскрывает всё; своё состояние раскрытия не трогаем.
+        let force_open = self.filter.searching();
+
+        // Узлы ядер → дерево.
+        let mut list = v_flex().w_full().gap_0();
+        for (core_id, core_name) in cores {
+            let Some(cd) = store.core(*core_id) else {
+                continue;
+            };
+            if cd.strategies.is_empty() || !cd.strategies.iter().any(|r| self.filter.matches(r)) {
+                continue;
+            }
+            let open = force_open || self.expanded_cores.contains(core_id);
+            let total = cd
+                .strategies
+                .iter()
+                .filter(|r| self.filter.counts(r))
+                .count();
+            let active = cd
+                .strategies
+                .iter()
+                .filter(|r| self.filter.counts(r) && r.checked)
+                .count();
+            let label = format!(
+                "{}  {}  {}/{}",
+                if open { "▼" } else { "▶" },
+                core_name,
+                active,
+                total
+            );
+            let cid = *core_id;
+            list = list.child(
+                div()
+                    .id(SharedString::from(format!("core-{cid}")))
+                    .w_full()
+                    .h(design::fit_h_px(cx, 24.0, 14.0, 5.0))
+                    .px(design::ui_px(cx, 6.0))
+                    .rounded(design::ui_px(cx, 3.0))
+                    .flex()
+                    .items_center()
+                    .cursor_pointer()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(accent)
+                    .hover(move |s| s.bg(moon_alpha(p.panel, 0.78)))
+                    .child(label)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        toggle(&mut this.expanded_cores, cid);
+                        cx.notify();
+                    })),
+            );
+            if !open {
+                continue;
+            }
+            // Вложенное дерево папок (отступ слева — как egui ui.indent).
+            let root = build_node(cd.strategies.iter().filter(|r| self.filter.matches(r)));
+            let mut prefix: Vec<String> = Vec::new();
+            let mut kids: Vec<AnyElement> = Vec::new();
+            self.render_node(
+                &root,
+                &cd.strategies,
+                *core_id,
+                &mut prefix,
+                force_open,
+                order,
+                built,
+                &mut kids,
+                cx,
+            );
+            let mut body = v_flex().w_full().pl_3().gap_0();
+            for k in kids {
+                body = body.child(k);
+            }
+            list = list.child(body);
+        }
+
+        // Поиск + фильтр вида + фильтр направления.
+        let kinds = kinds_present(cores, store);
+        let kind_text = self
+            .filter
+            .kind
+            .and_then(|k| kinds.iter().find(|(o, _)| *o == k))
+            .map(|(_, n)| n.clone())
+            .unwrap_or_else(|| "все типы".to_string());
+        let dir_text = match self.filter.dir {
+            None => "все".to_string(),
+            Some(true) => "SHORT".to_string(),
+            Some(false) => "LONG".to_string(),
+        };
+
+        let collapsed = self.expanded_cores.is_empty() && self.expanded_folders.is_empty();
+        let cores_owned: Arc<Vec<(CoreId, String)>> = Arc::new(cores.to_vec());
+
+        v_flex()
+            .w(px(220.0))
+            .h_full()
+            .bg(moon(p.shell_high))
+            .font_family("Geist Mono")
+            .text_size(design::text_px(cx, 11.0))
+            .line_height(design::line_px(cx, 14.0))
+            .border_r_1()
+            .border_color(border)
+            // ── Фильтры сверху ──
+            .child(
+                v_flex()
+                    .w_full()
+                    .px(design::ui_px(cx, 10.0))
+                    .py(design::ui_px(cx, 10.0))
+                    .gap(design::ui_px(cx, 7.0))
+                    .child(
+                        div().w_full().child(
+                            MoonInput::new("strat-search")
+                                .state(&self.search)
+                                .small()
+                                .cleanable(true),
+                        ),
+                    )
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .gap(design::ui_px(cx, 7.0))
+                            .items_center()
+                            .child(self.combo_kind(kind_text, kinds, cx))
+                            .child(self.combo_dir(dir_text, cx)),
+                    )
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .items_center()
+                            .justify_between()
+                            .child(
+                                MoonCheckbox::new("flt-active")
+                                    .label("только активные")
+                                    .checked(self.filter.only_active)
+                                    .size(MoonCheckboxSize::Compact)
+                                    .on_change(cx.listener(|this, ch: &bool, _, cx| {
+                                        if this.filter.only_active != *ch {
+                                            this.filter.only_active = *ch;
+                                            cx.notify();
+                                        }
+                                    })),
+                            )
+                            .child(
+                                MoonButton::new("expand-all")
+                                    .ghost()
+                                    .size(MoonButtonSize::Micro)
+                                    .label(if collapsed { "▼" } else { "▲" })
+                                    .on_click({
+                                        let cores = cores_owned.clone();
+                                        cx.listener(move |this, _, _, cx| {
+                                            let store = this.backend.read(cx).session.store();
+                                            let coll = this.expanded_cores.is_empty()
+                                                && this.expanded_folders.is_empty();
+                                            // store borrow tied to cx; clone cores for &-call.
+                                            let cores_v = cores.as_ref().clone();
+                                            this.expand_collapse_toggle(&cores_v, store, coll);
+                                            cx.notify();
+                                        })
+                                    })
+                                    .render(),
+                            ),
+                    ),
+            )
+            .child(div().w_full().h(px(1.0)).bg(border))
+            // ── Прокручиваемый список ──
+            .child(
+                div()
+                    .id("strat-tree-scroll")
+                    .flex_1()
+                    .w_full()
+                    .overflow_y_scroll()
+                    .p(px(8.0))
+                    .child(list),
+            )
+            // ── Нижняя панель действий ──
+            .child(div().w_full().h(px(1.0)).bg(border))
+            .child(self.action_bar(cores_owned, store, cx))
+            .into_any_element()
+    }
+
+    /// Комбобокс фильтра вида (попап-список: «все типы» + присутствующие виды).
+    fn combo_kind(
+        &self,
+        current: String,
+        kinds: Vec<(u8, String)>,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let view = cx.entity();
+        let selected_kind = self.filter.kind;
+        let mut items = vec![
+            MoonMenuItem::with_key("kind-all", "все типы")
+                .selected(selected_kind.is_none())
+                .on_click({
+                    let view = view.clone();
+                    move |_, _, app| {
+                        view.update(app, |this, c| {
+                            if this.filter.kind.is_some() {
+                                this.filter.kind = None;
+                                c.notify();
+                            }
+                        });
+                    }
+                }),
+        ];
+        for (ord, name) in kinds {
+            let view = view.clone();
+            items.push(
+                MoonMenuItem::with_key(format!("kind-{ord}"), name.clone())
+                    .selected(selected_kind == Some(ord))
+                    .on_click({
+                        let name_ord = ord;
+                        move |_, _, app| {
+                            view.update(app, |this, c| {
+                                if this.filter.kind != Some(name_ord) {
+                                    this.filter.kind = Some(name_ord);
+                                    c.notify();
+                                }
+                            });
+                        }
+                    }),
+            );
+        }
+        MoonDropdown::new("strat-kind-filter")
+            .label(format!("{current} ▾"))
+            .trigger_variant(MoonButtonVariant::Soft)
+            .trigger_size(MoonButtonSize::Action)
+            .trigger_width(116.0)
+            .menu_width(180.0)
+            .menu_size(MoonMenuSize::Compact)
+            .menu_max_height(240.0)
+            .items(items)
+            .into_any_element()
+    }
+
+    /// Комбобокс фильтра направления (все/LONG/SHORT).
+    fn combo_dir(&self, current: String, cx: &Context<Self>) -> AnyElement {
+        let view = cx.entity();
+        let opts: [(&str, Option<bool>); 3] =
+            [("все", None), ("LONG", Some(false)), ("SHORT", Some(true))];
+        let mut items = Vec::with_capacity(opts.len());
+        for (label, val) in opts {
+            let view = view.clone();
+            items.push(
+                MoonMenuItem::with_key(format!("dir-{label}"), label)
+                    .selected(self.filter.dir == val)
+                    .on_click(move |_, _, app| {
+                        view.update(app, |this, c| {
+                            if this.filter.dir != val {
+                                this.filter.dir = val;
+                                c.notify();
+                            }
+                        });
+                    }),
+            );
+        }
+        MoonDropdown::new("strat-dir-filter")
+            .label(format!("{current} ▾"))
+            .trigger_variant(MoonButtonVariant::Soft)
+            .trigger_size(MoonButtonSize::Action)
+            .trigger_width(80.0)
+            .menu_width(120.0)
+            .menu_size(MoonMenuSize::Compact)
+            .items(items)
+            .into_any_element()
+    }
+
+    /// Нижняя панель действий: старт/стоп отмеченных + счётчик стейджинга.
+    fn action_bar(
+        &self,
+        cores: Arc<Vec<(CoreId, String)>>,
+        _store: &CoreStore,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        // Кнопки видимы всегда (как egui); пустое действие — no-op в apply_start_stop.
+        let cs = cores.clone();
+        let mut row = h_flex().w_full().p_2().gap_2().items_center();
+        row = row.child(
+            MoonButton::new("start-checked")
+                .primary()
+                .size(MoonButtonSize::Micro)
+                .label("▶ отмеченных")
+                .on_click({
+                    let cs = cs.clone();
+                    cx.listener(move |this, _, _, cx| {
+                        let cores_v = cs.as_ref().clone();
+                        this.apply_start_stop(&cores_v, true, cx);
+                    })
+                })
+                .render(),
+        );
+        row = row.child(
+            MoonButton::new("stop-checked")
+                .outline()
+                .size(MoonButtonSize::Micro)
+                .label("■ отмеченных")
+                .on_click({
+                    let cs = cs.clone();
+                    cx.listener(move |this, _, _, cx| {
+                        let cores_v = cs.as_ref().clone();
+                        this.apply_start_stop(&cores_v, false, cx);
+                    })
+                })
+                .render(),
+        );
+        if !self.staged.is_empty() {
+            row = row.child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(MoonPalette::active(cx).amber))
+                    .child(format!("изменений: {}", self.staged.len())),
+            );
+        }
+        row.into_any_element()
+    }
+
+    /// Рекурсивно собирает элементы узла: подпапки (сворачиваемые, с активн./всего),
+    /// затем стратегии прямо в этой папке.
+    #[allow(clippy::too_many_arguments)]
+    fn render_node(
+        &self,
+        node: &FolderNode,
+        strategies: &[StrategyRow],
+        core_id: CoreId,
+        prefix: &mut Vec<String>,
+        force_open: bool,
+        order: &Arc<Vec<Key>>,
+        built: &mut Vec<Key>,
+        out: &mut Vec<AnyElement>,
+        cx: &Context<Self>,
+    ) {
+        let p = MoonPalette::active(cx);
+        for (name, child) in &node.children {
+            prefix.push(name.clone());
+            let path_key = prefix.join("/");
+            let fkey = (core_id, path_key.clone());
+            let fopen = force_open || self.expanded_folders.contains(&fkey);
+            let (active, total) = folder_counts(strategies, &self.filter, prefix);
+            let flabel = format!(
+                "{}  {name}  {active}/{total}",
+                if fopen { "▼" } else { "▶" }
+            );
+            let fkey_click = fkey.clone();
+            out.push(
+                div()
+                    .id(SharedString::from(format!("folder-{core_id}-{path_key}")))
+                    .w_full()
+                    .h(design::fit_h_px(cx, 23.0, 14.0, 4.5))
+                    .px(design::ui_px(cx, 6.0))
+                    .rounded(design::ui_px(cx, 3.0))
+                    .flex()
+                    .items_center()
+                    .cursor_pointer()
+                    .text_color(moon(p.text_soft))
+                    .hover(move |s| s.bg(moon_alpha(p.panel, 0.70)))
+                    .child(flabel)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        toggle(&mut this.expanded_folders, fkey_click.clone());
+                        cx.notify();
+                    }))
+                    .into_any_element(),
+            );
+            if fopen {
+                let mut kids: Vec<AnyElement> = Vec::new();
+                self.render_node(
+                    child, strategies, core_id, prefix, force_open, order, built, &mut kids, cx,
+                );
+                let mut body = v_flex().w_full().pl_3().gap_0();
+                for k in kids {
+                    body = body.child(k);
+                }
+                out.push(body.into_any_element());
+            }
+            prefix.pop();
+        }
+        for r in &node.strategies {
+            out.push(self.strategy_row(core_id, r, order, built, cx));
+        }
+    }
+
+    /// Одна строка стратегии: чекбокс (стейджинг) · индикатор запуска · имя (выбор).
+    fn strategy_row(
+        &self,
+        core: CoreId,
+        r: &StrategyRow,
+        order: &Arc<Vec<Key>>,
+        built: &mut Vec<Key>,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let key = (core, r.id);
+        built.push(key);
+        let server = r.checked;
+        let val = self.staged.get(&key).copied().unwrap_or(server);
+
+        // Подсветка — для всех выбранных (мультивыбор), иначе для первичной.
+        let p = MoonPalette::active(cx);
+        let highlighted = if self.sel.is_empty() {
+            self.selected == Some(key)
+        } else {
+            self.sel.contains(&key)
+        };
+        let dot = if server { p.green } else { p.text_muted };
+        let type_col = if r.is_short { p.orange } else { p.text_muted };
+
+        let order_c = order.clone();
+        let mut name_row = div()
+            .id(SharedString::from(format!("strat-{core}-{}", r.id)))
+            .flex_1()
+            .min_w_0()
+            .h(design::fit_h_px(cx, 23.0, 14.0, 4.5))
+            .px(design::ui_px(cx, 6.0))
+            .rounded(design::ui_px(cx, 3.0))
+            .border_1()
+            .border_color(moon_alpha(p.border, 0.0))
+            .cursor_pointer()
+            .child(
+                h_flex()
+                    .w_full()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_color(moon(p.text))
+                            .child(r.name.clone()),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(moon(type_col))
+                            .child(r.kind.clone()),
+                    ),
+            )
+            .on_click(cx.listener(move |this, e: &ClickEvent, _, cx| {
+                let m = e.modifiers();
+                if this.apply_click(key, &order_c, m.shift, m.secondary()) {
+                    cx.notify();
+                }
+            }));
+        if highlighted {
+            name_row = name_row
+                .bg(moon_alpha(p.amber, 0.16))
+                .border_color(moon_alpha(p.amber, 0.55));
+        } else {
+            name_row = name_row.hover(move |s| s.bg(moon_alpha(p.panel, 0.74)));
+        }
+
+        h_flex()
+            .w_full()
+            .items_center()
+            .gap(design::ui_px(cx, 6.0))
+            .py(design::ui_px(cx, 1.0))
+            .child(
+                MoonCheckbox::new(SharedString::from(format!("chk-{core}-{}", r.id)))
+                    .checked(val)
+                    .size(MoonCheckboxSize::Compact)
+                    .on_change(cx.listener(move |this, ch: &bool, _, cx| {
+                        let v = *ch;
+                        let before = this.staged.get(&key).copied();
+                        if v == server {
+                            this.staged.remove(&key);
+                        } else {
+                            this.staged.insert(key, v);
+                        }
+                        if before != this.staged.get(&key).copied() {
+                            cx.notify();
+                        }
+                    })),
+            )
+            .child(div().text_color(moon(dot)).child("●"))
+            .child(name_row)
+            .into_any_element()
+    }
+
+    // ── Панель 2: разделы (секции) ────────────────────────────────────────────
+
+}
