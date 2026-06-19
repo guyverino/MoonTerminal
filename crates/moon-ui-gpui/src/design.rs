@@ -49,6 +49,21 @@ pub fn solid(hex: u32) -> Rgba {
     rgb(hex)
 }
 
+/// Палитра/конфиг хранят цвета как `[u8; 3]`; GPUI-API берёт `0xRRGGBB`. Единый
+/// источник пары конвертеров: до рефактора `u32_to_rgb` дублировался в detects и
+/// connections, а обратный `rgb_to_u32` жил отдельной `fn hex` в корне бинарника.
+pub fn u32_to_rgb(c: u32) -> [u8; 3] {
+    [
+        ((c >> 16) & 0xff) as u8,
+        ((c >> 8) & 0xff) as u8,
+        (c & 0xff) as u8,
+    ]
+}
+
+pub fn rgb_to_u32(c: [u8; 3]) -> u32 {
+    (c[0] as u32) << 16 | (c[1] as u32) << 8 | c[2] as u32
+}
+
 pub fn mono() -> SharedString {
     SharedString::from("Geist Mono")
 }

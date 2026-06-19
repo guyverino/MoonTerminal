@@ -21,7 +21,7 @@ pub use parse::parse_report_sql;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use rusqlite::types::Value;
 use rusqlite::Connection;
@@ -65,12 +65,7 @@ pub struct ReportsHandle {
     pub generation: Arc<AtomicU64>,
 }
 
-fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
+use crate::util::now_unix_ms_i64 as now_ms;
 
 /// Полный набор колонок (сверх core_uid/core_name/db_id/sql/created_ms/updated_ms),
 /// зеркалящий Postgres `orders`. Используется и для CREATE, и для ALTER-апгрейда.

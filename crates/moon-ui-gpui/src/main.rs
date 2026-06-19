@@ -48,12 +48,6 @@ use moon_core::config::{AppConfig, WindowLayout};
 use moon_core::metrics::{Metrics, MetricsSnapshot};
 use moon_core::session::{CoreId, SessionManager};
 
-/// Runtime/chart config stores colors as `[u8; 3]`; GPUI APIs use `0xRRGGBB`.
-/// UI chrome itself is themed through MoonPalette, not through chart/runtime config.
-fn hex(c: [u8; 3]) -> u32 {
-    (c[0] as u32) << 16 | (c[1] as u32) << 8 | c[2] as u32
-}
-
 fn embedded_fonts() -> Vec<Cow<'static, [u8]>> {
     vec![
         include_bytes!("../../../assets/fonts/Inter-400.ttf")

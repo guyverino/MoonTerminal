@@ -14,14 +14,13 @@ use std::rc::Rc;
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use moon_ui::{
-    DockArea, MoonButton, MoonButtonSize, MoonButtonVariant, MoonDataCell, MoonDataRow,
+    DockArea, MoonButtonSize, MoonButtonVariant, MoonDataCell, MoonDataRow,
     MoonDataTable, MoonDataTableColumn, MoonDropdown, MoonMenuItem, MoonMenuSize, MoonPalette,
     MoonText, MoonTone, Panel, PanelEvent, PanelInfo, PanelState, h_flex, v_flex,
 };
 
 use crate::Backend;
 use crate::design;
-use crate::detached::DetachedSpec;
 use moon_core::feed::OrderRow;
 use moon_core::session::CoreId;
 use moon_core::symbol;
@@ -518,30 +517,12 @@ impl Panel for OrdersPanel {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<Vec<AnyElement>> {
-        let backend = self.backend.clone();
-        let group = self.group.clone();
-        let dock = self.dock.clone();
-        Some(vec![
-            MoonButton::new("detach-orders")
-                .ghost()
-                .size(MoonButtonSize::Action)
-                .label("⧉")
-                .on_click(move |_, window, app| {
-                    if let Some(dock) = dock.as_ref().and_then(|d| d.upgrade()) {
-                        dock.update(app, |area, cx| {
-                            area.remove_panel_by_name("Orders", window, cx);
-                        });
-                    }
-                    let spec = DetachedSpec::new(group.clone(), "Orders".to_string());
-                    crate::detached::spawn(app, &backend, &spec, Some(window.window_handle()));
-                    backend.update(app, |b, _| {
-                        b.detached.push(spec);
-                        b.detached_dirty = true;
-                    });
-                })
-                .render()
-                .into_any_element(),
-        ])
+        Some(vec![super::detach_button(
+            "Orders",
+            self.group.clone(),
+            self.backend.clone(),
+            self.dock.clone(),
+        )])
     }
 }
 

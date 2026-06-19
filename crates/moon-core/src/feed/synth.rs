@@ -11,13 +11,8 @@ use super::{
 };
 use crate::config::ServerConfig;
 use crate::market::SharedMarketStore;
+use crate::util::now_unix_ms as now_ms;
 
-fn now_ms() -> f64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs_f64() * 1000.0)
-        .unwrap_or(0.0)
-}
 fn env_usize(k: &str, d: usize) -> usize {
     std::env::var(k)
         .ok()

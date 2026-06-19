@@ -3,10 +3,9 @@
 //! Кнопка «⧉» откпрепляет панель в отдельное окно (убирает из дока + окно открепления).
 
 use gpui::*;
-use moon_ui::{DockArea, MoonButton, MoonButtonSize, MoonPalette, Panel, PanelEvent, PanelState};
+use moon_ui::{DockArea, MoonPalette, Panel, PanelEvent, PanelState};
 
 use crate::Backend;
-use crate::detached::DetachedSpec;
 
 /// Заглушка-панель (Активы/Лог/Отчёт) до подключения данных.
 pub struct StubPanel {
@@ -78,33 +77,12 @@ impl Panel for StubPanel {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<Vec<AnyElement>> {
-        let backend = self.backend.clone();
-        let group = self.group.clone();
-        let name = self.name;
-        let dock = self.dock.clone();
-        Some(vec![
-            MoonButton::new(SharedString::from(format!("detach-{name}")))
-                .ghost()
-                .size(MoonButtonSize::Action)
-                .label("⧉")
-                .on_click(move |_, window, app| {
-                    // Убрать себя из дока.
-                    if let Some(dock) = dock.as_ref().and_then(|d| d.upgrade()) {
-                        dock.update(app, |area, cx| {
-                            area.remove_panel_by_name(name, window, cx);
-                        });
-                    }
-                    // Открыть окно открепления + записать спеку.
-                    let spec = DetachedSpec::new(group.clone(), name.to_string());
-                    crate::detached::spawn(app, &backend, &spec, Some(window.window_handle()));
-                    backend.update(app, |b, _| {
-                        b.detached.push(spec);
-                        b.detached_dirty = true;
-                    });
-                })
-                .render()
-                .into_any_element(),
-        ])
+        Some(vec![super::detach_button(
+            self.name,
+            self.group.clone(),
+            self.backend.clone(),
+            self.dock.clone(),
+        )])
     }
 }
 impl Render for StubPanel {

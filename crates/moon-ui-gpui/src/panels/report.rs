@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use moon_ui::{
-    DockArea, MoonButton, MoonButtonSize, MoonButtonVariant, MoonDataCell, MoonDataRow,
+    DockArea, MoonButtonSize, MoonButtonVariant, MoonDataCell, MoonDataRow,
     MoonDataTable, MoonDataTableColumn, MoonDataTableState, MoonDropdown, MoonInput,
     MoonInputEvent, MoonInputState, MoonMenuItem, MoonMenuSize, MoonPalette, Panel, PanelEvent,
     PanelState, StyledExt, h_flex, v_flex,
@@ -18,7 +18,6 @@ use moon_ui::{
 use rusqlite::Connection;
 use rusqlite::types::Value;
 
-use crate::detached::DetachedSpec;
 use crate::{Backend, design};
 use moon_core::db::{self, ReportFilter, ReportTable, SideFilter};
 
@@ -368,30 +367,12 @@ impl Panel for ReportPanel {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<Vec<AnyElement>> {
-        let backend = self.backend.clone();
-        let group = self.group.clone();
-        let dock = self.dock.clone();
-        Some(vec![
-            MoonButton::new("detach-report")
-                .ghost()
-                .size(MoonButtonSize::Action)
-                .label("⧉")
-                .on_click(move |_, window, app| {
-                    if let Some(dock) = dock.as_ref().and_then(|d| d.upgrade()) {
-                        dock.update(app, |area, cx| {
-                            area.remove_panel_by_name("Report", window, cx);
-                        });
-                    }
-                    let spec = DetachedSpec::new(group.clone(), "Report".to_string());
-                    crate::detached::spawn(app, &backend, &spec, Some(window.window_handle()));
-                    backend.update(app, |b, _| {
-                        b.detached.push(spec);
-                        b.detached_dirty = true;
-                    });
-                })
-                .render()
-                .into_any_element(),
-        ])
+        Some(vec![super::detach_button(
+            "Report",
+            self.group.clone(),
+            self.backend.clone(),
+            self.dock.clone(),
+        )])
     }
 }
 

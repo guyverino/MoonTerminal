@@ -8,9 +8,9 @@
 //! Это уникальный источник старта/узлов/конца для маркеров и отрезков (рисует чарт).
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::feed::{OrderRow, OrderTrace};
+use crate::util::now_unix_ms;
 
 /// Виды трассируемых линий (у каждой свой старт/узлы/конец). Ликвидация — отдельно
 /// (непрерывная линия без маркеров), хранится как `RetainedOrder::liq`.
@@ -38,14 +38,6 @@ const CLOSED_RING_CAP: usize = 5000;
 /// грейса линии мигали бы active↔closed. Закрываем, только если ордер не виделся
 /// дольше этого срока.
 const CLOSE_GRACE_MS: f64 = 2500.0;
-
-/// Текущее unix-время, мс (та же шкала, что time_ms тиков).
-fn now_unix_ms() -> f64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs_f64() * 1000.0)
-        .unwrap_or(0.0)
-}
 
 /// Относительный порог «цена изменилась» (защита от float-дрожания → ложных узлов).
 fn price_eps(p: f32) -> f32 {

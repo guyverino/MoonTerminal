@@ -15,7 +15,7 @@ use moon_ui::{
 };
 
 use super::{SettingsView, hsla_u8};
-use crate::{Backend, design, hex};
+use crate::{Backend, design};
 use moon_core::config::{FeedFlags, GroupConfig, Secret, ServerConfig};
 use moon_core::feed::ConnStatus;
 use moon_core::session::CoreId;
@@ -45,14 +45,6 @@ const FEED_FLAGS: [(&str, fn(&FeedFlags) -> bool, fn(&mut FeedFlags, bool)); 8] 
     ("Chart-алерты / текст", |f| f.alerts, |f, v| f.alerts = v),
     ("Арбитраж", |f| f.arb, |f, v| f.arb = v),
 ];
-
-fn u32_rgb(c: u32) -> [u8; 3] {
-    [
-        ((c >> 16) & 0xff) as u8,
-        ((c >> 8) & 0xff) as u8,
-        (c & 0xff) as u8,
-    ]
-}
 
 /// TextInput, привязанный к полю сервера `servers[i]` (пишет в draft).
 fn conn_input(
@@ -91,7 +83,7 @@ fn conn_color(
     init: [u8; 3],
 ) -> Entity<MoonColorPickerState> {
     let st =
-        cx.new(|cx| MoonColorPickerState::new(window, cx).default_value(rgb(hex(init)).into()));
+        cx.new(|cx| MoonColorPickerState::new(window, cx).default_value(rgb(design::rgb_to_u32(init)).into()));
     cx.subscribe(&st, move |this, _e, ev: &MoonColorPickerEvent, cx| {
         let MoonColorPickerEvent::Change(h) = ev;
         let c = hsla_u8(*h);
@@ -247,7 +239,7 @@ impl SettingsView {
 
     /// Добавить сервер в draft (id = max+1) и пересобрать editor-стейты.
     fn add_server(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let default_color = u32_rgb(MoonPalette::active(cx).amber);
+        let default_color = design::u32_to_rgb(MoonPalette::active(cx).amber);
         self.backend.update(cx, |b, bcx| {
             if let Some(p) = b.preview.as_mut() {
                 let next = p.servers.iter().map(|s| s.id).max().unwrap_or(0) + 1;

@@ -10,12 +10,15 @@
 //! - [`stub`] — заглушка Активы до подключения данных.
 
 mod chart;
+mod common;
 mod detects;
 mod log;
 mod order;
 mod orders;
 mod report;
 mod stub;
+
+pub(crate) use common::detach_button;
 
 pub use chart::ChartPanel;
 pub use detects::DetectsPanel;

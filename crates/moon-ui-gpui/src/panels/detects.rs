@@ -9,7 +9,7 @@ use std::time::Duration;
 use gpui::*;
 use moon_ui::{MoonPalette, Panel, PanelEvent, PanelState, h_flex, v_flex};
 
-use crate::{Backend, design, hex};
+use crate::{Backend, design};
 use moon_chart::paint::now_unix_ms;
 use moon_core::session::CoreId;
 
@@ -30,14 +30,6 @@ struct DetectItem {
 fn lerp_u8(a: [u8; 3], b: [u8; 3], t: f32) -> [u8; 3] {
     let f = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
     [f(a[0], b[0]), f(a[1], b[1]), f(a[2], b[2])]
-}
-
-fn u32_rgb(c: u32) -> [u8; 3] {
-    [
-        ((c >> 16) & 0xff) as u8,
-        ((c >> 8) & 0xff) as u8,
-        (c & 0xff) as u8,
-    ]
 }
 
 /// Яркость цвета (для инверсии цвета таймера на светлом глоу), порт egui-логики.
@@ -262,15 +254,15 @@ impl Render for DetectsPanel {
             // Меш-градиент кнопки (порт egui `detect_button`): верх = LIFT, низ = смесь
             // LIFT + цвет ядра. В покое доля 0.55, на ховере 0.80 (ярче). Цвет таймера
             // инвертируем по яркости низа (тёмный на светлом глоу), чтобы не сливался.
-            let top = u32_rgb(p.panel);
-            let top_hover = u32_rgb(p.panel_high);
+            let top = design::u32_to_rgb(p.panel);
+            let top_hover = design::u32_to_rgb(p.panel_high);
             let bottom = lerp_u8(top, it.color, 0.55);
             let bottom_hover = lerp_u8(top_hover, it.color, 0.80);
             let grad = |top: [u8; 3], bot: [u8; 3]| {
                 linear_gradient(
                     180.0,
-                    linear_color_stop(rgb(hex(top)), 0.0),
-                    linear_color_stop(rgb(hex(bot)), 1.0),
+                    linear_color_stop(rgb(design::rgb_to_u32(top)), 0.0),
+                    linear_color_stop(rgb(design::rgb_to_u32(bot)), 1.0),
                 )
             };
             let secs_color = if luminance(bottom) > 140.0 {

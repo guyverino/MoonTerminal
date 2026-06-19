@@ -10,7 +10,7 @@ use moon_ui::{
 };
 
 use super::{SettingsView, hsla_u8, separator, slider_row};
-use crate::{Backend, design, hex};
+use crate::{Backend, design};
 use moon_core::config::OrdersStyle;
 
 /// Чекбокс ордер-стиля: (id, подпись, геттер, сеттер) — для тела блока линии.
@@ -39,7 +39,8 @@ fn ord_color(
     set: fn(&mut OrdersStyle, [u8; 3]),
 ) -> Entity<MoonColorPickerState> {
     let cur = get(&backend.read(cx).config.orders);
-    let st = cx.new(|cx| MoonColorPickerState::new(window, cx).default_value(rgb(hex(cur)).into()));
+    let st =
+        cx.new(|cx| MoonColorPickerState::new(window, cx).default_value(rgb(design::rgb_to_u32(cur)).into()));
     cx.subscribe(&st, move |this, _e, ev: &MoonColorPickerEvent, cx| {
         let MoonColorPickerEvent::Change(h) = ev;
         let c = hsla_u8(*h);

@@ -12,9 +12,9 @@ use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::config::paths;
+use crate::util::now_unix_ms_i64 as now_ms_i64;
 
 static LOG: OnceLock<Option<Mutex<std::fs::File>>> = OnceLock::new();
 
@@ -156,13 +156,6 @@ fn handle() -> Option<&'static Mutex<std::fs::File>> {
         }
     })
     .as_ref()
-}
-
-fn now_ms_i64() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
 }
 
 fn ts() -> String {

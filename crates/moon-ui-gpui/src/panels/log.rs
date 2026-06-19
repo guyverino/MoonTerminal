@@ -9,14 +9,13 @@
 
 use gpui::*;
 use moon_ui::{
-    DockArea, MoonButton, MoonButtonSize, MoonButtonVariant, MoonCheckbox, MoonCheckboxSize,
+    DockArea, MoonButtonSize, MoonButtonVariant, MoonCheckbox, MoonCheckboxSize,
     MoonDropdown, MoonInput, MoonInputEvent, MoonInputState, MoonMenuItem, MoonMenuSize,
     MoonPalette, MoonScrollbarVisibility, MoonVirtualList, MoonVirtualListScrollHandle, Panel,
     PanelEvent, PanelState, StyledExt, h_flex, v_flex,
 };
 
 use crate::Backend;
-use crate::detached::DetachedSpec;
 use moon_core::applog::{self, LogLine};
 use moon_core::session::{CoreId, CoreStore};
 
@@ -379,30 +378,12 @@ impl Panel for LogPanel {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<Vec<AnyElement>> {
-        let backend = self.backend.clone();
-        let group = self.group.clone();
-        let dock = self.dock.clone();
-        Some(vec![
-            MoonButton::new("detach-log")
-                .ghost()
-                .size(MoonButtonSize::Action)
-                .label("⧉")
-                .on_click(move |_, window, app| {
-                    if let Some(dock) = dock.as_ref().and_then(|d| d.upgrade()) {
-                        dock.update(app, |area, cx| {
-                            area.remove_panel_by_name("Log", window, cx);
-                        });
-                    }
-                    let spec = DetachedSpec::new(group.clone(), "Log".to_string());
-                    crate::detached::spawn(app, &backend, &spec, Some(window.window_handle()));
-                    backend.update(app, |b, _| {
-                        b.detached.push(spec);
-                        b.detached_dirty = true;
-                    });
-                })
-                .render()
-                .into_any_element(),
-        ])
+        Some(vec![super::detach_button(
+            "Log",
+            self.group.clone(),
+            self.backend.clone(),
+            self.dock.clone(),
+        )])
     }
 }
 

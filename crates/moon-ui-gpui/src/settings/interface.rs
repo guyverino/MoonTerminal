@@ -9,7 +9,7 @@ use moon_ui::{
 };
 
 use super::{SettingsView, color_row, hsla_u8, section, separator, slider_row};
-use crate::{Backend, hex};
+use crate::{Backend, design};
 use moon_core::config::{AppConfig, ChartTheme};
 
 /// Состояние редактора темы: по entity на каждое поле.
@@ -81,7 +81,8 @@ fn color_field(
     set: fn(&mut ChartTheme, [u8; 3]),
 ) -> Entity<MoonColorPickerState> {
     let cur = get(&backend.read(cx).config.theme);
-    let st = cx.new(|cx| MoonColorPickerState::new(window, cx).default_value(rgb(hex(cur)).into()));
+    let st =
+        cx.new(|cx| MoonColorPickerState::new(window, cx).default_value(rgb(design::rgb_to_u32(cur)).into()));
     cx.subscribe(&st, move |this, _emitter, ev: &MoonColorPickerEvent, cx| {
         let MoonColorPickerEvent::Change(h) = ev;
         let c = hsla_u8(*h);

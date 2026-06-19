@@ -6,7 +6,7 @@
 
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use moonproto::state::{MarketHistorySizing, OrderTraceChartPoint, OrderTraceLine};
 use moonproto::{
@@ -25,12 +25,7 @@ use super::{
 use crate::config::ServerConfig;
 use crate::db::ReportTx;
 
-fn now_ms() -> f64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs_f64() * 1000.0)
-        .unwrap_or(0.0)
-}
+use crate::util::now_unix_ms as now_ms;
 
 fn trace_point(p: OrderTraceChartPoint) -> Option<OrderTracePoint> {
     let time_ms = p.unix_millis() as f64;

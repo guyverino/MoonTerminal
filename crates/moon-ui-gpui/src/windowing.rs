@@ -161,6 +161,21 @@ fn owned_window_options(
     options
 }
 
+/// Геометрия окна в логич. px `(x, y, w, h)` — `None`, если окно НЕ в обычном (Windowed)
+/// состоянии (свёрнуто/во весь экран). Единая точка приведения f32→i32/u32 для персиста
+/// откреп-окон: одинаковая выборка жила в `detached.rs` и `chart_tabs::windows`.
+pub(crate) fn window_geom(window: &Window) -> Option<(i32, i32, u32, u32)> {
+    let WindowBounds::Windowed(b) = window.window_bounds() else {
+        return None;
+    };
+    Some((
+        f32::from(b.origin.x) as i32,
+        f32::from(b.origin.y) as i32,
+        f32::from(b.size.width) as u32,
+        f32::from(b.size.height) as u32,
+    ))
+}
+
 /// DWM-стиль окна (Windows): без скругления углов, тёмная рамка/заголовок. На прочих ОС — no-op.
 #[cfg(target_os = "windows")]
 pub(crate) fn configure_dwm_window(window: &Window) {

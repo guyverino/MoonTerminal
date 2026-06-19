@@ -157,30 +157,25 @@ impl DetachedWindow {
     }
 
     fn persist_geometry(&mut self, window: &Window, cx: &mut Context<Self>) {
-        if let WindowBounds::Windowed(b) = window.window_bounds() {
-            let geom = (
-                f32::from(b.origin.x) as i32,
-                f32::from(b.origin.y) as i32,
-                f32::from(b.size.width) as u32,
-                f32::from(b.size.height) as u32,
-            );
-            let (group, panel) = (self.group.clone(), self.panel.clone());
-            self.backend.update(cx, |bk, _| {
-                if let Some(s) = bk
-                    .detached
-                    .iter_mut()
-                    .find(|s| s.group == group && s.panel == panel)
-                {
-                    if (s.x, s.y, s.w, s.h) != geom {
-                        s.x = geom.0;
-                        s.y = geom.1;
-                        s.w = geom.2;
-                        s.h = geom.3;
-                        bk.detached_dirty = true;
-                    }
+        let Some(geom) = crate::windowing::window_geom(window) else {
+            return;
+        };
+        let (group, panel) = (self.group.clone(), self.panel.clone());
+        self.backend.update(cx, |bk, _| {
+            if let Some(s) = bk
+                .detached
+                .iter_mut()
+                .find(|s| s.group == group && s.panel == panel)
+            {
+                if (s.x, s.y, s.w, s.h) != geom {
+                    s.x = geom.0;
+                    s.y = geom.1;
+                    s.w = geom.2;
+                    s.h = geom.3;
+                    bk.detached_dirty = true;
                 }
-            });
-        }
+            }
+        });
     }
 }
 
