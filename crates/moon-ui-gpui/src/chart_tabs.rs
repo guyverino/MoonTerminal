@@ -520,7 +520,7 @@ impl ChartTabs {
     /// Восстановить отложенные откреп-окна (charts.json). Открывать ОС-окна В render НЕЛЬЗЯ
     /// (рушит element-арену gpui: «ArenaRef after Arena was cleared»). Откладываем через
     /// `cx.defer` — закрытие выполнится ПОСЛЕ цикла рендера, когда открытие окон безопасно.
-    fn restore_detached(&mut self, cx: &mut Context<Self>) {
+    fn restore_detached(&mut self, owner: AnyWindowHandle, cx: &mut Context<Self>) {
         if self.restore_pending.is_empty() {
             return;
         }
@@ -529,6 +529,11 @@ impl ChartTabs {
         cx.defer(move |app| {
             this.update(app, |this, cx| {
                 let (epoch, theme) = (this.epoch, this.theme.clone());
+                // Восстановленный откреп-чарт — owned-окно СВОЕЙ группы (как при runtime-detach).
+                // Owner = окно ЭТОГО ChartTabs (= групп-окно), берём его handle в render. НЕ через
+                // group_windows: на старте оно может быть ещё не вставлено к моменту defer →
+                // owner=None → Independent → отдельная кнопка в таскбаре.
+                let owner = Some(owner);
                 for (n, core, geom, scale) in pending {
                     let backend = this.backend.clone();
                     let panel = cx
@@ -536,7 +541,7 @@ impl ChartTabs {
                     if scale.is_some() {
                         panel.update(cx, |p, pcx| p.set_scale(scale, pcx));
                     }
-                    this.open_chart_window(n, core, panel, geom, true, None, cx);
+                    this.open_chart_window(n, core, panel, geom, true, owner, cx);
                 }
                 cx.notify();
             });
@@ -658,7 +663,7 @@ impl Render for ChartTabs {
         // Откреп-вкладки: вернуть закрытые в стрип (репин) + восстановить сохранённые окна
         // (charts.json) на первом render — пустыми, ждут детект.
         self.drain_chart_repin(cx);
-        self.restore_detached(cx);
+        self.restore_detached(window.window_handle(), cx);
         // Бейджи = непрочитанные С МОМЕНТА УХОДА: на АКТИВНОЙ вкладке seen догоняет pane_count
         // (бейджа нет — ты смотришь). Ушёл → seen заморожен → новые монеты растят бейдж только
         // этой вкладки (а не всех открытых). Прибраться от закрытых вкладок: чистим seen.

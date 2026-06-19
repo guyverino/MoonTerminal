@@ -1,5 +1,5 @@
 fn main() {
-    println!("cargo:rerun-if-changed=../../assets/icons/0.png");
+    println!("cargo:rerun-if-changed=../../assets/icons");
     println!("cargo:rerun-if-changed=../../Cargo.lock");
     println!("cargo:rustc-check-cfg=cfg(moon_profile_debug)");
     emit_build_metadata();
@@ -7,10 +7,57 @@ fn main() {
         println!("cargo:rustc-cfg=moon_profile_debug");
     }
 
+    // Встраиваем ВСЕ значки групп (assets/icons/<id>.png) в exe → подставляются из exe,
+    // без путей на диск (работает в dev и в деплое). Кодоген: GROUP_ICONS[id] = Option<&[u8]>.
+    if let Err(err) = embed_group_icons() {
+        println!("cargo:warning=failed to embed group icons: {err}");
+    }
+
     #[cfg(windows)]
     if let Err(err) = embed_exe_icon() {
         println!("cargo:warning=failed to embed MoonTerminal exe icon: {err}");
     }
+}
+
+/// Кодогенерит `GROUP_ICONS: &[Option<&[u8]>]` (индекс = id значка) из `assets/icons/<id>.png`
+/// через `include_bytes!` (абсолютные пути от `CARGO_MANIFEST_DIR`). Включается в windowing.rs.
+fn embed_group_icons() -> std::io::Result<()> {
+    use std::io::Write;
+    let manifest = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR");
+    let dir = std::path::Path::new("../../assets/icons");
+    let mut max_id = 0usize;
+    let mut ids: Vec<usize> = Vec::new();
+    for entry in std::fs::read_dir(dir)? {
+        let path = entry?.path();
+        if path.extension().and_then(|s| s.to_str()) == Some("png") {
+            if let Some(id) = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .and_then(|s| s.parse::<usize>().ok())
+            {
+                ids.push(id);
+                max_id = max_id.max(id);
+            }
+        }
+    }
+    let mut present = vec![false; max_id + 1];
+    for id in ids {
+        present[id] = true;
+    }
+    let out =
+        std::path::Path::new(&std::env::var("OUT_DIR").expect("OUT_DIR")).join("group_icons.rs");
+    let mut f = std::fs::File::create(out)?;
+    writeln!(f, "pub static GROUP_ICONS: &[Option<&[u8]>] = &[")?;
+    for (id, present) in present.iter().enumerate() {
+        if *present {
+            let path = format!("{manifest}/../../assets/icons/{id}.png").replace('\\', "/");
+            writeln!(f, "    Some(include_bytes!(\"{path}\")),")?;
+        } else {
+            writeln!(f, "    None,")?;
+        }
+    }
+    writeln!(f, "];")?;
+    Ok(())
 }
 
 fn emit_build_metadata() {
@@ -107,6 +154,8 @@ fn embed_exe_icon() -> std::io::Result<()> {
     dir.write(File::create(&out)?)?;
 
     let mut res = winresource::WindowsResource::new();
-    res.set_icon(out.to_str().expect("icon path must be valid UTF-8"));
+    // ID ровно "1": движок MoonUI грузит значок окна как LoadImageW(module, MAKEINTRESOURCE(1)).
+    // Без явного id winresource называет ресурс иначе → значок окна/таскбара не находится.
+    res.set_icon_with_id(out.to_str().expect("icon path must be valid UTF-8"), "1");
     res.compile()
 }

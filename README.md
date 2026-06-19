@@ -134,9 +134,14 @@ GPUI runtime и UI-компоненты приходят из **`Moonbot-Tech/Mo
 пишет в лог строку `build: moonterminal=... moonui=...`, чтобы сразу видеть, на каком срезе собран
 бинарь. После первой сборки Cargo создаёт локальный ignored `Cargo.lock`; это нормально.
 
-Если после `git pull` сборка падает на отсутствующих API (`gpui::GpuCanvas*`,
-`Panel::show_dock_header` и т.п.) — обнови локальный lock:
-`make update-moon-ui` → `make build`.
+Если после `git pull` сборка падает на отсутствующих API — обнови локальный lock:
+`make update-moon-ui` → `make build`. Это касается обоих rolling-источников:
+- **MoonUI** — напр. `no MoonWindowFrame`, `no field relationship`, `gpui::GpuCanvas*`, `Panel::show_dock_header`;
+- **MoonProto** (`Moonbot-Tech/MoonProtoBeta`, тоже без pin) — напр. `no method drain_new_bounded`,
+  `MarketHistoryConfig`, `diag_fill_market_history_to_capacity`.
+
+`make update-moon-ui` = полный `cargo update`, тянет оба. Свежий `git clone` обновлять не нужно
+(lock'а ещё нет — Cargo сам берёт текущие головы). Шаг нужен только при `git pull` в существующий checkout.
 
 Для одновременной локальной разработки терминала и MoonUI держи репозитории рядом:
 

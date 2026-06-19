@@ -16,9 +16,10 @@ use moon_ui::{DockAreaState, PanelInfo, PanelState, register_panel};
 
 use moon_core::config::paths;
 
+use crate::Backend;
 use crate::chart_tabs::ChartTabs;
+use crate::group_window::default_focus_market;
 use crate::panels::{DetectsPanel, LogPanel, OrderPanel, OrdersPanel, ReportPanel, StubPanel};
-use crate::{Backend, default_focus_market};
 
 /// Версия схемы раскладки доков. Поднимаем при несовместимом изменении структуры
 /// панелей → старый `docks.json` игнорируется (откат к дефолтной раскладке).

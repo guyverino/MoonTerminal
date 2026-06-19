@@ -357,8 +357,16 @@ impl SettingsView {
         for h in handles {
             let _ = h.update(cx, |_, window, _| window.remove_window());
         }
-        for (i, g) in crate::groups(&cfg).into_iter().enumerate() {
-            crate::spawn_group_window(cx, &self.backend, &cfg, g, epoch, &layout, i as f32 * 40.0);
+        for (i, g) in crate::group_window::groups(&cfg).into_iter().enumerate() {
+            crate::group_window::spawn_group_window(
+                cx,
+                &self.backend,
+                &cfg,
+                g,
+                epoch,
+                &layout,
+                i as f32 * 40.0,
+            );
         }
     }
 }
