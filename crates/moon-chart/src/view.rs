@@ -37,6 +37,10 @@ const LIVE_REJOIN_FRAC: f32 = 0.05;
 const MAX_WINDOW_MS: f32 = 21_600_000.0;
 /// Дефолтное видимое окно, к которому выбираем пиксельно-гладкий live scale.
 const DEFAULT_WINDOW_MS: f32 = 60_000.0;
+/// Минимальное видимое окно при макс. зум-ин (раньше упирались в дефолтные 60 c).
+const MIN_WINDOW_MS: f32 = 30_000.0;
+/// Сколько держим ручной X-режим после последнего пана, прежде чем авто-вернуться в live.
+const MANUAL_HOLD_MS: f64 = 3000.0;
 
 #[derive(Clone)]
 pub struct ChartView {
@@ -87,6 +91,9 @@ pub struct ChartView {
     /// Время прошлого `update_y` (unix мс) — для нормировки Y-сглаживания по реальному
     /// dt, а не "за кадр" (иначе скорость авто-Y зависела бы от частоты подготовки).
     last_update_ms: f64,
+    /// До этого момента (unix мс) держим ручной X-режим после пана; по истечении
+    /// `tick_auto_live` авто-возвращает live. 0 = нет отложенного возврата (или уже live).
+    manual_until: f64,
 }
 
 impl ChartView {
@@ -112,6 +119,7 @@ impl ChartView {
             last_phase_present_hz: f32::NAN,
             phase_default_px_per_ms: 0.0,
             last_update_ms: 0.0,
+            manual_until: 0.0,
         }
     }
 
@@ -182,6 +190,34 @@ impl ChartView {
     pub fn resume_live(&mut self, now_ms: f64) {
         self.follow = true;
         self.right_time_ms = now_ms;
+        self.manual_until = 0.0;
+    }
+
+    /// Явное (постоянное) выключение live — кнопка тулбара: без авто-возврата.
+    pub fn set_manual_persistent(&mut self) {
+        self.follow = false;
+        self.manual_until = 0.0;
+    }
+
+    /// Истёк ли ручной hold после пана → авто-возврат в live (П.9). Драйвится таймером
+    /// (own-pass двигает камеру, но prepare в покое не тикает — см. panels/chart.rs).
+    /// Возвращает true, если возобновили live.
+    pub fn tick_auto_live(&mut self, now_ms: f64) -> bool {
+        if !self.follow && self.manual_until > 0.0 && now_ms >= self.manual_until {
+            self.resume_live(now_ms);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Ближайший дедлайн авто-возврата (unix мс), если ожидается — для арминга таймера.
+    pub fn auto_live_deadline_ms(&self) -> Option<f64> {
+        if !self.follow && self.manual_until > 0.0 {
+            Some(self.manual_until)
+        } else {
+            None
+        }
     }
 
     pub fn reset_default_window_on_next_prepare(&mut self) {
@@ -243,6 +279,10 @@ impl ChartView {
         let dt_ms = dx as f64 / self.px_per_ms.max(1e-6) as f64;
         self.right_time_ms = (self.right_time_ms - dt_ms).min(now_ms);
         self.follow = false;
+        // П.9: пан не выключает live навсегда — заводим окно ручного удержания, по
+        // истечении которого `tick_auto_live` снова якорится к «сейчас». Каждый кадр
+        // пана сдвигает дедлайн вперёд, поэтому возврат идёт через ~3 c ПОСЛЕ отпускания.
+        self.manual_until = now_ms + MANUAL_HOLD_MS;
         let _ = area_w;
     }
 
@@ -268,11 +308,13 @@ impl ChartView {
         } else {
             0.0005
         };
-        let hi = if self.phase_default_px_per_ms > 0.0 {
+        // Зум-ин разрешаем глубже дефолта (60 c) до MIN_WINDOW_MS (30 c): база — фазо-чистый
+        // дефолт, домноженный на DEFAULT/MIN = 2×. Иначе максимум упирался в 1 мин (П.7).
+        let hi = (if self.phase_default_px_per_ms > 0.0 {
             self.phase_default_px_per_ms
         } else {
             Self::phase_clean_default_px_per_ms(area_w, 60.0)
-        }
+        } * (DEFAULT_WINDOW_MS / MIN_WINDOW_MS))
         .max(lo);
         self.px_per_ms = next.clamp(lo, hi);
         self.x_default_scale = (self.px_per_ms - self.phase_default_px_per_ms).abs() <= 1e-9;
@@ -352,7 +394,15 @@ impl ChartView {
 
             if let Some(r) = target_range {
                 if live && self.auto_price && self.center_price != 0.0 && self.price_range > 0.0 {
-                    self.price_range += (r - self.price_range) * auto_lerp;
+                    // Асимметрия (П.5): РАСШИРЯЕМ диапазон мгновенно — иначе видимые тики/
+                    // ордер-линии обрезаются на десятки кадров, пока медленный lerp догоняет
+                    // (симптом: видно только линию покупки + стакан, тики за экраном). СУЖАЕМ
+                    // плавно — нет дёрганья при кратковременных всплесках цены.
+                    if r > self.price_range {
+                        self.price_range = r;
+                    } else {
+                        self.price_range += (r - self.price_range) * auto_lerp;
+                    }
                 } else {
                     self.price_range = r;
                 }
@@ -399,7 +449,7 @@ impl ChartView {
 
 #[cfg(test)]
 mod tests {
-    use super::ChartView;
+    use super::{ChartView, MANUAL_HOLD_MS};
 
     fn default_window_sec(width: f32, present_hz: f32) -> f32 {
         let px_per_ms = ChartView::phase_clean_default_px_per_ms(width, present_hz);
@@ -439,15 +489,49 @@ mod tests {
     }
 
     #[test]
-    fn zoom_in_is_clamped_to_phase_clean_default_window() {
+    fn zoom_in_is_clamped_to_min_window_30s() {
         let now = 100_000.0;
         let mut view = ChartView::new(0.0);
         view.ensure_default_window(1000.0, 60.0);
         let default_px_per_ms = view.px_per_ms;
 
+        // Один шаг зум-ин (×2) от дефолта (60 c) допускается до 30 c = 2× px/ms (П.7).
         view.zoom_x_at(2.0, 1000.0, 500.0, now);
-
-        assert!((view.px_per_ms - default_px_per_ms).abs() < 1e-9);
+        assert!((view.px_per_ms - default_px_per_ms * 2.0).abs() < 1e-9);
         assert!(view.follow);
+
+        // Дальнейший зум-ин упирается в потолок (30 c), глубже нельзя.
+        view.zoom_x_at(2.0, 1000.0, 500.0, now);
+        assert!((view.px_per_ms - default_px_per_ms * 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn pan_then_hold_auto_returns_to_live() {
+        let now = 100_000.0;
+        let mut view = ChartView::new(0.0);
+        view.ensure_default_window(1000.0, 60.0);
+        view.resume_live(now);
+
+        view.pan_x_px(50.0, now, 1000.0);
+        assert!(!view.follow);
+        // Внутри окна удержания live не возобновляется.
+        assert!(!view.tick_auto_live(now + 1000.0));
+        assert!(!view.follow);
+        // По истечении удержания — авто-возврат к live.
+        assert!(view.tick_auto_live(now + MANUAL_HOLD_MS + 1.0));
+        assert!(view.follow);
+    }
+
+    #[test]
+    fn explicit_follow_off_has_no_auto_return() {
+        let now = 100_000.0;
+        let mut view = ChartView::new(0.0);
+        view.resume_live(now);
+        // Явное выключение (кнопка Live) — без отложенного возврата.
+        view.set_manual_persistent();
+        assert!(!view.follow);
+        assert!(view.auto_live_deadline_ms().is_none());
+        assert!(!view.tick_auto_live(now + 10_000.0));
+        assert!(!view.follow);
     }
 }

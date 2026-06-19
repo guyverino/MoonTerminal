@@ -139,7 +139,28 @@ impl ChartTabs {
     }
 
     /// Дабл-клик по чарту AddToChart-вкладки → открыть монету на Main + переключиться.
-    fn handle_open_request(&mut self, cx: &mut Context<Self>) {
+    /// Собрать откреплённые окна чартов ЭТОЙ группы: восстановить (разминимизировать), показать
+    /// и каскадом вернуть на первичный монитор. Спасение, если окна свёрнуты/спрятаны/уехали за
+    /// экран (они независимы и не ходят за Main). Кнопка в полосе вкладок Main-окна группы.
+    fn gather_windows(&mut self, cx: &mut Context<Self>) {
+        let group = self.group.clone();
+        let handles: Vec<_> = self
+            .backend
+            .read(cx)
+            .detached_chart_windows
+            .iter()
+            .filter(|(g, _)| *g == group)
+            .map(|(_, h)| *h)
+            .collect();
+        for (i, handle) in handles.into_iter().enumerate() {
+            let _ = handle.update(cx, |_, window, _| {
+                crate::windowing::reset_window_onscreen(window, i);
+                window.activate_window();
+            });
+        }
+    }
+
+    fn handle_open_request(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let pending = {
             let b = self.backend.read(cx);
             b.open_request
@@ -155,16 +176,24 @@ impl ChartTabs {
                 .as_ref()
                 .is_some_and(|(core, market)| *core == pending_core && market == &pending_market)
             {
-                b.open_request.take()
+                let activate = b.open_request_activate;
+                b.open_request_activate = false;
+                b.open_request.take().map(|(c, m)| (c, m, activate))
             } else {
                 None
             }
         });
-        if let Some((core, market)) = req {
+        if let Some((core, market, activate)) = req {
             self.main
                 .update(cx, |p, pcx| p.open_market(core, market, pcx));
             self.active = Tab::Main;
             self.last_sig = chart_tabs_sig(self.backend.read(cx), self.group.as_str());
+            // П.1: поднимаем/фокусируем окно Main ТОЛЬКО для дабл-клика по чарту
+            // (open_request_activate). Клики в Ордерах/Детектах открывают монету, но окно
+            // не активируют — иначе любой клик дёргал бы окно на передний план.
+            if activate {
+                window.activate_window();
+            }
         }
     }
 
@@ -370,7 +399,10 @@ impl ChartTabs {
             .find(|d| d.bounds().contains(&origin))
             .map(|d| d.id());
         let opts = crate::windowing::detached_window_options(
-            format!("MoonTerminal — Чарт {n}"),
+            format!(
+                "MoonTerminal — {}",
+                chart_pane_label(&self.backend, &self.group, n, core, cx)
+            ),
             WindowBounds::Windowed(Bounds {
                 origin,
                 size: size(px(geom.w as f32), px(geom.h as f32)),
@@ -561,23 +593,9 @@ impl ChartTabs {
         }
     }
 
-    /// Метка вкладки: «номер-ядро» (при split, ядро известно), иначе «номер».
+    /// Метка вкладки (П.4): «номер-группа», при split-by-core — «номер-группа-ядро».
     fn add_label(&self, n: u32, core: Option<CoreId>, cx: &App) -> String {
-        match core {
-            Some(cid) => {
-                let name = self
-                    .backend
-                    .read(cx)
-                    .session
-                    .sessions()
-                    .iter()
-                    .find(|s| s.id == cid)
-                    .map(|s| s.name.clone())
-                    .unwrap_or_default();
-                format!("{n}-{name}")
-            }
-            None => n.to_string(),
-        }
+        chart_pane_label(&self.backend, &self.group, n, core, cx)
     }
 
     /// Неактивные вкладки отсутствуют в текущей GPUI scene, значит их chart data observe не должен
@@ -657,7 +675,7 @@ impl Render for ChartTabs {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         #[cfg(any(debug_assertions, moon_profile_debug, feature = "debug-tools"))]
         self.drain_debug_fill_main_chart(cx);
-        self.handle_open_request(cx);
+        self.handle_open_request(window, cx);
         self.ingest(window, cx);
         self.sync_inactive_chart_visibility(cx);
         // Откреп-вкладки: вернуть закрытые в стрип (репин) + восстановить сохранённые окна
@@ -788,6 +806,42 @@ impl Render for ChartTabs {
                 }
             });
 
+        // Кнопка «собрать окна» — справа в полосе вкладок, ТОЛЬКО если у группы есть откреп-окна.
+        // Восстанавливает/показывает/возвращает на экран окна чартов, если они свёрнуты/спрятаны/
+        // уехали за пределы экранов (они независимы и не ходят за Main).
+        let detached_count = self
+            .backend
+            .read(cx)
+            .detached_chart_windows
+            .iter()
+            .filter(|(g, _)| *g == self.group)
+            .count();
+        let gather_btn = (detached_count > 0).then(|| {
+            div()
+                .absolute()
+                .right(px(6.0))
+                .top(px(4.0))
+                .w(px(24.0))
+                .h(px(22.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(4.0))
+                .text_size(px(13.0))
+                .text_color(rgba(0xC8CCD0FF))
+                .bg(rgba(0x00000059))
+                .cursor_pointer()
+                .hover(|s| s.bg(rgba(0x2A2E37FF)).text_color(rgb(0xFFFFFF)))
+                .child("▦")
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _e: &MouseDownEvent, _w, cx| {
+                        this.gather_windows(cx);
+                        cx.stop_propagation();
+                    }),
+                )
+        });
+
         v_flex()
             .size_full()
             .child(
@@ -796,7 +850,8 @@ impl Render for ChartTabs {
                     .w_full()
                     .relative()
                     .overflow_hidden()
-                    .child(strip),
+                    .child(strip)
+                    .children(gather_btn),
             )
             .child(div().flex_1().w_full().child(self.active_panel()))
     }
@@ -909,6 +964,39 @@ impl DetachedChartHost {
     }
 }
 
+/// Осмысленная подпись AddToChart-графика (П.4 — порт egui): «номер-группа», а при
+/// `charts_split_by_core` (ядро задано) — «номер-группа-ядро». Пустая группа → только номер
+/// (старый фолбэк). Используется и в стрипе вкладок, и в заголовке/титуле выносного окна,
+/// чтобы вместо безликого «Чарт N» везде было имя группы (и ядра при сплите).
+fn chart_pane_label(
+    backend: &Entity<Backend>,
+    group: &str,
+    n: u32,
+    core: Option<CoreId>,
+    cx: &App,
+) -> String {
+    let mut label = if group.is_empty() {
+        n.to_string()
+    } else {
+        format!("{n}-{group}")
+    };
+    if let Some(cid) = core {
+        let name = backend
+            .read(cx)
+            .session
+            .sessions()
+            .iter()
+            .find(|s| s.id == cid)
+            .map(|s| s.name.clone())
+            .unwrap_or_default();
+        if !name.is_empty() {
+            label.push('-');
+            label.push_str(&name);
+        }
+    }
+    label
+}
+
 impl Render for DetachedChartHost {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Коррекция размера восстановленного окна (один раз): окно уже на целевом мониторе с
@@ -916,15 +1004,15 @@ impl Render for DetachedChartHost {
         if let Some(sz) = self.restore_size.take() {
             window.resize(sz);
         }
+        // Откреп-чарты независимы (не owned) → ОС даёт им кнопку в таскбаре. Прячем её через
+        // WS_EX_TOOLWINDOW (Windows). Идемпотентно: реальная смена стиля происходит один раз.
+        crate::windowing::hide_window_from_taskbar(window);
         let p = MoonPalette::active(cx);
         // Масштаб — СВОЙ у этой панели (по-вкладочно), правится прямо в неё.
         let scale = self.panel.read(cx).scale();
         let panel = self.panel.clone();
         let close_all_panel = self.panel.clone();
-        let title = match self.core {
-            Some(core) => format!("{} · Чарт {} · {core:?}", self.group, self.num),
-            None => format!("{} · Чарт {}", self.group, self.num),
-        };
+        let title = chart_pane_label(&self.backend, &self.group, self.num, self.core, cx);
         let frame = MoonWindowFrame::detached_chart("detached-chart-window-frame", 0.0)
             .header_height(34.0)
             .controls(MoonWindowFrameControls::Close)

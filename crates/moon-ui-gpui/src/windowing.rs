@@ -102,9 +102,23 @@ pub(crate) fn detached_window_options(
     title: impl Into<SharedString>,
     window_bounds: WindowBounds,
     display_id: Option<DisplayId>,
-    owner: Option<AnyWindowHandle>,
+    _owner: Option<AnyWindowHandle>,
 ) -> WindowOptions {
-    owned_window_options(title, window_bounds, display_id, None, owner, true)
+    // Откреп-чарты — НЕЗАВИСИМЫЕ окна (НЕ owned). owned образует с Main группу активации ОС:
+    // клик по окну чарта поднимал и Main (особенно заметно на мультимониторе — Main выскакивал
+    // на другом экране). Из таскбара прячем ЯВНО (`Hidden`) — раньше скрытие шло побочкой owned.
+    // `_owner` больше не используется (оставлен в сигнатуре, чтобы не трогать места вызова).
+    let mut options = app_window_options(
+        title,
+        window_bounds,
+        display_id,
+        None,
+        APP_ID.to_string(),
+        None,
+        true,
+    );
+    options.taskbar_visibility = WindowTaskbarVisibility::Hidden;
+    options
 }
 
 pub(crate) fn debug_window_options(
@@ -236,3 +250,78 @@ pub(crate) fn set_group_window_icon(window: &Window, icon_id: u32) {
 
 #[cfg(not(target_os = "windows"))]
 pub(crate) fn set_group_window_icon(_: &Window, _: u32) {}
+
+/// Скрыть окно из таскбара/Alt-Tab (Windows) через `WS_EX_TOOLWINDOW` — БЕЗ owner-связи.
+/// Нужно для откреп-чартов: они независимы (owned цеплялся за активацию Main, см.
+/// `detached_window_options`), а движок MoonUI `taskbar_visibility::Hidden` пока не реализует
+/// (`show_for` не подключён в бэкенде — скрытие шло только как побочка owner). Идемпотентно:
+/// меняем ex-style (с hide/show — требование WinAPI для смены кнопки таскбара) лишь однажды.
+#[cfg(target_os = "windows")]
+pub(crate) fn hide_window_from_taskbar(window: &Window) {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GWL_EXSTYLE, GetWindowLongPtrW, SW_HIDE, SW_SHOWNA, SetWindowLongPtrW, ShowWindow,
+        WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
+    };
+
+    let Ok(handle) = HasWindowHandle::window_handle(window) else {
+        return;
+    };
+    let RawWindowHandle::Win32(h) = handle.as_raw() else {
+        return;
+    };
+    let hwnd = HWND(h.hwnd.get() as *mut _);
+    unsafe {
+        let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+        let want = (ex & !(WS_EX_APPWINDOW.0 as isize)) | (WS_EX_TOOLWINDOW.0 as isize);
+        if want != ex {
+            // WinAPI: чтобы кнопка таскбара исчезла, окно надо спрятать, сменить ex-style и
+            // показать обратно БЕЗ активации (SW_SHOWNA — иначе перехватит фокус у текущего).
+            let _ = ShowWindow(hwnd, SW_HIDE);
+            SetWindowLongPtrW(hwnd, GWL_EXSTYLE, want);
+            let _ = ShowWindow(hwnd, SW_SHOWNA);
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub(crate) fn hide_window_from_taskbar(_: &Window) {}
+
+/// Восстановить окно и вернуть его на экран (Windows): разминимизировать (`SW_RESTORE`) и
+/// переставить каскадом на первичный монитор (левый-верх primary = (0,0) в координатах ОС) —
+/// спасение откреп-окон, уехавших за пределы экранов / на отключённый монитор / свёрнутых.
+/// Сеттера позиции окна у gpui-форка нет (есть только `resize`), поэтому двигаем через WinAPI.
+#[cfg(target_os = "windows")]
+pub(crate) fn reset_window_onscreen(window: &Window, index: usize) {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        HWND_TOP, SW_RESTORE, SWP_NOSIZE, SWP_SHOWWINDOW, SetWindowPos, ShowWindow,
+    };
+
+    let Ok(handle) = HasWindowHandle::window_handle(window) else {
+        return;
+    };
+    let RawWindowHandle::Win32(h) = handle.as_raw() else {
+        return;
+    };
+    let hwnd = HWND(h.hwnd.get() as *mut _);
+    // Каскад с шагом 40px (и переносом по модулю), чтобы окна не легли стопкой друг на друга.
+    let off = 60 + (index as i32 % 8) * 40;
+    unsafe {
+        let _ = ShowWindow(hwnd, SW_RESTORE);
+        let _ = SetWindowPos(
+            hwnd,
+            Some(HWND_TOP),
+            off,
+            off,
+            0,
+            0,
+            SWP_NOSIZE | SWP_SHOWWINDOW,
+        );
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub(crate) fn reset_window_onscreen(_: &Window, _: usize) {}

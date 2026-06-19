@@ -1,4 +1,45 @@
 //! Backend-neutral GPU structs shared by DX11, Metal, and wgpu chart passes.
+//! Плюс мелкие билдеры/хелперы, превращающие данные фида в эти GPU-инстансы.
+
+use moon_core::data::PriceLinePoint;
+use moon_core::feed::{PricePoint, Side, Tick};
+
+/// sRGB [u8;3] → [f32;4] (alpha 1) для cbuffer-цветов (шейдер переводит в linear).
+pub fn rgb4(c: [u8; 3]) -> [f32; 4] {
+    [
+        c[0] as f32 / 255.0,
+        c[1] as f32 / 255.0,
+        c[2] as f32 / 255.0,
+        1.0,
+    ]
+}
+
+/// Заполнить буфер GPU-крестов трейдов из тиков (время → относительное от epoch).
+pub fn fill_cross_upload(ticks: &[Tick], epoch_ms: f64, out: &mut Vec<ChartCross>) {
+    out.clear();
+    out.reserve(ticks.len());
+    out.extend(ticks.iter().map(|t| ChartCross {
+        time_rel: (t.time_ms - epoch_ms) as f32,
+        price: t.price,
+        side: match t.side {
+            Side::Buy => 0,
+            Side::Sell => 1,
+        },
+        qty: t.qty.max(0.0),
+    }));
+}
+
+/// Заполнить буфер точек ценовой линии (last/mark) из `PricePoint`, отбрасывая неконечные.
+pub fn fill_price_upload(points: &[PricePoint], epoch_ms: f64, out: &mut Vec<PriceLinePoint>) {
+    out.clear();
+    out.reserve(points.len());
+    out.extend(points.iter().filter_map(|p| {
+        (p.price.is_finite() && p.price > 0.0).then_some(PriceLinePoint {
+            time_rel_ms: (p.time_ms - epoch_ms) as f32,
+            price: p.price,
+        })
+    }));
+}
 
 /// One trade marker in GPU memory. Layout matches chart shaders.
 #[repr(C)]

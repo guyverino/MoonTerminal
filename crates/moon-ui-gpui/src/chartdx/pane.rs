@@ -24,6 +24,9 @@ pub struct Pane {
     pub market: String,
     pub source: PaneSource,
     pub view: ChartView,
+    /// П.2: пользователь «приколол» AddToChart-панель → TTL не закрывает её. На Manual-панели
+    /// не влияет (они и так живут вечно). Сессионный флаг (панели сами по себе не персистятся).
+    pub pinned: bool,
 }
 
 #[derive(Clone)]
@@ -82,6 +85,7 @@ impl Container {
                     market: market.to_string(),
                     source: PaneSource::Manual,
                     view,
+                    pinned: false,
                 });
                 self.panes.len() - 1
             }
@@ -115,6 +119,7 @@ impl Container {
                         ttl_ms,
                     },
                     view,
+                    pinned: false,
                 });
             }
         }
@@ -125,7 +130,8 @@ impl Container {
     pub fn prune_ttl(&mut self, now_ms: f64) -> bool {
         let before = self.panes.len();
         self.panes.retain(|p| match p.source {
-            PaneSource::AddToChart { born_ms, ttl_ms } => now_ms - born_ms < ttl_ms,
+            // П.2: приколотая панель не закрывается по TTL.
+            PaneSource::AddToChart { born_ms, ttl_ms } => p.pinned || now_ms - born_ms < ttl_ms,
             PaneSource::Manual => true,
         });
         let removed = self.panes.len() != before;
@@ -138,17 +144,36 @@ impl Container {
     pub fn has_ttl_panes(&self) -> bool {
         self.panes
             .iter()
-            .any(|p| matches!(p.source, PaneSource::AddToChart { .. }))
+            .any(|p| matches!(p.source, PaneSource::AddToChart { .. }) && !p.pinned)
     }
 
     pub fn next_ttl_deadline_ms(&self) -> Option<f64> {
         self.panes
             .iter()
             .filter_map(|p| match p.source {
-                PaneSource::AddToChart { born_ms, ttl_ms } => Some(born_ms + ttl_ms),
-                PaneSource::Manual => None,
+                // Приколотые панели дедлайна не имеют (П.2).
+                PaneSource::AddToChart { born_ms, ttl_ms } if !p.pinned => Some(born_ms + ttl_ms),
+                _ => None,
             })
             .min_by(|a, b| a.total_cmp(b))
+    }
+
+    /// Можно ли приколоть панель idx (только AddToChart с TTL; Manual/Main — нет смысла). П.2
+    pub fn is_pinnable(&self, idx: usize) -> bool {
+        self.panes
+            .get(idx)
+            .is_some_and(|p| matches!(p.source, PaneSource::AddToChart { .. }))
+    }
+
+    pub fn is_pinned(&self, idx: usize) -> bool {
+        self.panes.get(idx).is_some_and(|p| p.pinned)
+    }
+
+    /// Переключить пин панели idx. Возвращает новое состояние (или None — индекс вне диапазона).
+    pub fn toggle_pin(&mut self, idx: usize) -> Option<bool> {
+        let p = self.panes.get_mut(idx)?;
+        p.pinned = !p.pinned;
+        Some(p.pinned)
     }
 
     /// Удалить панель (закрытие крестиком в UI). Возвращает её (core, market) — для решения

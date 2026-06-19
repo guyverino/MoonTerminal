@@ -760,6 +760,8 @@ fn token_cell(
                 this.backend.update(cx, |b, bcx| {
                     b.open_request = Some((core, market.clone()));
                     b.open_request_rev = b.open_request_rev.wrapping_add(1);
+                    // Клик в Ордерах открывает монету на Main, но окно НЕ поднимает.
+                    b.open_request_activate = false;
                     bcx.notify();
                 });
             });

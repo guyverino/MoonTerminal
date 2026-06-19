@@ -116,6 +116,10 @@ struct Backend {
     /// Ревизия `open_request`: нужна, чтобы ChartTabs просыпался по конкретному
     /// запросу открытия, а не по страховочному backend-render.
     open_request_rev: u64,
+    /// Активировать ли окно Main при выполнении `open_request`. true ТОЛЬКО для дабл-клика
+    /// по чарту (открытие монеты на Main); клики Ордеров/Детектов открывают без подъёма окна.
+    /// Ставится одновременно с каждым `open_request`, чтобы не рассинхронилось.
+    open_request_activate: bool,
     /// Диагностический автозапуск графика для runtime-счётчиков. Off по умолчанию;
     /// включается только env `MOON_RENDER_DIAG_OPEN_FIRST_MARKET`.
     diag_open_first_market: bool,
@@ -277,6 +281,7 @@ impl Backend {
         self.diag_open_done = true;
         self.open_request = Some((core, market.clone()));
         self.open_request_rev = self.open_request_rev.wrapping_add(1);
+        self.open_request_activate = false;
         if std::env::var_os("MOON_RENDER_DIAG_PAUSE_AFTER_OPEN").is_some() {
             self.follow = false;
         }
@@ -403,6 +408,7 @@ fn main() -> anyhow::Result<()> {
             preview: None,
             open_request: None,
             open_request_rev: 0,
+            open_request_activate: false,
             diag_open_first_market: std::env::var_os("MOON_RENDER_DIAG_OPEN_FIRST_MARKET")
                 .is_some(),
             diag_open_done: false,

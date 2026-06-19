@@ -150,8 +150,22 @@ pub fn build_order_geometry(
                     if t0_rel.max(t1_rel) < left_rel || t0_rel.min(t1_rel) > right_rel {
                         continue;
                     }
+                    // П.8: ступенчатая (step-after) ордер-линия под ПРЯМЫМ углом, а не
+                    // диагональ. Цена p0 действует с t0 до момента изменения t1 → горизонталь
+                    // на уровне p0; затем скачок до p1 → вертикаль на t1. Раньше пара
+                    // соединялась одним наклонным сегментом (подступенек был наклонным).
                     segs.push(SegInstance {
                         t0_rel,
+                        p0,
+                        t1_rel,
+                        p1: p0,
+                        thickness: st.thickness,
+                        dashed: dash,
+                        extend: 0.0,
+                        color: col,
+                    });
+                    segs.push(SegInstance {
+                        t0_rel: t1_rel,
                         p0,
                         t1_rel,
                         p1,
@@ -165,10 +179,28 @@ pub fn build_order_geometry(
                 if !ended {
                     let (last_t, last_p) = *line.server_points.last().unwrap();
                     if let Some((tmp_t, tmp_p)) = line.tmp_point {
+                        // Живая temp-точка — ступенькой под ПРЯМЫМ углом, а не косым пунктиром.
+                        // В норме цена та же (tmp_p == last_p) → видна только горизонталь; при
+                        // перестановке ордера раньше мелькала диагональ от старой точки к новой
+                        // (пользователь жаловался на «косой пунктир»). Горизонталь на last_p до
+                        // tmp_t, затем вертикаль на tmp_t до tmp_p (вертикаль вырождена, если цена
+                        // не менялась).
+                        let last_rel = to_rel(last_t);
+                        let tmp_rel = to_rel(tmp_t);
                         segs.push(SegInstance {
-                            t0_rel: to_rel(last_t),
+                            t0_rel: last_rel,
                             p0: last_p,
-                            t1_rel: to_rel(tmp_t),
+                            t1_rel: tmp_rel,
+                            p1: last_p,
+                            thickness: st.thickness,
+                            dashed: 1.0,
+                            extend: 0.0,
+                            color: col,
+                        });
+                        segs.push(SegInstance {
+                            t0_rel: tmp_rel,
+                            p0: last_p,
+                            t1_rel: tmp_rel,
                             p1: tmp_p,
                             thickness: st.thickness,
                             dashed: 1.0,

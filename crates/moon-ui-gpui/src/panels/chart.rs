@@ -104,6 +104,9 @@ pub struct ChartPanel {
     /// One-shot timer до ближайшего истечения AddToChart TTL. Это time-based dirty,
     /// поэтому он не должен зависеть от backend data observe.
     ttl_timer_armed: bool,
+    /// One-shot timer авто-возврата в live после пана (П.9). Тоже time-based: prepare в
+    /// покое не тикает (камеру двигает own-pass), поэтому возврат нужен по таймеру.
+    auto_live_timer_armed: bool,
     focus: FocusHandle,
 }
 
@@ -188,6 +191,7 @@ impl ChartPanel {
             last_adaptive_notify_ms: 0.0,
             last_ppp: 1.0,
             ttl_timer_armed: false,
+            auto_live_timer_armed: false,
             focus: cx.focus_handle(),
         }
     }
@@ -272,6 +276,7 @@ impl ChartPanel {
             last_adaptive_notify_ms: 0.0,
             last_ppp: 1.0,
             ttl_timer_armed: false,
+            auto_live_timer_armed: false,
             focus: cx.focus_handle(),
         }
     }
@@ -348,6 +353,16 @@ impl ChartPanel {
         cx.notify();
     }
 
+    /// П.2: приколоть/открепить панель idx. Пин отменяет авто-закрытие по TTL; открепление
+    /// возвращает TTL (панель закроется, если срок уже истёк) → пере-арм таймера дедлайнов.
+    fn toggle_pin(&mut self, idx: usize, cx: &mut Context<Self>) {
+        if self.chart.toggle_pane_pin(idx) {
+            self.view_dirty = true;
+            self.arm_ttl_timer(cx);
+            cx.notify();
+        }
+    }
+
     /// Закрыть ВСЕ монеты этого чарта (кнопка «закрыть все графики» в выносном окне) +
     /// отписаться от их стаканов.
     pub fn close_all_panes(&mut self, cx: &mut Context<Self>) {
@@ -400,6 +415,48 @@ impl ChartPanel {
         .detach();
     }
 
+    fn next_auto_live_delay(&self, now_ms: f64) -> Option<Duration> {
+        self.chart
+            .next_auto_live_deadline_ms()
+            .map(|deadline| Duration::from_millis((deadline - now_ms).max(1.0).ceil() as u64))
+    }
+
+    /// One-shot таймер авто-возврата в live (П.9): мирроринг `arm_ttl_timer`. Армится из
+    /// `mark_input_changed` после пана; по срабатыванию двигает live и пере-армится на
+    /// следующий дедлайн (или гаснет, если возвращать больше нечего).
+    fn arm_auto_live_timer(&mut self, cx: &mut Context<Self>) {
+        if self.auto_live_timer_armed {
+            return;
+        }
+        let Some(delay) = self.next_auto_live_delay(now_unix_ms()) else {
+            return;
+        };
+        self.auto_live_timer_armed = true;
+        cx.spawn(async move |this, cx| {
+            let executor = cx.update(|cx| cx.background_executor().clone());
+            executor.timer(delay).await;
+            let _ = cx.update(|cx| {
+                this.update(cx, |this, cx| {
+                    this.auto_live_timer_armed = false;
+                    if this.chart.tick_auto_live(now_unix_ms()) {
+                        this.view_dirty = true;
+                        let follow = this.chart.follow();
+                        this.backend.update(cx, |b, bcx| {
+                            if b.follow != follow {
+                                b.follow = follow;
+                                bcx.notify();
+                            }
+                        });
+                        cx.notify();
+                    }
+                    this.arm_auto_live_timer(cx);
+                })
+                .is_ok()
+            });
+        })
+        .detach();
+    }
+
     fn mark_input_changed(&mut self, cx: &mut Context<Self>) {
         self.chart.sync_follow_from_views();
         let follow = self.chart.follow();
@@ -410,6 +467,8 @@ impl ChartPanel {
             }
         });
         self.view_dirty = true;
+        // Если пан перевёл панель в ручной режим — заводим таймер авто-возврата (П.9).
+        self.arm_auto_live_timer(cx);
     }
 
     fn chart_local(&self, pos: Point<Pixels>, sf: f32) -> Option<((f32, f32), bool)> {
@@ -430,16 +489,22 @@ impl ChartPanel {
         self.chart.set_cursor(cursor)
     }
 
-    /// Подпись вкладки: «Чарт N» для AddToChart, иначе рынок открытой монеты, затем «Main».
+    /// Подпись вкладки: для AddToChart — «N · рынок» (П.4: вместо безликого «Чарт N»),
+    /// иначе рынок открытой монеты, затем «Main». Группа/ядро тут недоступны (их знают
+    /// ChartTabs/DetachedChartHost) — используем номер + активный рынок.
     pub fn title_text(&self) -> String {
-        if let Some(n) = self.num {
-            return format!("Чарт {n}");
-        }
-        self.chart
+        let market = self
+            .chart
             .active_market()
             .filter(|m| !m.is_empty())
-            .or_else(|| self.market.clone())
-            .unwrap_or_else(|| "Main".into())
+            .or_else(|| self.market.clone());
+        if let Some(n) = self.num {
+            return match market {
+                Some(m) => format!("{n} · {m}"),
+                None => format!("Чарт {n}"),
+            };
+        }
+        market.unwrap_or_else(|| "Main".into())
     }
 
     #[cfg(any(debug_assertions, moon_profile_debug, feature = "debug-tools"))]
@@ -567,6 +632,21 @@ impl Render for ChartPanel {
             .iter()
             .map(|(idx, rect, _)| (*idx, (rect.x + rect.w) / ppp, rect.y / ppp))
             .collect();
+        // П.2: кнопка «пин» в левом верхнем углу ВНУТРИ области графика (правее ценовой оси,
+        // не на самой оси) — ТОЛЬКО на AddToChart-панелях (с TTL). Пин отменяет авто-закрытие.
+        // (idx, pinned, left_px, top_px). PRICE_AXIS_W — логическая ширина оси (rect в девайс-px).
+        let pin_btns: Vec<(usize, bool, f32, f32)> = axis_panes
+            .iter()
+            .filter(|(idx, _, _)| self.chart.pane_is_pinnable(*idx))
+            .map(|(idx, rect, _)| {
+                (
+                    *idx,
+                    self.chart.pane_pinned(*idx),
+                    rect.x / ppp + moon_chart::PRICE_AXIS_W,
+                    rect.y / ppp,
+                )
+            })
+            .collect();
         let show_empty_logo = axis_panes.is_empty();
         let logo_w = ((self.chart_dev.0 as f32 / ppp) * 0.28).clamp(180.0, 280.0);
 
@@ -645,6 +725,8 @@ impl Render for ChartPanel {
                         this.backend.update(cx, |b, bcx| {
                             b.open_request = Some((core, market));
                             b.open_request_rev = b.open_request_rev.wrapping_add(1);
+                            // Только этот путь (дабл-клик по чарту) поднимает окно Main (П.1).
+                            b.open_request_activate = true;
                             bcx.notify();
                         });
                         opened_to_main = true;
@@ -876,6 +958,40 @@ impl Render for ChartPanel {
                         MouseButton::Left,
                         cx.listener(move |this, _e: &MouseDownEvent, _w, cx| {
                             this.remove_pane(idx, cx);
+                            cx.stop_propagation();
+                        }),
+                    )
+            }))
+            .children(pin_btns.into_iter().map(|(idx, pinned, left, top)| {
+                // Пин-кнопка в левом верхнем углу: заполненный кружок = приколото, контур = нет (П.2).
+                div()
+                    .absolute()
+                    .left(px(left + 3.0))
+                    .top(px(top + 3.0))
+                    .w(px(15.0))
+                    .h(px(15.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(design::ui_px(cx, 3.0))
+                    .text_size(design::text_px(cx, 11.0))
+                    .text_color(if pinned {
+                        rgb(0xFFFFFF)
+                    } else {
+                        rgba(0xC8CCD0FF)
+                    })
+                    .bg(if pinned {
+                        rgba(0x3B82F6CC)
+                    } else {
+                        rgba(0x00000059)
+                    })
+                    .cursor_pointer()
+                    .hover(|s| s.bg(rgba(0x3B82F6CC)).text_color(rgb(0xFFFFFF)))
+                    .child(if pinned { "●" } else { "○" })
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _e: &MouseDownEvent, _w, cx| {
+                            this.toggle_pin(idx, cx);
                             cx.stop_propagation();
                         }),
                     )
