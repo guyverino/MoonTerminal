@@ -215,122 +215,144 @@ impl StrategiesView {
         let row_id = editor_state_id(keys, &field_name);
         let view = cx.entity();
 
-        let value_el: AnyElement = match merged {
-            None => div()
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(moon(p.blue))
-                .child("≠")
-                .into_any_element(),
-            Some(value) => match f.ui {
-                SchemaFieldUi::Checkbox => {
-                    let on = is_on(&value);
+        // `merged == None` → у выбранных стратегий значение РАЗНОЕ. Раньше показывали лишь «≠»
+        // без правки. Теперь поле всё равно редактируемое: значок «≠» + подсветка, а ввод любого
+        // значения через `stage_field_value` ложится сразу во ВСЕ выбранные ключи (унифицирует).
+        let differ = merged.is_none();
+        let value = merged.unwrap_or_default();
+        let control: AnyElement = match f.ui {
+            SchemaFieldUi::Checkbox => {
+                let on = is_on(&value);
+                let keys = keys.to_vec();
+                let field = field_name.clone();
+                MoonCheckbox::new(SharedString::from(format!("field-check-{row_id}")))
+                    .checked(on)
+                    .indeterminate(differ)
+                    .disabled(!active)
+                    .size(MoonCheckboxSize::Compact)
+                    .on_change(cx.listener(move |this, ch: &bool, _, cx| {
+                        this.stage_field_value(
+                            &keys,
+                            &field,
+                            if *ch { "Yes" } else { "No" }.to_string(),
+                            cx,
+                        );
+                    }))
+                    .into_any_element()
+            }
+            SchemaFieldUi::Combo if !f.picklist.is_empty() => {
+                let mut items = Vec::with_capacity(f.picklist.len());
+                for option in &f.picklist {
+                    let option_value = option.clone();
+                    let label = if option.is_empty() {
+                        "—".to_string()
+                    } else {
+                        option.clone()
+                    };
                     let keys = keys.to_vec();
                     let field = field_name.clone();
-                    MoonCheckbox::new(SharedString::from(format!("field-check-{row_id}")))
-                        .checked(on)
-                        .disabled(!active)
-                        .size(MoonCheckboxSize::Compact)
-                        .on_change(cx.listener(move |this, ch: &bool, _, cx| {
-                            this.stage_field_value(
-                                &keys,
-                                &field,
-                                if *ch { "Yes" } else { "No" }.to_string(),
-                                cx,
-                            );
-                        }))
-                        .into_any_element()
+                    let view = view.clone();
+                    items.push(
+                        MoonMenuItem::with_key(format!("field-{row_id}-{option}"), label)
+                            .selected(!differ && option_value == value)
+                            .on_click(move |_, _, app| {
+                                view.update(app, |this, cx| {
+                                    this.stage_field_value(&keys, &field, option_value.clone(), cx);
+                                });
+                            }),
+                    );
                 }
-                SchemaFieldUi::Combo if !f.picklist.is_empty() => {
-                    let mut items = Vec::with_capacity(f.picklist.len());
-                    for option in &f.picklist {
-                        let option_value = option.clone();
-                        let label = if option.is_empty() {
+                let trigger_label = if differ {
+                    "≠ ▾".to_string()
+                } else {
+                    format!(
+                        "{} ▾",
+                        if value.is_empty() {
                             "—".to_string()
                         } else {
-                            option.clone()
-                        };
-                        let keys = keys.to_vec();
-                        let field = field_name.clone();
-                        let view = view.clone();
-                        items.push(
-                            MoonMenuItem::with_key(format!("field-{row_id}-{option}"), label)
-                                .selected(option_value == value)
-                                .on_click(move |_, _, app| {
-                                    view.update(app, |this, cx| {
-                                        this.stage_field_value(
-                                            &keys,
-                                            &field,
-                                            option_value.clone(),
-                                            cx,
-                                        );
-                                    });
-                                }),
-                        );
-                    }
-                    MoonDropdown::new(SharedString::from(format!("field-combo-{row_id}")))
-                        .label(format!(
-                            "{} ▾",
-                            if value.is_empty() {
-                                "—".to_string()
-                            } else {
-                                value.clone()
-                            }
-                        ))
-                        .trigger_variant(if dirty {
-                            MoonButtonVariant::Amber
-                        } else {
-                            MoonButtonVariant::Soft
-                        })
-                        .trigger_size(MoonButtonSize::Action)
-                        .trigger_width(180.0)
-                        .menu_width(220.0)
-                        .menu_size(MoonMenuSize::Compact)
-                        .menu_max_height(220.0)
-                        .disabled(!active)
-                        .items(items)
-                        .into_any_element()
-                }
-                _ => {
-                    let keys_arc = Arc::new(keys.to_vec());
-                    if is_memo_field(f, &value) {
-                        let state = self.field_memo_state(
-                            row_id.clone(),
-                            value,
-                            keys_arc,
-                            field_name.clone(),
-                            window,
-                            cx,
-                        );
-                        MoonTextArea::new(SharedString::from(format!("field-memo-{row_id}")))
-                            .state(&state)
-                            .formula()
-                            .tone(MoonTone::Warning)
-                            .selected(dirty)
-                            .disabled(!active)
-                            .into_any_element()
+                            value.clone()
+                        }
+                    )
+                };
+                MoonDropdown::new(SharedString::from(format!("field-combo-{row_id}")))
+                    .label(trigger_label)
+                    .trigger_variant(if dirty || differ {
+                        MoonButtonVariant::Amber
                     } else {
-                        let state = self.field_input_state(
-                            row_id.clone(),
-                            value,
-                            keys_arc,
-                            field_name.clone(),
-                            window,
-                            cx,
-                        );
-                        MoonInput::new(SharedString::from(format!("field-input-{row_id}")))
-                            .state(&state)
-                            .small()
-                            .tone(if matches!(f.ui, SchemaFieldUi::Color) {
-                                MoonTone::Warning
-                            } else {
-                                MoonTone::Info
-                            })
-                            .selected(dirty)
-                            .disabled(!active)
-                            .into_any_element()
+                        MoonButtonVariant::Soft
+                    })
+                    .trigger_size(MoonButtonSize::Action)
+                    .trigger_width(180.0)
+                    .menu_width(220.0)
+                    .menu_size(MoonMenuSize::Compact)
+                    .menu_max_height(220.0)
+                    .disabled(!active)
+                    .items(items)
+                    .into_any_element()
+            }
+            _ => {
+                let keys_arc = Arc::new(keys.to_vec());
+                // Разные значения рисуем как ПУСТОЙ инпут с плейсхолдером (не memo): набранное
+                // применится ко всем выбранным сразу.
+                if !differ && is_memo_field(f, &value) {
+                    let state = self.field_memo_state(
+                        row_id.clone(),
+                        value,
+                        keys_arc,
+                        field_name.clone(),
+                        window,
+                        cx,
+                    );
+                    MoonTextArea::new(SharedString::from(format!("field-memo-{row_id}")))
+                        .state(&state)
+                        .formula()
+                        .tone(MoonTone::Warning)
+                        .selected(dirty)
+                        .disabled(!active)
+                        .into_any_element()
+                } else {
+                    let state = self.field_input_state(
+                        row_id.clone(),
+                        value,
+                        keys_arc,
+                        field_name.clone(),
+                        window,
+                        cx,
+                    );
+                    let mut input = MoonInput::new(SharedString::from(format!("field-input-{row_id}")))
+                        .state(&state)
+                        .small()
+                        .tone(if differ || matches!(f.ui, SchemaFieldUi::Color) {
+                            MoonTone::Warning
+                        } else {
+                            MoonTone::Info
+                        })
+                        .selected(dirty || differ)
+                        .disabled(!active);
+                    if differ {
+                        input = input.placeholder("разные значения");
                     }
+                    input.into_any_element()
                 }
-            },
+            }
+        };
+        // Значок «≠» перед редактируемым контролом, когда значения различаются.
+        let value_el: AnyElement = if differ {
+            h_flex()
+                .items_center()
+                .gap_1()
+                .w_full()
+                .child(
+                    div()
+                        .flex_none()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(moon(p.blue))
+                        .child("≠"),
+                )
+                .child(control)
+                .into_any_element()
+        } else {
+            control
         };
 
         let field_for_focus = field_name.clone();
@@ -361,6 +383,9 @@ impl StrategiesView {
                 div()
                     .flex_1()
                     .min_w_0()
+                    // Клип: значение НЕ должно вылезать за свою ячейку и просвечивать на
+                    // соседние поля (memo с длинным текстом раньше перекрывал строки ниже).
+                    .overflow_hidden()
                     .text_color(moon(val_col))
                     .child(value_el),
             )

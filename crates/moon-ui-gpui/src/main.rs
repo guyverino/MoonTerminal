@@ -42,6 +42,7 @@ use gpui::*;
 
 use chartdx::ChartDataHandle;
 
+use moon_ui::components::Theme;
 use moon_ui::{DockAreaState, MoonTheme, MoonThemeConfig, Root, init as init_moon_ui};
 
 use moon_core::config::{AppConfig, WindowLayout};
@@ -79,6 +80,15 @@ pub(crate) fn moon_theme_config_for(cfg: &AppConfig) -> MoonThemeConfig {
 
 pub(crate) fn install_moon_theme_for_config(cfg: &AppConfig, cx: &mut App) {
     MoonTheme::install_config(moon_theme_config_for(cfg), cx);
+    // Каретка (мигающий курсор) инпутов: `caret` живёт в gpui-component `Theme.colors`
+    // (его ставит init), а не в `MoonPalette`. В дефолтной теме он фолбэчит на тёмный
+    // `primary`/`foreground` → курсор чёрный на чёрном (поле поиска в дереве стратегий).
+    // Ставим ВИДИМЫЙ цвет = основной текст активной MoonPalette (светлый на тёмном фоне).
+    // `install_config` зовётся и при смене настроек, поэтому оверрайд применяется заново.
+    if cx.has_global::<Theme>() {
+        let text = moon_ui::MoonPalette::active(cx).text;
+        cx.update_global::<Theme, _>(|t, _| t.colors.caret = gpui::rgb(text).into());
+    }
 }
 
 /// Общий backend: живёт в одном `Entity`, дренится таймером, будит окна по notify.

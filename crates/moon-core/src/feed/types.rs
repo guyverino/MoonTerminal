@@ -201,9 +201,8 @@ pub enum SchemaFieldUi {
 #[derive(Debug, Clone)]
 pub struct SchemaField {
     pub name: String,
-    /// Имя типа ("Bool"/"Int32"/"Double"/…), для подписи/форматирования.
-    /// Пока не читается: нужно этапу полного редактирования полей стратегий.
-    #[allow(dead_code)]
+    /// Имя типа ("Bool"/"Int32"/"Double"/"String"/…) из схемы ядра. Используется в UI,
+    /// чтобы числовые поля не рисовались как многострочный memo (см. `is_memo_field`).
     pub type_name: String,
     pub ui: SchemaFieldUi,
     /// Статический список значений (для Combo).

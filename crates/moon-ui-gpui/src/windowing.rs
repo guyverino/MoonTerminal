@@ -89,6 +89,25 @@ pub(crate) fn trading_window_options(
     )
 }
 
+/// Самостоятельное окно-инструмент (напр. «Стратегии»): ОБЫЧНОЕ окно, видимое в
+/// таскбаре и НЕ owned — не сворачивается/не активируется вместе с родителем (в отличие
+/// от `tool_window_options`, чей owner связывает окно с главным). `min_size` — мин. размер.
+pub(crate) fn standalone_window_options(
+    title: impl Into<SharedString>,
+    window_bounds: WindowBounds,
+    min_size: Option<Size<Pixels>>,
+) -> WindowOptions {
+    app_window_options(
+        title,
+        window_bounds,
+        None,
+        min_size,
+        APP_ID.to_string(),
+        None,
+        true,
+    )
+}
+
 pub(crate) fn tool_window_options(
     title: impl Into<SharedString>,
     window_bounds: WindowBounds,

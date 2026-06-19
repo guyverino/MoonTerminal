@@ -82,6 +82,9 @@ pub struct WindowLayout {
     /// Ключ: `g:<idx>` для глобальных, `o:<idx>:<группа>` для Orders (см. App).
     #[serde(default)]
     pub detached_geom: HashMap<String, GeomRect>,
+    /// Геометрия окна «Стратегии» (отдельное окно) — чтобы открывалось на прежнем месте.
+    #[serde(default)]
+    pub strategies_window: Option<GeomRect>,
 }
 
 impl WindowLayout {

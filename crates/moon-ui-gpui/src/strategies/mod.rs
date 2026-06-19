@@ -116,6 +116,22 @@ impl StrategiesView {
         })
         .detach();
 
+        // Сохранять положение/размер окна «Стратегии» в layout — чтобы открывалось на прежнем
+        // месте. Дебаунс-сейв делает дренаж по `layout_dirty` (как у окон групп).
+        cx.observe_window_bounds(window, |this, window, cx| {
+            let Some((x, y, w, h)) = crate::windowing::window_geom(window) else {
+                return;
+            };
+            this.backend.update(cx, |b, _| {
+                if b.layout.strategies_window.map(|g| (g.x, g.y, g.w, g.h)) != Some((x, y, w, h)) {
+                    b.layout.strategies_window =
+                        Some(moon_core::config::layout::GeomRect { x, y, w, h });
+                    b.layout_dirty = true;
+                }
+            });
+        })
+        .detach();
+
         cx.spawn(async move |this, cx| {
             let executor = cx.update(|cx| cx.background_executor().clone());
             loop {
@@ -270,16 +286,22 @@ impl StrategiesView {
         if self.field_edits.is_empty() {
             return;
         }
-        let mut per_strategy: HashMap<(CoreId, u64), Vec<(String, String)>> = HashMap::new();
+        // Группируем по ЯДРУ → внутри по стратегии. На ядро уходит ОДНА команда со всеми его
+        // правками: иначе при нескольких выбранных стратегиях одного ядра раздельные
+        // `sync_local_strategies` перетирали бы друг друга (применялось бы к одной).
+        let mut per_core: HashMap<CoreId, HashMap<u64, Vec<(String, String)>>> = HashMap::new();
         for ((core, id, field), value) in &self.field_edits {
-            per_strategy
-                .entry((*core, *id))
+            per_core
+                .entry(*core)
+                .or_default()
+                .entry(*id)
                 .or_default()
                 .push((field.clone(), value.clone()));
         }
         let b = self.backend.read(cx);
-        for ((core, id), changes) in per_strategy {
-            b.session.edit_strategies(core, vec![id], changes);
+        for (core, strat_edits) in per_core {
+            let edits: Vec<(u64, Vec<(String, String)>)> = strat_edits.into_iter().collect();
+            b.session.edit_strategies(core, edits);
         }
         self.clear_field_draft();
         cx.notify();
@@ -627,7 +649,7 @@ fn strategies_header(p: MoonPalette, cx: &App) -> impl IntoElement {
 
 
 /// Открыть окно «Стратегии» (отдельное ОС-окно). Дедуп окон — в `Backend`.
-pub fn open(backend: Entity<Backend>, owner: Option<AnyWindowHandle>, cx: &mut App) {
+pub fn open(backend: Entity<Backend>, _owner: Option<AnyWindowHandle>, cx: &mut App) {
     // Уже открыто → сфокусировать.
     if let Some(handle) = backend.read(cx).strategies_window {
         if handle
@@ -637,15 +659,34 @@ pub fn open(backend: Entity<Backend>, owner: Option<AnyWindowHandle>, cx: &mut A
             return;
         }
     }
-    let opts = crate::windowing::tool_window_options(
-        "MoonTerminal — Стратегии",
-        WindowBounds::Windowed(Bounds {
+    // Самостоятельное окно (НЕ owned): не сворачивается вместе с главным окном группы.
+    // Геометрию восстанавливаем из layout (её сохраняет StrategiesView по observe_window_bounds).
+    let saved = backend.read(cx).layout.strategies_window;
+    let bounds = saved.map_or(
+        Bounds {
             origin: point(px(120.0), px(90.0)),
             size: size(px(1180.0), px(680.0)),
-        }),
-        Some(size(px(920.0), px(560.0))),
-        owner,
+        },
+        |g| Bounds {
+            origin: point(px(g.x as f32), px(g.y as f32)),
+            size: size(px(g.w as f32), px(g.h as f32)),
+        },
     );
+    // Мультимонитор: без display_id окно создаётся на primary и при bounds вне него gpui
+    // откатывается на дефолт — ищем монитор, содержащий сохранённую точку.
+    let display_id = saved.and_then(|g| {
+        let origin = point(px(g.x as f32), px(g.y as f32));
+        cx.displays()
+            .into_iter()
+            .find(|d| d.bounds().contains(&origin))
+            .map(|d| d.id())
+    });
+    let mut opts = crate::windowing::standalone_window_options(
+        "MoonTerminal — Стратегии",
+        WindowBounds::Windowed(bounds),
+        Some(size(px(920.0), px(560.0))),
+    );
+    opts.display_id = display_id;
     let b = backend.clone();
     if let Ok(handle) = cx.open_window(opts, move |window, cx| {
         let view = cx.new(|cx| StrategiesView::new(b, window, cx));

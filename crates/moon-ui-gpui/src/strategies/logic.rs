@@ -187,6 +187,12 @@ pub(super) fn is_on(v: &str) -> bool {
 }
 
 pub(super) fn is_memo_field(f: &SchemaField, value: &str) -> bool {
+    // Memo (многострочный редактор формул) — ТОЛЬКО для строковых полей. Числовые
+    // (Int/Double/Single/…) всегда однострочный инпут, даже если в имени есть «ema»
+    // (напр. trailingEma) — иначе числовое поле растягивается как формула и текст течёт.
+    if f.type_name != "String" {
+        return false;
+    }
     if value.contains('\n') || value.chars().count() > 44 {
         return true;
     }

@@ -237,22 +237,27 @@ pub fn run(
                         start_stop
                     );
                 }
-                Ok(CoreCmd::EditStrategyFields { ids, changes }) => {
+                Ok(CoreCmd::EditStrategyFields { edits }) => {
                     // `sync_local_strategies` СИНХРОНИТ ВЕСЬ локальный набор: внутри moonproto
-                    // делает `replace_with_snapshots` (clear + вставка переданных). Поэтому шлём
-                    // ПОЛНЫЙ список всех стратегий, а поля патчим только у целевых (`ids`). Раньше
-                    // слали лишь изменённые → moonproto стирал все остальные (в дереве оставалась
-                    // только правленая стратегия).
+                    // делает `replace_with_snapshots` (clear + вставка переданных). Поэтому одной
+                    // командой шлём ПОЛНЫЙ список всех стратегий, патча ВСЕ указанные в `edits`
+                    // за один проход → один sync. (Раздельные команды на каждую стратегию
+                    // одного ядра перетирали бы друг друга — применялось бы к одной.)
                     if let Some(snap) = client.snapshot() {
                         let strats = snap.strats();
                         let schema = strats.strategy_schema();
+                        // Delphi `FLastEditDate` / rollback-guard: сервер примет снапшот стратегии,
+                        // ТОЛЬКО если её last_date новее его копии — иначе откатит эхом старое.
+                        let now = now_ms() as u64;
                         let mut edited = 0usize;
                         let full: Vec<_> = strats
                             .snapshots()
                             .map(|s| {
                                 let mut sc = s.clone();
-                                if ids.contains(&sc.strategy_id) {
-                                    for (name, val) in &changes {
+                                if let Some((_, changes)) =
+                                    edits.iter().find(|(id, _)| *id == sc.strategy_id)
+                                {
+                                    for (name, val) in changes {
                                         let existing = sc.fields.get(name).cloned();
                                         let stype =
                                             schema.and_then(|s| s.field(name)).map(|f| f.type_id);
@@ -261,12 +266,7 @@ pub fn run(
                                             fv_from_str(existing.as_ref(), stype, val),
                                         );
                                     }
-                                    // Delphi `FLastEditDate` / rollback-guard: сервер принимает
-                                    // снапшот стратегии, ТОЛЬКО если её last_date новее его копии.
-                                    // Без бампа правка «не новее» → сервер откатывает эхом старое
-                                    // значение (баг: чекбокс параметра возвращался). Поднимаем до
-                                    // «сейчас» (unix ms), но строго больше прежней даты.
-                                    sc.last_date = (now_ms() as u64).max(sc.last_date + 1);
+                                    sc.last_date = now.max(sc.last_date + 1);
                                     edited += 1;
                                 }
                                 sc
@@ -274,12 +274,7 @@ pub fn run(
                             .collect();
                         if edited > 0 {
                             let _ = client.strategies().sync_local_strategies(full);
-                            log::info!(
-                                "core {} edit {} strategies, {} changes",
-                                server.id,
-                                edited,
-                                changes.len()
-                            );
+                            log::info!("core {} edit {} strategies", server.id, edited);
                         }
                     }
                 }
