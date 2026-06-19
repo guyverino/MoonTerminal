@@ -238,34 +238,46 @@ pub fn run(
                     );
                 }
                 Ok(CoreCmd::EditStrategyFields { ids, changes }) => {
-                    // Берём полный снимок каждой стратегии, правим поля по типу и
-                    // отправляем sync_local_strategies (moonproto правит только целиком).
+                    // `sync_local_strategies` СИНХРОНИТ ВЕСЬ локальный набор: внутри moonproto
+                    // делает `replace_with_snapshots` (clear + вставка переданных). Поэтому шлём
+                    // ПОЛНЫЙ список всех стратегий, а поля патчим только у целевых (`ids`). Раньше
+                    // слали лишь изменённые → moonproto стирал все остальные (в дереве оставалась
+                    // только правленая стратегия).
                     if let Some(snap) = client.snapshot() {
                         let strats = snap.strats();
                         let schema = strats.strategy_schema();
-                        let mut modified = Vec::new();
-                        for id in &ids {
-                            let Some(s) = strats.snapshot(*id) else {
-                                continue;
-                            };
-                            let mut sc = s.clone();
-                            for (name, val) in &changes {
-                                let existing = sc.fields.get(name).cloned();
-                                let stype = schema.and_then(|s| s.field(name)).map(|f| f.type_id);
-                                sc.fields.insert(
-                                    name.as_str(),
-                                    fv_from_str(existing.as_ref(), stype, val),
-                                );
-                            }
-                            modified.push(sc);
-                        }
-                        let n = modified.len();
-                        if n > 0 {
-                            let _ = client.strategies().sync_local_strategies(modified);
+                        let mut edited = 0usize;
+                        let full: Vec<_> = strats
+                            .snapshots()
+                            .map(|s| {
+                                let mut sc = s.clone();
+                                if ids.contains(&sc.strategy_id) {
+                                    for (name, val) in &changes {
+                                        let existing = sc.fields.get(name).cloned();
+                                        let stype =
+                                            schema.and_then(|s| s.field(name)).map(|f| f.type_id);
+                                        sc.fields.insert(
+                                            name.as_str(),
+                                            fv_from_str(existing.as_ref(), stype, val),
+                                        );
+                                    }
+                                    // Delphi `FLastEditDate` / rollback-guard: сервер принимает
+                                    // снапшот стратегии, ТОЛЬКО если её last_date новее его копии.
+                                    // Без бампа правка «не новее» → сервер откатывает эхом старое
+                                    // значение (баг: чекбокс параметра возвращался). Поднимаем до
+                                    // «сейчас» (unix ms), но строго больше прежней даты.
+                                    sc.last_date = (now_ms() as u64).max(sc.last_date + 1);
+                                    edited += 1;
+                                }
+                                sc
+                            })
+                            .collect();
+                        if edited > 0 {
+                            let _ = client.strategies().sync_local_strategies(full);
                             log::info!(
                                 "core {} edit {} strategies, {} changes",
                                 server.id,
-                                n,
+                                edited,
                                 changes.len()
                             );
                         }
