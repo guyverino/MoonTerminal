@@ -6,37 +6,43 @@
 //! (исполнился — позиция открыта/продаётся) — синим. Эмуляторный — «(E)».
 //! SL/TS/Vstop — флаги ON (зелёным) / OFF (тускло).
 //!
-//! Клик по колонке токена открывает чарт монеты на Main НА ЯДРЕ ордера (через
-//! `Backend.open_request`). Поля-списки источника/типа + меню сортировки/фильтра.
+//! По функционалу разнесено: состояние/вид/жизненный цикл — здесь, поля-списки и
+//! меню сортировки — [`controls`], таблица/колонки/ячейки — [`table`].
+
+mod controls;
+mod table;
 
 use std::rc::Rc;
 
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use moon_ui::{
-    DockArea, MoonButtonSize, MoonButtonVariant, MoonDataCell, MoonDataRow,
-    MoonDataTable, MoonDataTableColumn, MoonDropdown, MoonMenuItem, MoonMenuSize, MoonPalette,
-    MoonText, MoonTone, Panel, PanelEvent, PanelInfo, PanelState, h_flex, v_flex,
+    DockArea, MoonButtonSize, MoonButtonVariant, MoonDataCell, MoonDataRow, MoonDataTable,
+    MoonDataTableColumn, MoonDropdown, MoonMenuItem, MoonMenuSize, MoonPalette, MoonText, MoonTone,
+    Panel, PanelEvent, PanelInfo, PanelState, h_flex, v_flex,
 };
 
 use crate::Backend;
 use crate::design;
+use crate::panels::{RenderGate, num};
 use moon_core::feed::OrderRow;
 use moon_core::session::CoreId;
 use moon_core::symbol;
 
+pub use table::count_orders;
+
 /// Одна строка таблицы ордеров с привязкой к ядру-источнику (порт `OrderEntry`).
 #[derive(Clone)]
-struct OrderEntry {
-    core: CoreId,
-    core_name: String,
-    quote: String,
-    row: OrderRow,
+pub(super) struct OrderEntry {
+    pub(super) core: CoreId,
+    pub(super) core_name: String,
+    pub(super) quote: String,
+    pub(super) row: OrderRow,
 }
 
 /// Первичный ключ сортировки (тогл-группа в меню).
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum PrimarySort {
+pub(super) enum PrimarySort {
     SellFirst,
     BuyFirst,
     Creation,
@@ -62,14 +68,14 @@ impl PrimarySort {
 
 /// Источник ордеров: все ядра группы или конкретное ядро.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum OrdersSource {
+pub(super) enum OrdersSource {
     All,
     Core(CoreId),
 }
 
 /// Фильтр по типу ордера: все / реальные / эмуляторные.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum OrderKind {
+pub(super) enum OrderKind {
     All,
     Real,
     Emu,
@@ -95,12 +101,12 @@ impl OrderKind {
 
 /// Состояние вида таблицы (источник + тип + фильтр + сортировка). Своё у панели.
 #[derive(Clone, Copy, PartialEq, Eq)]
-struct OrdersViewState {
-    source: OrdersSource,
-    kind: OrderKind,
-    only_current_market: bool,
-    primary: PrimarySort,
-    newest_first: bool,
+pub(super) struct OrdersViewState {
+    pub(super) source: OrdersSource,
+    pub(super) kind: OrderKind,
+    pub(super) only_current_market: bool,
+    pub(super) primary: PrimarySort,
+    pub(super) newest_first: bool,
 }
 
 impl Default for OrdersViewState {
@@ -120,29 +126,22 @@ fn executed(r: &OrderRow) -> bool {
     r.fill_pct >= 99.95
 }
 /// SELL — исполненный ЛОНГ (куплен и выставлен на продажу). НЕ шорт.
-fn is_sell(r: &OrderRow) -> bool {
+pub(super) fn is_sell(r: &OrderRow) -> bool {
     !r.is_short && executed(r)
 }
 /// BUY — лонг, ещё не исполнен (ждёт покупки).
-fn is_buy(r: &OrderRow) -> bool {
+pub(super) fn is_buy(r: &OrderRow) -> bool {
     !r.is_short && !executed(r)
 }
 
 /// Панель «Ордера».
 pub struct OrdersPanel {
-    backend: Entity<Backend>,
-    group: String,
-    view: OrdersViewState,
-    /// Сигнатура ордеров прошлого кадра (сумма orders_rev ядер группы) — чтобы НЕ
-    /// перестраивать таблицу каждые 100мс на холостом ходу (иначе вместе с readback
-    /// чарта это перегружает UI-поток → рывки графика, когда вкладка «Ордера» активна).
-    last_sig: u64,
-    /// Секундное ведро для ~1 Гц обновления свежести цен/P&L (они живут от рынка, а
-    /// orders_sig на тик цены не реагирует). Перерисовка: эпоха/статус ордера ИЛИ раз в сек.
-    last_sec: u64,
-    /// Время последней перерисовки (unix мс) — пол 250мс: ордерные ивенты летят часто,
-    /// глаз всё равно не успеет, поэтому таблицу обновляем НЕ ЧАЩЕ 4 Гц. Исключение-гейт.
-    last_notify_ms: f64,
+    pub(super) backend: Entity<Backend>,
+    pub(super) group: String,
+    pub(super) view: OrdersViewState,
+    /// Гейт перерисовки: ордерные ивенты летят часто, цены/P&L живут от рынка — общий
+    /// `RenderGate` (сигнатура ИЛИ 1 Гц-тик, пол 250мс) экономит UI-поток на холостом ходу.
+    gate: RenderGate,
     dock: Option<WeakEntity<DockArea>>,
     focus: FocusHandle,
 }
@@ -159,15 +158,7 @@ impl OrdersPanel {
             crate::diag::bump(&crate::diag::ORDERS_OBS_FIRE);
             let now = moon_chart::paint::now_unix_ms();
             let sig = orders_sig(backend.read(cx), &this.group);
-            // ~1 Гц тик: цены/P&L в таблице живут от рынка, orders_sig их не ловит.
-            let sec = (now as u64) / 1000;
-            // Перерисовка: смена эпохи/статуса ордера ИЛИ раз в сек (цены), НО НЕ ЧАЩЕ
-            // 250мс — коалесцируем частые ордерные ивенты (глаз их всё равно не различит).
-            let changed = sig != this.last_sig || sec != this.last_sec;
-            if changed && now - this.last_notify_ms >= 250.0 {
-                this.last_sig = sig;
-                this.last_sec = sec;
-                this.last_notify_ms = now;
+            if this.gate.should_notify(sig, now) {
                 crate::diag::bump(&crate::diag::ORDERS_OBS_NOTIFY);
                 cx.notify();
             }
@@ -177,9 +168,7 @@ impl OrdersPanel {
             backend,
             group,
             view: OrdersViewState::default(),
-            last_sig: 0,
-            last_sec: 0,
-            last_notify_ms: 0.0,
+            gate: RenderGate::default(),
             dock: None,
             focus: cx.focus_handle(),
         }
@@ -259,7 +248,7 @@ impl OrdersPanel {
     /// перерисовывает и ПЕРСИСТИТ (дамп дока в `dock_states` + `dock_dirty`). Дамп
     /// делаем на уровне `App` (вне borrow самой панели) — иначе ре-энтранси при
     /// `dock.dump()`, который читает в т.ч. эту панель. `OrdersViewState: Copy`.
-    fn mutate(view: &Entity<Self>, app: &mut App, f: impl FnOnce(&mut OrdersViewState)) {
+    pub(super) fn mutate(view: &Entity<Self>, app: &mut App, f: impl FnOnce(&mut OrdersViewState)) {
         let changed = view.update(app, |this, cx| {
             let mut next = this.view;
             f(&mut next);
@@ -293,133 +282,6 @@ impl OrdersPanel {
             b.dock_dirty = true;
         });
     }
-
-    /// Поле-список источника (Все ядра + ядра группы) — порт egui ComboBox.
-    fn source_combo(&self, cores: &[(CoreId, String)], cx: &Context<Self>) -> impl IntoElement {
-        let cur = match self.view.source {
-            OrdersSource::All => "Все ядра".to_string(),
-            OrdersSource::Core(id) => cores
-                .iter()
-                .find(|(c, _)| *c == id)
-                .map(|(_, n)| n.clone())
-                .unwrap_or_else(|| "Все ядра".into()),
-        };
-        let view = cx.entity();
-        let mut menu = MoonDropdown::new("orders-source")
-            .label(format!("{cur} ▾"))
-            .trigger_variant(MoonButtonVariant::Soft)
-            .trigger_size(MoonButtonSize::Action)
-            .trigger_width(118.0)
-            .menu_width(160.0)
-            .menu_size(MoonMenuSize::Compact)
-            .item(
-                MoonMenuItem::with_key("all", "Все ядра")
-                    .checked(matches!(self.view.source, OrdersSource::All))
-                    .on_click({
-                        let view = view.clone();
-                        move |_, _, app| Self::mutate(&view, app, |v| v.source = OrdersSource::All)
-                    }),
-            );
-        for (id, name) in cores {
-            let id = *id;
-            let selected = matches!(self.view.source, OrdersSource::Core(cur) if cur == id);
-            let view = view.clone();
-            menu = menu.item(
-                MoonMenuItem::with_key(format!("core-{id}"), name.clone())
-                    .checked(selected)
-                    .on_click(move |_, _, app| {
-                        Self::mutate(&view, app, |v| v.source = OrdersSource::Core(id))
-                    }),
-            );
-        }
-        menu
-    }
-
-    /// Поле-список типа ордеров (Все / Реальные / Эмуляторные).
-    fn kind_combo(&self, cx: &Context<Self>) -> impl IntoElement {
-        let cur = match self.view.kind {
-            OrderKind::All => "Все",
-            OrderKind::Real => "Реальные",
-            OrderKind::Emu => "Эмуляторные",
-        };
-        let view = cx.entity();
-        let mut menu = MoonDropdown::new("orders-kind")
-            .label(format!("{cur} ▾"))
-            .trigger_variant(MoonButtonVariant::Soft)
-            .trigger_size(MoonButtonSize::Action)
-            .trigger_width(102.0)
-            .menu_width(138.0)
-            .menu_size(MoonMenuSize::Compact);
-        for (k, label) in [
-            (OrderKind::All, "Все"),
-            (OrderKind::Real, "Реальные"),
-            (OrderKind::Emu, "Эмуляторные"),
-        ] {
-            let view = view.clone();
-            menu = menu.item(
-                MoonMenuItem::with_key(format!("kind-{label}"), label)
-                    .checked(self.view.kind == k)
-                    .on_click(move |_, _, app| Self::mutate(&view, app, |v| v.kind = k)),
-            );
-        }
-        menu
-    }
-
-    /// Меню сортировки/фильтра (порт ПКМ-меню egui): фильтр текущего маркета + две
-    /// тогл-группы сортировки. В GPUI — попап-кнопка (PopupMenu основан на Action).
-    fn sort_menu(&self, cx: &Context<Self>) -> impl IntoElement {
-        let view = cx.entity();
-        let cur = self.view;
-        let v = view.clone();
-        let mut menu = MoonDropdown::new("orders-sort")
-            .label("⚙")
-            .trigger_variant(MoonButtonVariant::Ghost)
-            .trigger_size(MoonButtonSize::Action)
-            .trigger_width(34.0)
-            .menu_width(220.0)
-            .menu_size(MoonMenuSize::Normal)
-            .item(
-                MoonMenuItem::with_key("m-onlycur", "Только ордера текущего маркета")
-                    .checked(cur.only_current_market)
-                    .on_click(move |_, _, app| {
-                        Self::mutate(&v, app, |s| s.only_current_market = true)
-                    }),
-            );
-        let v = view.clone();
-        menu = menu
-            .item(
-                MoonMenuItem::with_key("m-showall", "Показать все")
-                    .checked(!cur.only_current_market)
-                    .on_click(move |_, _, app| {
-                        Self::mutate(&v, app, |s| s.only_current_market = false)
-                    }),
-            )
-            .item(MoonMenuItem::separator());
-        for (variant, label, id) in [
-            (PrimarySort::SellFirst, "Sell первые", "m-sell"),
-            (PrimarySort::BuyFirst, "Buy первые", "m-buy"),
-            (PrimarySort::Creation, "По созданию ордера", "m-creation"),
-        ] {
-            let v = view.clone();
-            menu = menu.item(
-                MoonMenuItem::with_key(id, label)
-                    .checked(cur.primary == variant)
-                    .on_click(move |_, _, app| Self::mutate(&v, app, |s| s.primary = variant)),
-            );
-        }
-        let v = view.clone();
-        menu = menu.item(MoonMenuItem::separator()).item(
-            MoonMenuItem::with_key("m-new", "Новые первые")
-                .checked(cur.newest_first)
-                .on_click(move |_, _, app| Self::mutate(&v, app, |s| s.newest_first = true)),
-        );
-        let v = view;
-        menu.item(
-            MoonMenuItem::with_key("m-old", "Старые первые")
-                .checked(!cur.newest_first)
-                .on_click(move |_, _, app| Self::mutate(&v, app, |s| s.newest_first = false)),
-        )
-    }
 }
 
 /// Ключ группировки по ОТОБРАЖАЕМОЙ стороне (с учётом исполнения → SELL). 0 = выше.
@@ -440,10 +302,6 @@ fn sort_entries(entries: &mut [OrderEntry], view: &OrdersViewState) {
             if view.newest_first { c.reverse() } else { c }
         })
     });
-}
-
-fn num(v: f64) -> String {
-    moon_core::util::fmt::adaptive(v)
 }
 
 /// Восстановить сохранённое состояние вида из `PanelInfo` (docks.json). Отсутствующие
@@ -517,7 +375,7 @@ impl Panel for OrdersPanel {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<Vec<AnyElement>> {
-        Some(vec![super::detach_button(
+        Some(vec![crate::panels::detach_button(
             "Orders",
             self.group.clone(),
             self.backend.clone(),
@@ -585,7 +443,7 @@ impl Render for OrdersPanel {
         }
 
         // ── Виртуальная таблица в геометрии HTML-эталона ──
-        let table = orders_table(entries, cx);
+        let table = table::orders_table(entries, cx);
 
         v_flex()
             .id("orders-panel")
@@ -602,153 +460,6 @@ impl Render for OrdersPanel {
     }
 }
 
-fn orders_table(entries: Vec<OrderEntry>, cx: &Context<OrdersPanel>) -> impl IntoElement {
-    let empty = entries.is_empty();
-    let rows = Rc::new(entries);
-    let row_count = rows.len();
-    let view = cx.entity();
-    let table_rows = rows.clone();
-    let p = MoonPalette::active(cx);
-
-    div()
-        .id("orders-table-host")
-        .relative()
-        .flex_1()
-        .w_full()
-        .min_h(px(0.0))
-        .overflow_hidden()
-        .bg(rgb(p.table_body))
-        .child(
-            MoonDataTable::new("orders-table", row_count, move |ix, _window, _app| {
-                order_table_row(&table_rows[ix], &view, p)
-            })
-            .columns(order_columns())
-            .header_height(design::TABLE_HEAD_H)
-            .row_height(design::TABLE_ROW_H),
-        )
-        .when(empty, |this| {
-            this.child(
-                div()
-                    .absolute()
-                    .left(px(10.0))
-                    .top(px(design::TABLE_HEAD_H))
-                    .h(px(design::TABLE_ROW_H))
-                    .flex()
-                    .items_center()
-                    .font_family(design::mono())
-                    .text_size(design::text_px(cx, 10.5))
-                    .text_color(rgb(p.text_muted))
-                    .child("нет открытых ордеров"),
-            )
-        })
-}
-
-fn order_columns() -> Vec<MoonDataTableColumn> {
-    // Колонки и их порядок — как в оригинале (egui): Core · Side · Token · Size ·
-    // SL · TS · Vstop · Buy · Cur.P · Fill · Strat. Ширина — логические px: минимум,
-    // когда таблица узкая, и пропорциональный вес, когда есть лишняя ширина.
-    vec![
-        MoonDataTableColumn::new("core", "Core", 90.0),
-        MoonDataTableColumn::new("side", "Side", 60.0),
-        numeric_column("Token", 70.0),
-        numeric_column("Size", 70.0),
-        MoonDataTableColumn::new("sl", "SL", 46.0),
-        MoonDataTableColumn::new("ts", "TS", 46.0),
-        MoonDataTableColumn::new("vstop", "Vstop", 56.0),
-        numeric_column("Buy", 80.0),
-        numeric_column("Cur.P", 86.0),
-        numeric_column("Fill", 56.0),
-        numeric_column("Strat", 90.0),
-    ]
-}
-
-fn numeric_column(title: impl Into<SharedString>, width: f32) -> MoonDataTableColumn {
-    let title = title.into();
-    MoonDataTableColumn::new(title.to_lowercase(), title, width).right()
-}
-
-fn order_table_row(e: &OrderEntry, view: &Entity<OrdersPanel>, p: MoonPalette) -> MoonDataRow {
-    let r = &e.row;
-    // SELL (исполненный лонг) — синим, SHORT — красным, BUY (ждёт) — зелёным; (E) — эмулятор.
-    let (side, side_tone) = if is_sell(r) {
-        ("SELL", MoonTone::Info)
-    } else if r.is_short {
-        ("SHORT", MoonTone::Danger)
-    } else {
-        ("BUY", MoonTone::Positive)
-    };
-    let side = if r.emulator {
-        format!("{side}(E)")
-    } else {
-        side.to_string()
-    };
-
-    MoonDataRow::new([
-        MoonDataCell::text(e.core_name.clone()).tone(MoonTone::Muted),
-        MoonDataCell::text(side).tone(side_tone).weight(500.0),
-        MoonDataCell::element(token_cell(e, view, p)),
-        MoonDataCell::text(num(r.size)),
-        flag_cell(r.sl_on),
-        flag_cell(r.ts_on),
-        flag_cell(r.vstop_on),
-        MoonDataCell::text(num(r.buy_price)),
-        MoonDataCell::text(num(r.price as f64)),
-        MoonDataCell::text(format!("{:.0}%", r.fill_pct)).tone(MoonTone::Muted),
-        MoonDataCell::text(r.strat.clone()).tone(MoonTone::Muted),
-    ])
-}
-
-/// Флаг ON/OFF (SL/TS/Vstop): ON — зелёным, OFF — тускло (порт `cell_onoff`).
-fn flag_cell(on: bool) -> MoonDataCell {
-    if on {
-        MoonDataCell::text("ON").tone(MoonTone::Positive)
-    } else {
-        MoonDataCell::text("OFF").tone(MoonTone::Muted)
-    }
-}
-
-/// Ячейка токена (без quote: `ADAUSDT` → `ADA`), акцентом — намёк, что кликабельна.
-/// Клик открывает чарт монеты на Main НА ЯДРЕ ордера (порт клика по строке egui).
-fn token_cell(
-    e: &OrderEntry,
-    view: &Entity<OrdersPanel>,
-    p: MoonPalette,
-) -> impl IntoElement + 'static {
-    let token = symbol::base_symbol(&e.row.market, &e.quote).to_string();
-    let core = e.core;
-    let market = e.row.market.clone();
-    let uid = e.row.uid;
-    let view = view.clone();
-
-    div()
-        .id(SharedString::from(format!("ord-tok-{core}-{uid}")))
-        .h_full()
-        .flex()
-        .items_center()
-        .cursor_pointer()
-        .child(
-            MoonText::new(token)
-                .color(MoonTone::Accent.color(p))
-                .font_size(10.5)
-                .line_height(14.0)
-                .weight(500.0)
-                .mono(true)
-                .uppercase(false)
-                .render(),
-        )
-        .on_click(move |_, _window, app| {
-            view.update(app, |this, cx| {
-                this.backend.update(cx, |b, bcx| {
-                    b.open_request = Some((core, market.clone()));
-                    b.open_request_rev = b.open_request_rev.wrapping_add(1);
-                    // Клик в Ордерах открывает монету на Main, но окно НЕ поднимает.
-                    b.open_request_activate = false;
-                    bcx.notify();
-                });
-            });
-        })
-}
-
 /// Сигнатура ордеров группы (сумма orders_rev ядер) — растёт при любом изменении
 /// ордеров. Не сменилась → таблицу можно не перестраивать (экономим UI-поток).
 fn orders_sig(b: &Backend, group: &str) -> u64 {
@@ -759,16 +470,4 @@ fn orders_sig(b: &Backend, group: &str) -> u64 {
         .filter(|s| s.group == group)
         .filter_map(|s| store.core(s.id))
         .fold(0u64, |a, c| a.wrapping_mul(31).wrapping_add(c.orders_rev))
-}
-
-/// Открытые ордера всех ядер группы — для статус-бара Shell (число ордеров).
-pub fn count_orders(b: &Backend, group: &str) -> usize {
-    let store = b.session.store();
-    b.session
-        .sessions()
-        .iter()
-        .filter(|s| s.group == group)
-        .filter_map(|s| store.core(s.id))
-        .map(|c| c.orders.len())
-        .sum()
 }

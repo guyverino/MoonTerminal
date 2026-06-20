@@ -6,13 +6,19 @@
 //! Для одного ядра/локального можно смотреть Live (текущий) ИЛИ файл с диска
 //! (`logs/<дата>_<источник>.log`); агрегат — только Live. Список виртуализирован
 //! через `MoonVirtualList`; при появлении новых строк прокрутка держится у хвоста.
+//!
+//! По функционалу разнесено: состояние/сбор строк/жизненный цикл — здесь, поля-списки
+//! источника/файла — [`controls`], сигнатура/агрегат/рендер строки — [`render`].
+
+mod controls;
+mod render;
 
 use gpui::*;
 use moon_ui::{
-    DockArea, MoonButtonSize, MoonButtonVariant, MoonCheckbox, MoonCheckboxSize,
-    MoonDropdown, MoonInput, MoonInputEvent, MoonInputState, MoonMenuItem, MoonMenuSize,
-    MoonPalette, MoonScrollbarVisibility, MoonVirtualList, MoonVirtualListScrollHandle, Panel,
-    PanelEvent, PanelState, StyledExt, h_flex, v_flex,
+    DockArea, MoonButtonSize, MoonButtonVariant, MoonCheckbox, MoonCheckboxSize, MoonDropdown,
+    MoonInput, MoonInputEvent, MoonInputState, MoonMenuItem, MoonMenuSize, MoonPalette,
+    MoonScrollbarVisibility, MoonVirtualList, MoonVirtualListScrollHandle, Panel, PanelEvent,
+    PanelState, StyledExt, h_flex, v_flex,
 };
 
 use crate::Backend;
@@ -26,7 +32,7 @@ const AGG_PER_CORE: usize = 2000;
 
 /// Источник лога.
 #[derive(Clone, PartialEq)]
-enum LogSource {
+pub(super) enum LogSource {
     Aggregate,
     Local,
     Core(CoreId),
@@ -34,23 +40,23 @@ enum LogSource {
 
 /// Что показываем: живой лог из памяти или файл с диска.
 #[derive(Clone, PartialEq)]
-enum LogFile {
+pub(super) enum LogFile {
     Live,
     Named(String),
 }
 
 /// Один пункт селектора источника.
-struct LogSourceItem {
-    source: LogSource,
-    display: String,
-    file_label: String,
+pub(super) struct LogSourceItem {
+    pub(super) source: LogSource,
+    pub(super) display: String,
+    pub(super) file_label: String,
 }
 
 pub struct LogPanel {
-    backend: Entity<Backend>,
-    group: String,
-    source: LogSource,
-    file: LogFile,
+    pub(super) backend: Entity<Backend>,
+    pub(super) group: String,
+    pub(super) source: LogSource,
+    pub(super) file: LogFile,
     errors_only: bool,
     query: Entity<MoonInputState>,
     /// Кэш загруженного файла — чтобы не читать диск каждый кадр.
@@ -82,7 +88,7 @@ impl LogPanel {
         .detach();
         // Перерисовка — ТОЛЬКО когда реально появились новые строки лога.
         cx.observe(&backend, |this, backend, cx| {
-            let sig = log_sig(backend.read(cx), &this.group);
+            let sig = render::log_sig(backend.read(cx), &this.group);
             if sig != this.last_sig {
                 this.last_sig = sig;
                 cx.notify();
@@ -139,7 +145,7 @@ impl LogPanel {
         v
     }
 
-    fn file_label(&self, sources: &[LogSourceItem]) -> String {
+    pub(super) fn file_label(&self, sources: &[LogSourceItem]) -> String {
         sources
             .iter()
             .find(|s| s.source == self.source)
@@ -158,7 +164,7 @@ impl LogPanel {
                         .core(*id)
                         .map(|c| c.log_snapshot(VIEW_LIMIT))
                         .unwrap_or_default(),
-                    LogSource::Aggregate => aggregate(store, sources),
+                    LogSource::Aggregate => render::aggregate(store, sources),
                 }
             }
             LogFile::Named(name) => {
@@ -171,7 +177,7 @@ impl LogPanel {
         }
     }
 
-    fn set_source(&mut self, s: LogSource, cx: &mut Context<Self>) {
+    pub(super) fn set_source(&mut self, s: LogSource, cx: &mut Context<Self>) {
         if self.source != s {
             self.source = s;
             // Смена источника → к Live, сброс кэша файла.
@@ -180,167 +186,12 @@ impl LogPanel {
             cx.notify();
         }
     }
-    fn set_file(&mut self, f: LogFile, cx: &mut Context<Self>) {
+    pub(super) fn set_file(&mut self, f: LogFile, cx: &mut Context<Self>) {
         if self.file != f {
             self.file = f;
             cx.notify();
         }
     }
-
-    /// Комбобокс источника.
-    fn source_combo(&self, sources: &[LogSourceItem], cx: &Context<Self>) -> impl IntoElement {
-        let cur = sources
-            .iter()
-            .find(|s| s.source == self.source)
-            .map(|s| s.display.clone())
-            .unwrap_or_else(|| "Локальный".into());
-        let view = cx.entity();
-        let items: Vec<(LogSource, String)> = sources
-            .iter()
-            .map(|s| (s.source.clone(), s.display.clone()))
-            .collect();
-        MoonDropdown::new("log-source")
-            .label(format!("{cur} ▾"))
-            .trigger_variant(MoonButtonVariant::Soft)
-            .trigger_size(MoonButtonSize::Action)
-            .trigger_width(150.0)
-            .menu_width(180.0)
-            .menu_size(MoonMenuSize::Compact)
-            .items(items.into_iter().enumerate().map(move |(i, (src, disp))| {
-                let selected = src == self.source;
-                let view = view.clone();
-                MoonMenuItem::with_key(format!("ls-{i}"), disp)
-                    .selected(selected)
-                    .on_click(move |_, _, app| {
-                        let src = src.clone();
-                        view.update(app, |t, c| t.set_source(src, c));
-                    })
-            }))
-    }
-
-    /// Комбобокс файла (Live + прошлые файлы) — только для одиночного источника.
-    fn file_combo(&self, sources: &[LogSourceItem], cx: &Context<Self>) -> impl IntoElement {
-        let cur = match &self.file {
-            LogFile::Live => "Live (текущий)".to_string(),
-            LogFile::Named(n) => n.clone(),
-        };
-        let label = self.file_label(sources);
-        let view = cx.entity();
-        let mut items = vec![
-            MoonMenuItem::with_key("lf-live", "Live (текущий)")
-                .selected(matches!(self.file, LogFile::Live))
-                .on_click({
-                    let view = view.clone();
-                    move |_, _, app| {
-                        view.update(app, |t, c| t.set_file(LogFile::Live, c));
-                    }
-                }),
-        ];
-        for f in applog::list_files(&label) {
-            let selected = matches!(&self.file, LogFile::Named(name) if name == &f);
-            let view = view.clone();
-            let file = f.clone();
-            items.push(
-                MoonMenuItem::with_key(SharedString::from(format!("lf-{f}")), f)
-                    .selected(selected)
-                    .on_click(move |_, _, app| {
-                        let file = file.clone();
-                        view.update(app, |t, c| t.set_file(LogFile::Named(file), c));
-                    }),
-            );
-        }
-        MoonDropdown::new("log-file")
-            .label(format!("{cur} ▾"))
-            .trigger_variant(MoonButtonVariant::Soft)
-            .trigger_size(MoonButtonSize::Action)
-            .trigger_width(180.0)
-            .menu_width(220.0)
-            .menu_size(MoonMenuSize::Compact)
-            .items(items)
-    }
-}
-
-/// Сигнатура лога: ревизия кольца applog + сумма log_rev ядер группы. Растёт при
-/// любой новой строке (локальной или ядра). Не сменилась → пересобирать не нужно.
-fn log_sig(b: &Backend, group: &str) -> u64 {
-    let store = b.session.store();
-    let scoped = !group.is_empty();
-    let cores: u64 = b
-        .session
-        .sessions()
-        .iter()
-        .filter(|s| !scoped || s.group == group)
-        .filter_map(|s| store.core(s.id))
-        .fold(0u64, |a, c| a.wrapping_mul(31).wrapping_add(c.log_rev));
-    applog::revision().wrapping_add(cores)
-}
-
-/// Слияние живых логов всех ядер области по времени (ts лексикографичен = хронологичен).
-fn aggregate(store: &CoreStore, sources: &[LogSourceItem]) -> Vec<LogLine> {
-    let mut merged: Vec<LogLine> = Vec::new();
-    for item in sources {
-        if let LogSource::Core(id) = item.source {
-            if let Some(c) = store.core(id) {
-                for mut l in c.log_snapshot(AGG_PER_CORE) {
-                    l.target = item.display.clone();
-                    merged.push(l);
-                }
-            }
-        }
-    }
-    merged.sort_by(|a, b| a.ts.cmp(&b.ts));
-    if merged.len() > VIEW_LIMIT {
-        let drop = merged.len() - VIEW_LIMIT;
-        merged.drain(0..drop);
-    }
-    merged
-}
-
-/// Бейдж уровня + цвет (палитра).
-fn level_tag(level: log::Level, p: MoonPalette) -> Option<(&'static str, u32)> {
-    match level {
-        log::Level::Error => Some(("ERR", p.red)),
-        log::Level::Warn => Some(("WARN", p.amber)),
-        _ => None,
-    }
-}
-
-/// Рендер одной строки лога (время · [уровень] · источник · сообщение).
-fn log_row(line: &LogLine, p: MoonPalette) -> AnyElement {
-    let time = line
-        .ts
-        .rsplit(' ')
-        .next()
-        .unwrap_or(line.ts.as_str())
-        .to_string();
-    let flat = line.msg.replace('\n', " ⏎ ");
-    let mut row = h_flex().w_full().gap_1().items_baseline().text_xs().px_1();
-    row = row.child(div().flex_none().text_color(rgb(p.text_soft)).child(time));
-    if let Some((tag, col)) = level_tag(line.level, p) {
-        row = row.child(
-            div()
-                .flex_none()
-                .font_bold()
-                .text_color(rgb(col))
-                .child(tag),
-        );
-    }
-    if !line.target.is_empty() {
-        row = row.child(
-            div()
-                .flex_none()
-                .text_color(rgb(p.text_soft))
-                .child(line.target.clone()),
-        );
-    }
-    row.child(
-        div()
-            .flex_1()
-            .min_w_0()
-            .text_color(rgb(p.text_soft))
-            .child(flat),
-    )
-    .into_any_element()
 }
 
 impl EventEmitter<PanelEvent> for LogPanel {}
@@ -378,7 +229,7 @@ impl Panel for LogPanel {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<Vec<AnyElement>> {
-        Some(vec![super::detach_button(
+        Some(vec![crate::panels::detach_button(
             "Log",
             self.group.clone(),
             self.backend.clone(),
@@ -483,7 +334,9 @@ impl Render for LogPanel {
                 18.0,
                 move |ix, _w, app| {
                     weak.upgrade()
-                        .and_then(|e| e.read(app).lines.get(ix).map(|line| log_row(line, p)))
+                        .and_then(|e| {
+                            e.read(app).lines.get(ix).map(|line| render::log_row(line, p))
+                        })
                         .unwrap_or_else(|| div().into_any_element())
                 },
             )
