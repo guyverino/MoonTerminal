@@ -19,7 +19,7 @@ use moon_core::config::paths;
 use crate::Backend;
 use crate::chart_tabs::ChartTabs;
 use crate::group_window::default_focus_market;
-use crate::panels::{DetectsPanel, LogPanel, OrderPanel, OrdersPanel, ReportPanel, StubPanel};
+use crate::panels::{AssetsView, DetectsPanel, LogPanel, OrderPanel, OrdersPanel, ReportPanel};
 
 /// Версия схемы раскладки доков. Поднимаем при несовместимом изменении структуры
 /// панелей → старый `docks.json` игнорируется (откат к дефолтной раскладке).
@@ -111,14 +111,13 @@ pub fn register_panels(cx: &mut App, backend: Entity<Backend>, epoch: f64) {
     register_panel(cx, "Order", move |_state, _info, _window, cx| {
         Rc::new(cx.new(OrderPanel::new))
     });
-    // Заглушка Активы: panel_name = имя, заголовок известен по имени; группа из state,
-    // backend — для открепления панели (кнопка «⧉»).
+    // Активы: группа из state; реальные данные ядер группы (таблица + дерево переноса).
     {
         let backend = backend.clone();
-        register_panel(cx, "Assets", move |_s, info, _w, cx| {
+        register_panel(cx, "Assets", move |_s, info, window, cx| {
             let group = group_of(info);
             let backend = backend.clone();
-            Rc::new(cx.new(|cx| StubPanel::new("Assets", "Активы", group, backend, cx)))
+            Rc::new(cx.new(|cx| AssetsView::restored_group(backend, group, window, cx)))
         });
     }
     // Лог: группа из state; нужен `window` (поле поиска — InputState).

@@ -23,7 +23,9 @@ use moonproto::MoonClient;
 
 use crate::config::AppConfig;
 use crate::db::ReportTx;
-use crate::feed::{self, ConnStatus, CoreCmd, ExchangeId, FeedHandle, FeedMsg, FeedWakeTx};
+use crate::feed::{
+    self, ConnStatus, CoreCmd, ExchangeId, FeedHandle, FeedMsg, FeedWakeTx, WalletKind,
+};
 use crate::market::{MarketDataMode, MarketDataSource, MarketStore, MarketView, SharedMarketStore};
 
 pub struct CoreSession {
@@ -441,6 +443,43 @@ impl SessionManager {
         }
         if let Some(s) = self.sessions.iter().find(|s| s.id == core) {
             let _ = s.handle.cmd_tx.send(CoreCmd::EditStrategyFields { edits });
+        }
+    }
+
+    /// Перенос актива между кошельками ОДНОГО ядра (drag&drop в окне «Активы»).
+    /// `qty` в базовой монете; `from`/`to` — кошельки (Spot/Futures/Quarterly).
+    pub fn transfer_asset(
+        &self,
+        core: CoreId,
+        asset: String,
+        qty: f64,
+        from: WalletKind,
+        to: WalletKind,
+    ) {
+        if from == to || asset.is_empty() || !(qty > 0.0) {
+            return;
+        }
+        if let Some(s) = self.sessions.iter().find(|s| s.id == core) {
+            let _ = s.handle.cmd_tx.send(CoreCmd::TransferAsset {
+                asset,
+                qty,
+                from,
+                to,
+            });
+        }
+    }
+
+    /// Запросить свежий список transfer-активов ядра (по всем кошелькам).
+    pub fn refresh_transfer_assets(&self, core: CoreId) {
+        if let Some(s) = self.sessions.iter().find(|s| s.id == core) {
+            let _ = s.handle.cmd_tx.send(CoreCmd::RefreshTransferAssets);
+        }
+    }
+
+    /// Сконвертировать «пыль» ядра в BNB (необратимо). Per-core.
+    pub fn convert_dust(&self, core: CoreId) {
+        if let Some(s) = self.sessions.iter().find(|s| s.id == core) {
+            let _ = s.handle.cmd_tx.send(CoreCmd::ConvertDust);
         }
     }
 

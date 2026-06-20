@@ -19,7 +19,7 @@ use moon_ui::{
 use serde::{Deserialize, Serialize};
 
 use crate::Backend;
-use crate::panels::{LogPanel, OrdersPanel, ReportPanel, StubPanel};
+use crate::panels::{AssetsView, LogPanel, OrdersPanel, ReportPanel, StubPanel};
 use moon_core::config::paths;
 
 /// Одно откреплённое окно: какая панель (`panel_name`), из какой группы, геометрия окна.
@@ -108,7 +108,7 @@ pub fn build_panel(
                 cx.new(|cx| ReportPanel::new(backend.clone(), group.to_string(), window, cx)),
             ),
             "Assets" => Rc::new(cx.new(|cx| {
-                StubPanel::new("Assets", "Активы", group.to_string(), backend.clone(), cx)
+                AssetsView::restored_group(backend.clone(), group.to_string(), window, cx)
             })),
             _ => return None,
         };
@@ -270,7 +270,7 @@ pub fn spawn(
                 .into(),
             "Assets" => cx
                 .new(|cx| {
-                    StubPanel::new("Assets", "Активы", spec.group.clone(), backend.clone(), cx)
+                    AssetsView::restored_group(backend.clone(), spec.group.clone(), window, cx)
                 })
                 .into(),
             _ => cx

@@ -9,6 +9,7 @@
 //! - [`report`] — вкладка «Отчёт» (закрытые сделки из SQLite, фильтры/сортировка);
 //! - [`stub`] — заглушка Активы до подключения данных.
 
+mod assets;
 mod chart;
 mod common;
 mod detects;
@@ -20,6 +21,7 @@ mod stub;
 
 pub(crate) use common::detach_button;
 
+pub use assets::{AssetsView, open as open_assets_window};
 pub use chart::ChartPanel;
 pub use detects::DetectsPanel;
 pub use log::LogPanel;

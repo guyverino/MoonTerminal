@@ -19,7 +19,7 @@ use moon_core::session::{ConnSummary, CoreId};
 
 use crate::chart_tabs::ChartTabs;
 use crate::dock_persist::DOCK_VERSION;
-use crate::panels::{DetectsPanel, LogPanel, OrderPanel, OrdersPanel, ReportPanel, StubPanel};
+use crate::panels::{AssetsView, DetectsPanel, LogPanel, OrderPanel, OrdersPanel, ReportPanel};
 use crate::{Backend, controls, design, detached, panels, terminal_chrome};
 
 /// Оболочка одной группы (= одно ОС-окно): header + единый `DockArea` + статус.
@@ -132,7 +132,7 @@ impl Shell {
             }
             if !detached_set.contains("Assets") {
                 bottom_tabs.push(Rc::new(cx.new(|cx| {
-                    StubPanel::new("Assets", "Активы", group.clone(), backend.clone(), cx)
+                    AssetsView::restored_group(backend.clone(), group.clone(), window, cx)
                 })));
             }
             if !detached_set.contains("Log") {
@@ -297,6 +297,17 @@ impl Render for Shell {
 
         let detaches = std::mem::take(&mut self.pending_detach);
         for panel_name in detaches {
+            // «Активы» откпрепляются НЕ в per-group окно, а в ГЛОБАЛЬНОЕ singleton-окно
+            // (все ядра, с деревом переноса) — как окно «Стратегии». Панель из дока не
+            // убираем (она остаётся вкладкой group-scope). Так дабл-клик = кнопка «⧉».
+            if panel_name == "Assets" {
+                let backend = self.backend.clone();
+                let owner = window.window_handle();
+                cx.defer(move |cx| {
+                    crate::panels::open_assets_window(backend, Some(owner), cx);
+                });
+                continue;
+            }
             let group = self.group.clone();
             if detached::supports_panel(&panel_name) {
                 self.dock.update(cx, |area, cx| {

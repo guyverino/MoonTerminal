@@ -8,7 +8,10 @@
 use std::collections::{HashMap, VecDeque};
 
 use crate::applog::LogLine;
-use crate::feed::{ConnStatus, DetectRow, FeedMsg, OrderRow, StrategyRow, StrategySchemaModel};
+use crate::feed::{
+    AssetsSnapshot, ConnStatus, DetectRow, FeedMsg, OrderRow, StrategyRow, StrategySchemaModel,
+    TransferAssetsSnapshot,
+};
 use crate::session::order_lines::OrderLineStore;
 
 /// Сколько последних детектов держим в памяти на ядро.
@@ -32,13 +35,19 @@ pub struct CoreData {
     pub strategies: Vec<StrategyRow>,
     /// Схема стратегий ядра (секции/поля по видам). None пока не пришла.
     pub schema: Option<StrategySchemaModel>,
+    /// Активы/позиции ядра (последний снимок; для окна «Активы»).
+    pub assets: AssetsSnapshot,
+    /// Transfer-активы ядра по кошелькам (для дерева переноса). Пусто, пока не запрошено.
+    pub transfer_assets: TransferAssetsSnapshot,
     /// Последние строки серверного лога ядра (кольцо, обрезается до MAX_LOG).
     pub log: VecDeque<LogLine>,
-    /// Растёт при изменении ордеров / детектов / стратегий / схемы / лога.
+    /// Растёт при изменении ордеров / детектов / стратегий / схемы / лога / активов.
     pub orders_rev: u64,
     pub detects_rev: u64,
     pub strategies_rev: u64,
     pub schema_rev: u64,
+    pub assets_rev: u64,
+    pub transfer_rev: u64,
     pub log_rev: u64,
 }
 
@@ -51,11 +60,15 @@ impl CoreData {
             detects: Vec::new(),
             strategies: Vec::new(),
             schema: None,
+            assets: AssetsSnapshot::default(),
+            transfer_assets: TransferAssetsSnapshot::default(),
             log: VecDeque::new(),
             orders_rev: 0,
             detects_rev: 0,
             strategies_rev: 0,
             schema_rev: 0,
+            assets_rev: 0,
+            transfer_rev: 0,
             log_rev: 0,
         }
     }
@@ -109,6 +122,14 @@ impl CoreData {
             FeedMsg::StrategySchema(schema) => {
                 self.schema = Some(schema);
                 self.schema_rev = self.schema_rev.wrapping_add(1);
+            }
+            FeedMsg::Assets(assets) => {
+                self.assets = assets;
+                self.assets_rev = self.assets_rev.wrapping_add(1);
+            }
+            FeedMsg::TransferAssets(transfer) => {
+                self.transfer_assets = transfer;
+                self.transfer_rev = self.transfer_rev.wrapping_add(1);
             }
             FeedMsg::ServerLog(lines) => {
                 if !lines.is_empty() {

@@ -1,6 +1,7 @@
 //! Feed: граница между ядром и UI. Backend-поток (на ядро) шлёт `FeedMsg` в UI.
 //! UI никогда не вызывает moonproto напрямую. Режим один — live.
 
+mod assets;
 pub mod live;
 mod report;
 mod strategies;
@@ -89,6 +90,18 @@ pub enum CoreCmd {
     EditStrategyFields {
         edits: Vec<(u64, Vec<(String, String)>)>,
     },
+    /// Перенос актива между кошельками ОДНОГО ядра (drag&drop в дереве «Активы»).
+    /// `from`/`to` — кошельки (Spot/Futures/Quarterly); `qty` в базовой монете.
+    TransferAsset {
+        asset: String,
+        qty: f64,
+        from: WalletKind,
+        to: WalletKind,
+    },
+    /// Запросить свежий список transfer-активов ядра (по всем кошелькам).
+    RefreshTransferAssets,
+    /// Сконвертировать мелкие остатки («пыль») в BNB (необратимо). Per-core.
+    ConvertDust,
 }
 
 #[derive(Clone)]

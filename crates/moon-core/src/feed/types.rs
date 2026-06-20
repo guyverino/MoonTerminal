@@ -237,6 +237,141 @@ pub struct StrategySchemaModel {
     pub kinds: Vec<SchemaKind>,
 }
 
+/// Кошелёк биржи (для дерева переноса активов). Зеркало moonproto `ExchangeKind`
+/// (Spot=0/Futures=1/Quarterly=2), но декаплено — UI/стор не зависят от moonproto.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum WalletKind {
+    Spot,
+    Futures,
+    Quarterly,
+}
+
+impl WalletKind {
+    /// Все кошельки в порядке отображения (как ветки дерева).
+    pub const ALL: [WalletKind; 3] = [WalletKind::Spot, WalletKind::Futures, WalletKind::Quarterly];
+
+    /// Человекочитаемое имя ветки.
+    pub fn label(self) -> &'static str {
+        match self {
+            WalletKind::Spot => "Спот",
+            WalletKind::Futures => "Фьючерсы",
+            WalletKind::Quarterly => "Квартальные",
+        }
+    }
+
+    /// Стабильный код для персиста (раскрытые ветки/выбор).
+    pub fn to_u8(self) -> u8 {
+        match self {
+            WalletKind::Spot => 0,
+            WalletKind::Futures => 1,
+            WalletKind::Quarterly => 2,
+        }
+    }
+
+    pub fn from_u8(v: u8) -> Self {
+        match v {
+            1 => WalletKind::Futures,
+            2 => WalletKind::Quarterly,
+            _ => WalletKind::Spot,
+        }
+    }
+}
+
+/// Один актив/позиция ядра по рынку (для окна «Активы»). Декаплено от moonproto.
+/// USDT-нормализация стоимости и отсечение пыли делаются на стороне UI — в сторе
+/// держим полные данные.
+#[derive(Debug, Clone)]
+pub struct AssetRow {
+    /// Имя рынка ядра, напр. "ADAUSDT".
+    pub market: String,
+    /// Базовая монета (актив), напр. "ADA".
+    pub coin: String,
+    /// Котировочная валюта рынка, напр. "USDT"/"BTC".
+    pub quote: String,
+    /// ListedType рынка: 0 unknown / 1 spot / 2 futures / 3 both.
+    pub listed: u8,
+    /// Баланс актива (asset_balance), в базовой монете.
+    pub qty: f64,
+    /// Полный баланс актива (asset_balance_full), в базовой монете.
+    pub qty_full: f64,
+    /// Текущая цена рынка (p_last, в quote).
+    pub price: f64,
+    /// Текущая стоимость баланса монеты в USDT (qty * price * курс quote/USDT).
+    /// Считается на ядре через `base_currency_price`. 0 = курс неизвестен.
+    pub value_usdt: f64,
+    /// Mark-цена (для фьюч; 0 если нет).
+    pub mark_price: f64,
+    /// Размер позиции (pos_size).
+    pub pos_size: f64,
+    /// Цена позиции (pos_price).
+    pub pos_price: f64,
+    /// Цена ликвидации позиции (liq_price; 0 если нет).
+    pub liq_price: f64,
+    /// Профит позиции: b (баланс) / l (long) / s (short) — как в ядре.
+    pub profit_b: f64,
+    pub profit_l: f64,
+    pub profit_s: f64,
+}
+
+/// Account-итоги ядра (`GlobalBalance`). Декаплено от moonproto.
+#[derive(Debug, Clone, Default)]
+pub struct GlobalBalanceRow {
+    /// BTC-эквивалент: доступно / заблокировано / полный (с нереализ. PnL).
+    pub btc_total: f64,
+    pub btc_locked: f64,
+    pub btc_full: f64,
+    /// special_coin_balance (USDT для фьюч, BUSD/USDC в MA-режиме и т.п.).
+    pub special_coin: f64,
+    /// Суммарный PnL по BTC-котируемым рынкам.
+    pub total_pnl: f64,
+    /// Свободный баланс аккаунта в USDT (btc_balance_total × курс базовой валюты→USDT).
+    /// Считается на ядре с УЧЁТОМ базовой валюты (для USDT-бота `btc_balance_*` уже в USDT,
+    /// курс=1; для BTC-бота — ×BTCUSDT). 0 = курс неизвестен.
+    pub free_usdt: f64,
+    /// Итоговый баланс аккаунта в USDT (btc_balance_full × курс, с нереализ. PnL).
+    pub total_usdt: f64,
+}
+
+/// Снимок активов ядра (для окна «Активы»). Декаплено от moonproto.
+#[derive(Debug, Clone, Default)]
+pub struct AssetsSnapshot {
+    pub rows: Vec<AssetRow>,
+    pub global: GlobalBalanceRow,
+}
+
+/// Один transfer-актив кошелька (для дерева переноса). Декаплено от moonproto.
+#[derive(Debug, Clone)]
+pub struct TransferAssetRow {
+    /// Валюта/монета, напр. "USDT"/"BTC".
+    pub currency: String,
+    /// Доступно к переносу (биржа).
+    pub amount: f64,
+    /// Всего на кошельке.
+    pub total: f64,
+    /// Стоимость `total` в USDT (через рынок `<currency>USDT`). 0 = курс неизвестен.
+    pub value_usdt: f64,
+}
+
+/// Снимок transfer-активов ядра по кошелькам (Spot/Futures/Quarterly). Источник
+/// дерева переноса; обновляется по запросу (`refresh_transfer_assets`).
+#[derive(Debug, Clone, Default)]
+pub struct TransferAssetsSnapshot {
+    pub spot: Vec<TransferAssetRow>,
+    pub futures: Vec<TransferAssetRow>,
+    pub quarterly: Vec<TransferAssetRow>,
+}
+
+impl TransferAssetsSnapshot {
+    /// Активы выбранного кошелька (ветки дерева).
+    pub fn wallet(&self, kind: WalletKind) -> &[TransferAssetRow] {
+        match kind {
+            WalletKind::Spot => &self.spot,
+            WalletKind::Futures => &self.futures,
+            WalletKind::Quarterly => &self.quarterly,
+        }
+    }
+}
+
 /// Статус соединения с ядром.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConnStatus {
@@ -288,4 +423,9 @@ pub enum FeedMsg {
     Strategies(Vec<StrategyRow>),
     /// Схема стратегий ядра (секции/поля по видам). Шлётся при смене revision.
     StrategySchema(StrategySchemaModel),
+    /// Снимок активов/позиций ядра (для окна «Активы»). Шлётся ~1 Гц по событию.
+    Assets(AssetsSnapshot),
+    /// Снимок transfer-активов ядра по кошелькам (для дерева переноса). Шлётся при
+    /// смене revision (обновляется по запросу `RefreshTransferAssets`).
+    TransferAssets(TransferAssetsSnapshot),
 }

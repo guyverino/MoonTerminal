@@ -171,6 +171,8 @@ struct Backend {
     settings_window: Option<WindowHandle<Root>>,
     /// Окно «Стратегии» (отдельное ОС-окно, общее на приложение) — дедуп/фокус.
     strategies_window: Option<WindowHandle<Root>>,
+    /// Глобальное окно «Активы» (singleton, все ядра) — дедуп/фокус.
+    assets_window: Option<WindowHandle<Root>>,
     /// Откреплённые dock-панели (какая панель, из какой группы, геометрия окна) — load
     /// на старте, save при изменении. Порт egui `WindowLayout.detached`/`detached.rs`.
     detached: Vec<detached::DetachedSpec>,
@@ -440,6 +442,7 @@ fn main() -> anyhow::Result<()> {
             group_windows: HashMap::new(),
             settings_window: None,
             strategies_window: None,
+            assets_window: None,
             detached,
             detached_dirty: false,
             repin_request: Vec::new(),

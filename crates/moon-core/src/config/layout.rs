@@ -85,6 +85,9 @@ pub struct WindowLayout {
     /// Геометрия окна «Стратегии» (отдельное окно) — чтобы открывалось на прежнем месте.
     #[serde(default)]
     pub strategies_window: Option<GeomRect>,
+    /// Геометрия глобального окна «Активы» (singleton) — чтобы открывалось на прежнем месте.
+    #[serde(default)]
+    pub assets_window: Option<GeomRect>,
 }
 
 impl WindowLayout {

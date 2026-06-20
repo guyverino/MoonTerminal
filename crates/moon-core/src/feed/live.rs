@@ -14,6 +14,7 @@ use moonproto::{
     MoonEventSink, TradesStreamMode, TransportMode,
 };
 
+use super::assets::{build_assets, build_transfer_assets, to_exchange_kind};
 use super::report::{delphi_to_unix, send_close_report, OrderIndex, OrderMeta};
 use super::strategies::{
     alert_params, build_schema_model, fmt_field, fv_from_str, strat_kind_name,
@@ -129,6 +130,10 @@ pub fn run(
     let mut identity_sent = false;
     let mut last_orders = Instant::now();
     let mut last_strats = Instant::now();
+    // Активы (окно «Активы»): тот же ~1 Гц тик, что у ордеров/стратегий.
+    let mut last_assets = Instant::now();
+    // Курсор transfer-активов: шлём только при смене revision (request/response).
+    let mut last_transfer_rev: u64 = u64::MAX;
     // Курсоры выгрузки стратегий: revision схемы и сигнатура состава/checked —
     // шлём только при изменениях (поля стратегий тяжёлые, гонять каждую секунду незачем).
     let mut last_schema_rev: u64 = u64::MAX;
@@ -277,6 +282,35 @@ pub fn run(
                             log::info!("core {} edit {} strategies", server.id, edited);
                         }
                     }
+                }
+                Ok(CoreCmd::TransferAsset {
+                    asset,
+                    qty,
+                    from,
+                    to,
+                }) => {
+                    // Перенос строго в пределах ЭТОГО ядра (клиент конкретного ядра).
+                    let _ = client.balances().transfer_asset(
+                        &asset,
+                        qty,
+                        to_exchange_kind(from),
+                        to_exchange_kind(to),
+                    );
+                    // После переноса просим свежий список — UI увидит новые остатки.
+                    let _ = client.balances().refresh_transfer_assets();
+                    log::info!(
+                        "core {} transfer {qty} {asset} {from:?}->{to:?}",
+                        server.id
+                    );
+                }
+                Ok(CoreCmd::RefreshTransferAssets) => {
+                    let _ = client.balances().refresh_transfer_assets();
+                }
+                Ok(CoreCmd::ConvertDust) => {
+                    // Конверсия мелких остатков в BNB (Engine API), необратимо.
+                    let _ = client.balances().convert_dust_bnb();
+                    let _ = client.balances().refresh_transfer_assets();
+                    log::info!("core {} convert dust", server.id);
                 }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
@@ -696,6 +730,40 @@ pub fn run(
                     if tx.send(FeedMsg::Strategies(strategies)).is_err() {
                         break;
                     }
+                }
+            }
+        }
+
+        // Активы ядра (окно «Активы»): по domain event, не чаще ~1 Гц. Цены живут от
+        // рынка, поэтому снимок шлём целиком каждую секунду (UI гейтит перерисовку
+        // секундным ведром по assets_rev). Transfer-активы — лишь при смене revision.
+        if had_domain_event && last_assets.elapsed() >= Duration::from_secs(1) {
+            last_assets = Instant::now();
+            if let Some(snap) = client.snapshot() {
+                // Базовая валюта аккаунта (USDT/BTC/…) — нужна для корректного пересчёта
+                // `btc_balance_*` (исторически в базовой валюте) в USDT.
+                let base = client
+                    .server_info()
+                    .and_then(|i| i.base_currency_name)
+                    .unwrap_or_default();
+                let assets = build_assets(snap.markets(), snap.balances(), &base);
+                if tx.send(FeedMsg::Assets(assets)).is_err() {
+                    break;
+                }
+            }
+        }
+
+        // Transfer-активы: проверяем КАЖДУЮ итерацию (а не в 1 Гц/domain-event блоке) — чтобы
+        // ответ на `refresh_transfer_assets` (клик по ядру в окне «Активы») доходил до UI
+        // сразу, даже если у ядра нет потока рыночных событий.
+        if let Some(snap) = client.snapshot() {
+            let tr = snap.transfer_assets();
+            let rev = tr.revision();
+            if rev != last_transfer_rev {
+                last_transfer_rev = rev;
+                let msg = build_transfer_assets(snap.markets(), tr);
+                if tx.send(FeedMsg::TransferAssets(msg)).is_err() {
+                    break;
                 }
             }
         }
