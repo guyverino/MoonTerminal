@@ -150,28 +150,29 @@ pub(crate) fn scale_dropdown(
         .items(items)
 }
 
-/// Дропдаун масштаба, привязанный к КОНКРЕТНОЙ панели чарта (шапка выносного окна): пишет
-/// масштаб прямо в эту панель (`set_scale`), а не в глобальный backend.
-pub(crate) fn scale_dropdown_for_panel(
+/// Дропдаун масштаба для AddToChart-stack: пишет масштаб во все отдельные ChartPanel внутри
+/// stack-а. Это сохраняет Delphi-модель "один график = одна сущность", но управление масштабом
+/// остаётся единым для окна/вкладки.
+pub(crate) fn scale_dropdown_for_add_stack(
     scale: Option<f32>,
-    panel: Entity<crate::panels::ChartPanel>,
+    stack: Entity<crate::chart_tabs::AddChartStack>,
     p: MoonPalette,
 ) -> impl IntoElement {
     let selected_label = scale_label(scale);
     let mut items = Vec::with_capacity(SCALES.len());
     for (label, pct) in SCALES {
-        let panel = panel.clone();
+        let stack = stack.clone();
         items.push(
-            MoonMenuItem::with_key(format!("scale-panel-{label}"), label)
+            MoonMenuItem::with_key(format!("scale-stack-{label}"), label)
                 .selected(scale == pct)
                 .checked(scale == pct)
                 .on_click(move |_, _, cx| {
-                    panel.update(cx, |pl, pcx| pl.set_scale(pct, pcx));
+                    stack.update(cx, |st, scx| st.set_scale(pct, scx));
                 }),
         );
     }
 
-    MoonDropdown::new("detached-scale-dropdown")
+    MoonDropdown::new("detached-stack-scale-dropdown")
         .trigger_width(112.0)
         .trigger_variant(MoonButtonVariant::Neutral)
         .trigger_size(MoonButtonSize::Toolbar)

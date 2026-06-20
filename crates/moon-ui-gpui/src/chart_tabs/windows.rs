@@ -10,11 +10,10 @@ use moon_ui::{
     v_flex,
 };
 
-use super::{ChartTabs, Tab, chart_pane_label};
+use super::{AddChartStack, ChartTabs, Tab, chart_pane_label};
 use crate::Backend;
 use crate::chart_persist;
 use crate::design;
-use crate::panels::ChartPanel;
 use moon_core::session::CoreId;
 
 impl ChartTabs {
@@ -87,14 +86,14 @@ impl ChartTabs {
         &mut self,
         n: u32,
         core: Option<CoreId>,
-        panel: Entity<ChartPanel>,
+        panel: Entity<AddChartStack>,
         geom: chart_persist::WinGeom,
         restored: bool,
         owner: Option<AnyWindowHandle>,
         cx: &mut Context<Self>,
     ) {
         self.detached.push((n, core, panel.clone()));
-        panel.update(cx, |p, _| p.set_scene_visible(false));
+        panel.update(cx, |p, pcx| p.set_scene_visible(false, pcx));
         // КРИТИЧНО для мультимонитора: без display_id окно создаётся на PRIMARY, и если
         // сохранённые bounds вне primary — gpui откатывается на default_bounds() (центр + дефолт-
         // размер). Поэтому ищем монитор, СОДЕРЖАЩИЙ сохранённую точку, и передаём его display_id —
@@ -275,8 +274,8 @@ impl ChartTabs {
                 let owner = Some(owner);
                 for (n, core, geom, scale) in pending {
                     let backend = this.backend.clone();
-                    let panel = cx
-                        .new(|c| ChartPanel::new_addto(backend, n, core, epoch, theme.clone(), c));
+                    let panel =
+                        cx.new(|_| AddChartStack::new(backend, n, core, epoch, theme.clone()));
                     if scale.is_some() {
                         panel.update(cx, |p, pcx| p.set_scale(scale, pcx));
                     }
@@ -292,7 +291,7 @@ impl ChartTabs {
 /// Сам пишет геометрию окна в charts.json (`observe_window_bounds`) и просит репин по закрытию
 /// (`on_release` → `chart_repin_request`, дренит ChartTabs).
 struct DetachedChartHost {
-    panel: Entity<ChartPanel>,
+    panel: Entity<AddChartStack>,
     backend: Entity<Backend>,
     group: String,
     num: u32,
@@ -310,7 +309,7 @@ struct DetachedChartHost {
 
 impl DetachedChartHost {
     fn new(
-        panel: Entity<ChartPanel>,
+        panel: Entity<AddChartStack>,
         backend: Entity<Backend>,
         group: String,
         num: u32,
@@ -431,7 +430,7 @@ impl Render for DetachedChartHost {
                             .min_w_0()
                             .items_center(),
                     )
-                    .child(crate::controls::scale_dropdown_for_panel(
+                    .child(crate::controls::scale_dropdown_for_add_stack(
                         scale,
                         panel.clone(),
                         p,

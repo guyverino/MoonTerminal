@@ -12,6 +12,7 @@ mod windows;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use gpui::prelude::FluentBuilder;
 use gpui::*;
 use moon_ui::{
     MoonBackgroundPolicy, MoonRect, MoonTabItem, MoonTabStrip, Panel, PanelEvent, PanelState,
@@ -44,11 +45,11 @@ pub struct ChartTabs {
     theme: ChartTheme,
     /// Main-чарт (вкладка Main).
     main: Entity<ChartPanel>,
-    /// AddToChart-вкладки (номер, ядро, панель), отсортированы по (номер, ядро).
-    add: Vec<(u32, Option<CoreId>, Entity<ChartPanel>)>,
+    /// AddToChart-вкладки (номер, ядро, стек графиков), отсортированы по (номер, ядро).
+    add: Vec<(u32, Option<CoreId>, Entity<AddChartStack>)>,
     /// Откреплённые в своё ОС-окно вкладки — держим Entity, чтобы при закрытии окна
     /// вернуть панель в стрип (repin) и чтобы новые детекты этого номера шли в неё.
-    detached: Vec<(u32, Option<CoreId>, Entity<ChartPanel>)>,
+    detached: Vec<(u32, Option<CoreId>, Entity<AddChartStack>)>,
     /// Активная вкладка.
     active: Tab,
     /// Сколько монет на вкладке (num, core) пользователь уже «видел» (был на ней активен).
@@ -67,6 +68,217 @@ pub struct ChartTabs {
     /// открываем окна на ПЕРВОМ render (не в конструкторе окна группы — нельзя вложенно).
     restore_pending: Vec<(u32, Option<CoreId>, chart_persist::WinGeom, Option<f32>)>,
     focus: FocusHandle,
+}
+
+struct AddChartEntry {
+    core: CoreId,
+    market: String,
+    panel: Entity<ChartPanel>,
+}
+
+/// AddToChart-вкладка: визуально это один список графиков, но архитектурно каждый график —
+/// отдельный `ChartPanel`/`gpu_canvas`/dirty entity. Не возвращаемся к ебанине
+/// `ChartPanel -> Container.panes`, где mousemove одного графика перерисовывал overlay всех.
+pub(crate) struct AddChartStack {
+    backend: Entity<Backend>,
+    num: u32,
+    core: Option<CoreId>,
+    epoch: f64,
+    theme: ChartTheme,
+    charts: Vec<AddChartEntry>,
+    scale: Option<f32>,
+    fullscreen: Option<(CoreId, String)>,
+}
+
+impl AddChartStack {
+    fn new(
+        backend: Entity<Backend>,
+        num: u32,
+        core: Option<CoreId>,
+        epoch: f64,
+        theme: ChartTheme,
+    ) -> Self {
+        Self {
+            backend,
+            num,
+            core,
+            epoch,
+            theme,
+            charts: Vec::new(),
+            scale: None,
+            fullscreen: None,
+        }
+    }
+
+    fn add_coin(&mut self, core: CoreId, market: &str, ttl_ms: f64, cx: &mut Context<Self>) {
+        if let Some(entry) = self
+            .charts
+            .iter()
+            .find(|entry| entry.core == core && entry.market == market)
+        {
+            entry
+                .panel
+                .update(cx, |panel, pcx| panel.add_coin(core, market, ttl_ms, pcx));
+            return;
+        }
+
+        let backend = self.backend.clone();
+        let num = self.num;
+        let tab_core = self.core;
+        let epoch = self.epoch;
+        let theme = self.theme.clone();
+        let scale = self.scale;
+        let panel = cx.new(|cx| ChartPanel::new_addto(backend, num, tab_core, epoch, theme, cx));
+        if scale.is_some() {
+            panel.update(cx, |panel, pcx| panel.set_scale(scale, pcx));
+        }
+        panel.update(cx, |panel, pcx| panel.add_coin(core, market, ttl_ms, pcx));
+        self.charts.push(AddChartEntry {
+            core,
+            market: market.to_string(),
+            panel,
+        });
+        cx.notify();
+    }
+
+    fn prune_empty(&mut self, cx: &App) {
+        self.charts
+            .retain(|entry| entry.panel.read(cx).pane_count() > 0);
+    }
+
+    pub(crate) fn pane_count(&self, cx: &App) -> usize {
+        self.charts
+            .iter()
+            .filter(|entry| entry.panel.read(cx).pane_count() > 0)
+            .count()
+    }
+
+    pub(crate) fn scale(&self) -> Option<f32> {
+        self.scale
+    }
+
+    pub(crate) fn set_scale(&mut self, pct: Option<f32>, cx: &mut Context<Self>) {
+        if self.scale == pct {
+            return;
+        }
+        self.scale = pct;
+        for entry in &self.charts {
+            entry
+                .panel
+                .update(cx, |panel, pcx| panel.set_scale(pct, pcx));
+        }
+        cx.notify();
+    }
+
+    fn set_scene_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
+        for entry in &self.charts {
+            entry
+                .panel
+                .update(cx, |panel, _| panel.set_scene_visible(visible));
+        }
+    }
+
+    pub(crate) fn close_all_panes(&mut self, cx: &mut Context<Self>) {
+        for entry in &self.charts {
+            entry
+                .panel
+                .update(cx, |panel, pcx| panel.close_all_panes(pcx));
+        }
+        self.charts.clear();
+        self.fullscreen = None;
+        cx.notify();
+    }
+
+    fn toggle_fullscreen(&mut self, core: CoreId, market: String, cx: &mut Context<Self>) {
+        if self.fullscreen.as_ref() == Some(&(core, market.clone())) {
+            self.fullscreen = None;
+        } else {
+            self.fullscreen = Some((core, market));
+        }
+        cx.notify();
+    }
+}
+
+impl Render for AddChartStack {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.prune_empty(cx);
+        let palette = moon_ui::MoonPalette::active(cx);
+        if self.charts.is_empty() {
+            return div()
+                .size_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(crate::design::logo_glow_sized(220.0))
+                .into_any_element();
+        }
+
+        let fullscreen = self.fullscreen.clone().filter(|(core, market)| {
+            self.charts
+                .iter()
+                .any(|entry| entry.core == *core && entry.market == *market)
+        });
+        if self.fullscreen != fullscreen {
+            self.fullscreen = fullscreen.clone();
+        }
+
+        if let Some((core, market)) = fullscreen {
+            let Some(entry) = self
+                .charts
+                .iter()
+                .find(|entry| entry.core == core && entry.market == market)
+            else {
+                return div().size_full().into_any_element();
+            };
+            let core = entry.core;
+            let market = entry.market.clone();
+            return div()
+                .id(format!(
+                    "add-chart-stack-fullscreen-{}-{}-{}",
+                    self.num, core, market
+                ))
+                .size_full()
+                .relative()
+                .overflow_hidden()
+                .child(entry.panel.clone())
+                .on_click(cx.listener(move |this, _event, _window, cx| {
+                    this.toggle_fullscreen(core, market.clone(), cx);
+                }))
+                .into_any_element();
+        }
+
+        div()
+            .id(format!("add-chart-stack-scroll-{}", self.num))
+            .size_full()
+            .overflow_y_scroll()
+            .child(
+                v_flex()
+                    .w_full()
+                    .children(self.charts.iter().enumerate().map(|(ix, entry)| {
+                        let core = entry.core;
+                        let market = entry.market.clone();
+                        div()
+                            .id(format!(
+                                "add-chart-stack-{}-{}-{}",
+                                self.num, entry.core, entry.market
+                            ))
+                            .h(px(360.0))
+                            .min_h(px(280.0))
+                            .w_full()
+                            .flex_none()
+                            .relative()
+                            .overflow_hidden()
+                            .when(ix > 0, |this| {
+                                this.border_t_1().border_color(rgb(palette.border))
+                            })
+                            .child(entry.panel.clone())
+                            .on_click(cx.listener(move |this, _event, _window, cx| {
+                                this.toggle_fullscreen(core, market.clone(), cx);
+                            }))
+                    })),
+            )
+            .into_any_element()
+    }
 }
 
 impl ChartTabs {
@@ -292,8 +504,8 @@ impl ChartTabs {
                 }
                 tab.update(cx, |p, pcx| p.add_coin(core, &market, ttl, pcx));
             } else {
-                let panel = cx.new(|cx| {
-                    ChartPanel::new_addto(backend.clone(), n, key_core, epoch, theme.clone(), cx)
+                let panel = cx.new(|_| {
+                    AddChartStack::new(backend.clone(), n, key_core, epoch, theme.clone())
                 });
                 // Восстановить сохранённый масштаб этой вкладки (charts.json), если был.
                 let saved_scale = self
@@ -319,16 +531,42 @@ impl ChartTabs {
         }
     }
 
-    /// Активная панель (Main или AddToChart) для показа.
-    fn active_panel(&self) -> Entity<ChartPanel> {
+    fn add_stack(&self, n: u32, core: Option<CoreId>) -> Option<Entity<AddChartStack>> {
+        self.add
+            .iter()
+            .find(|(num, c, _)| *num == n && *c == core)
+            .map(|(_, _, p)| p.clone())
+    }
+
+    /// Активная панель (Main или AddToChart stack) для показа.
+    fn active_element(&self) -> AnyElement {
         match self.active {
-            Tab::Main => self.main.clone(),
+            Tab::Main => self.main.clone().into_any_element(),
             Tab::Add(n, core) => self
-                .add
-                .iter()
-                .find(|(num, c, _)| *num == n && *c == core)
-                .map(|(_, _, p)| p.clone())
-                .unwrap_or_else(|| self.main.clone()),
+                .add_stack(n, core)
+                .map(|p| p.into_any_element())
+                .unwrap_or_else(|| self.main.clone().into_any_element()),
+        }
+    }
+
+    fn active_scale(&self, cx: &App) -> Option<f32> {
+        match self.active {
+            Tab::Main => self.main.read(cx).scale(),
+            Tab::Add(n, core) => self
+                .add_stack(n, core)
+                .map(|p| p.read(cx).scale())
+                .unwrap_or_else(|| self.main.read(cx).scale()),
+        }
+    }
+
+    fn set_active_scale(&self, pct: Option<f32>, cx: &mut Context<Self>) {
+        match self.active {
+            Tab::Main => self.main.update(cx, |p, pcx| p.set_scale(pct, pcx)),
+            Tab::Add(n, core) => {
+                if let Some(stack) = self.add_stack(n, core) {
+                    stack.update(cx, |p, pcx| p.set_scale(pct, pcx));
+                }
+            }
         }
     }
 
@@ -347,7 +585,7 @@ impl ChartTabs {
         }
         for (n, c, panel) in &self.add {
             if Tab::Add(*n, *c) != active {
-                panel.update(cx, |panel, _| panel.set_scene_visible(false));
+                panel.update(cx, |panel, pcx| panel.set_scene_visible(false, pcx));
             }
         }
     }
@@ -427,7 +665,7 @@ impl Render for ChartTabs {
         if let Tab::Add(n, c) = self.active {
             if let Some((_, _, panel)) = self.add.iter().find(|(num, cc, _)| *num == n && *cc == c)
             {
-                let cnt = panel.read(cx).pane_count();
+                let cnt = panel.read(cx).pane_count(cx);
                 self.seen.insert((n, c), cnt);
             }
         }
@@ -439,12 +677,11 @@ impl Render for ChartTabs {
                 let b = self.backend.read(cx);
                 (b.price_scale_rev, b.price_scale)
             };
-            let active = self.active_panel();
             if rev != self.last_scale_rev {
                 self.last_scale_rev = rev;
-                active.update(cx, |p, pcx| p.set_scale(want, pcx));
+                self.set_active_scale(want, cx);
             } else {
-                let cur = active.read(cx).scale();
+                let cur = self.active_scale(cx);
                 self.backend.update(cx, |b, _| {
                     if b.price_scale != cur {
                         b.price_scale = cur;
@@ -460,7 +697,7 @@ impl Render for ChartTabs {
         let mut tabs: Vec<(Tab, String, usize, usize, bool)> =
             vec![(Tab::Main, "Main".to_string(), 0, 0, false)];
         tabs.extend(self.add.iter().map(|(n, core, panel)| {
-            let count = panel.read(cx).pane_count();
+            let count = panel.read(cx).pane_count(cx);
             let seen = self.seen.get(&(*n, *core)).copied().unwrap_or(0);
             (
                 Tab::Add(*n, *core),
@@ -592,7 +829,13 @@ impl Render for ChartTabs {
                     .child(strip)
                     .children(gather_btn),
             )
-            .child(div().flex_1().w_full().child(self.active_panel()))
+            .child(
+                div()
+                    .flex_1()
+                    .w_full()
+                    .min_h(px(0.0))
+                    .child(self.active_element()),
+            )
     }
 }
 
