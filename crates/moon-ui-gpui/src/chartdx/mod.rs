@@ -17,6 +17,7 @@ mod base;
 mod data_state;
 mod engine;
 mod render_state;
+mod text;
 #[cfg(windows)]
 pub mod combo;
 #[cfg(windows)]
@@ -48,7 +49,8 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use gpui::{
-    GpuBackend, GpuCanvasDriver, GpuCanvasHandle, GpuFrameDecision, GpuFrameInfo, RawGpuAccess,
+    GpuBackend, GpuCanvasDriver, GpuCanvasHandle, GpuCanvasTextContext, GpuCanvasTextRun,
+    GpuFrameDecision, GpuFrameInfo, RawGpuAccess,
 };
 use moon_chart::axes::AxisSnapshot;
 use moon_chart::paint::now_unix_ms;
@@ -62,7 +64,6 @@ use windows::Win32::Graphics::Direct3D11::{
     ID3D11Device, ID3D11DeviceContext, ID3D11RasterizerState, ID3D11RenderTargetView,
 };
 
-use crate::axes::CrossStyle;
 use backend::PlatformLayers;
 use pane::{Container, ContainerKind, Mode};
 use types::{
@@ -150,6 +151,7 @@ struct PaneRender {
     combo_cross_capacity: usize,
     combo_price_line_capacity: usize,
     orderbook_view: ChartViewGpu,
+    pane_bounds: [f32; 4],
     book_style: BookStyle,
     resident_left_rel: f32,
     /// Последнее виденное поколение device combo: сменилось (device-lost) → перезалить историю.
@@ -201,6 +203,7 @@ impl PaneRender {
             combo_cross_capacity: 0,
             combo_price_line_capacity: 0,
             orderbook_view: ChartViewGpu::default(),
+            pane_bounds: [0.0, 0.0, 1.0, 1.0],
             book_style: BookStyle::default(),
             resident_left_rel: f32::NAN,
             last_device_gen: 0,
@@ -263,6 +266,9 @@ struct RenderState {
     camera_shift_count: u32,
     camera_shift_hz: f32,
     last_gpu_prepare_generation: u64,
+    text_runs: Vec<GpuCanvasTextRun>,
+    text_run_cursor: usize,
+    ui_palette: moon_ui::MoonPalette,
     /// Левый верхний угол chart slot в backbuffer. Cursor приходит из UI в локальных
     /// device-px слота, а own-pass рисует в координатах окна.
     slot_origin: [f32; 2],
@@ -375,6 +381,25 @@ impl GpuCanvasDriver for ChartCanvasDriver {
         }
     }
 
+    fn prepare_text(&mut self, ctx: &mut GpuCanvasTextContext<'_>) -> anyhow::Result<()> {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.state.borrow_mut().prepare_text(ctx)
+        }));
+        match result {
+            Ok(result) => result,
+            Err(e) => {
+                let msg = e
+                    .downcast_ref::<&str>()
+                    .copied()
+                    .or_else(|| e.downcast_ref::<String>().map(|s| s.as_str()))
+                    .unwrap_or("<non-string panic>");
+                log::error!("chart gpu_canvas text PANIC (text skipped): {msg}");
+                moon_core::detect_diag::line(&format!("[gpu_canvas] text PANIC: {msg}"));
+                Ok(())
+            }
+        }
+    }
+
     fn draw(&mut self, ctx: &mut gpui::GpuCanvasDrawContext<'_>) -> anyhow::Result<()> {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.state.borrow_mut().draw_gpu(&ctx.gpu)
@@ -413,4 +438,3 @@ pub struct ChartEngine {
     /// поэтому координаты слоёв = origin слота + локальные, а cv_resolution = размер backbuffer.
     origin: (f32, f32),
 }
-

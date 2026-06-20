@@ -24,7 +24,8 @@ use moonproto::MoonClient;
 use crate::config::AppConfig;
 use crate::db::ReportTx;
 use crate::feed::{
-    self, ConnStatus, CoreCmd, ExchangeId, FeedHandle, FeedMsg, FeedWakeTx, WalletKind,
+    self, ConnStatus, CoreCmd, ExchangeId, FeedHandle, FeedMsg, FeedWakeTx, NewStrategySpec,
+    WalletKind,
 };
 use crate::market::{MarketDataMode, MarketDataSource, MarketStore, MarketView, SharedMarketStore};
 
@@ -443,6 +444,47 @@ impl SessionManager {
         }
         if let Some(s) = self.sessions.iter().find(|s| s.id == core) {
             let _ = s.handle.cmd_tx.send(CoreCmd::EditStrategyFields { edits });
+        }
+    }
+
+    /// Удалить ОДНУ стратегию ядра по `id` (необратимо). Правило «только выключенные»
+    /// проверяется в UI до вызова.
+    pub fn delete_strategy(&self, core: CoreId, id: u64) {
+        if let Some(s) = self.sessions.iter().find(|s| s.id == core) {
+            let _ = s.handle.cmd_tx.send(CoreCmd::DeleteStrategy { id });
+        }
+    }
+
+    /// Удалить ПАПКУ ядра целиком по пути (необратимо). Стратегии под папкой должны быть
+    /// удалены/перенесены заранее (UI это гарантирует).
+    pub fn delete_folder(&self, core: CoreId, path: String) {
+        if path.is_empty() {
+            return;
+        }
+        if let Some(s) = self.sessions.iter().find(|s| s.id == core) {
+            let _ = s.handle.cmd_tx.send(CoreCmd::DeleteFolder { path });
+        }
+    }
+
+    /// Создать новые стратегии ядра (создание / вставка из буфера). feed добавит их к
+    /// полному набору с новыми id и одним sync. Один набор на ядро (вызывать по разу на ядро).
+    pub fn create_strategies(&self, core: CoreId, specs: Vec<NewStrategySpec>) {
+        if specs.is_empty() {
+            return;
+        }
+        if let Some(s) = self.sessions.iter().find(|s| s.id == core) {
+            let _ = s.handle.cmd_tx.send(CoreCmd::CreateStrategies { specs });
+        }
+    }
+
+    /// Сменить папку существующих стратегий ядра (переименование папки / перенос).
+    /// `moves` — `(strategy_id, новый folder_path)`. Один набор на ядро.
+    pub fn move_strategies(&self, core: CoreId, moves: Vec<(u64, String)>) {
+        if moves.is_empty() {
+            return;
+        }
+        if let Some(s) = self.sessions.iter().find(|s| s.id == core) {
+            let _ = s.handle.cmd_tx.send(CoreCmd::MoveStrategies { moves });
         }
     }
 

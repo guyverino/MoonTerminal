@@ -88,6 +88,7 @@ pub fn merge(sf: ServersFile, meta: SettingsFile) -> Merged {
                     .unwrap_or_else(servers::default_market),
                 color: m.map(|m| m.color).unwrap_or_else(servers::default_color),
                 synthetic: false,
+                chart_bundle: m.map(|m| m.chart_bundle.clone()).unwrap_or_default(),
             }
         })
         .collect();
@@ -153,6 +154,7 @@ pub fn split(
                 group: s.group.clone(),
                 market: s.market.clone(),
                 color: s.color,
+                chart_bundle: s.chart_bundle.clone(),
             })
             .collect(),
     };

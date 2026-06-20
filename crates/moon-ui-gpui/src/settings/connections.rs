@@ -25,6 +25,8 @@ pub(super) struct ConnRow {
     name: Entity<MoonInputState>,
     key: Entity<MoonInputState>,
     group: Entity<MoonInputState>,
+    /// Имя чарт-связки AddToChart (пусто = по глоб. настройке). См. `ServerConfig::chart_bundle`.
+    bundle: Entity<MoonInputState>,
     color: Entity<MoonColorPickerState>,
 }
 
@@ -147,6 +149,14 @@ pub(super) fn build_conn(
                 |s| s.group.clone(),
                 |s, v| s.group = v,
             ),
+            bundle: conn_input(
+                window,
+                cx,
+                i,
+                s.chart_bundle.clone(),
+                |s| s.chart_bundle.clone(),
+                |s, v| s.chart_bundle = v,
+            ),
             color: conn_color(window, cx, i, s.color),
         })
         .collect()
@@ -237,8 +247,8 @@ impl SettingsView {
         checkbox
     }
 
-    /// Добавить сервер в draft (id = max+1) и пересобрать editor-стейты.
-    fn add_server(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Добавить сервер в draft (id = max+1) в указанную группу и пересобрать editor-стейты.
+    fn add_server(&mut self, group: String, window: &mut Window, cx: &mut Context<Self>) {
         let default_color = design::u32_to_rgb(MoonPalette::active(cx).amber);
         self.backend.update(cx, |b, bcx| {
             if let Some(p) = b.preview.as_mut() {
@@ -251,10 +261,11 @@ impl SettingsView {
                     show_window: true,
                     feed: FeedFlags::default(),
                     key: Secret::new(""),
-                    group: "default".into(),
+                    group,
                     market: "BTCUSDT".into(),
                     color: default_color,
                     synthetic: false,
+                    chart_bundle: String::new(),
                 });
                 bcx.notify();
             }
@@ -367,7 +378,7 @@ impl SettingsView {
             .gap_1()
             .items_center()
             .py_0p5()
-            .child(div().w(px(28.0)).child(self.srv_check(
+            .child(Self::cell(28.0, false).child(self.srv_check(
                 cx,
                 i,
                 "act",
@@ -375,7 +386,7 @@ impl SettingsView {
                 |s| s.active,
                 |s, v| s.active = v,
             )))
-            .child(div().w(px(34.0)).child(self.srv_check(
+            .child(Self::cell(34.0, false).child(self.srv_check(
                 cx,
                 i,
                 "win",
@@ -384,14 +395,14 @@ impl SettingsView {
                 |s, v| s.show_window = v,
             )))
             .child(
-                div().w(px(150.0)).child(
+                Self::cell(150.0, true).child(
                     MoonInput::new(SharedString::from(format!("name-{i}")))
                         .state(&row.name)
                         .small(),
                 ),
             )
             .child(
-                div().w(px(200.0)).child(
+                Self::cell(200.0, true).child(
                     MoonInput::new(SharedString::from(format!("key-{i}")))
                         .state(&row.key)
                         .small()
@@ -399,59 +410,113 @@ impl SettingsView {
                 ),
             )
             .child(
-                div().w(px(110.0)).child(
+                Self::cell(110.0, false).child(
                     MoonInput::new(SharedString::from(format!("group-{i}")))
                         .state(&row.group)
                         .small(),
                 ),
             )
-            .child(self.feed_popover(cx, i))
-            .child(MoonColorPicker::new(&row.color))
             .child(
-                MoonButton::new(SharedString::from(format!("del-{i}")))
-                    .danger()
-                    .size(MoonButtonSize::Micro)
-                    .width(24.0)
-                    .label("x")
-                    .on_click(cx.listener(move |this, _, w, cx| this.delete_server(i, w, cx)))
-                    .render(),
+                Self::cell(96.0, false).child(
+                    MoonInput::new(SharedString::from(format!("bundle-{i}")))
+                        .state(&row.bundle)
+                        .small(),
+                ),
             )
-            .child(recon)
-            .child(status_dot(
+            .child(Self::cell(52.0, false).child(self.feed_popover(cx, i)))
+            .child(Self::cell(110.0, false).child(MoonColorPicker::new(&row.color)))
+            .child(
+                Self::cell(24.0, false).child(
+                    MoonButton::new(SharedString::from(format!("del-{i}")))
+                        .danger()
+                        .size(MoonButtonSize::Micro)
+                        .width(24.0)
+                        .label("x")
+                        .on_click(cx.listener(move |this, _, w, cx| this.delete_server(i, w, cx)))
+                        .render(),
+                ),
+            )
+            .child(Self::cell(24.0, false).child(recon))
+            .child(Self::cell(16.0, false).child(status_dot(
                 i,
                 active,
                 status.as_ref(),
                 MoonPalette::active(cx),
-            ))
+            )))
     }
 
-    /// Заголовок колонки таблицы серверов (тусклая подпись фикс. ширины).
-    fn col_head(label: &str, w: f32, p: MoonPalette) -> impl IntoElement {
-        div()
-            .w(px(w))
-            .text_xs()
-            .text_color(rgb(p.text_soft))
-            .child(label.to_string())
+    /// Ячейка-колонка таблицы ядер: ОДИН flex-спек, общий для шапки и строк (ключ к тому,
+    /// чтобы колонки не съезжали — обе раскладки тянутся/жмутся одинаково). `grow=true` —
+    /// растягивается под ширину (flex-grow, shrink по умолчанию); `grow=false` — фикс. ширина
+    /// (`flex-grow:0`+`flex-shrink:0`). `basis` = базовая ширина колонки.
+    fn cell(basis: f32, grow: bool) -> Div {
+        let d = div().flex_basis(px(basis));
+        if grow {
+            d.flex_grow_1()
+        } else {
+            d.flex_grow_0().flex_shrink_0()
+        }
     }
 
-    /// Заголовок колонки с тултипом (порт egui `head_tip`): для сокращённых подписей
-    /// галок «Акт»/«Окн» и кнопки «Данные».
+    /// Заголовок колонки (тусклая подпись). `pad` — левый отступ ТЕКСТА (через внутренний
+    /// margin) под внутренний отступ инпута (`px_2`≈8px у MoonInput), чтобы подпись стояла
+    /// над текстом поля; margin внутреннего блока НЕ меняет ширину колонки. `grow` — как в `cell`.
+    fn col_head(label: &str, basis: f32, grow: bool, pad: f32, p: MoonPalette) -> impl IntoElement {
+        Self::cell(basis, grow).child(
+            div()
+                .ml(px(pad))
+                .text_xs()
+                .text_color(rgb(p.text_soft))
+                .child(label.to_string()),
+        )
+    }
+
+    /// Заголовок колонки с тултипом (порт egui `head_tip`). Подпись помечена подчёркиванием
+    /// + чуть ярче цветом — сигнал «наведи, есть подсказка». `pad`/`grow` — как в `col_head`.
+    /// Тултип — штатный `MoonTooltipView` движка (перенос длинного текста — баг движка,
+    /// см. docs-internal/FORK_BUGS.md; чинится в MoonUI, не в терминале).
     fn col_head_tip(
         id: &'static str,
         label: &str,
-        w: f32,
+        basis: f32,
+        grow: bool,
+        pad: f32,
+        tip: &'static str,
+        p: MoonPalette,
+    ) -> impl IntoElement {
+        Self::cell(basis, grow)
+            .id(id)
+            .child(
+                div()
+                    .ml(px(pad))
+                    .text_xs()
+                    .text_color(rgb(p.text))
+                    .underline()
+                    .text_decoration_color(rgb(p.text_soft))
+                    .child(label.to_string()),
+            )
+            .tooltip(move |_window, cx| {
+                cx.new(|_| MoonTooltipView::new(tip).max_width(320.0)).into()
+            })
+    }
+
+    /// Подпись-«есть подсказка» произвольной ширины (не колонка): подчёркивание + переносящий
+    /// тултип. Для заголовков секций/групп, где надо пояснить смысл при наведении.
+    fn hint_label(
+        id: &'static str,
+        label: impl Into<SharedString>,
         tip: &'static str,
         p: MoonPalette,
     ) -> impl IntoElement {
         div()
             .id(id)
-            .w(px(w))
-            .text_xs()
-            .text_color(rgb(p.text_soft))
-            .child(label.to_string())
+            .font_bold()
+            .text_color(rgb(p.text))
+            .underline()
+            .text_decoration_color(rgb(p.text_soft))
+            .child(label.into())
             .tooltip(move |_window, cx| {
-                cx.new(|_| MoonTooltipView::new(tip).max_width(360.0))
-                    .into()
+                cx.new(|_| MoonTooltipView::new(tip).max_width(360.0)).into()
             })
     }
 
@@ -476,14 +541,14 @@ impl SettingsView {
                 }
             }
         });
-        // Снимки серверов (id, active) и групп (name, active, icon).
-        let (servers, groups) = {
+        // Снимки серверов (id, active, группа) и групп (name, active, icon).
+        let (servers, mut groups) = {
             let b = self.backend.read(cx);
             let d = b.preview.as_ref().unwrap_or(&b.config);
             (
                 d.servers
                     .iter()
-                    .map(|s| (s.id, s.active))
+                    .map(|s| (s.id, s.active, s.group.clone()))
                     .collect::<Vec<_>>(),
                 d.groups
                     .iter()
@@ -491,6 +556,8 @@ impl SettingsView {
                     .collect::<Vec<_>>(),
             )
         };
+        // Стабильный порядок групп — по имени (заголовки-ветки в списке ядер).
+        groups.sort_by(|a, b| a.0.cmp(&b.0));
         // Предзагрузить иконки (групп + весь набор, если открыт пикер) — texture() берёт
         // &mut self.icons, поэтому грузим ДО построения UI, потом читаем из карты.
         let picking = self.picking.clone();
@@ -511,58 +578,55 @@ impl SettingsView {
                 .or_insert_with(|| self.icons.texture(*id));
         }
 
-        // ── Левая колонка: таблица серверов ──────────────────────────────────
-        let mut servers_col = v_flex()
-            .flex_1()
+        // ── Единый список-«дерево»: заголовок-ветка группы + ядра-листья под ней ──
+        // (Не настоящий tree: ветки/листья задаём отступом, без раскрытия.) Колонки
+        // ядер выровнены под заголовком группы: шапка колонок с тем же левым отступом.
+        let col_head_row = h_flex()
+            .w_full()
+            .gap_1()
+            .items_center()
+            .pl(px(20.0))
+            .child(Self::col_head_tip("h-act", "Акт", 28.0, false, 0.0, "Подключаться к ядру", p))
+            .child(Self::col_head_tip("h-win", "Окн", 34.0, false, 0.0, "Рисовать окно/чарт. Выкл = headless: данные в БД/память без окна", p))
+            .child(Self::col_head("Имя", 150.0, true, 8.0, p))
+            .child(Self::col_head("Ключ", 200.0, true, 8.0, p))
+            .child(Self::col_head_tip("h-group", "Группа", 110.0, false, 8.0, "Группа = ОТДЕЛЬНОЕ главное окно. Все ядра с одинаковым именем группы живут в одном окне; новое имя группы → новое главное окно.", p))
+            .child(Self::col_head_tip("h-bundle", "Чарты", 96.0, false, 8.0, "Имя чарт-связки: детекты AddToChart с НЕСКОЛЬКИХ ядер одной группы с одинаковым именем сводятся в ОДИН чарт (одну вкладку, имя — в её заголовке). Пусто = по глобальной настройке (своя вкладка на ядро / все в одной).", p))
+            .child(Self::col_head_tip("h-data", "Данные", 52.0, false, 0.0, "Приём данных от ядра. Серая = принимаем всё; цветная = часть категорий выключена. Клик — настроить.", p))
+            // Хвостовые плейсхолдеры под колонки строки (цвет/удалить/реконнект/статус) —
+            // ОБЯЗАТЕЛЬНЫ: без них растяжимые колонки шапки получили бы лишнее место и съехали.
+            .child(Self::cell(110.0, false))
+            .child(Self::cell(24.0, false))
+            .child(Self::cell(24.0, false))
+            .child(Self::cell(16.0, false));
+
+        let mut list_col = v_flex()
+            .w_full()
             .min_w_0()
             .gap_1()
-            .child(div().font_bold().child("Ядра (серверы)"))
-            .child(
-                h_flex()
-                    .w_full()
-                    .gap_1()
-                    .items_center()
-                    .child(Self::col_head_tip("h-act", "Акт", 28.0, "Подключаться к ядру", p))
-                    .child(Self::col_head_tip("h-win", "Окн", 34.0, "Рисовать окно/чарт. Выкл = headless: данные в БД/память без окна", p))
-                    .child(Self::col_head("Имя", 150.0, p))
-                    .child(Self::col_head("Ключ", 200.0, p))
-                    .child(Self::col_head("Группа", 110.0, p))
-                    .child(Self::col_head_tip("h-data", "Данные", 52.0, "Приём данных от ядра. Серая = принимаем всё; цветная = часть категорий выключена. Клик — настроить.", p)),
-            );
-        for (i, (id, active)) in servers.iter().enumerate() {
-            if let Some(row) = self.conn.get(i) {
-                let st = status.get(id).cloned();
-                servers_col = servers_col.child(self.server_row(cx, i, row, *id, *active, st));
-            }
-        }
-        servers_col = servers_col.child(
-            MoonButton::new("add-srv")
-                .outline()
-                .small()
-                .width(130.0)
-                .label("+ Добавить ядро")
-                .on_click(cx.listener(|this, _, w, cx| this.add_server(w, cx)))
-                .render(),
-        );
+            .child(Self::hint_label(
+                "h-section",
+                "Ядра по группам",
+                "Группа = отдельное главное окно (ядра группы в одном окне). Колонка «Чарты» сводит детекты с нескольких ядер группы в один график.",
+                p,
+            ))
+            .child(col_head_row);
 
-        // ── Правая колонка: группы ───────────────────────────────────────────
-        let mut groups_col = v_flex()
-            .w(px(240.0))
-            .gap_1()
-            .child(div().font_bold().child("Группы"));
-        // Нет групп (ни у одного сервера не задана) → поясняющий хинт (порт egui
-        // `conn.no_groups`), как и в оригинале вместо пустого списка.
+        // Нет групп (ни у одного ядра не задана) → поясняющий хинт.
         if groups.is_empty() {
-            groups_col = groups_col.child(
+            list_col = list_col.child(
                 div()
                     .text_color(rgb(p.text_soft))
-                    .child("задай группы серверам слева"),
+                    .child("добавь ядро ниже и впиши ему «Группу» — появится ветка группы"),
             );
         }
+
         for (name, active, icon) in &groups {
             let nm_act = name.clone();
             let nm_eye = name.clone();
             let nm_pick = name.clone();
+            let nm_add = name.clone();
+            let member_count = servers.iter().filter(|(_, _, g)| g == name).count();
             let ico_el: AnyElement = match icon_tex.get(icon).and_then(|t| t.clone()) {
                 Some(arc) => img(arc)
                     .w(design::ui_px(cx, 20.0))
@@ -573,11 +637,16 @@ impl SettingsView {
                     .h(design::ui_px(cx, 20.0))
                     .into_any_element(),
             };
-            groups_col = groups_col.child(
+            // ── Заголовок-ветка группы: галка active · иконка · имя · кол-во · win · Иконка · +ядро ──
+            list_col = list_col.child(
                 h_flex()
                     .w_full()
                     .gap_1()
                     .items_center()
+                    .px_1()
+                    .py_0p5()
+                    .rounded(px(4.0))
+                    .bg(rgb(p.panel_high))
                     .child(
                         MoonCheckbox::new(SharedString::from(format!("grp-{name}")))
                             .checked(*active)
@@ -605,6 +674,12 @@ impl SettingsView {
                             .truncate()
                             .font_bold()
                             .child(name.clone()),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(p.text_soft))
+                            .child(format!("{member_count} ядр.")),
                     )
                     .child(
                         div()
@@ -640,78 +715,120 @@ impl SettingsView {
                                 cx.notify();
                             }))
                             .render(),
+                    )
+                    .child(
+                        MoonButton::new(SharedString::from(format!("addgrp-{name}")))
+                            .outline()
+                            .size(MoonButtonSize::Micro)
+                            .width(56.0)
+                            .label("+ ядро")
+                            .on_click(cx.listener(move |this, _, w, cx| {
+                                this.add_server(nm_add.clone(), w, cx)
+                            }))
+                            .render(),
                     ),
             );
-        }
-        // Пикер иконок для выбранной группы.
-        if let Some(pick) = picking {
-            let mut grid = h_flex().w_full().flex_wrap().gap_1();
-            for id in pick_ids {
-                let cell: AnyElement = match icon_tex.get(&id).and_then(|t| t.clone()) {
-                    Some(arc) => img(arc)
-                        .w(design::ui_px(cx, 22.0))
-                        .h(design::ui_px(cx, 22.0))
-                        .into_any_element(),
-                    None => continue,
-                };
-                let nm = pick.clone();
-                grid = grid.child(
-                    div()
-                        .id(SharedString::from(format!("ico-{id}")))
-                        .p_0p5()
-                        .cursor_pointer()
-                        .rounded(design::ui_px(cx, 4.0))
-                        .hover(move |s| s.bg(rgb(p.panel_high)))
-                        .child(cell)
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            let n = nm.clone();
-                            this.backend.update(cx, |b, bcx| {
-                                if let Some(p) = b.preview.as_mut() {
-                                    if let Some(g) = p.groups.iter_mut().find(|g| g.name == n) {
-                                        g.icon = id;
-                                        bcx.notify();
-                                    }
-                                }
-                            });
-                            this.picking = None;
-                            cx.notify();
-                        })),
-                );
+            // ── Ядра-листья этой группы (с отступом + вертикальная линия ветки) ──
+            for (i, (id, srv_active, _g)) in servers
+                .iter()
+                .enumerate()
+                .filter(|(_, (_, _, g))| g == name)
+            {
+                if let Some(row) = self.conn.get(i) {
+                    let st = status.get(id).cloned();
+                    list_col = list_col.child(
+                        div()
+                            .ml(px(8.0))
+                            .pl(px(11.0))
+                            .border_l_1()
+                            .border_color(rgb(p.border))
+                            .child(self.server_row(cx, i, row, *id, *srv_active, st)),
+                    );
+                }
             }
-            groups_col = groups_col
-                .child(
-                    h_flex()
-                        .w_full()
-                        .items_center()
-                        .gap_1()
-                        .child(
-                            div()
-                                .flex_1()
-                                .text_xs()
-                                .text_color(rgb(p.text_soft))
-                                .child(format!("Иконка для «{pick}»")),
-                        )
-                        .child(
-                            MoonButton::new("pick-close")
-                                .ghost()
-                                .size(MoonButtonSize::Micro)
-                                .width(24.0)
-                                .label("x")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.picking = None;
-                                    cx.notify();
-                                }))
-                                .render(),
-                        ),
-                )
-                .child(
-                    div()
-                        .id("icon-picker")
-                        .max_h(px(220.0))
-                        .overflow_y_scroll()
-                        .child(grid),
-                );
+            // ── Пикер иконок под выбранной группой ──
+            if picking.as_deref() == Some(name.as_str()) {
+                let mut grid = h_flex().w_full().flex_wrap().gap_1();
+                for id in pick_ids.iter().copied() {
+                    let cell: AnyElement = match icon_tex.get(&id).and_then(|t| t.clone()) {
+                        Some(arc) => img(arc)
+                            .w(design::ui_px(cx, 22.0))
+                            .h(design::ui_px(cx, 22.0))
+                            .into_any_element(),
+                        None => continue,
+                    };
+                    let nm = name.clone();
+                    grid = grid.child(
+                        div()
+                            .id(SharedString::from(format!("ico-{id}")))
+                            .p_0p5()
+                            .cursor_pointer()
+                            .rounded(design::ui_px(cx, 4.0))
+                            .hover(move |s| s.bg(rgb(p.panel_high)))
+                            .child(cell)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                let n = nm.clone();
+                                this.backend.update(cx, |b, bcx| {
+                                    if let Some(p) = b.preview.as_mut() {
+                                        if let Some(g) = p.groups.iter_mut().find(|g| g.name == n) {
+                                            g.icon = id;
+                                            bcx.notify();
+                                        }
+                                    }
+                                });
+                                this.picking = None;
+                                cx.notify();
+                            })),
+                    );
+                }
+                list_col = list_col
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .items_center()
+                            .gap_1()
+                            .pl(px(20.0))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .text_xs()
+                                    .text_color(rgb(p.text_soft))
+                                    .child(format!("Иконка для «{name}»")),
+                            )
+                            .child(
+                                MoonButton::new("pick-close")
+                                    .ghost()
+                                    .size(MoonButtonSize::Micro)
+                                    .width(24.0)
+                                    .label("x")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.picking = None;
+                                        cx.notify();
+                                    }))
+                                    .render(),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .id("icon-picker")
+                            .pl(px(20.0))
+                            .max_h(px(220.0))
+                            .overflow_y_scroll()
+                            .child(grid),
+                    );
+            }
         }
+
+        // Глобальная кнопка: новое ядро в группу «default» (дальше можно переписать «Группу»).
+        list_col = list_col.child(
+            MoonButton::new("add-srv")
+                .outline()
+                .small()
+                .width(220.0)
+                .label("+ Добавить ядро (в «default»)")
+                .on_click(cx.listener(|this, _, w, cx| this.add_server("default".into(), w, cx)))
+                .render(),
+        );
 
         v_flex()
             .w_full()
@@ -743,6 +860,6 @@ impl SettingsView {
                         ),
                     ),
             )
-            .child(h_flex().w_full().gap_4().items_start().child(servers_col).child(groups_col))
+            .child(list_col)
     }
 }

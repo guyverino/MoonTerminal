@@ -364,6 +364,16 @@ impl ChartDataState {
                 pr.market = pane.market.clone();
                 pixels_changed = true;
             }
+            let next_pane_bounds = [
+                self.origin.0 + rect.x,
+                self.origin.1 + rect.y,
+                rect.w.max(1.0),
+                rect.h.max(1.0),
+            ];
+            if pr.pane_bounds != next_pane_bounds {
+                pr.pane_bounds = next_pane_bounds;
+                pixels_changed = true;
+            }
             let device_gen = pr.layers.device_gen();
             let device_lost = pr.last_device_gen != device_gen;
             if device_lost {

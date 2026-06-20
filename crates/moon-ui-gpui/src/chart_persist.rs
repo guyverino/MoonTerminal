@@ -7,7 +7,7 @@
 //! Положение/зум самого чарта НЕ персистим: при загрузке вкладка пуста (нечего восстанавливать),
 //! а появившиеся монеты идут в live-follow.
 
-use moon_core::config::paths;
+use moon_core::config::{paths, ChartBucket};
 use moon_core::session::CoreId;
 use serde::{Deserialize, Serialize};
 
@@ -25,13 +25,30 @@ pub struct WinGeom {
 pub struct ChartTabSpec {
     pub group: String,
     pub num: u32,
+    /// LEGACY-ключ старых charts.json (до именованных связок): Some(ядро)=split, None=общая.
+    /// Читается для обратной совместимости; новые записи кладут `bucket`, а `core`=None.
     #[serde(default)]
     pub core: Option<CoreId>,
+    /// Канонический ключ вкладки (своё ядро / общая / именованная связка). Отсутствует в
+    /// старых файлах → выводим из `core` (см. `bucket()`).
+    #[serde(default)]
+    pub bucket: Option<ChartBucket>,
     #[serde(default)]
     pub scale: Option<f32>,
     /// Some → вкладка откреплена в своё окно с этой геометрией; None → во вкладочном стрипе.
     #[serde(default)]
     pub detached: Option<WinGeom>,
+}
+
+impl ChartTabSpec {
+    /// Ключ вкладки: новый `bucket`, иначе выводим из legacy `core`
+    /// (Some(ядро)→Core, None→Shared).
+    pub fn bucket(&self) -> ChartBucket {
+        self.bucket.clone().unwrap_or_else(|| match self.core {
+            Some(id) => ChartBucket::Core(id),
+            None => ChartBucket::Shared,
+        })
+    }
 }
 
 /// Загрузить из `charts.json` (нет/битый → пусто).

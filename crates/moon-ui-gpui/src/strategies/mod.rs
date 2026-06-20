@@ -11,6 +11,8 @@ mod logic;
 mod params;
 mod rules;
 mod tree;
+mod tree_ops;
+mod tree_ui;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -84,6 +86,22 @@ pub struct StrategiesView {
     expanded_folders: HashSet<(CoreId, String)>,
     /// Правила зависимостей полей (param_deps.toml; hot-reload).
     rules: Rules,
+    /// Буфер копирования стратегий/папок (исходные данные — для межъядерной вставки).
+    clipboard: Option<Vec<tree_ops::ClipItem>>,
+    /// Пустые UI-папки (до наполнения первой стратегией): (ядро, путь через `/`).
+    ui_folders: HashSet<(CoreId, String)>,
+    /// Активная модалка операции над деревом (создать/переименовать/подтвердить).
+    op: Option<tree_ui::TreeOp>,
+    /// Ввод модалки создания/переименования — ПЕРЕСОЗДаётся на каждое открытие (свежий
+    /// entity = свежий layout; обходит панику среза MoonInput при смене значения, FORK_BUGS).
+    op_input: Option<Entity<MoonInputState>>,
+    /// Начальное значение для `op_input` при следующем создании (render строит инпут).
+    op_input_init: String,
+    /// Открытое ПКМ-контекст-меню (цель + позиция курсора).
+    menu: Option<tree_ui::ContextMenu>,
+    /// Ожидаем появления стратегии (эхо ядра после create/paste): (ядро, имя) — как
+    /// придёт, выбираем её в дереве. Очищается после выбора.
+    pending_select: Option<(CoreId, String)>,
     /// Сигнатура данных стратегий/схем, которые реально меняют окно.
     last_sig: u64,
     /// Показывать только активные параметры (галка над параметрами).
@@ -169,6 +187,13 @@ impl StrategiesView {
             expanded_cores: HashSet::new(),
             expanded_folders: HashSet::new(),
             rules: Rules::load(),
+            clipboard: None,
+            ui_folders: HashSet::new(),
+            op: None,
+            op_input: None,
+            op_input_init: String::new(),
+            menu: None,
+            pending_select: None,
             last_sig: initial_sig,
             // По умолчанию неактивные параметры скрыты (галка включена).
             only_active_params: true,
@@ -332,15 +357,22 @@ impl StrategiesView {
         cx: &mut Context<Self>,
     ) -> Entity<MoonInputState> {
         if let Some(state) = self.field_inputs.get(&id) {
-            let state = state.clone();
+            let cur = state.read(cx).value().to_string();
+            if cur == value {
+                return state.clone();
+            }
             // Кэш мог устареть: значение в сторе изменилось (эхо сервера / правка в другом
             // выборе), а `value` уже актуально (учитывает черновик). Синхронизируем ТИХО
             // (`sync_value` не эмитит Change → не зациклится и не наделает ложных правок),
             // иначе поле показывает залипшее старое значение (мульти-выбор: 62 вместо 60).
-            if state.read(cx).value().as_ref() != value {
+            // НО: при УКОРОЧЕНИИ текста MoonInput паникует (input/element.rs срез по
+            // устаревшему layout, см. FORK_BUGS) — тогда пересоздаём entity (свежий layout).
+            if value.len() >= cur.len() {
+                let state = state.clone();
                 state.update(cx, |s, cx| s.sync_value(value.clone(), cx));
+                return state;
             }
-            return state;
+            self.field_inputs.remove(&id);
         }
         let state = cx.new(|cx| MoonInputState::new(window, cx).default_value(value));
         cx.subscribe(&state, move |this, state, ev: &MoonInputEvent, cx| {
@@ -364,12 +396,18 @@ impl StrategiesView {
         cx: &mut Context<Self>,
     ) -> Entity<MoonTextAreaState> {
         if let Some(state) = self.field_memos.get(&id) {
-            let state = state.clone();
-            // См. field_input_state: тихо синхронизируем кэш со свежим значением.
-            if state.read(cx).value().as_ref() != value {
-                state.update(cx, |s, cx| s.sync_value(value.clone(), cx));
+            let cur = state.read(cx).value().to_string();
+            if cur == value {
+                return state.clone();
             }
-            return state;
+            // См. field_input_state: тихо синхронизируем; при укорочении — пересоздаём
+            // (обход паники среза по устаревшему layout, FORK_BUGS).
+            if value.len() >= cur.len() {
+                let state = state.clone();
+                state.update(cx, |s, cx| s.sync_value(value.clone(), cx));
+                return state;
+            }
+            self.field_memos.remove(&id);
         }
         let state = cx.new(|cx| MoonTextAreaState::new(window, cx).default_value(value));
         cx.subscribe(&state, move |this, state, ev: &MoonTextAreaEvent, cx| {
@@ -399,6 +437,24 @@ impl StrategiesView {
         }
     }
 
+    /// Раскрыть каждый уровень пути (накопительные префиксы) в `expanded_folders`.
+    /// Единый помощник раскрытия цепочки папок (используется при «развернуть всё» и при
+    /// создании папки, чтобы новая была сразу видна).
+    pub(super) fn expand_path<'a>(
+        &mut self,
+        core: CoreId,
+        segments: impl Iterator<Item = &'a str>,
+    ) {
+        let mut acc = String::new();
+        for part in segments {
+            if !acc.is_empty() {
+                acc.push('/');
+            }
+            acc.push_str(part);
+            self.expanded_folders.insert((core, acc.clone()));
+        }
+    }
+
     /// Развернуть все узлы (если `collapsed`) или свернуть все (иначе).
     fn expand_collapse_toggle(
         &mut self,
@@ -406,26 +462,18 @@ impl StrategiesView {
         store: &CoreStore,
         collapsed: bool,
     ) {
-        if collapsed {
-            for (c, _) in cores {
-                self.expanded_cores.insert(*c);
-                if let Some(cd) = store.core(*c) {
-                    for r in &cd.strategies {
-                        // Раскрываем каждый уровень пути (накопительные префиксы).
-                        let mut acc = String::new();
-                        for part in r.folder_path.split(['/', '\\']).filter(|s| !s.is_empty()) {
-                            if !acc.is_empty() {
-                                acc.push('/');
-                            }
-                            acc.push_str(part);
-                            self.expanded_folders.insert((*c, acc.clone()));
-                        }
-                    }
-                }
-            }
-        } else {
+        if !collapsed {
             self.expanded_cores.clear();
             self.expanded_folders.clear();
+            return;
+        }
+        for (c, _) in cores {
+            self.expanded_cores.insert(*c);
+            let Some(cd) = store.core(*c) else { continue };
+            let paths: Vec<String> = cd.strategies.iter().map(|r| r.folder_path.clone()).collect();
+            for path in paths {
+                self.expand_path(*c, tree_ops::path_segments(&path));
+            }
         }
     }
 
@@ -435,7 +483,7 @@ impl StrategiesView {
         let p = MoonPalette::active(cx);
         let border = moon(p.border);
         let mut col = v_flex()
-            .w(px(220.0))
+            .w(px(264.0))
             .h_full()
             .bg(moon(p.shell_high))
             .font_family("Geist Mono")
@@ -563,6 +611,25 @@ impl Render for StrategiesView {
                 .collect()
         };
 
+        // Появилась ли ожидаемая стратегия (эхо ядра после create/paste)? → выбрать её.
+        if let Some((core, name)) = self.pending_select.clone() {
+            let key = {
+                let store = self.backend.read(cx).session.store();
+                store.core(core).and_then(|cd| {
+                    cd.strategies
+                        .iter()
+                        .find(|r| r.name == name)
+                        .map(|r| (core, r.id))
+                })
+            };
+            if let Some(key) = key {
+                self.selected = Some(key);
+                self.sel.clear();
+                self.sel.insert(key);
+                self.pending_select = None;
+            }
+        }
+
         // Клампим выбранный раздел в диапазон (как sections::show).
         {
             let store = self.backend.read(cx).session.store();
@@ -587,6 +654,16 @@ impl Render for StrategiesView {
         };
         let params = self.params_panel(params_model, window, cx);
         let overlay = self.popup_overlay(cx);
+        // Свежий ввод модалки на каждое открытие (FORK_BUGS: пересоздание = свежий layout).
+        if self.op.is_some() && self.op_input.is_none() {
+            let init = self.op_input_init.clone();
+            self.op_input =
+                Some(cx.new(|cx| MoonInputState::new(window, cx).default_value(init).placeholder("имя")));
+        } else if self.op.is_none() && self.op_input.is_some() {
+            self.op_input = None;
+        }
+        let op_overlay = self.op_overlay(cx);
+        let menu_overlay = self.menu_overlay(cx);
 
         // Сохранить порядок текущего кадра (store-borrow держит cx, не self).
         self.flat_order = built;
@@ -606,6 +683,9 @@ impl Render for StrategiesView {
             .text_size(design::text_px(cx, 11.0))
             .line_height(design::line_px(cx, 14.0))
             .track_focus(&self.focus)
+            .on_key_down(cx.listener(|this, ev: &KeyDownEvent, _w, cx| {
+                this.handle_tree_key(ev, cx);
+            }))
             .child(strategies_header(p, cx))
             .child(
                 h_flex()
@@ -618,6 +698,12 @@ impl Render for StrategiesView {
             );
         if let Some(overlay) = overlay {
             root = root.child(overlay);
+        }
+        if let Some(op_overlay) = op_overlay {
+            root = root.child(op_overlay);
+        }
+        if let Some(menu_overlay) = menu_overlay {
+            root = root.child(menu_overlay);
         }
         root = root.child(
             MoonWindowFrame::tool("strategies-window-frame-hit", chrome_width)

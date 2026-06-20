@@ -19,7 +19,7 @@ mod orders;
 mod report;
 mod stub;
 
-pub(crate) use common::detach_button;
+pub(crate) use common::{RenderGate, detach_button, num};
 
 pub use assets::{AssetsView, open as open_assets_window};
 pub use chart::ChartPanel;

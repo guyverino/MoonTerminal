@@ -12,7 +12,6 @@ mod windows;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use gpui::prelude::FluentBuilder;
 use gpui::*;
 use moon_ui::{
     MoonBackgroundPolicy, MoonRect, MoonTabItem, MoonTabStrip, Panel, PanelEvent, PanelState,
@@ -22,20 +21,20 @@ use moon_ui::{
 use crate::Backend;
 use crate::chart_persist;
 use crate::panels::ChartPanel;
-use moon_core::config::ChartTheme;
+use moon_core::config::{ChartBucket, ChartTheme};
 use moon_core::session::CoreId;
 
 /// Высота полоски чарт-вкладок (px). Табы в MoonTabStrip — h=28 + подчёркивание; 30 даёт
 /// ровный ряд. Резервируется в layout сверху, и в неё же кладутся bounds стрипа.
 const CHART_TAB_STRIP_H: f32 = 30.0;
 
-/// Идентичность вкладки чарта. Main — фуллскрин; Add(номер, ядро) — AddToChart-вкладка
-/// (ядро задано при `charts_split_by_core`, иначе None — общая на номер). Порт egui
-/// `ContainerKind` (Main / Chart{num, core}).
-#[derive(Clone, Copy, PartialEq, Eq)]
+/// Идентичность вкладки чарта. Main — фуллскрин; Add(номер, bucket) — AddToChart-вкладка,
+/// где `bucket` — куда сведены графики ядра внутри группы (своё ядро / общая / именованная
+/// связка; см. `ChartBucket`). Порт egui `ContainerKind` (Main / Chart{num, bucket}).
+#[derive(Clone, PartialEq, Eq)]
 enum Tab {
     Main,
-    Add(u32, Option<CoreId>),
+    Add(u32, ChartBucket),
 }
 
 pub struct ChartTabs {
@@ -45,17 +44,17 @@ pub struct ChartTabs {
     theme: ChartTheme,
     /// Main-чарт (вкладка Main).
     main: Entity<ChartPanel>,
-    /// AddToChart-вкладки (номер, ядро, стек графиков), отсортированы по (номер, ядро).
-    add: Vec<(u32, Option<CoreId>, Entity<AddChartStack>)>,
+    /// AddToChart-вкладки (номер, bucket, стек графиков), отсортированы по (номер, bucket).
+    add: Vec<(u32, ChartBucket, Entity<AddChartStack>)>,
     /// Откреплённые в своё ОС-окно вкладки — держим Entity, чтобы при закрытии окна
     /// вернуть панель в стрип (repin) и чтобы новые детекты этого номера шли в неё.
-    detached: Vec<(u32, Option<CoreId>, Entity<AddChartStack>)>,
+    detached: Vec<(u32, ChartBucket, Entity<AddChartStack>)>,
     /// Активная вкладка.
     active: Tab,
-    /// Сколько монет на вкладке (num, core) пользователь уже «видел» (был на ней активен).
+    /// Сколько монет на вкладке (num, bucket) пользователь уже «видел» (был на ней активен).
     /// Бейдж = pane_count - seen (новые с момента ухода). На активной вкладке seen догоняет
     /// pane_count → бейджа нет. Уходишь → seen заморожен → новые детекты растят бейдж.
-    seen: HashMap<(u32, Option<CoreId>), usize>,
+    seen: HashMap<(u32, ChartBucket), usize>,
     /// Per-core курсор учтённых AddToChart-детектов.
     add_seq: HashMap<CoreId, u64>,
     /// Сигнатура входов, которые реально меняют tab-strip: AddToChart-детекты,
@@ -66,7 +65,7 @@ pub struct ChartTabs {
     last_scale_rev: u64,
     /// Откреп-вкладки на восстановление при загрузке (из charts.json): создаём их пустыми и
     /// открываем окна на ПЕРВОМ render (не в конструкторе окна группы — нельзя вложенно).
-    restore_pending: Vec<(u32, Option<CoreId>, chart_persist::WinGeom, Option<f32>)>,
+    restore_pending: Vec<(u32, ChartBucket, chart_persist::WinGeom, Option<f32>)>,
     focus: FocusHandle,
 }
 
@@ -82,7 +81,7 @@ struct AddChartEntry {
 pub(crate) struct AddChartStack {
     backend: Entity<Backend>,
     num: u32,
-    core: Option<CoreId>,
+    bucket: ChartBucket,
     epoch: f64,
     theme: ChartTheme,
     charts: Vec<AddChartEntry>,
@@ -94,14 +93,14 @@ impl AddChartStack {
     fn new(
         backend: Entity<Backend>,
         num: u32,
-        core: Option<CoreId>,
+        bucket: ChartBucket,
         epoch: f64,
         theme: ChartTheme,
     ) -> Self {
         Self {
             backend,
             num,
-            core,
+            bucket,
             epoch,
             theme,
             charts: Vec::new(),
@@ -124,11 +123,11 @@ impl AddChartStack {
 
         let backend = self.backend.clone();
         let num = self.num;
-        let tab_core = self.core;
+        let bucket = self.bucket.clone();
         let epoch = self.epoch;
         let theme = self.theme.clone();
         let scale = self.scale;
-        let panel = cx.new(|cx| ChartPanel::new_addto(backend, num, tab_core, epoch, theme, cx));
+        let panel = cx.new(|cx| ChartPanel::new_addto(backend, num, bucket, epoch, theme, cx));
         if scale.is_some() {
             panel.update(cx, |panel, pcx| panel.set_scale(scale, pcx));
         }
@@ -172,9 +171,7 @@ impl AddChartStack {
 
     fn set_scene_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
         for entry in &self.charts {
-            entry
-                .panel
-                .update(cx, |panel, _| panel.set_scene_visible(visible));
+            entry.panel.update(cx, |panel, _| panel.set_scene_visible(visible));
         }
     }
 
@@ -268,9 +265,13 @@ impl Render for AddChartStack {
                             .flex_none()
                             .relative()
                             .overflow_hidden()
-                            .when(ix > 0, |this| {
-                                this.border_t_1().border_color(rgb(palette.border))
+                            .border_t_1()
+                            .border_color(if ix > 0 {
+                                rgb(palette.border)
+                            } else {
+                                rgba(0x00000000)
                             })
+                            .bg(rgb(palette.chart_bg))
                             .child(entry.panel.clone())
                             .on_click(cx.listener(move |this, _event, _window, cx| {
                                 this.toggle_fullscreen(core, market.clone(), cx);
@@ -320,7 +321,7 @@ impl ChartTabs {
             let pending = specs
                 .iter()
                 .filter(|s| s.group == group && s.num >= 1 && s.detached.is_some())
-                .map(|s| (s.num, s.core, s.detached.unwrap(), s.scale))
+                .map(|s| (s.num, s.bucket(), s.detached.unwrap(), s.scale))
                 .collect();
             (main_scale, pending)
         };
@@ -425,10 +426,15 @@ impl ChartTabs {
     }
 
     /// Ингест AddToChart-детектов (add_to_chart>0) → создать/наполнить вкладку.
-    /// Ключ вкладки — (номер, ядро) при `charts_split_by_core`, иначе (номер, None).
+    /// Ключ вкладки — `ChartBucket` ядра (своё ядро / общая / именованная связка),
+    /// резолвится из конфига ядра + глоб. `charts_split_by_core`.
     /// БЕЗ авто-перехода: active не трогаем (порт «не уводить на чарт при детекте»).
     fn ingest(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        let (split, fresh, cursors): (bool, Vec<(u32, CoreId, String, f64)>, Vec<(CoreId, u64)>) = {
+        let (split, fresh, cursors): (
+            bool,
+            Vec<(u32, CoreId, ChartBucket, String, f64)>,
+            Vec<(CoreId, u64)>,
+        ) = {
             let b = self.backend.read(cx);
             let split = b.config.charts_split_by_core;
             let mut fresh = Vec::new();
@@ -443,6 +449,14 @@ impl ChartTabs {
                 let Some(d) = b.session.store().core(id) else {
                     continue;
                 };
+                // Bucket ядра — из его конфига (связка) + глоб. split. Нет конфига → своя вкладка.
+                let bucket = b
+                    .config
+                    .servers
+                    .iter()
+                    .find(|sv| sv.id == id)
+                    .map(|sv| sv.chart_bucket(split))
+                    .unwrap_or(ChartBucket::Core(id));
                 let last = self.add_seq.get(&id).copied().unwrap_or(0);
                 let mut mx = last;
                 for det in &d.detects {
@@ -452,7 +466,7 @@ impl ChartTabs {
                     mx = mx.max(det.seq);
                     if det.add_to_chart > 0 {
                         let ttl = (det.keep_in_chart_secs.max(1) as f64) * 1000.0;
-                        fresh.push((det.add_to_chart, id, det.market.clone(), ttl));
+                        fresh.push((det.add_to_chart, id, bucket.clone(), det.market.clone(), ttl));
                     }
                 }
                 if mx != last {
@@ -476,8 +490,7 @@ impl ChartTabs {
             self.add.len()
         ));
         let (epoch, theme, backend) = (self.epoch, self.theme.clone(), self.backend.clone());
-        for (n, core, market, ttl) in fresh {
-            let key_core = if split { Some(core) } else { None };
+        for (n, core, bucket, market, ttl) in fresh {
             backend.update(cx, |b, _| {
                 if !b.desired.iter().any(|(c, m)| *c == core && m == &market) {
                     b.desired.push((core, market.clone()));
@@ -486,26 +499,32 @@ impl ChartTabs {
             let in_detached = self
                 .detached
                 .iter()
-                .any(|(num, c, _)| *num == n && *c == key_core);
+                .any(|(num, c, _)| *num == n && *c == bucket);
             if let Some((_, _, tab)) = self
                 .add
                 .iter()
-                .find(|(num, c, _)| *num == n && *c == key_core)
+                .find(|(num, c, _)| *num == n && *c == bucket)
                 .or_else(|| {
                     self.detached
                         .iter()
-                        .find(|(num, c, _)| *num == n && *c == key_core)
+                        .find(|(num, c, _)| *num == n && *c == bucket)
                 })
             {
                 if in_detached {
                     moon_core::detect_diag::line(&format!(
-                        "[ingest] +coin n={n} core={key_core:?} market={market} → DETACHED-окно"
+                        "[ingest] +coin n={n} bucket={bucket:?} market={market} → DETACHED-окно"
                     ));
                 }
                 tab.update(cx, |p, pcx| p.add_coin(core, &market, ttl, pcx));
             } else {
                 let panel = cx.new(|_| {
-                    AddChartStack::new(backend.clone(), n, key_core, epoch, theme.clone())
+                    AddChartStack::new(
+                        backend.clone(),
+                        n,
+                        bucket.clone(),
+                        epoch,
+                        theme.clone(),
+                    )
                 });
                 // Восстановить сохранённый масштаб этой вкладки (charts.json), если был.
                 let saved_scale = self
@@ -513,17 +532,17 @@ impl ChartTabs {
                     .read(cx)
                     .chart_specs
                     .iter()
-                    .find(|s| s.group == self.group && s.num == n && s.core == key_core)
+                    .find(|s| s.group == self.group && s.num == n && s.bucket() == bucket)
                     .and_then(|s| s.scale);
                 if saved_scale.is_some() {
                     panel.update(cx, |p, pcx| p.set_scale(saved_scale, pcx));
                 }
                 panel.update(cx, |p, pcx| p.add_coin(core, &market, ttl, pcx));
-                self.add.push((n, key_core, panel));
-                // Порядок вкладок: по (номер, ядро) — как egui sort_by_key.
-                self.add.sort_by_key(|(num, c, _)| (*num, c.unwrap_or(0)));
+                self.add.push((n, bucket.clone(), panel));
+                // Порядок вкладок: по (номер, bucket) — как egui sort_by_key.
+                self.add.sort_by_key(|(num, c, _)| (*num, c.clone()));
                 moon_core::detect_diag::line(&format!(
-                    "[ingest] NEW tab n={n} core={key_core:?} (total_tabs={})",
+                    "[ingest] NEW tab n={n} bucket={bucket:?} (total_tabs={})",
                     self.add.len()
                 ));
                 // active НЕ меняем — не уводим пользователя на новую вкладку.
@@ -531,60 +550,61 @@ impl ChartTabs {
         }
     }
 
-    fn add_stack(&self, n: u32, core: Option<CoreId>) -> Option<Entity<AddChartStack>> {
+    fn add_stack(&self, n: u32, bucket: &ChartBucket) -> Option<Entity<AddChartStack>> {
         self.add
             .iter()
-            .find(|(num, c, _)| *num == n && *c == core)
+            .find(|(num, c, _)| *num == n && c == bucket)
             .map(|(_, _, p)| p.clone())
     }
 
     /// Активная панель (Main или AddToChart stack) для показа.
     fn active_element(&self) -> AnyElement {
-        match self.active {
+        match &self.active {
             Tab::Main => self.main.clone().into_any_element(),
-            Tab::Add(n, core) => self
-                .add_stack(n, core)
+            Tab::Add(n, bucket) => self
+                .add_stack(*n, bucket)
                 .map(|p| p.into_any_element())
                 .unwrap_or_else(|| self.main.clone().into_any_element()),
         }
     }
 
     fn active_scale(&self, cx: &App) -> Option<f32> {
-        match self.active {
+        match &self.active {
             Tab::Main => self.main.read(cx).scale(),
-            Tab::Add(n, core) => self
-                .add_stack(n, core)
+            Tab::Add(n, bucket) => self
+                .add_stack(*n, bucket)
                 .map(|p| p.read(cx).scale())
                 .unwrap_or_else(|| self.main.read(cx).scale()),
         }
     }
 
     fn set_active_scale(&self, pct: Option<f32>, cx: &mut Context<Self>) {
-        match self.active {
+        match &self.active {
             Tab::Main => self.main.update(cx, |p, pcx| p.set_scale(pct, pcx)),
-            Tab::Add(n, core) => {
-                if let Some(stack) = self.add_stack(n, core) {
+            Tab::Add(n, bucket) => {
+                if let Some(stack) = self.add_stack(*n, bucket) {
                     stack.update(cx, |p, pcx| p.set_scale(pct, pcx));
                 }
             }
         }
     }
 
-    /// Метка вкладки (П.4): «номер-группа», при split-by-core — «номер-группа-ядро».
-    fn add_label(&self, n: u32, core: Option<CoreId>, cx: &App) -> String {
-        chart_pane_label(&self.backend, &self.group, n, core, cx)
+    /// Метка вкладки (П.4): «номер-группа», «номер-группа-ядро» (своё ядро) или
+    /// «номер-группа-связка» (именованная связка).
+    fn add_label(&self, n: u32, bucket: &ChartBucket, cx: &App) -> String {
+        chart_pane_label(&self.backend, &self.group, n, bucket, cx)
     }
 
     /// Неактивные вкладки отсутствуют в текущей GPUI scene, значит их chart data observe не должен
     /// гонять CPU prepare. Активная/откреплённая панель сама выставит visible=true в своём render.
     fn sync_inactive_chart_visibility(&self, cx: &mut Context<Self>) {
-        let active = self.active;
+        let active = self.active.clone();
         if !matches!(active, Tab::Main) {
             self.main
                 .update(cx, |panel, _| panel.set_scene_visible(false));
         }
         for (n, c, panel) in &self.add {
-            if Tab::Add(*n, *c) != active {
+            if Tab::Add(*n, c.clone()) != active {
                 panel.update(cx, |panel, pcx| panel.set_scene_visible(false, pcx));
             }
         }
@@ -662,7 +682,7 @@ impl Render for ChartTabs {
         // Бейджи = непрочитанные С МОМЕНТА УХОДА: на АКТИВНОЙ вкладке seen догоняет pane_count
         // (бейджа нет — ты смотришь). Ушёл → seen заморожен → новые монеты растят бейдж только
         // этой вкладки (а не всех открытых). Прибраться от закрытых вкладок: чистим seen.
-        if let Tab::Add(n, c) = self.active {
+        if let Tab::Add(n, c) = self.active.clone() {
             if let Some((_, _, panel)) = self.add.iter().find(|(num, cc, _)| *num == n && *cc == c)
             {
                 let cnt = panel.read(cx).pane_count(cx);
@@ -696,12 +716,12 @@ impl Render for ChartTabs {
         // ширины, unread для бейджа, detachable.)
         let mut tabs: Vec<(Tab, String, usize, usize, bool)> =
             vec![(Tab::Main, "Main".to_string(), 0, 0, false)];
-        tabs.extend(self.add.iter().map(|(n, core, panel)| {
+        tabs.extend(self.add.iter().map(|(n, bucket, panel)| {
             let count = panel.read(cx).pane_count(cx);
-            let seen = self.seen.get(&(*n, *core)).copied().unwrap_or(0);
+            let seen = self.seen.get(&(*n, bucket.clone())).copied().unwrap_or(0);
             (
-                Tab::Add(*n, *core),
-                self.add_label(*n, *core, cx),
+                Tab::Add(*n, bucket.clone()),
+                self.add_label(*n, bucket, cx),
                 count,
                 count.saturating_sub(seen),
                 true,
@@ -709,7 +729,7 @@ impl Render for ChartTabs {
         }));
         let tab_keys = Rc::new(
             tabs.iter()
-                .map(|(tab, _, _, _, _)| *tab)
+                .map(|(tab, _, _, _, _)| tab.clone())
                 .collect::<Vec<_>>(),
         );
         let items = tabs
@@ -744,7 +764,7 @@ impl Render for ChartTabs {
                 let tab_keys = tab_keys.clone();
                 let view = view.clone();
                 move |ix, event, window, app| {
-                    let Some(tab_id) = tab_keys.get(ix).copied() else {
+                    let Some(tab_id) = tab_keys.get(ix).cloned() else {
                         return;
                     };
                     let owner = window.window_handle();
@@ -752,7 +772,7 @@ impl Render for ChartTabs {
                         if !matches!(tab_id, Tab::Main) && event.click_count() >= 2 {
                             this.detach(tab_id, Some(owner), cx);
                         } else if matches!(tab_id, Tab::Main)
-                            || this.add.iter().any(|(n, c, _)| Tab::Add(*n, *c) == tab_id)
+                            || this.add.iter().any(|(n, c, _)| Tab::Add(*n, c.clone()) == tab_id)
                         {
                             if this.active != tab_id {
                                 this.active = tab_id;
@@ -766,14 +786,14 @@ impl Render for ChartTabs {
                 let tab_keys = tab_keys.clone();
                 let view = view.clone();
                 move |ix, _event, _window, app| {
-                    let Some(tab_id) = tab_keys.get(ix).copied() else {
+                    let Some(tab_id) = tab_keys.get(ix).cloned() else {
                         return;
                     };
                     if matches!(tab_id, Tab::Main) {
                         return;
                     }
                     view.update(app, |this, cx| {
-                        this.add.retain(|(n, c, _)| Tab::Add(*n, *c) != tab_id);
+                        this.add.retain(|(n, c, _)| Tab::Add(*n, c.clone()) != tab_id);
                         if this.active == tab_id {
                             this.active = Tab::Main;
                         }
@@ -839,15 +859,15 @@ impl Render for ChartTabs {
     }
 }
 
-/// Осмысленная подпись AddToChart-графика (П.4 — порт egui): «номер-группа», а при
-/// `charts_split_by_core` (ядро задано) — «номер-группа-ядро». Пустая группа → только номер
-/// (старый фолбэк). Используется и в стрипе вкладок, и в заголовке/титуле выносного окна,
-/// чтобы вместо безликого «Чарт N» везде было имя группы (и ядра при сплите).
+/// Осмысленная подпись AddToChart-графика (П.4 — порт egui): «номер-группа», а далее по
+/// `bucket`: своё ядро → «номер-группа-ядро», именованная связка → «номер-группа-связка»,
+/// общая → только «номер-группа». Пустая группа → только номер (старый фолбэк). Используется
+/// и в стрипе вкладок, и в заголовке/титуле выносного окна.
 fn chart_pane_label(
     backend: &Entity<Backend>,
     group: &str,
     n: u32,
-    core: Option<CoreId>,
+    bucket: &ChartBucket,
     cx: &App,
 ) -> String {
     let mut label = if group.is_empty() {
@@ -855,19 +875,21 @@ fn chart_pane_label(
     } else {
         format!("{n}-{group}")
     };
-    if let Some(cid) = core {
-        let name = backend
+    let suffix = match bucket {
+        ChartBucket::Shared => String::new(),
+        ChartBucket::Core(cid) => backend
             .read(cx)
             .session
             .sessions()
             .iter()
-            .find(|s| s.id == cid)
+            .find(|s| s.id == *cid)
             .map(|s| s.name.clone())
-            .unwrap_or_default();
-        if !name.is_empty() {
-            label.push('-');
-            label.push_str(&name);
-        }
+            .unwrap_or_default(),
+        ChartBucket::Bundle(name) => name.clone(),
+    };
+    if !suffix.is_empty() {
+        label.push('-');
+        label.push_str(&suffix);
     }
     label
 }

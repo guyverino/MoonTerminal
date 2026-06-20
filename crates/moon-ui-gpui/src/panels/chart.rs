@@ -1,10 +1,10 @@
 //! Панель чарта (center DockArea): НАШ own-pass DX11 рендер (через generic-хук gpui) +
-//! ввод + GPUI-оверлей осей. Как Dock-панель — отцепляется в окно. Монета — из
+//! ввод. Как Dock-панель — отцепляется в окно. Монета — из
 //! focus и `Backend.open_request`.
 //!
 //! Рендер: `ChartEngine.canvas()` отдаёт GPUI `gpu_canvas` ПОД сценой (рисует combo/слои в
 //! backbuffer GPUI без readback), `prepare` обновляет вид и заливает новые тики.
-//! Текст осей/readout — GPUI-оверлей ПОВЕРХ; линии перекрестия — native chartdx cursor layer.
+//! Текст осей/readout — retained gpu_canvas text; линии перекрестия — native chartdx cursor layer.
 
 use std::time::Duration;
 
@@ -16,7 +16,7 @@ use crate::chartdx::ChartEngine;
 use crate::{Backend, axes, design, input};
 use moon_chart::container::ContainerKind;
 use moon_chart::paint::now_unix_ms;
-use moon_core::config::{ChartTheme, OrdersStyle};
+use moon_core::config::{ChartBucket, ChartTheme, OrdersStyle};
 use moon_core::session::CoreId;
 
 #[cfg(windows)]
@@ -215,12 +215,12 @@ impl ChartPanel {
     pub fn new_addto(
         backend: Entity<Backend>,
         num: u32,
-        core: Option<CoreId>,
+        bucket: ChartBucket,
         epoch: f64,
         theme: ChartTheme,
         cx: &mut Context<Self>,
     ) -> Self {
-        let mut chart = ChartEngine::new_kind(epoch, theme, ContainerKind::Chart { num, core });
+        let mut chart = ChartEngine::new_kind(epoch, theme, ContainerKind::Chart { num, bucket });
         chart.set_market_source(Some(backend.read(cx).session.market_source()));
         let settings_sig = {
             let b = backend.read(cx);
@@ -569,6 +569,8 @@ impl Render for ChartPanel {
         // Запоминаем DPI для data prepare path (у него нет window). DPI меняется редко.
         self.last_ppp = ppp;
         self.chart.set_last_ppp(ppp);
+        let palette = MoonPalette::active(cx);
+        self.chart.set_ui_palette(palette);
         // Bootstrap only: chartdx refines this from real `gpu_canvas.frame()` cadence,
         // so macOS/Linux do not depend on this fallback staying exact forever.
         let monitor_rate_hz = chart_bootstrap_present_rate_hz();
@@ -624,7 +626,6 @@ impl Render for ChartPanel {
             .map(|(idx, rect, _)| (*idx, *rect))
             .collect();
         self.sync_native_cursor();
-        let cross = self.chart.crosshair_style();
         // Угловой ✕ закрытия монеты — на КАЖДОЙ панели (и Main, и AddToChart-мультичарт):
         // закрыл монету на Main → вернулись к лого. Позиция из раскладки панелей (девайс-px →
         // лог.px слота); собираем ДО canvas, который забирает axis_panes по move.
@@ -856,25 +857,23 @@ impl Render for ChartPanel {
                 if cursor_changed {
                     this.sync_native_cursor();
                 }
-                // Drag меняет камеры/оси; cursor_changed нужен для GPUI readout-плашек осей.
-                // Частые линии креста всё равно остаются в native chartdx overlay.
-                if dragging || cursor_changed {
+                // Drag меняет камеры/оси и GPUI-side controls. Cursor-only move теперь
+                // остаётся в retained gpu_canvas: crosshair/readout present без cx.notify().
+                if dragging {
                     crate::diag::bump(&crate::diag::CHART_INPUT_NOTIFY);
                     cx.notify();
                 }
             }))
-            .on_hover(cx.listener(|this, hovered: &bool, _window, cx| {
+            .on_hover(cx.listener(|this, hovered: &bool, _window, _cx| {
                 if !*hovered {
                     let changed = this.input.cursor.take().is_some()
                         || this.input.hovered_pane.take().is_some();
                     if changed {
                         this.sync_native_cursor();
-                        crate::diag::bump(&crate::diag::CHART_INPUT_NOTIFY);
-                        cx.notify();
                     }
                 }
             }))
-            .child(self.chart.canvas().absolute().size_full())
+            .child(self.chart.canvas().text_over().absolute().size_full())
             .when(show_empty_logo, |this| {
                 this.child(
                     div()
@@ -886,13 +885,11 @@ impl Render for ChartPanel {
                         .child(crate::design::logo_glow_sized(logo_w)),
                 )
             })
-            // Оверлей: оси/числа/перекрестие — GPUI поверх own-pass графика (прозрачный регион).
+            // Layout probe only: text is emitted by `gpu_canvas.prepare_text`, not by GPUI paint.
             .child({
                 let entity = cx.entity();
                 let measured = self.chart_dev;
                 let prev_bounds = self.chart_bounds;
-                let cursor_pos = self.input.cursor;
-                let hovered_pane = self.input.hovered_pane;
                 canvas(
                     move |bounds, _, _| bounds,
                     move |bounds, _, window, cx| {
@@ -908,29 +905,6 @@ impl Render for ChartPanel {
                                 crate::diag::bump(&crate::diag::CHART_CANVAS_NOTIFY);
                                 cx.notify();
                             });
-                        }
-                        // Оси — ПО КАЖДОЙ панели (Tiled-мультичарт): свой прямоугольник
-                        // (девайс-px → лог.px окна) и снимок. Линии креста native, readout-
-                        // плашки GPUI, чтобы размер/шрифт совпадали с остальными осями.
-                        let palette = MoonPalette::active(cx);
-                        for (idx, rect, snap) in &axis_panes {
-                            let sub = Bounds::new(
-                                point(
-                                    bounds.origin.x + px(rect.x / sf),
-                                    bounds.origin.y + px(rect.y / sf),
-                                ),
-                                gpui::size(px(rect.w / sf), px(rect.h / sf)),
-                            );
-                            let cursor =
-                                cursor_pos
-                                    .filter(|_| hovered_pane == Some(*idx))
-                                    .map(|(x, y)| {
-                                        point(
-                                            bounds.origin.x + px(x / sf),
-                                            bounds.origin.y + px(y / sf),
-                                        )
-                                    });
-                            axes::draw(window, cx, sub, snap, cursor, false, sf, cross, palette);
                         }
                     },
                 )

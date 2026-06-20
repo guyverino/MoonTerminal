@@ -2,6 +2,12 @@
 //! (ордеров) из локальной SQLite. Фильтры (ядро/монета/сторона/даты) + выбор колонок
 //! сверху, ИТОГО за период снизу, generic-таблица по всем колонкам БД с сортировкой
 //! по клику на заголовок. Автообновление по счётчику-генерации writer'а (Backend.reports).
+//!
+//! По функционалу разнесено: состояние/запросы/жизненный цикл — здесь, поля-списки и
+//! меню колонок — [`controls`], форматирование колонок/ячеек/заголовков — [`columns`].
+
+mod columns;
+mod controls;
 
 use std::rc::Rc;
 use std::sync::Arc;
@@ -10,10 +16,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use moon_ui::{
-    DockArea, MoonButtonSize, MoonButtonVariant, MoonDataCell, MoonDataRow,
-    MoonDataTable, MoonDataTableColumn, MoonDataTableState, MoonDropdown, MoonInput,
-    MoonInputEvent, MoonInputState, MoonMenuItem, MoonMenuSize, MoonPalette, Panel, PanelEvent,
-    PanelState, StyledExt, h_flex, v_flex,
+    DockArea, MoonButtonSize, MoonButtonVariant, MoonDataCell, MoonDataRow, MoonDataTable,
+    MoonDataTableColumn, MoonDataTableState, MoonDropdown, MoonInput, MoonInputEvent, MoonInputState,
+    MoonMenuItem, MoonMenuSize, MoonPalette, MoonText, MoonTone, Panel, PanelEvent, PanelState,
+    StyledExt, h_flex, v_flex,
 };
 use rusqlite::Connection;
 use rusqlite::types::Value;
@@ -37,34 +43,33 @@ const DEFAULT_VISIBLE: &[&str] = &[
     "sellprice",
     "profitbtc",
     "lev",
-    "strategyid",
     "sellreason",
     "comment",
 ];
 
 pub struct ReportPanel {
-    backend: Entity<Backend>,
-    group: String,
+    pub(super) backend: Entity<Backend>,
+    pub(super) group: String,
     generation: Option<Arc<AtomicU64>>,
     last_gen: u64,
 
     conn: Option<Connection>,
-    cores: Vec<(u64, String)>,
-    table: Rc<ReportTable>,
+    pub(super) cores: Vec<(u64, String)>,
+    pub(super) table: Rc<ReportTable>,
     totals: (f64, i64),
 
     sort_key: String,
     sort_desc: bool,
 
-    sel_core: usize,
+    pub(super) sel_core: usize,
     coin: Entity<MoonInputState>,
     from: Entity<MoonInputState>,
     to: Entity<MoonInputState>,
-    side: SideFilter,
+    pub(super) side: SideFilter,
     needs_query: bool,
 
     /// Видимость колонок (параллельно db::DISPLAY_COLUMNS).
-    visible: Vec<bool>,
+    pub(super) visible: Vec<bool>,
     table_state: Entity<MoonDataTableState>,
     dock: Option<WeakEntity<DockArea>>,
     focus: FocusHandle,
@@ -88,10 +93,22 @@ impl ReportPanel {
             .as_ref()
             .map(|g| g.load(Ordering::Relaxed))
             .unwrap_or(0);
-        let visible = db::DISPLAY_COLUMNS
-            .iter()
-            .map(|c| DEFAULT_VISIBLE.contains(c))
-            .collect();
+        // Видимость колонок: восстанавливаем сохранённый набор (app_meta), иначе дефолт.
+        let visible: Vec<bool> = conn
+            .as_ref()
+            .and_then(db::load_visible)
+            .map(|saved| {
+                db::DISPLAY_COLUMNS
+                    .iter()
+                    .map(|c| saved.iter().any(|s| s == c))
+                    .collect()
+            })
+            .unwrap_or_else(|| {
+                db::DISPLAY_COLUMNS
+                    .iter()
+                    .map(|c| DEFAULT_VISIBLE.contains(c))
+                    .collect()
+            });
         let (sort_key, sort_desc) = conn
             .as_ref()
             .and_then(db::load_sort)
@@ -197,19 +214,35 @@ impl ReportPanel {
         self.needs_query = false;
     }
 
-    fn set_core(&mut self, i: usize, cx: &mut Context<Self>) {
+    pub(super) fn set_core(&mut self, i: usize, cx: &mut Context<Self>) {
         if self.sel_core != i {
             self.sel_core = i;
             self.needs_query = true;
             cx.notify();
         }
     }
-    fn set_side(&mut self, s: SideFilter, cx: &mut Context<Self>) {
+    pub(super) fn set_side(&mut self, s: SideFilter, cx: &mut Context<Self>) {
         if self.side != s {
             self.side = s;
             self.needs_query = true;
             cx.notify();
         }
+    }
+    /// Переключить видимость колонки и СОХРАНИТЬ набор (app_meta) — переживает рестарт.
+    pub(super) fn toggle_column(&mut self, i: usize, cx: &mut Context<Self>) {
+        if let Some(slot) = self.visible.get_mut(i) {
+            *slot = !*slot;
+        }
+        if let Some(conn) = &self.conn {
+            let cols: Vec<&str> = db::DISPLAY_COLUMNS
+                .iter()
+                .enumerate()
+                .filter(|(j, _)| self.visible.get(*j).copied().unwrap_or(false))
+                .map(|(_, c)| *c)
+                .collect();
+            db::save_visible(conn, &cols);
+        }
+        cx.notify();
     }
     fn set_report_sort(&mut self, col: &str, sort_desc: bool, cx: &mut Context<Self>) {
         if self.sort_key == col && self.sort_desc == sort_desc {
@@ -225,110 +258,6 @@ impl ReportPanel {
             db::save_sort(conn, &self.sort_key, self.sort_desc);
         }
         cx.notify();
-    }
-
-    /// Комбобокс выбора ядра (Все + ядра из БД).
-    fn core_combo(&self, cx: &Context<Self>) -> impl IntoElement {
-        let cur = if self.sel_core == 0 {
-            "Все".to_string()
-        } else {
-            self.cores
-                .get(self.sel_core - 1)
-                .map(|(_, n)| n.clone())
-                .unwrap_or_else(|| "Все".into())
-        };
-        let view = cx.entity();
-        let cores = self.cores.clone();
-        let mut items = vec![
-            MoonMenuItem::with_key("rc-all", "Все")
-                .selected(self.sel_core == 0)
-                .on_click({
-                    let view = view.clone();
-                    move |_, _, app| {
-                        view.update(app, |t, c| t.set_core(0, c));
-                    }
-                }),
-        ];
-        for (i, (_u, name)) in cores.into_iter().enumerate() {
-            let view = view.clone();
-            items.push(
-                MoonMenuItem::with_key(format!("rc-{i}"), name)
-                    .selected(self.sel_core == i + 1)
-                    .on_click(move |_, _, app| {
-                        view.update(app, |t, c| t.set_core(i + 1, c));
-                    }),
-            );
-        }
-        MoonDropdown::new("rep-core")
-            .label(format!("{cur} ▾"))
-            .trigger_variant(MoonButtonVariant::Soft)
-            .trigger_size(MoonButtonSize::Action)
-            .trigger_width(130.0)
-            .menu_width(180.0)
-            .menu_max_height(360.0)
-            .menu_size(MoonMenuSize::Compact)
-            .items(items)
-    }
-
-    /// Комбобокс стороны (Все/Лонг/Шорт).
-    fn side_combo(&self, cx: &Context<Self>) -> impl IntoElement {
-        let cur = match self.side {
-            SideFilter::All => "Все",
-            SideFilter::Long => "Лонг",
-            SideFilter::Short => "Шорт",
-        };
-        let view = cx.entity();
-        let opts = [
-            (SideFilter::All, "Все"),
-            (SideFilter::Long, "Лонг"),
-            (SideFilter::Short, "Шорт"),
-        ];
-        MoonDropdown::new("rep-side")
-            .label(format!("{cur} ▾"))
-            .trigger_variant(MoonButtonVariant::Soft)
-            .trigger_size(MoonButtonSize::Action)
-            .trigger_width(86.0)
-            .menu_width(120.0)
-            .menu_size(MoonMenuSize::Compact)
-            .items(opts.into_iter().map(move |(side, label)| {
-                let view = view.clone();
-                MoonMenuItem::with_key(format!("rs-{label}"), label)
-                    .selected(side == self.side)
-                    .on_click(move |_, _, app| {
-                        view.update(app, |t, c| t.set_side(side, c));
-                    })
-            }))
-    }
-
-    /// Попап выбора видимых колонок (чекбоксы).
-    fn columns_menu(&self, cx: &Context<Self>) -> impl IntoElement {
-        let view = cx.entity();
-        let visible = self.visible.clone();
-        let items = db::DISPLAY_COLUMNS.iter().enumerate().map(move |(i, c)| {
-            let on = visible.get(i).copied().unwrap_or(false);
-            let view = view.clone();
-            MoonMenuItem::with_key(format!("col-{i}"), header_for(c))
-                .checked(on)
-                .selected(on)
-                .on_click(move |_, _, app| {
-                    view.update(app, |t, c| {
-                        if let Some(slot) = t.visible.get_mut(i) {
-                            *slot = !*slot;
-                        }
-                        c.notify();
-                    });
-                })
-        });
-        MoonDropdown::new("rep-cols")
-            .label("Колонки ▾")
-            .trigger_variant(MoonButtonVariant::Soft)
-            .trigger_size(MoonButtonSize::Action)
-            .trigger_width(110.0)
-            .menu_width(230.0)
-            .menu_max_height(420.0)
-            .menu_size(MoonMenuSize::Compact)
-            .close_on_select(false)
-            .items(items)
     }
 }
 
@@ -367,7 +296,7 @@ impl Panel for ReportPanel {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<Vec<AnyElement>> {
-        Some(vec![super::detach_button(
+        Some(vec![crate::panels::detach_button(
             "Report",
             self.group.clone(),
             self.backend.clone(),
@@ -450,7 +379,7 @@ impl Render for ReportPanel {
             let row_count = table.rows.len();
             let view = cx.entity();
             let table_state = self.table_state.clone();
-            let columns = report_columns(&vis);
+            let cols = columns::report_columns(&vis);
             div()
                 .id("rep-table-host")
                 .relative()
@@ -459,10 +388,10 @@ impl Render for ReportPanel {
                 .min_h_0()
                 .child(
                     MoonDataTable::new("report-table", row_count, move |ri, _window, _app| {
-                        report_data_row(ri, &table, &visible, p)
+                        columns::report_data_row(ri, &table, &visible, p)
                     })
                     .state(&table_state)
-                    .columns(columns)
+                    .columns(cols)
                     .header_height(24.0)
                     .row_height(24.0)
                     .on_sort(move |key, ascending, _window, app| {
@@ -540,158 +469,5 @@ impl Render for ReportPanel {
             .child(table_el)
             .child(div().w_full().h(px(1.0)).bg(border))
             .child(totals)
-    }
-}
-
-fn report_columns(vis: &[usize]) -> Vec<MoonDataTableColumn> {
-    vis.iter()
-        .map(|&i| {
-            let col = db::DISPLAY_COLUMNS[i];
-            let column =
-                MoonDataTableColumn::new(col, header_for(col), width_for(col)).sortable(true);
-            if is_numeric_report_column(col) {
-                column.right()
-            } else {
-                column
-            }
-        })
-        .collect()
-}
-
-fn report_data_row(ri: usize, table: &ReportTable, vis: &[usize], p: MoonPalette) -> MoonDataRow {
-    let mut cells = Vec::with_capacity(vis.len());
-    if let Some(r) = table.rows.get(ri) {
-        for &i in vis {
-            let cname = table.cols[i];
-            let val = r.get(i).unwrap_or(&Value::Null);
-            cells.push(report_data_cell(cname, val, p));
-        }
-    }
-    MoonDataRow::new(cells)
-}
-
-fn report_data_cell(col: &str, val: &Value, p: MoonPalette) -> MoonDataCell {
-    let (text, color) = cell(col, val, p);
-    let cell = MoonDataCell::text(text).font_size(10.0).line_height(13.0);
-    if let Some(color) = color {
-        cell.text_color(color)
-    } else {
-        cell
-    }
-}
-
-fn is_numeric_report_column(col: &str) -> bool {
-    matches!(
-        col,
-        "quantity"
-            | "boughtq"
-            | "buyprice"
-            | "sellprice"
-            | "spentbtc"
-            | "gainedbtc"
-            | "profitbtc"
-            | "lev"
-            | "db_id"
-            | "taskid"
-    )
-}
-
-/// Текст + цвет ячейки по имени колонки и значению (порт `cell`).
-fn cell(col: &str, v: &Value, p: MoonPalette) -> (String, Option<u32>) {
-    match col {
-        "buydate" | "closedate" | "sellsetdate" | "last_update_at" => {
-            (as_i64(v).map(db::fmt_unix).unwrap_or_default(), None)
-        }
-        "isshort" => match as_i64(v) {
-            Some(1) => ("Шорт".into(), Some(p.red)),
-            Some(0) => ("Лонг".into(), Some(p.green)),
-            _ => (String::new(), Some(p.text_soft)),
-        },
-        "emulator" => match as_i64(v) {
-            Some(1) => ("эму".into(), Some(p.text_soft)),
-            _ => (String::new(), None),
-        },
-        "profitbtc" | "gainedbtc" => {
-            let n = as_f64(v);
-            let color = match n {
-                Some(x) if x > 0.0 => Some(p.green),
-                Some(x) if x < 0.0 => Some(p.red),
-                _ => None,
-            };
-            (n.map(|x| format!("{x:+.6}")).unwrap_or_default(), color)
-        }
-        _ => (value_to_string(v), None),
-    }
-}
-
-fn as_i64(v: &Value) -> Option<i64> {
-    match v {
-        Value::Integer(i) => Some(*i),
-        Value::Real(r) => Some(*r as i64),
-        _ => None,
-    }
-}
-fn as_f64(v: &Value) -> Option<f64> {
-    match v {
-        Value::Real(r) => Some(*r),
-        Value::Integer(i) => Some(*i as f64),
-        _ => None,
-    }
-}
-fn value_to_string(v: &Value) -> String {
-    match v {
-        Value::Null => String::new(),
-        Value::Integer(i) => i.to_string(),
-        Value::Real(r) => moon_core::util::fmt::compact(*r, 8),
-        Value::Text(t) => t.clone(),
-        Value::Blob(_) => "<blob>".into(),
-    }
-}
-
-/// Человекочитаемый заголовок колонки (порт `header_for`).
-fn header_for(col: &str) -> &str {
-    match col {
-        "buydate" => "Открыт (UTC)",
-        "closedate" => "Закрыт (UTC)",
-        "sellsetdate" => "Sell set",
-        "last_update_at" => "Обновлён",
-        "core_name" => "Ядро",
-        "db_id" => "ID",
-        "taskid" => "TaskID",
-        "exorderid" => "ExOrderID",
-        "coin" => "Монета",
-        "isshort" => "Сторона",
-        "quantity" => "Кол-во",
-        "boughtq" => "Куплено",
-        "buyprice" => "Покупка",
-        "sellprice" => "Продажа",
-        "spentbtc" => "Влож.BTC",
-        "gainedbtc" => "Получ.BTC",
-        "profitbtc" => "Профит BTC",
-        "lev" => "Плечо",
-        "strategyid" => "Strat",
-        "channelname" => "Канал",
-        "signaltype" => "Сигнал",
-        "fname" => "Файл",
-        "basecurrency" => "BaseCur",
-        "emulator" => "Эму",
-        "status" => "Статус",
-        "sellreason" => "Причина",
-        "comment" => "Коммент",
-        other => other,
-    }
-}
-
-fn width_for(col: &str) -> f32 {
-    match col {
-        "buydate" | "closedate" => 120.0,
-        "sellsetdate" | "last_update_at" => 116.0,
-        "comment" => 280.0,
-        "sellreason" => 170.0,
-        "channelname" | "signaltype" | "fname" | "exorderid" => 110.0,
-        "core_name" | "coin" => 88.0,
-        "profitbtc" | "gainedbtc" | "spentbtc" => 96.0,
-        "lev" | "isshort" | "emulator" => 52.0,
-        _ => 82.0,
     }
 }

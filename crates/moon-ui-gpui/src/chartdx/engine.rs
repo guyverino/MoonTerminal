@@ -21,6 +21,9 @@ impl ChartEngine {
             camera_shift_count: 0,
             camera_shift_hz: 0.0,
             last_gpu_prepare_generation: 0,
+            text_runs: Vec::new(),
+            text_run_cursor: 0,
+            ui_palette: moon_ui::MoonPalette::TERMINAL,
             slot_origin: [0.0, 0.0],
             cursor: None,
             cursor_color: {
@@ -119,6 +122,18 @@ impl ChartEngine {
         self.state
             .borrow_mut()
             .set_target_present_rate_hz(self.present_rate_hz);
+    }
+
+    pub fn set_ui_palette(&mut self, palette: moon_ui::MoonPalette) {
+        let mut state = self.state.borrow_mut();
+        if state.ui_palette.panel != palette.panel
+            || state.ui_palette.chart_bg != palette.chart_bg
+            || state.ui_palette.text_soft != palette.text_soft
+            || state.ui_palette.border != palette.border
+        {
+            state.ui_palette = palette;
+            state.needs_present = true;
+        }
     }
 
     pub fn set_cursor(&mut self, cursor: Option<(usize, f32, f32)>) -> bool {
@@ -418,14 +433,4 @@ impl ChartEngine {
             .collect()
     }
 
-    /// Стиль перекрестия из темы (крест рисует GPUI-оверлей, не own-pass).
-    pub fn crosshair_style(&self) -> CrossStyle {
-        CrossStyle {
-            color: self.theme.cross,
-            alpha: self.theme.cross_alpha,
-            thickness: self.theme.cross_thickness,
-            halo_radius: self.theme.halo_radius,
-            halo_intensity: self.theme.halo_intensity,
-        }
-    }
 }

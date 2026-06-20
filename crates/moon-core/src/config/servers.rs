@@ -91,6 +91,39 @@ pub struct ServerConfig {
     /// Синтетическое ядро бенчмарка (MOON_SYNTH): фид гонит synth::run вместо live::run.
     #[serde(default)]
     pub synthetic: bool,
+    /// Имя чарт-связки для AddToChart. Пусто = по глобальной настройке
+    /// (`charts_split_by_core`: своя вкладка на ядро / все ядра в одной). Непусто =
+    /// ядра ОДНОЙ группы с этим же именем сводят свои AddToChart=N графики в ОДНУ
+    /// вкладку, а имя связки идёт в её заголовок. Имя локально для группы.
+    #[serde(default)]
+    pub chart_bundle: String,
+}
+
+/// Ключ чарт-вкладки AddToChart внутри группы — куда сводить графики ядра.
+/// Резолвится из `ServerConfig::chart_bucket` (см.). Сериализуется в charts.json.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum ChartBucket {
+    /// Все ядра группы в одной вкладке `N-группа` (глоб. split=off, связка пуста).
+    Shared,
+    /// Своя вкладка ядра `N-группа-ядро` (глоб. split=on, связка пуста).
+    Core(crate::session::CoreId),
+    /// Именованная связка `N-группа-имя` — подмножество ядер группы (переопределяет
+    /// глобальный флаг). Имя попадает в заголовок вкладки.
+    Bundle(String),
+}
+
+impl ServerConfig {
+    /// Куда сводить AddToChart-графики этого ядра при текущем глобальном флаге
+    /// `charts_split_by_core` (split). Непустая связка переопределяет флаг.
+    pub fn chart_bucket(&self, split: bool) -> ChartBucket {
+        if !self.chart_bundle.is_empty() {
+            ChartBucket::Bundle(self.chart_bundle.clone())
+        } else if split {
+            ChartBucket::Core(self.id)
+        } else {
+            ChartBucket::Shared
+        }
+    }
 }
 
 pub fn default_color() -> [u8; 3] {

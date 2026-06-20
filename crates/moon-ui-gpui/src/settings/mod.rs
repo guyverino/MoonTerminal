@@ -309,6 +309,18 @@ impl SettingsView {
         let struct_changed = before.structural_sig() != after.structural_sig();
         let mode_changed = before.market_mode != after.market_mode;
         let split_changed = before.charts_split_by_core != after.charts_split_by_core;
+        // Смена чарт-связки (`chart_bundle`) у ядра меняет состав чарт-вкладок, но НЕ требует
+        // реконнекта — как split, только пересобираем окна групп (без рестарта сессий).
+        let bundle_sig = |c: &AppConfig| {
+            let mut v: Vec<(u64, String)> = c
+                .servers
+                .iter()
+                .map(|s| (s.uid, s.chart_bundle.clone()))
+                .collect();
+            v.sort();
+            v
+        };
+        let bundle_changed = bundle_sig(before) != bundle_sig(&after);
         let ui_theme_changed =
             before.ui_font_delta != after.ui_font_delta || before.ui_scale != after.ui_scale;
 
@@ -341,20 +353,36 @@ impl SettingsView {
         // Сменили «отдельная чарт-вкладка на ядро» (без структурного ребилда, который и
         // так всё пересоздаёт) → пересобираем окна, чтобы чарт-вкладки собрались в новом
         // режиме (egui чистил chart-tabs; в GPUI вкладки живут в окне — пересоздаём окно).
-        if !struct_changed && split_changed {
+        if !struct_changed && (split_changed || bundle_changed) {
             self.rebuild_group_windows(cx);
         }
     }
 
     /// Закрыть все окна групп и открыть заново по актуальному конфигу (порт egui
     /// `needs_rebuild`). Геометрия восстановится из сохранённой раскладки.
+    ///
+    /// Также закрываем ВСЕ откреп-окна чарт-вкладок и снимаем у спек `detached`: при
+    /// смене групп их состав/ключи (bucket) меняются — старые окна иначе зависают дублями
+    /// и сыплют «window not found» по протухшим хэндлам. Вкладки вернутся в стрип нового
+    /// окна группы по детектам (а не повторно откроются off-screen окнами).
     fn rebuild_group_windows(&mut self, cx: &mut Context<Self>) {
-        let (handles, cfg, epoch, layout) = self.backend.update(cx, |b, _| {
+        let (handles, chart_handles, cfg, epoch, layout) = self.backend.update(cx, |b, _| {
             let handles: Vec<WindowHandle<Root>> = b.group_windows.values().copied().collect();
             b.group_windows.clear();
-            (handles, b.config.clone(), b.epoch, b.layout.clone())
+            let chart_handles: Vec<WindowHandle<Root>> =
+                b.detached_chart_windows.drain(..).map(|(_, h)| h).collect();
+            // Вернуть откреп-вкладки в стрип: снять detached у всех спек, чтобы свежие
+            // окна групп не открыли их повторно (иначе дубли).
+            for s in b.chart_specs.iter_mut() {
+                s.detached = None;
+            }
+            b.chart_specs_dirty = true;
+            (handles, chart_handles, b.config.clone(), b.epoch, b.layout.clone())
         });
         for h in handles {
+            let _ = h.update(cx, |_, window, _| window.remove_window());
+        }
+        for h in chart_handles {
             let _ = h.update(cx, |_, window, _| window.remove_window());
         }
         for (i, g) in crate::group_window::groups(&cfg).into_iter().enumerate() {

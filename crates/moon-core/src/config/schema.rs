@@ -18,8 +18,8 @@ use crate::market::MarketDataMode;
 /// v2: добавлено поле `language`. v3: добавлено `market_mode`.
 /// v4: добавлено `charts_split_by_core`. v5: добавлены `log_to_file` + `log_retention_days`.
 /// v6: добавлены `ui_font_delta` + `ui_scale`.
-/// v7: добавлен `chart_memory_percent`.
-pub const SCHEMA_VERSION: u32 = 7;
+/// v7: добавлен `chart_memory_percent`. v8: добавлен per-server `chart_bundle`.
+pub const SCHEMA_VERSION: u32 = 8;
 
 /// Старые файлы без поля `version` читаются как 0 → меньше SCHEMA_VERSION →
 /// триггерят досейв с дослоением новых дефолтов.
@@ -86,6 +86,10 @@ pub struct ServerMeta {
     pub market: String,
     #[serde(default = "servers::default_color")]
     pub color: [u8; 3],
+    /// Имя чарт-связки AddToChart (см. `ServerConfig::chart_bundle`). Пусто = по
+    /// глобальной настройке. Старые файлы → пустая строка (дефолт).
+    #[serde(default)]
+    pub chart_bundle: String,
 }
 
 #[derive(Default, Serialize, Deserialize)]
