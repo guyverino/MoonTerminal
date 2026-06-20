@@ -10,6 +10,7 @@ use moon_core::session::{CoreId, CoreStore};
 
 use super::filter::StrategyFilter;
 use super::rules::{Rules, Values};
+use super::tree_ops::path_segments;
 use super::{Key, StrategiesView};
 
 /// Поиск строки стратегии в store.
@@ -292,7 +293,7 @@ pub(super) fn build_node<'a>(it: impl Iterator<Item = &'a StrategyRow>) -> Folde
     let mut root = FolderNode::default();
     for r in it {
         let mut node = &mut root;
-        for part in r.folder_path.split(['/', '\\']).filter(|s| !s.is_empty()) {
+        for part in path_segments(&r.folder_path) {
             node = node.children.entry(part.to_string()).or_default();
         }
         node.strategies.push(r);
@@ -320,11 +321,7 @@ pub(super) fn folder_counts(
         if !filter.counts(r) {
             continue;
         }
-        let parts: Vec<&str> = r
-            .folder_path
-            .split(['/', '\\'])
-            .filter(|s| !s.is_empty())
-            .collect();
+        let parts: Vec<&str> = path_segments(&r.folder_path).collect();
         if parts.len() >= prefix.len()
             && prefix
                 .iter()

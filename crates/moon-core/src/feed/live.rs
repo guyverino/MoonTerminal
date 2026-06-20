@@ -11,7 +11,8 @@ use std::time::{Duration, Instant};
 use moonproto::state::{MarketHistorySizing, OrderTraceChartPoint, OrderTraceLine};
 use moonproto::{
     ClientConfig, ConnectConfig, Event, InitConfig, InitialStrategies, LifecycleEvent, MoonClient,
-    MoonEventSink, StrategyFields, StrategyKind, StrategySnapshot, TradesStreamMode, TransportMode,
+    MoonEventSink, StrategyFields, StrategyKind, StrategySchema, StrategySnapshot, TradesStreamMode,
+    TransportMode,
 };
 
 use super::assets::{build_assets, build_transfer_assets, to_exchange_kind};
@@ -27,6 +28,29 @@ use crate::config::ServerConfig;
 use crate::db::ReportTx;
 
 use crate::util::now_unix_ms as now_ms;
+
+/// Общий путь синка стратегий: берём ПОЛНЫЙ текущий набор, даём его `build` на правку
+/// (патч полей / смена пути / добавление новых), и если что-то изменилось — шлём ОДИН
+/// `sync_local_strategies` + лог. `build` возвращает число затронутых. Бамп `last_date`
+/// (rollback-guard Delphi) делает сам `build` у изменённых снапшотов.
+fn rebuild_sync(
+    client: &MoonClient,
+    server_id: u64,
+    action: &str,
+    build: impl FnOnce(&mut Vec<StrategySnapshot>, Option<&StrategySchema>, u64) -> usize,
+) {
+    if let Some(snap) = client.snapshot() {
+        let strats = snap.strats();
+        let schema = strats.strategy_schema();
+        let now = now_ms() as u64;
+        let mut full: Vec<StrategySnapshot> = strats.snapshots().cloned().collect();
+        let changed = build(&mut full, schema, now);
+        if changed > 0 {
+            let _ = client.strategies().sync_local_strategies(full);
+            log::info!("core {server_id} {action} {changed} strategies");
+        }
+    }
+}
 
 fn trace_point(p: OrderTraceChartPoint) -> Option<OrderTracePoint> {
     let time_ms = p.unix_millis() as f64;
@@ -243,45 +267,28 @@ pub fn run(
                     );
                 }
                 Ok(CoreCmd::EditStrategyFields { edits }) => {
-                    // `sync_local_strategies` СИНХРОНИТ ВЕСЬ локальный набор: внутри moonproto
-                    // делает `replace_with_snapshots` (clear + вставка переданных). Поэтому одной
-                    // командой шлём ПОЛНЫЙ список всех стратегий, патча ВСЕ указанные в `edits`
-                    // за один проход → один sync. (Раздельные команды на каждую стратегию
-                    // одного ядра перетирали бы друг друга — применялось бы к одной.)
-                    if let Some(snap) = client.snapshot() {
-                        let strats = snap.strats();
-                        let schema = strats.strategy_schema();
-                        // Delphi `FLastEditDate` / rollback-guard: сервер примет снапшот стратегии,
-                        // ТОЛЬКО если её last_date новее его копии — иначе откатит эхом старое.
-                        let now = now_ms() as u64;
+                    // `sync_local_strategies` СИНХРОНИТ ВЕСЬ локальный набор (moonproto делает
+                    // replace_with_snapshots). Патчим ВСЕ указанные в `edits` за один проход → один
+                    // sync (раздельные команды на стратегии одного ядра перетёрли бы друг друга).
+                    rebuild_sync(&client, server.id, "edit", |full, schema, now| {
                         let mut edited = 0usize;
-                        let full: Vec<_> = strats
-                            .snapshots()
-                            .map(|s| {
-                                let mut sc = s.clone();
-                                if let Some((_, changes)) =
-                                    edits.iter().find(|(id, _)| *id == sc.strategy_id)
-                                {
-                                    for (name, val) in changes {
-                                        let existing = sc.fields.get(name).cloned();
-                                        let stype =
-                                            schema.and_then(|s| s.field(name)).map(|f| f.type_id);
-                                        sc.fields.insert(
-                                            name.as_str(),
-                                            fv_from_str(existing.as_ref(), stype, val),
-                                        );
-                                    }
-                                    sc.last_date = now.max(sc.last_date + 1);
-                                    edited += 1;
-                                }
-                                sc
-                            })
-                            .collect();
-                        if edited > 0 {
-                            let _ = client.strategies().sync_local_strategies(full);
-                            log::info!("core {} edit {} strategies", server.id, edited);
+                        for sc in full.iter_mut() {
+                            let Some((_, changes)) =
+                                edits.iter().find(|(id, _)| *id == sc.strategy_id)
+                            else {
+                                continue;
+                            };
+                            for (name, val) in changes {
+                                let existing = sc.fields.get(name).cloned();
+                                let stype = schema.and_then(|s| s.field(name)).map(|f| f.type_id);
+                                sc.fields
+                                    .insert(name.as_str(), fv_from_str(existing.as_ref(), stype, val));
+                            }
+                            sc.last_date = now.max(sc.last_date + 1);
+                            edited += 1;
                         }
-                    }
+                        edited
+                    });
                 }
                 Ok(CoreCmd::DeleteStrategy { id }) => {
                     // `TStratDelete(strategy_id=id, folder_path="")` — удалить одну стратегию.
@@ -295,24 +302,17 @@ pub fn run(
                     log::info!("core {} delete folder {path}", server.id);
                 }
                 Ok(CoreCmd::CreateStrategies { specs }) => {
-                    // Полный набор + новые снапшоты (тот же sync-путь, что EditStrategyFields).
-                    // id = max+1 ЦЕЛЕВОГО ядра (безопасно для межъядерной вставки). Поля —
-                    // из строк по типу схемы (как fv_from_str при правках), existing=None.
-                    if let Some(snap) = client.snapshot() {
-                        let strats = snap.strats();
-                        let schema = strats.strategy_schema();
-                        let now = now_ms() as u64;
-                        let mut full: Vec<StrategySnapshot> = strats.snapshots().cloned().collect();
-                        let mut next_id =
-                            full.iter().map(|s| s.strategy_id).max().unwrap_or(0) + 1;
-                        let mut added = 0usize;
+                    // К полному набору добавляем новые снапшоты. id = max+1 ЦЕЛЕВОГО ядра
+                    // (безопасно для межъядерной вставки). Поля — из строк по типу схемы
+                    // (как fv_from_str при правках), existing=None.
+                    rebuild_sync(&client, server.id, "create", |full, schema, now| {
+                        let mut next_id = full.iter().map(|s| s.strategy_id).max().unwrap_or(0) + 1;
                         for spec in &specs {
                             let id = next_id;
                             next_id += 1;
                             let mut fields = StrategyFields::new();
                             for (name, val) in &spec.fields {
-                                let stype =
-                                    schema.and_then(|s| s.field(name)).map(|f| f.type_id);
+                                let stype = schema.and_then(|s| s.field(name)).map(|f| f.type_id);
                                 fields.insert(name.as_str(), fv_from_str(None, stype, val));
                             }
                             full.push(StrategySnapshot::new(
@@ -324,39 +324,25 @@ pub fn run(
                                 spec.folder_path.clone(),
                                 fields,
                             ));
-                            added += 1;
                         }
-                        if added > 0 {
-                            let _ = client.strategies().sync_local_strategies(full);
-                            log::info!("core {} create {added} strategies", server.id);
-                        }
-                    }
+                        specs.len()
+                    });
                 }
                 Ok(CoreCmd::MoveStrategies { moves }) => {
-                    // Смена `path` у указанных стратегий в полном наборе + bump last_date → один sync.
-                    if let Some(snap) = client.snapshot() {
-                        let strats = snap.strats();
-                        let now = now_ms() as u64;
+                    // Смена `path` у указанных стратегий + bump last_date → один sync.
+                    rebuild_sync(&client, server.id, "move", |full, _schema, now| {
                         let mut changed = 0usize;
-                        let full: Vec<StrategySnapshot> = strats
-                            .snapshots()
-                            .map(|s| {
-                                let mut sc = s.clone();
-                                if let Some((_, new_path)) =
-                                    moves.iter().find(|(id, _)| *id == sc.strategy_id)
-                                {
-                                    sc.path = new_path.as_str().into();
-                                    sc.last_date = now.max(sc.last_date + 1);
-                                    changed += 1;
-                                }
-                                sc
-                            })
-                            .collect();
-                        if changed > 0 {
-                            let _ = client.strategies().sync_local_strategies(full);
-                            log::info!("core {} move {changed} strategies", server.id);
+                        for sc in full.iter_mut() {
+                            if let Some((_, new_path)) =
+                                moves.iter().find(|(id, _)| *id == sc.strategy_id)
+                            {
+                                sc.path = new_path.as_str().into();
+                                sc.last_date = now.max(sc.last_date + 1);
+                                changed += 1;
+                            }
                         }
-                    }
+                        changed
+                    });
                 }
                 Ok(CoreCmd::TransferAsset {
                     asset,

@@ -437,6 +437,24 @@ impl StrategiesView {
         }
     }
 
+    /// Раскрыть каждый уровень пути (накопительные префиксы) в `expanded_folders`.
+    /// Единый помощник раскрытия цепочки папок (используется при «развернуть всё» и при
+    /// создании папки, чтобы новая была сразу видна).
+    pub(super) fn expand_path<'a>(
+        &mut self,
+        core: CoreId,
+        segments: impl Iterator<Item = &'a str>,
+    ) {
+        let mut acc = String::new();
+        for part in segments {
+            if !acc.is_empty() {
+                acc.push('/');
+            }
+            acc.push_str(part);
+            self.expanded_folders.insert((core, acc.clone()));
+        }
+    }
+
     /// Развернуть все узлы (если `collapsed`) или свернуть все (иначе).
     fn expand_collapse_toggle(
         &mut self,
@@ -444,26 +462,18 @@ impl StrategiesView {
         store: &CoreStore,
         collapsed: bool,
     ) {
-        if collapsed {
-            for (c, _) in cores {
-                self.expanded_cores.insert(*c);
-                if let Some(cd) = store.core(*c) {
-                    for r in &cd.strategies {
-                        // Раскрываем каждый уровень пути (накопительные префиксы).
-                        let mut acc = String::new();
-                        for part in r.folder_path.split(['/', '\\']).filter(|s| !s.is_empty()) {
-                            if !acc.is_empty() {
-                                acc.push('/');
-                            }
-                            acc.push_str(part);
-                            self.expanded_folders.insert((*c, acc.clone()));
-                        }
-                    }
-                }
-            }
-        } else {
+        if !collapsed {
             self.expanded_cores.clear();
             self.expanded_folders.clear();
+            return;
+        }
+        for (c, _) in cores {
+            self.expanded_cores.insert(*c);
+            let Some(cd) = store.core(*c) else { continue };
+            let paths: Vec<String> = cd.strategies.iter().map(|r| r.folder_path.clone()).collect();
+            for path in paths {
+                self.expand_path(*c, tree_ops::path_segments(&path));
+            }
         }
     }
 

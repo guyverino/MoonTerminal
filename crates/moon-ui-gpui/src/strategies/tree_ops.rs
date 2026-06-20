@@ -5,7 +5,6 @@
 //!
 //! Папка существует только как ПРЕФИКС пути у стратегий (в данных пустой папки нет —
 //! см. STRATEGIES_TREE_OPS_PLAN.md): все операции — это правка `folder_path`/набора.
-#![allow(dead_code)] // публичные функции включаются в дереве/диспетче (этапы 3–4)
 
 use std::collections::HashSet;
 
@@ -14,12 +13,15 @@ use moon_core::feed::{SchemaKind, StrategyRow};
 /// Имя поля, в котором moonproto хранит имя стратегии (`StrategySnapshot::strategy_name`).
 pub const STRATEGY_NAME_FIELD: &str = "StrategyName";
 
-/// Разбить путь папки на сегменты (`/` и `\` — разделители, пустые отбрасываем).
+/// Сегменты пути (`/` и `\` — разделители, пустые отброшены) — БЕЗ аллокаций. Единый
+/// источник правила разбиения пути для всего окна (дерево/счётчики/раскрытие/операции).
+pub fn path_segments(path: &str) -> impl Iterator<Item = &str> {
+    path.split(['/', '\\']).filter(|s| !s.is_empty())
+}
+
+/// Разбить путь папки на владеемые сегменты (поверх [`path_segments`]).
 pub fn split_path(path: &str) -> Vec<String> {
-    path.split(['/', '\\'])
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .collect()
+    path_segments(path).map(str::to_string).collect()
 }
 
 /// Собрать путь из сегментов (канонично через `/`).
@@ -28,7 +30,7 @@ pub fn join_path(parts: &[String]) -> String {
 }
 
 /// `path` начинается с `prefix` (посегментно, регистр учитывается как в данных)?
-pub fn starts_with(path: &[String], prefix: &[String]) -> bool {
+fn starts_with(path: &[String], prefix: &[String]) -> bool {
     path.len() >= prefix.len() && prefix.iter().zip(path).all(|(a, b)| a == b)
 }
 
@@ -80,7 +82,7 @@ pub fn default_fields(kind: &SchemaKind) -> Vec<(String, String)> {
 }
 
 /// Заменить (или добавить) значение поля по имени.
-pub fn set_field(fields: &mut Vec<(String, String)>, name: &str, value: &str) {
+fn set_field(fields: &mut Vec<(String, String)>, name: &str, value: &str) {
     if let Some(slot) = fields.iter_mut().find(|(n, _)| n == name) {
         slot.1 = value.to_string();
     } else {

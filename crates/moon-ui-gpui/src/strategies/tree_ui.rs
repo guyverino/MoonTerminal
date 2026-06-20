@@ -424,13 +424,11 @@ impl StrategiesView {
         let mut parts = tree_ops::split_path(parent);
         parts.push(name.to_string());
         self.ui_folders.insert((core, tree_ops::join_path(&parts)));
-        // Раскрыть ядро и всю родительскую цепочку, чтобы новая папка была сразу видна.
+        // Раскрыть ядро и родительскую цепочку (все сегменты, кроме новой папки), чтобы она
+        // была сразу видна.
         self.expanded_cores.insert(core);
-        let mut acc: Vec<String> = Vec::new();
-        for part in parts.iter().take(parts.len().saturating_sub(1)) {
-            acc.push(part.clone());
-            self.expanded_folders.insert((core, tree_ops::join_path(&acc)));
-        }
+        let ancestors = parts.len().saturating_sub(1);
+        self.expand_path(core, parts.iter().take(ancestors).map(String::as_str));
     }
 
     fn remove_ui_folder(&mut self, core: CoreId, path: &[String]) {
