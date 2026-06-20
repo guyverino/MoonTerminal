@@ -148,6 +148,7 @@ pub(super) fn build_assets(
         total_pnl: g.total_pnl,
         free_usdt: g.btc_balance_total * rate,
         total_usdt: g.btc_balance_full * rate,
+        pnl_usdt: g.total_pnl * rate,
     };
     AssetsSnapshot { rows, global }
 }

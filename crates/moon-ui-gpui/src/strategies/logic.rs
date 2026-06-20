@@ -300,6 +300,14 @@ pub(super) fn build_node<'a>(it: impl Iterator<Item = &'a StrategyRow>) -> Folde
     root
 }
 
+/// Гарантирует существование узла по пути (для пустых UI-папок без стратегий).
+pub(super) fn ensure_folder(root: &mut FolderNode, parts: &[String]) {
+    let mut node = root;
+    for part in parts {
+        node = node.children.entry(part.clone()).or_default();
+    }
+}
+
 /// Активных/всего (по фильтру типа/L/S) во всех стратегиях под путём `prefix`.
 pub(super) fn folder_counts(
     strategies: &[StrategyRow],

@@ -322,7 +322,9 @@ pub struct GlobalBalanceRow {
     pub btc_full: f64,
     /// special_coin_balance (USDT для фьюч, BUSD/USDC в MA-режиме и т.п.).
     pub special_coin: f64,
-    /// Суммарный PnL по BTC-котируемым рынкам.
+    /// Суммарный PnL ядра в БАЗОВОЙ валюте (серверный `total_pnl` = MoonBot RecalcTotalPnl:
+    /// сумма `total_profit` ТОЛЬКО по рынкам базовой валюты `is_btc_market`). Это «реальный»
+    /// PnL ядра — не равен сумме `profit_*` по всем строкам таблицы (там мешаются котировки).
     pub total_pnl: f64,
     /// Свободный баланс аккаунта в USDT (btc_balance_total × курс базовой валюты→USDT).
     /// Считается на ядре с УЧЁТОМ базовой валюты (для USDT-бота `btc_balance_*` уже в USDT,
@@ -330,6 +332,9 @@ pub struct GlobalBalanceRow {
     pub free_usdt: f64,
     /// Итоговый баланс аккаунта в USDT (btc_balance_full × курс, с нереализ. PnL).
     pub total_usdt: f64,
+    /// Серверный PnL ядра (`total_pnl`), пересчитанный в USDT той же базовой ставкой, что
+    /// `free_usdt`/`total_usdt`. Это значение шапки «PnL» — берём с сервера, не суммируем сами.
+    pub pnl_usdt: f64,
 }
 
 /// Снимок активов ядра (для окна «Активы»). Декаплено от moonproto.

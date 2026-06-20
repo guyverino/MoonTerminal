@@ -61,6 +61,16 @@ impl FeedTx {
     }
 }
 
+/// Спецификация новой стратегии (создание/вставка). `fields` — форматированные строки UI
+/// (как в `EditStrategyFields`); имя стратегии — поле `"StrategyName"`. feed конвертирует
+/// строки в `FieldValue` по схеме вида и назначает новый `strategy_id`.
+#[derive(Debug, Clone)]
+pub struct NewStrategySpec {
+    pub kind_ordinal: u8,
+    pub folder_path: String,
+    pub fields: Vec<(String, String)>,
+}
+
 /// Команды координатора → backend ядра. Задают рыночную РОЛЬ ядра.
 #[derive(Debug, Clone)]
 pub enum CoreCmd {
@@ -89,6 +99,29 @@ pub enum CoreCmd {
     /// заменяет набор, и второй sync перетёр бы правку первого (применялось бы к одной).
     EditStrategyFields {
         edits: Vec<(u64, Vec<(String, String)>)>,
+    },
+    /// Удалить ОДНУ стратегию ядра по `id` (`TStratDelete` с `folder_path=""`). Необратимо.
+    /// Enforcement правила `checked` (только выключенные) — на стороне UI до отправки.
+    DeleteStrategy {
+        id: u64,
+    },
+    /// Удалить ПАПКУ целиком по пути (`TStratDelete` с `strategy_id=0`). Сервер сносит пустую
+    /// папку; стратегии под ней должны быть удалены/перенесены заранее (UI это гарантирует).
+    DeleteFolder {
+        path: String,
+    },
+    /// Создать новые стратегии (создание / вставка из буфера, в т.ч. межъядерная). На стороне
+    /// feed: к ПОЛНОМУ набору добавляем по `StrategySnapshot::new` (новый id = max+1 ЦЕЛЕВОГО
+    /// ядра, поля из строк по схеме, `last_date=now`), один `sync_local_strategies`. Один набор
+    /// на ядро.
+    CreateStrategies {
+        specs: Vec<NewStrategySpec>,
+    },
+    /// Сменить папку существующих стратегий (переименование папки / перенос). `moves` —
+    /// `(strategy_id, новый folder_path)`. feed правит `path` у указанных в полном наборе,
+    /// бампает `last_date`, шлёт один `sync_local_strategies`.
+    MoveStrategies {
+        moves: Vec<(u64, String)>,
     },
     /// Перенос актива между кошельками ОДНОГО ядра (drag&drop в дереве «Активы»).
     /// `from`/`to` — кошельки (Spot/Futures/Quarterly); `qty` в базовой монете.

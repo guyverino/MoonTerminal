@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use moonproto::state::{MarketHistorySizing, OrderTraceChartPoint, OrderTraceLine};
 use moonproto::{
     ClientConfig, ConnectConfig, Event, InitConfig, InitialStrategies, LifecycleEvent, MoonClient,
-    MoonEventSink, TradesStreamMode, TransportMode,
+    MoonEventSink, StrategyFields, StrategyKind, StrategySnapshot, TradesStreamMode, TransportMode,
 };
 
 use super::assets::{build_assets, build_transfer_assets, to_exchange_kind};
@@ -280,6 +280,81 @@ pub fn run(
                         if edited > 0 {
                             let _ = client.strategies().sync_local_strategies(full);
                             log::info!("core {} edit {} strategies", server.id, edited);
+                        }
+                    }
+                }
+                Ok(CoreCmd::DeleteStrategy { id }) => {
+                    // `TStratDelete(strategy_id=id, folder_path="")` — удалить одну стратегию.
+                    // Правило «только выключенные» проверено в UI до отправки.
+                    let _ = client.strategies().delete(id, "");
+                    log::info!("core {} delete strategy {id}", server.id);
+                }
+                Ok(CoreCmd::DeleteFolder { path }) => {
+                    // `TStratDelete(strategy_id=0, folder_path=path)` — удалить папку целиком.
+                    let _ = client.strategies().delete(0, path.as_str());
+                    log::info!("core {} delete folder {path}", server.id);
+                }
+                Ok(CoreCmd::CreateStrategies { specs }) => {
+                    // Полный набор + новые снапшоты (тот же sync-путь, что EditStrategyFields).
+                    // id = max+1 ЦЕЛЕВОГО ядра (безопасно для межъядерной вставки). Поля —
+                    // из строк по типу схемы (как fv_from_str при правках), existing=None.
+                    if let Some(snap) = client.snapshot() {
+                        let strats = snap.strats();
+                        let schema = strats.strategy_schema();
+                        let now = now_ms() as u64;
+                        let mut full: Vec<StrategySnapshot> = strats.snapshots().cloned().collect();
+                        let mut next_id =
+                            full.iter().map(|s| s.strategy_id).max().unwrap_or(0) + 1;
+                        let mut added = 0usize;
+                        for spec in &specs {
+                            let id = next_id;
+                            next_id += 1;
+                            let mut fields = StrategyFields::new();
+                            for (name, val) in &spec.fields {
+                                let stype =
+                                    schema.and_then(|s| s.field(name)).map(|f| f.type_id);
+                                fields.insert(name.as_str(), fv_from_str(None, stype, val));
+                            }
+                            full.push(StrategySnapshot::new(
+                                id,
+                                0,
+                                now,
+                                false,
+                                StrategyKind::from_ordinal(spec.kind_ordinal),
+                                spec.folder_path.clone(),
+                                fields,
+                            ));
+                            added += 1;
+                        }
+                        if added > 0 {
+                            let _ = client.strategies().sync_local_strategies(full);
+                            log::info!("core {} create {added} strategies", server.id);
+                        }
+                    }
+                }
+                Ok(CoreCmd::MoveStrategies { moves }) => {
+                    // Смена `path` у указанных стратегий в полном наборе + bump last_date → один sync.
+                    if let Some(snap) = client.snapshot() {
+                        let strats = snap.strats();
+                        let now = now_ms() as u64;
+                        let mut changed = 0usize;
+                        let full: Vec<StrategySnapshot> = strats
+                            .snapshots()
+                            .map(|s| {
+                                let mut sc = s.clone();
+                                if let Some((_, new_path)) =
+                                    moves.iter().find(|(id, _)| *id == sc.strategy_id)
+                                {
+                                    sc.path = new_path.as_str().into();
+                                    sc.last_date = now.max(sc.last_date + 1);
+                                    changed += 1;
+                                }
+                                sc
+                            })
+                            .collect();
+                        if changed > 0 {
+                            let _ = client.strategies().sync_local_strategies(full);
+                            log::info!("core {} move {changed} strategies", server.id);
                         }
                     }
                 }

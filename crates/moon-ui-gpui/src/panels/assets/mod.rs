@@ -343,9 +343,13 @@ impl Render for AssetsView {
 
         let count = entries.len();
         let total_value: f64 = entries.iter().map(|e| e.value).sum();
-        let total_pnl: f64 = entries
+        // PnL берём СЕРВЕРНЫЙ (`global.pnl_usdt` = RecalcTotalPnl ядра), а не сумму `profit_*`
+        // по строкам: построчная сумма мешает котировки и расходится с реальным PnL ядра.
+        let total_pnl: f64 = self
+            .scope_cores(b)
             .iter()
-            .map(|e| e.row.profit_b + e.row.profit_l + e.row.profit_s)
+            .filter_map(|(id, _)| b.session.store().core(*id))
+            .map(|cd| cd.assets.global.pnl_usdt)
             .sum();
 
         let aggs = self.per_core(b);

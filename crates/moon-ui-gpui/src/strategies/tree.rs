@@ -48,6 +48,7 @@ impl StrategiesView {
                 total
             );
             let cid = *core_id;
+            let core_dnd_bg = moon_alpha(p.panel, 0.85);
             list = list.child(
                 div()
                     .id(SharedString::from(format!("core-{cid}")))
@@ -65,13 +66,26 @@ impl StrategiesView {
                     .on_click(cx.listener(move |this, _, _, cx| {
                         toggle(&mut this.expanded_cores, cid);
                         cx.notify();
+                    }))
+                    // DnD: сброс на ядро = перенос/копирование в КОРЕНЬ этого ядра.
+                    .drag_over::<super::tree_ui::StratDrag>(move |s, _, _, _| s.bg(core_dnd_bg))
+                    .drag_over::<super::tree_ui::FolderDrag>(move |s, _, _, _| s.bg(core_dnd_bg))
+                    .on_drop(cx.listener(move |this, drag: &super::tree_ui::StratDrag, _w, cx| {
+                        this.drop_strategies(cid, Vec::new(), drag, cx);
+                    }))
+                    .on_drop(cx.listener(move |this, drag: &super::tree_ui::FolderDrag, _w, cx| {
+                        this.drop_folder(cid, Vec::new(), drag, cx);
                     })),
             );
             if !open {
                 continue;
             }
             // Вложенное дерево папок (отступ слева — как egui ui.indent).
-            let root = build_node(cd.strategies.iter().filter(|r| self.filter.matches(r)));
+            let mut root = build_node(cd.strategies.iter().filter(|r| self.filter.matches(r)));
+            // Подмешиваем пустые UI-папки (созданные, ещё без стратегий).
+            for parts in self.ui_folder_paths(*core_id) {
+                ensure_folder(&mut root, &parts);
+            }
             let mut prefix: Vec<String> = Vec::new();
             let mut kids: Vec<AnyElement> = Vec::new();
             self.render_node(
@@ -110,7 +124,7 @@ impl StrategiesView {
         let cores_owned: Arc<Vec<(CoreId, String)>> = Arc::new(cores.to_vec());
 
         v_flex()
-            .w(px(220.0))
+            .w(px(380.0))
             .h_full()
             .bg(moon(p.shell_high))
             .font_family("Geist Mono")
@@ -139,7 +153,11 @@ impl StrategiesView {
                             .gap(design::ui_px(cx, 7.0))
                             .items_center()
                             .child(self.combo_kind(kind_text, kinds, cx))
-                            .child(self.combo_dir(dir_text, cx)),
+                            .child(self.combo_dir(dir_text, cx))
+                            .child({
+                                let (cc, ct) = self.default_target(store, cores);
+                                self.create_dropdown(cc, ct, cx)
+                            }),
                     )
                     .child(
                         h_flex()
@@ -282,53 +300,64 @@ impl StrategiesView {
             .into_any_element()
     }
 
-    /// Нижняя панель действий: старт/стоп отмеченных + счётчик стейджинга.
+    /// Нижняя панель действий: СЛЕВА группа выделения (копировать/вставить, под ними —
+    /// удалить во всю ширину), СПРАВА старт/стоп отмеченных стопкой. Счётчик стейджинга — по центру.
     fn action_bar(
         &self,
         cores: Arc<Vec<(CoreId, String)>>,
-        _store: &CoreStore,
+        store: &CoreStore,
         cx: &Context<Self>,
     ) -> AnyElement {
-        // Кнопки видимы всегда (как egui); пустое действие — no-op в apply_start_stop.
         let cs = cores.clone();
-        let mut row = h_flex().w_full().p_2().gap_2().items_center();
-        row = row.child(
-            MoonButton::new("start-checked")
-                .primary()
-                .size(MoonButtonSize::Micro)
-                .label("▶ отмеченных")
-                .on_click({
-                    let cs = cs.clone();
-                    cx.listener(move |this, _, _, cx| {
-                        let cores_v = cs.as_ref().clone();
-                        this.apply_start_stop(&cores_v, true, cx);
+        // Правая группа: старт/стоп друг под другом, прижата вправо.
+        let right = v_flex()
+            .gap_1()
+            .items_end()
+            .child(
+                MoonButton::new("start-checked")
+                    .primary()
+                    .size(MoonButtonSize::Micro)
+                    .label("▶ отмеченных")
+                    .on_click({
+                        let cs = cs.clone();
+                        cx.listener(move |this, _, _, cx| {
+                            let cores_v = cs.as_ref().clone();
+                            this.apply_start_stop(&cores_v, true, cx);
+                        })
                     })
-                })
-                .render(),
-        );
-        row = row.child(
-            MoonButton::new("stop-checked")
-                .outline()
-                .size(MoonButtonSize::Micro)
-                .label("■ отмеченных")
-                .on_click({
-                    let cs = cs.clone();
-                    cx.listener(move |this, _, _, cx| {
-                        let cores_v = cs.as_ref().clone();
-                        this.apply_start_stop(&cores_v, false, cx);
+                    .render(),
+            )
+            .child(
+                MoonButton::new("stop-checked")
+                    .outline()
+                    .size(MoonButtonSize::Micro)
+                    .label("■ отмеченных")
+                    .on_click({
+                        let cs = cs.clone();
+                        cx.listener(move |this, _, _, cx| {
+                            let cores_v = cs.as_ref().clone();
+                            this.apply_start_stop(&cores_v, false, cx);
+                        })
                     })
-                })
-                .render(),
-        );
+                    .render(),
+            );
+
+        let mut bar = h_flex()
+            .w_full()
+            .p_2()
+            .gap_2()
+            .items_start()
+            .justify_between()
+            .child(self.selection_toolbar(store, cx));
         if !self.staged.is_empty() {
-            row = row.child(
+            bar = bar.child(
                 div()
                     .text_xs()
                     .text_color(rgb(MoonPalette::active(cx).amber))
                     .child(format!("изменений: {}", self.staged.len())),
             );
         }
-        row.into_any_element()
+        bar.child(right).into_any_element()
     }
 
     /// Рекурсивно собирает элементы узла: подпапки (сворачиваемые, с активн./всего),
@@ -358,6 +387,12 @@ impl StrategiesView {
                 if fopen { "▼" } else { "▶" }
             );
             let fkey_click = fkey.clone();
+            let menu_path = prefix.clone();
+            let drag_path = prefix.clone();
+            let strat_drop = prefix.clone();
+            let folder_drop = prefix.clone();
+            let fname: SharedString = name.clone().into();
+            let dnd_bg = moon_alpha(p.blue, 0.18);
             out.push(
                 div()
                     .id(SharedString::from(format!("folder-{core_id}-{path_key}")))
@@ -374,6 +409,40 @@ impl StrategiesView {
                     .on_click(cx.listener(move |this, _, _, cx| {
                         toggle(&mut this.expanded_folders, fkey_click.clone());
                         cx.notify();
+                    }))
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(move |this, e: &MouseDownEvent, _, cx| {
+                            cx.stop_propagation();
+                            this.open_menu(
+                                super::tree_ui::ContextMenu {
+                                    core: core_id,
+                                    target: super::tree_ui::MenuTarget::Folder(menu_path.clone()),
+                                    pos: e.position,
+                                },
+                                cx,
+                            );
+                        }),
+                    )
+                    // DnD: папка — источник перетаскивания и цель сброса (стратегий и папок).
+                    .on_drag(
+                        super::tree_ui::FolderDrag {
+                            core: core_id,
+                            path: drag_path,
+                        },
+                        move |_d, _p, _w, cx| {
+                            cx.new(|_| super::tree_ui::DragChip {
+                                label: fname.clone(),
+                            })
+                        },
+                    )
+                    .drag_over::<super::tree_ui::StratDrag>(move |s, _, _, _| s.bg(dnd_bg))
+                    .drag_over::<super::tree_ui::FolderDrag>(move |s, _, _, _| s.bg(dnd_bg))
+                    .on_drop(cx.listener(move |this, drag: &super::tree_ui::StratDrag, _w, cx| {
+                        this.drop_strategies(core_id, strat_drop.clone(), drag, cx);
+                    }))
+                    .on_drop(cx.listener(move |this, drag: &super::tree_ui::FolderDrag, _w, cx| {
+                        this.drop_folder(core_id, folder_drop.clone(), drag, cx);
                     }))
                     .into_any_element(),
             );
@@ -420,6 +489,13 @@ impl StrategiesView {
         let type_col = if r.is_short { p.orange } else { p.text_muted };
 
         let order_c = order.clone();
+        // Источник DnD: тащим весь мультивыбор этого ядра (если строка в выборе) или одну.
+        let drag_ids = self.drag_ids_for(core, r.id);
+        let drag_label: SharedString = if drag_ids.len() > 1 {
+            format!("{} стратегий", drag_ids.len()).into()
+        } else {
+            r.name.clone().into()
+        };
         let mut name_row = div()
             .id(SharedString::from(format!("strat-{core}-{}", r.id)))
             .flex_1()
@@ -451,12 +527,45 @@ impl StrategiesView {
                             .child(r.kind.clone()),
                     ),
             )
-            .on_click(cx.listener(move |this, e: &ClickEvent, _, cx| {
+            .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
+                // Фокус на окно стратегий — чтобы Ctrl+C/V/Delete доходили до on_key_down.
+                window.focus(&this.focus, cx);
                 let m = e.modifiers();
                 if this.apply_click(key, &order_c, m.shift, m.secondary()) {
                     cx.notify();
                 }
-            }));
+            }))
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |this, e: &MouseDownEvent, _, cx| {
+                    cx.stop_propagation();
+                    // ПКМ по невыбранной — выбрать только её (как в проводнике).
+                    if !this.sel.contains(&key) {
+                        this.sel.clear();
+                        this.sel.insert(key);
+                        this.selected = Some(key);
+                    }
+                    this.open_menu(
+                        super::tree_ui::ContextMenu {
+                            core,
+                            target: super::tree_ui::MenuTarget::Strategy(key.1),
+                            pos: e.position,
+                        },
+                        cx,
+                    );
+                }),
+            )
+            .on_drag(
+                super::tree_ui::StratDrag {
+                    core,
+                    ids: drag_ids,
+                },
+                move |_d, _pos, _w, cx| {
+                    cx.new(|_| super::tree_ui::DragChip {
+                        label: drag_label.clone(),
+                    })
+                },
+            );
         if highlighted {
             name_row = name_row
                 .bg(moon_alpha(p.amber, 0.16))
