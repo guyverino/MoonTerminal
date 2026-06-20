@@ -18,8 +18,8 @@ use gpui::*;
 use moon_ui::{
     DockArea, MoonButtonSize, MoonButtonVariant, MoonDataCell, MoonDataRow, MoonDataTable,
     MoonDataTableColumn, MoonDataTableState, MoonDropdown, MoonInput, MoonInputEvent, MoonInputState,
-    MoonMenuItem, MoonMenuSize, MoonPalette, Panel, PanelEvent, PanelState, StyledExt, h_flex,
-    v_flex,
+    MoonMenuItem, MoonMenuSize, MoonPalette, MoonText, MoonTone, Panel, PanelEvent, PanelState,
+    StyledExt, h_flex, v_flex,
 };
 use rusqlite::Connection;
 use rusqlite::types::Value;
@@ -43,7 +43,6 @@ const DEFAULT_VISIBLE: &[&str] = &[
     "sellprice",
     "profitbtc",
     "lev",
-    "strategyid",
     "sellreason",
     "comment",
 ];
@@ -94,10 +93,22 @@ impl ReportPanel {
             .as_ref()
             .map(|g| g.load(Ordering::Relaxed))
             .unwrap_or(0);
-        let visible = db::DISPLAY_COLUMNS
-            .iter()
-            .map(|c| DEFAULT_VISIBLE.contains(c))
-            .collect();
+        // Видимость колонок: восстанавливаем сохранённый набор (app_meta), иначе дефолт.
+        let visible: Vec<bool> = conn
+            .as_ref()
+            .and_then(db::load_visible)
+            .map(|saved| {
+                db::DISPLAY_COLUMNS
+                    .iter()
+                    .map(|c| saved.iter().any(|s| s == c))
+                    .collect()
+            })
+            .unwrap_or_else(|| {
+                db::DISPLAY_COLUMNS
+                    .iter()
+                    .map(|c| DEFAULT_VISIBLE.contains(c))
+                    .collect()
+            });
         let (sort_key, sort_desc) = conn
             .as_ref()
             .and_then(db::load_sort)
@@ -216,6 +227,22 @@ impl ReportPanel {
             self.needs_query = true;
             cx.notify();
         }
+    }
+    /// Переключить видимость колонки и СОХРАНИТЬ набор (app_meta) — переживает рестарт.
+    pub(super) fn toggle_column(&mut self, i: usize, cx: &mut Context<Self>) {
+        if let Some(slot) = self.visible.get_mut(i) {
+            *slot = !*slot;
+        }
+        if let Some(conn) = &self.conn {
+            let cols: Vec<&str> = db::DISPLAY_COLUMNS
+                .iter()
+                .enumerate()
+                .filter(|(j, _)| self.visible.get(*j).copied().unwrap_or(false))
+                .map(|(_, c)| *c)
+                .collect();
+            db::save_visible(conn, &cols);
+        }
+        cx.notify();
     }
     fn set_report_sort(&mut self, col: &str, sort_desc: bool, cx: &mut Context<Self>) {
         if self.sort_key == col && self.sort_desc == sort_desc {

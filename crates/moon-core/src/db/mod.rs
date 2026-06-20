@@ -393,6 +393,28 @@ pub fn save_sort(conn: &Connection, key: &str, desc: bool) {
     );
 }
 
+/// Сохранённый набор видимых колонок отчёта (имена через запятую). None — не сохраняли.
+pub fn load_visible(conn: &Connection) -> Option<Vec<String>> {
+    let csv: String = conn
+        .query_row(
+            "SELECT value FROM app_meta WHERE key='report_visible'",
+            [],
+            |r| r.get(0),
+        )
+        .ok()?;
+    Some(csv.split(',').filter(|s| !s.is_empty()).map(str::to_string).collect())
+}
+
+/// Сохранить набор видимых колонок отчёта (имена через запятую).
+pub fn save_visible(conn: &Connection, cols: &[&str]) {
+    let csv = cols.join(",");
+    let _ = conn.execute(
+        "INSERT INTO app_meta(key,value) VALUES('report_visible',?1)
+         ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        rusqlite::params![csv],
+    );
+}
+
 /// Валидируем ключ сортировки против известных колонок (без инъекций).
 fn sort_column(key: &str) -> &'static str {
     DISPLAY_COLUMNS

@@ -88,12 +88,7 @@ impl ReportPanel {
                 .checked(on)
                 .selected(on)
                 .on_click(move |_, _, app| {
-                    view.update(app, |t, c| {
-                        if let Some(slot) = t.visible.get_mut(i) {
-                            *slot = !*slot;
-                        }
-                        c.notify();
-                    });
+                    view.update(app, |t, c| t.toggle_column(i, c));
                 })
         });
         MoonDropdown::new("rep-cols")

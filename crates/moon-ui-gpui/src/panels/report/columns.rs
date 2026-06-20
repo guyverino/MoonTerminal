@@ -37,12 +37,28 @@ pub(super) fn report_data_row(
 
 fn report_data_cell(col: &str, val: &Value, p: MoonPalette) -> MoonDataCell {
     let (text, color) = cell(col, val, p);
-    let cell = MoonDataCell::text(text).font_size(10.0).line_height(13.0);
-    if let Some(color) = color {
-        cell.text_color(color)
-    } else {
-        cell
-    }
+    // Клиппируем по реальной ширине колонки: `MoonDataTable::render_cell` ставит
+    // `whitespace_nowrap()` БЕЗ `overflow_hidden()`, поэтому длинный текст вытекает на
+    // соседнюю ячейку (баг форка, см. docs-internal/FORK_BUGS.md). Обёртка с
+    // overflow_hidden обрезает текст по границе колонки. Выравнивание — как у колонки.
+    let right = is_numeric_report_column(col);
+    let color = color.unwrap_or_else(|| MoonTone::Default.color(p));
+    let inner = div()
+        .flex()
+        .w_full()
+        .min_w_0()
+        .overflow_hidden()
+        .when(right, |d| d.justify_end())
+        .child(
+            MoonText::new(text)
+                .color(color)
+                .font_size(10.0)
+                .line_height(13.0)
+                .mono(true)
+                .uppercase(false)
+                .render(),
+        );
+    MoonDataCell::element(inner)
 }
 
 fn is_numeric_report_column(col: &str) -> bool {
