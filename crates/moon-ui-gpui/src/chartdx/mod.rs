@@ -14,14 +14,12 @@ pub mod background;
 mod base;
 // Оркестратор движка, вынесенный из этого файла (impl-блоки; структуры объявлены ниже).
 // Дочерние модули видят приватные поля структур-предка — логика не менялась, только переезд.
-mod data_state;
-mod engine;
-mod render_state;
-mod text;
 #[cfg(windows)]
 pub mod combo;
 #[cfg(windows)]
 pub mod cursor;
+mod data_state;
+mod engine;
 #[cfg(windows)]
 pub mod gpu;
 #[cfg(windows)]
@@ -33,6 +31,8 @@ pub mod orderbook;
 pub mod pane;
 #[cfg(windows)]
 pub mod readout;
+mod render_state;
+mod text;
 pub mod types;
 #[cfg(windows)]
 pub mod userdata;
@@ -420,6 +420,7 @@ impl GpuCanvasDriver for ChartCanvasDriver {
     }
 }
 
+#[derive(Clone)]
 pub struct ChartEngine {
     container: Rc<RefCell<Container>>,
     state: Rc<RefCell<RenderState>>,

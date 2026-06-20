@@ -45,6 +45,23 @@ pub(crate) fn app_icon(icon_id: u32) -> Option<Arc<image::RgbaImage>> {
         .map(|img| Arc::new(img.to_rgba8()))
 }
 
+#[cfg(target_os = "windows")]
+pub(crate) fn window_hwnd(window: &Window) -> Option<isize> {
+    use raw_window_handle::RawWindowHandle;
+    let Ok(handle) = raw_window_handle::HasWindowHandle::window_handle(window) else {
+        return None;
+    };
+    let RawWindowHandle::Win32(handle) = handle.as_raw() else {
+        return None;
+    };
+    Some(handle.hwnd.get() as isize)
+}
+
+#[cfg(not(target_os = "windows"))]
+pub(crate) fn window_hwnd(_window: &Window) -> Option<isize> {
+    None
+}
+
 fn app_window_options(
     title: impl Into<SharedString>,
     window_bounds: WindowBounds,

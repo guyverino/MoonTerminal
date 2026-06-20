@@ -1,6 +1,7 @@
 //! macOS GPUI native Metal chart backend. It renders inside GPUI's CAMetalLayer
 //! command encoder via the custom GPU pass hook.
 
+use block::ConcreteBlock;
 use foreign_types::ForeignTypeRef;
 use gpui::RawGpuAccess;
 use metal::{
@@ -11,6 +12,7 @@ use metal::{
 };
 use moon_chart::layers::{LineInstance, MarkerInstance, SegInstance, ZoneInstance};
 use moon_core::data::{LevelInstance, PriceLinePoint};
+use objc::msg_send;
 use std::ffi::c_void;
 
 use super::types::{
@@ -384,9 +386,10 @@ impl MetalLayers {
         orderbook_view: &ChartViewGpu,
         gpu: &RawGpuAccess,
     ) -> anyhow::Result<()> {
-        let Some((device, encoder)) = (unsafe { borrow_metal_draw(gpu) }) else {
+        let Some((device, command_buffer, encoder)) = (unsafe { borrow_metal_draw(gpu) }) else {
             anyhow::bail!("chart Metal draw received empty Metal raw gpu handles");
         };
+        attach_gpu_frame_timing(command_buffer);
         self.upload_frame_uniforms(
             device,
             view,
@@ -774,7 +777,11 @@ unsafe fn borrow_metal_prepare<'a>(
 
 unsafe fn borrow_metal_draw<'a>(
     gpu: &RawGpuAccess,
-) -> Option<(&'a DeviceRef, &'a RenderCommandEncoderRef)> {
+) -> Option<(
+    &'a DeviceRef,
+    &'a CommandBufferRef,
+    &'a RenderCommandEncoderRef,
+)> {
     let RawGpuAccess::Metal(gpu) = gpu else {
         return None;
     };
@@ -782,8 +789,23 @@ unsafe fn borrow_metal_draw<'a>(
     let encoder = gpu.command_encoder?;
     Some((
         unsafe { DeviceRef::from_ptr(gpu.device.as_ptr().cast()) },
+        unsafe { CommandBufferRef::from_ptr(gpu.command_buffer.as_ptr().cast()) },
         unsafe { RenderCommandEncoderRef::from_ptr(encoder.as_ptr().cast()) },
     ))
+}
+
+fn attach_gpu_frame_timing(command_buffer: &CommandBufferRef) {
+    if !crate::diag::is_enabled() {
+        return;
+    }
+    let block = ConcreteBlock::new(|completed: &CommandBufferRef| {
+        let start: f64 = unsafe { msg_send![completed, GPUStartTime] };
+        let end: f64 = unsafe { msg_send![completed, GPUEndTime] };
+        let ms = (end - start) * 1000.0;
+        crate::diag::record_gpu_frame_ms(ms);
+    });
+    let block = block.copy();
+    command_buffer.add_completed_handler(&block);
 }
 
 fn scissor_rect(

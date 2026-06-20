@@ -1,6 +1,8 @@
 //! Диагностические метрики процесса и системы для статус-бара: CPU
-//! (процесс/система), RAM процесса и её рост за окно. sysinfo-обновление дорогое,
-//! поэтому реально опрашиваем не чаще REFRESH_EVERY, между сэмплами отдаём кэш.
+//! (процесс/система), RAM процесса и её рост за окно. На Windows дополнительно
+//! снимаем GPU Engine utilisation текущего процесса через PDH. sysinfo/PDH
+//! обновление дорогое, поэтому реально опрашиваем не чаще REFRESH_EVERY, между
+//! сэмплами отдаём кэш.
 
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
@@ -23,6 +25,8 @@ pub struct MetricsSnapshot {
     pub mem_mb: f32,
     /// Прирост RAM за MEM_WINDOW, МБ (>0 — растёт; стабильный плюс → утечка).
     pub mem_delta_mb: f32,
+    /// GPU текущего процесса, % по Windows GPU Engine counters. На не-Windows 0.
+    pub gpu_process: f32,
 }
 
 pub struct Metrics {
@@ -31,6 +35,7 @@ pub struct Metrics {
     ncpu: f32,
     last_refresh: Option<Instant>,
     snap: MetricsSnapshot,
+    gpu: GpuProcessSampler,
     /// (время, RAM МБ) для расчёта прироста за MEM_WINDOW.
     mem_hist: VecDeque<(Instant, f32)>,
 }
@@ -47,6 +52,7 @@ impl Metrics {
             ncpu,
             last_refresh: None,
             snap: MetricsSnapshot::default(),
+            gpu: GpuProcessSampler::new(pid_as_u32(pid)),
             mem_hist: VecDeque::new(),
         }
     }
@@ -89,12 +95,14 @@ impl Metrics {
             .front()
             .map(|(_, m0)| mem_mb - *m0)
             .unwrap_or(0.0);
+        let gpu_process = self.gpu.sample().unwrap_or(self.snap.gpu_process);
 
         self.snap = MetricsSnapshot {
             cpu_process,
             cpu_system,
             mem_mb,
             mem_delta_mb,
+            gpu_process,
         };
         self.snap
     }
@@ -103,5 +111,154 @@ impl Metrics {
 impl Default for Metrics {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+fn pid_as_u32(pid: Pid) -> u32 {
+    let text = pid.to_string();
+    text.parse().unwrap_or(0)
+}
+
+#[cfg(windows)]
+struct GpuProcessSampler {
+    pid_pattern: String,
+    query: windows_sys::Win32::System::Performance::PDH_HQUERY,
+    counter: windows_sys::Win32::System::Performance::PDH_HCOUNTER,
+    available: bool,
+}
+
+#[cfg(windows)]
+impl GpuProcessSampler {
+    fn new(pid: u32) -> Self {
+        use windows_sys::Win32::System::Performance::{
+            PdhAddEnglishCounterW, PdhCollectQueryData, PdhOpenQueryW,
+        };
+
+        let mut query = std::ptr::null_mut();
+        let mut counter = std::ptr::null_mut();
+        let mut available = false;
+        let path = to_wide("\\GPU Engine(*)\\Utilization Percentage");
+        unsafe {
+            if PdhOpenQueryW(std::ptr::null(), 0, &mut query) == 0
+                && PdhAddEnglishCounterW(query, path.as_ptr(), 0, &mut counter) == 0
+            {
+                let _ = PdhCollectQueryData(query);
+                available = true;
+            }
+        }
+        if !available && !query.is_null() {
+            unsafe {
+                windows_sys::Win32::System::Performance::PdhCloseQuery(query);
+            }
+            query = std::ptr::null_mut();
+            counter = std::ptr::null_mut();
+        }
+        Self {
+            pid_pattern: format!("pid_{pid}_"),
+            query,
+            counter,
+            available,
+        }
+    }
+
+    fn sample(&mut self) -> Option<f32> {
+        use windows_sys::Win32::System::Performance::{
+            PdhCollectQueryData, PdhGetFormattedCounterArrayW, PDH_FMT_COUNTERVALUE_ITEM_W,
+            PDH_FMT_DOUBLE, PDH_MORE_DATA,
+        };
+
+        if !self.available {
+            return None;
+        }
+        unsafe {
+            if PdhCollectQueryData(self.query) != 0 {
+                self.available = false;
+                return None;
+            }
+
+            let mut bytes = 0_u32;
+            let mut count = 0_u32;
+            let status = PdhGetFormattedCounterArrayW(
+                self.counter,
+                PDH_FMT_DOUBLE,
+                &mut bytes,
+                &mut count,
+                std::ptr::null_mut(),
+            );
+            if status != PDH_MORE_DATA || bytes == 0 {
+                return None;
+            }
+
+            let item_size = std::mem::size_of::<PDH_FMT_COUNTERVALUE_ITEM_W>() as u32;
+            let item_count = count.max(bytes.div_ceil(item_size)).max(1);
+            let mut items = vec![PDH_FMT_COUNTERVALUE_ITEM_W::default(); item_count as usize];
+            let status = PdhGetFormattedCounterArrayW(
+                self.counter,
+                PDH_FMT_DOUBLE,
+                &mut bytes,
+                &mut count,
+                items.as_mut_ptr(),
+            );
+            if status != 0 {
+                return None;
+            }
+
+            let mut total = 0.0_f64;
+            let mut matched = false;
+            for item in items.iter().take(count as usize) {
+                if item.szName.is_null() || item.FmtValue.CStatus != 0 {
+                    continue;
+                }
+                let name = wide_ptr_to_string(item.szName);
+                if !name.contains(&self.pid_pattern) {
+                    continue;
+                }
+                let value = item.FmtValue.Anonymous.doubleValue;
+                if value.is_finite() && value > 0.0 {
+                    total += value;
+                    matched = true;
+                }
+            }
+            matched.then_some(total.clamp(0.0, 100.0) as f32)
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for GpuProcessSampler {
+    fn drop(&mut self) {
+        if !self.query.is_null() {
+            unsafe {
+                windows_sys::Win32::System::Performance::PdhCloseQuery(self.query);
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+fn to_wide(text: &str) -> Vec<u16> {
+    text.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+#[cfg(windows)]
+unsafe fn wide_ptr_to_string(ptr: *const u16) -> String {
+    let mut len = 0_usize;
+    while unsafe { *ptr.add(len) } != 0 {
+        len += 1;
+    }
+    String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(ptr, len) })
+}
+
+#[cfg(not(windows))]
+struct GpuProcessSampler;
+
+#[cfg(not(windows))]
+impl GpuProcessSampler {
+    fn new(_pid: u32) -> Self {
+        Self
+    }
+
+    fn sample(&mut self) -> Option<f32> {
+        Some(0.0)
     }
 }

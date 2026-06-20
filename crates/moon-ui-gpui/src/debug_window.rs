@@ -336,6 +336,12 @@ impl Render for DebugPerfWindow {
                 cx,
             ))
             .child(Self::stat_row(
+                "gpu",
+                format!("process {:.1}%", snap.gpu_process),
+                p,
+                cx,
+            ))
+            .child(Self::stat_row(
                 "ram",
                 format!("{:.0} MB ({:+.1} MB/5s)", snap.mem_mb, snap.mem_delta_mb),
                 p,

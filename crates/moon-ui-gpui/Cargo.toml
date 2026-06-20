@@ -72,3 +72,6 @@ wgpu = { git = "https://github.com/zed-industries/wgpu.git", rev = "357a0c56e007
 [target.'cfg(target_os = "macos")'.dependencies]
 metal = "0.33"
 foreign-types = "0.5"
+block = "0.1"
+objc = "0.2"
+core-graphics = "0.24"

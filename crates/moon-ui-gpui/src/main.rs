@@ -24,6 +24,7 @@ mod design;
 mod detached;
 mod diag;
 mod dock_persist;
+mod firetest;
 mod group_window;
 mod icons;
 mod input;
@@ -173,6 +174,8 @@ struct Backend {
     strategies_window: Option<WindowHandle<Root>>,
     /// Глобальное окно «Активы» (singleton, все ядра) — дедуп/фокус.
     assets_window: Option<WindowHandle<Root>>,
+    /// Built-in debug scenario runner (`--debug-script chart-smoke`). None in normal app runs.
+    firetest: Option<firetest::Runtime>,
     /// Откреплённые dock-панели (какая панель, из какой группы, геометрия окна) — load
     /// на старте, save при изменении. Порт egui `WindowLayout.detached`/`detached.rs`.
     detached: Vec<detached::DetachedSpec>,
@@ -332,6 +335,10 @@ fn main() -> anyhow::Result<()> {
         option_env!("MOONTERMINAL_GIT_REV").unwrap_or("unknown"),
         option_env!("MOONUI_GIT_REV").unwrap_or("unknown")
     );
+    let firetest_config = firetest::Config::from_args(std::env::args())?;
+    if firetest_config.is_some() {
+        diag::force_enable();
+    }
 
     // Паник-хук: GUI-приложение без консоли → stderr с сообщением паники теряется (и при
     // panic=abort это выглядит как нативный краш 0xc0000409 в ucrtbase). Пишем место+сообщение
@@ -443,6 +450,7 @@ fn main() -> anyhow::Result<()> {
             settings_window: None,
             strategies_window: None,
             assets_window: None,
+            firetest: firetest_config.clone().map(firetest::Runtime::new),
             detached,
             detached_dirty: false,
             repin_request: Vec::new(),
@@ -591,6 +599,7 @@ fn main() -> anyhow::Result<()> {
                         b.maybe_diag_open_first_market(cx);
                         b.session.set_open(&b.desired);
                         b.snap = b.metrics.sample(Instant::now());
+                        crate::firetest::tick_backend(b, cx);
 
                         let recon: Vec<CoreId> = b.reconnect_request.drain(..).collect();
                         for id in recon {
@@ -646,7 +655,14 @@ fn main() -> anyhow::Result<()> {
                 if last_report.elapsed().as_millis() >= 1000 {
                     let ms = last_report.elapsed().as_secs_f64() * 1000.0;
                     last_report = Instant::now();
-                    crate::diag::report(ms);
+                    if let Some(sample) = crate::diag::take_sample(ms) {
+                        crate::diag::write_sample(ms, &sample);
+                        cx.update(|cx| {
+                            coord_backend.update(cx, |b, _| {
+                                crate::firetest::record_diag_sample(b, ms, &sample);
+                            });
+                        });
+                    }
                 }
             }
         })

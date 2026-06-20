@@ -625,7 +625,6 @@ impl Render for ChartPanel {
             .iter()
             .map(|(idx, rect, _)| (*idx, *rect))
             .collect();
-        self.sync_native_cursor();
         // Угловой ✕ закрытия монеты — на КАЖДОЙ панели (и Main, и AddToChart-мультичарт):
         // закрыл монету на Main → вернулись к лого. Позиция из раскладки панелей (девайс-px →
         // лог.px слота); собираем ДО canvas, который забирает axis_panes по move.
@@ -633,6 +632,48 @@ impl Render for ChartPanel {
             .iter()
             .map(|(idx, rect, _)| (*idx, (rect.x + rect.w) / ppp, rect.y / ppp))
             .collect();
+        let cursor_bounds = self.chart_bounds;
+        let cursor_panes = self.input.pane_rects.clone();
+        let mut cursor_chart = self.chart.clone();
+        window.on_mouse_event::<MouseMoveEvent>(move |event, phase, _window, cx| {
+            if phase != DispatchPhase::Capture
+                || event.pressed_button.is_some()
+                || cx.has_active_drag()
+            {
+                return;
+            }
+            let Some(bounds) = cursor_bounds else {
+                return;
+            };
+            let lx = f32::from(event.position.x) - f32::from(bounds.origin.x);
+            let ly = f32::from(event.position.y) - f32::from(bounds.origin.y);
+            if lx < 0.0
+                || ly < 0.0
+                || lx > f32::from(bounds.size.width)
+                || ly > f32::from(bounds.size.height)
+            {
+                return;
+            }
+            let x = lx * ppp;
+            let y = ly * ppp;
+            crate::diag::bump(&crate::diag::CHART_MOUSE_MOVE);
+            crate::diag::bump(&crate::diag::CHART_MOUSE_MOVE_FAST);
+            let hovered_pane = cursor_panes
+                .iter()
+                .find(|(_, r)| x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h)
+                .map(|(idx, _)| *idx);
+            if let Some(pane) = hovered_pane {
+                if cursor_chart.set_cursor(Some((pane, x, y))) {
+                    crate::diag::bump(&crate::diag::CHART_CURSOR_UPDATE);
+                }
+                crate::diag::bump(&crate::diag::CHART_MOUSE_FAST_STOP);
+                cx.stop_propagation();
+            }
+        });
+        // Cursor-only motion is fed directly into ChartEngine by the raw mouse listener above.
+        // Do not resync from `self.input.cursor` here: when GPUI happens to redraw the view,
+        // that state can be stale and would erase the retained native cursor just before
+        // gpu_canvas draws it.
         // П.2: кнопка «пин» в левом верхнем углу ВНУТРИ области графика (правее ценовой оси,
         // не на самой оси) — ТОЛЬКО на AddToChart-панелях (с TTL). Пин отменяет авто-закрытие.
         // (idx, pinned, left_px, top_px). PRICE_AXIS_W — логическая ширина оси (rect в девайс-px).
@@ -831,6 +872,8 @@ impl Render for ChartPanel {
                 let Some((pos, within)) = this.chart_local(e.position, sf) else {
                     return;
                 };
+                crate::diag::bump(&crate::diag::CHART_MOUSE_MOVE);
+                crate::diag::bump(&crate::diag::CHART_MOUSE_MOVE_ENTITY);
                 this.input.sync_pressed(
                     e.pressed_button == Some(MouseButton::Left),
                     e.pressed_button == Some(MouseButton::Right),
@@ -855,7 +898,9 @@ impl Render for ChartPanel {
                 let cursor_changed =
                     prev_cursor != this.input.cursor || prev_hovered != this.input.hovered_pane;
                 if cursor_changed {
-                    this.sync_native_cursor();
+                    if this.sync_native_cursor() {
+                        crate::diag::bump(&crate::diag::CHART_CURSOR_UPDATE);
+                    }
                 }
                 // Drag меняет камеры/оси и GPUI-side controls. Cursor-only move теперь
                 // остаётся в retained gpu_canvas: crosshair/readout present без cx.notify().
@@ -898,12 +943,31 @@ impl Render for ChartPanel {
                             (f32::from(bounds.size.width) * sf).round().max(1.0) as u32,
                             (f32::from(bounds.size.height) * sf).round().max(1.0) as u32,
                         );
+                        let firetest_probe = crate::firetest::ChartProbe::new(
+                            crate::windowing::window_hwnd(window),
+                            f32::from(window.window_bounds().get_bounds().origin.x),
+                            f32::from(window.window_bounds().get_bounds().origin.y),
+                            f32::from(bounds.origin.x),
+                            f32::from(bounds.origin.y),
+                            f32::from(bounds.size.width),
+                            f32::from(bounds.size.height),
+                            sf,
+                        );
                         if dev != measured || Some(bounds) != prev_bounds {
                             entity.update(cx, |this, cx| {
                                 this.chart_bounds = Some(bounds);
                                 this.chart_dev = dev;
                                 crate::diag::bump(&crate::diag::CHART_CANVAS_NOTIFY);
                                 cx.notify();
+                            });
+                        }
+                        if let Some(probe) = firetest_probe {
+                            entity.update(cx, |this, cx| {
+                                if this.num.is_none() {
+                                    this.backend.update(cx, |b, _| {
+                                        crate::firetest::observe_chart_probe(b, probe);
+                                    });
+                                }
                             });
                         }
                     },

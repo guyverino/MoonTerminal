@@ -13,7 +13,7 @@
 //! NB: это РУЧНАЯ инструментация по узлам (забывается на новом узле). Целевое — чокпоинт во
 //! фреймворке (render каждой вьюхи по имени типа) + own-pass-слои руками. Пока — вот так.
 
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 
 macro_rules! diag_counters {
     ($($name:ident => $label:literal),* $(,)?) => {
@@ -67,7 +67,24 @@ diag_counters!(
     CHART_TTL_NOTIFY  => "chart_ttl_notify",
     CHART_INPUT_NOTIFY => "chart_input_notify",
     CHART_CANVAS_NOTIFY => "chart_canvas_notify",
+    CHART_MOUSE_MOVE => "chart_mouse_move",
+    CHART_MOUSE_MOVE_FAST => "chart_mouse_move_fast",
+    CHART_MOUSE_MOVE_ENTITY => "chart_mouse_move_entity",
+    CHART_MOUSE_FAST_STOP => "chart_mouse_fast_stop",
+    CHART_CURSOR_UPDATE => "chart_cursor_update",
+    FIRETEST_MOUSE_SENT => "firetest_mouse_sent",
+    FIRETEST_MOUSE_POST_FAIL => "firetest_mouse_post_fail",
 );
+
+#[derive(Clone, Debug)]
+pub struct DiagRate {
+    pub label: &'static str,
+    pub hz: f64,
+}
+
+static FORCE_ON: AtomicBool = AtomicBool::new(false);
+static GPU_FRAME_US_SUM: AtomicU64 = AtomicU64::new(0);
+static GPU_FRAME_COUNT: AtomicU64 = AtomicU64::new(0);
 
 /// Диагностика включается ТОЛЬКО при заданной env `MOON_RENDER_DIAG` (любое значение). По
 /// умолчанию инертна в ЛЮБОЙ сборке (dev и release): ни счётчиков, ни файла render_diag.log —
@@ -76,7 +93,17 @@ diag_counters!(
 fn enabled() -> bool {
     use std::sync::OnceLock;
     static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("MOON_RENDER_DIAG").is_some())
+    FORCE_ON.load(std::sync::atomic::Ordering::Relaxed)
+        || *ON.get_or_init(|| std::env::var_os("MOON_RENDER_DIAG").is_some())
+}
+
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn is_enabled() -> bool {
+    enabled()
+}
+
+pub fn force_enable() {
+    FORCE_ON.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
 #[inline]
@@ -86,18 +113,54 @@ pub fn bump(c: &AtomicU64) {
     }
 }
 
-/// Снять счётчики и дописать строку Hz в render_diag.log за прошедший интервал (no-op без env).
-pub fn report(elapsed_ms: f64) {
+/// Снять счётчики за прошедший интервал (no-op без env/force_enable).
+pub fn take_sample(elapsed_ms: f64) -> Option<Vec<DiagRate>> {
     if !enabled() {
-        return;
+        return None;
     }
-    use std::io::Write;
     let snap = snapshot_and_reset();
     let hz = |c: u64| c as f64 * 1000.0 / elapsed_ms.max(1.0);
-    let mut line = format!("[diag {:.0}ms]", elapsed_ms);
-    for (label, c) in &snap {
-        line.push_str(&format!(" {}={:.0}", label, hz(*c)));
+    Some(
+        snap.into_iter()
+            .map(|(label, count)| DiagRate {
+                label,
+                hz: hz(count),
+            })
+            .collect(),
+    )
+}
+
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn record_gpu_frame_ms(ms: f64) {
+    if !enabled() || !ms.is_finite() || ms <= 0.0 {
+        return;
     }
+    let us = (ms * 1000.0).round().clamp(1.0, u64::MAX as f64) as u64;
+    GPU_FRAME_US_SUM.fetch_add(us, std::sync::atomic::Ordering::Relaxed);
+    GPU_FRAME_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn take_gpu_frame_ms() -> f64 {
+    let sum = GPU_FRAME_US_SUM.swap(0, std::sync::atomic::Ordering::Relaxed);
+    let count = GPU_FRAME_COUNT.swap(0, std::sync::atomic::Ordering::Relaxed);
+    if count == 0 {
+        0.0
+    } else {
+        sum as f64 / count as f64 / 1000.0
+    }
+}
+
+pub fn format_sample(elapsed_ms: f64, sample: &[DiagRate]) -> String {
+    let mut line = format!("[diag {:.0}ms]", elapsed_ms);
+    for rate in sample {
+        line.push_str(&format!(" {}={:.0}", rate.label, rate.hz));
+    }
+    line
+}
+
+pub fn write_sample(elapsed_ms: f64, sample: &[DiagRate]) {
+    use std::io::Write;
+    let line = format_sample(elapsed_ms, sample);
     log::info!("{line}");
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)

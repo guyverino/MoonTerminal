@@ -626,6 +626,12 @@ impl Shell {
                         ))
                         .color(p.text_soft)
                         .gap_after(10.0),
+                        MoonStatusItem::new("GPU")
+                            .color(p.text_muted)
+                            .gap_after(6.0),
+                        MoonStatusItem::new(format!("{:.0}%", snap.gpu_process))
+                            .color(p.text_soft)
+                            .gap_after(10.0),
                         MoonStatusItem::new("RAM")
                             .color(p.text_muted)
                             .gap_after(6.0),
