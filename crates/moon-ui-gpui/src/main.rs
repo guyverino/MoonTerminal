@@ -181,8 +181,8 @@ struct Backend {
     /// Дренит `Shell` своей группы: добавляет панель в свой `DockArea` + убирает спеку.
     repin_request: Vec<(String, String)>,
     /// Запросы «вернуть чарт-вкладку в стрип» (закрыли окно откреп-вкладки) —
-    /// (группа, номер, ядро). Дренит `ChartTabs` своей группы: панель detached→add.
-    chart_repin_request: Vec<(String, u32, Option<CoreId>)>,
+    /// (группа, номер, bucket). Дренит `ChartTabs` своей группы: панель detached→add.
+    chart_repin_request: Vec<(String, u32, moon_core::config::ChartBucket)>,
     /// Откреплённые в ОС-окна чарт-вкладки, по группе (группа → handle окна). Закрытие
     /// окна группы закрывает принадлежащие ей откреп-чарты; при закрытии самого откреп-окна
     /// чистится по window_id. (Отдельно от `detached` — то про dock-панели, это про чарты.)

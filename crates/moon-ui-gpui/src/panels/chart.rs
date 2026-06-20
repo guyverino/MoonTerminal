@@ -16,7 +16,7 @@ use crate::chartdx::ChartEngine;
 use crate::{Backend, axes, design, input};
 use moon_chart::container::ContainerKind;
 use moon_chart::paint::now_unix_ms;
-use moon_core::config::{ChartTheme, OrdersStyle};
+use moon_core::config::{ChartBucket, ChartTheme, OrdersStyle};
 use moon_core::session::CoreId;
 
 #[cfg(windows)]
@@ -215,12 +215,12 @@ impl ChartPanel {
     pub fn new_addto(
         backend: Entity<Backend>,
         num: u32,
-        core: Option<CoreId>,
+        bucket: ChartBucket,
         epoch: f64,
         theme: ChartTheme,
         cx: &mut Context<Self>,
     ) -> Self {
-        let mut chart = ChartEngine::new_kind(epoch, theme, ContainerKind::Chart { num, core });
+        let mut chart = ChartEngine::new_kind(epoch, theme, ContainerKind::Chart { num, bucket });
         chart.set_market_source(Some(backend.read(cx).session.market_source()));
         let settings_sig = {
             let b = backend.read(cx);

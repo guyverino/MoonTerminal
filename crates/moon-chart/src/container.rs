@@ -3,15 +3,15 @@
 //! moon-ui-gpui), которая ре-экспортит эти типы. wgpu-движок панелей (`Pane{chart:Chart}`)
 //! удалён вместе с egui-бинарём.
 
-use moon_core::session::CoreId;
+use moon_core::config::ChartBucket;
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub enum ContainerKind {
     /// Главная вкладка: клики по детектам, фулскрин-центричный.
     Main,
-    /// Чарт-вкладка AddToChart=`num`. `core` = Some(ядро), когда чарты разделены по
-    /// ядрам (настройка charts_split_by_core); None — все ядра в одной вкладке.
-    Chart { num: u32, core: Option<CoreId> },
+    /// Чарт-вкладка AddToChart=`num`. `bucket` — куда сведены графики ядра внутри
+    /// группы (своё ядро / общая вкладка / именованная связка). См. `ChartBucket`.
+    Chart { num: u32, bucket: ChartBucket },
 }
 
 /// Источник панели — влияет на TTL и поведение.

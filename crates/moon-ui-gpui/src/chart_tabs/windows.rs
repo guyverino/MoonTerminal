@@ -15,7 +15,7 @@ use crate::Backend;
 use crate::chart_persist;
 use crate::design;
 use crate::panels::ChartPanel;
-use moon_core::session::CoreId;
+use moon_core::config::ChartBucket;
 
 impl ChartTabs {
     /// Дабл-клик по чарту AddToChart-вкладки → открыть монету на Main + переключиться.
@@ -47,11 +47,13 @@ impl ChartTabs {
         owner: Option<AnyWindowHandle>,
         cx: &mut Context<Self>,
     ) {
-        let Tab::Add(n, core) = tab else { return };
+        let Tab::Add(n, bucket) = tab.clone() else {
+            return;
+        };
         let Some(pos) = self
             .add
             .iter()
-            .position(|(num, c, _)| *num == n && *c == core)
+            .position(|(num, c, _)| *num == n && *c == bucket)
         else {
             return;
         };
@@ -61,7 +63,7 @@ impl ChartTabs {
         }
         // Геометрия: сохранённая (если уже откреплялась) или дефолт-каскад.
         let geom = self
-            .spec_geom(cx, n, core)
+            .spec_geom(cx, n, &bucket)
             .unwrap_or(chart_persist::WinGeom {
                 x: 200,
                 y: 160,
@@ -69,12 +71,12 @@ impl ChartTabs {
                 h: 620,
             });
         // Пометить вкладку откреплённой в charts.json (восстановится окном на след. запуске).
-        self.upsert_spec(cx, n, core, |s| s.detached = Some(geom));
+        self.upsert_spec(cx, n, &bucket, |s| s.detached = Some(geom));
         moon_core::detect_diag::line(&format!(
-            "[detach] n={n} core={core:?} → detached=Some({},{},{},{})",
+            "[detach] n={n} bucket={bucket:?} → detached=Some({},{},{},{})",
             geom.x, geom.y, geom.w, geom.h
         ));
-        self.open_chart_window(n, core, panel, geom, false, owner, cx);
+        self.open_chart_window(n, bucket, panel, geom, false, owner, cx);
         cx.notify();
     }
 
@@ -86,14 +88,14 @@ impl ChartTabs {
     fn open_chart_window(
         &mut self,
         n: u32,
-        core: Option<CoreId>,
+        bucket: ChartBucket,
         panel: Entity<ChartPanel>,
         geom: chart_persist::WinGeom,
         restored: bool,
         owner: Option<AnyWindowHandle>,
         cx: &mut Context<Self>,
     ) {
-        self.detached.push((n, core, panel.clone()));
+        self.detached.push((n, bucket.clone(), panel.clone()));
         panel.update(cx, |p, _| p.set_scene_visible(false));
         // КРИТИЧНО для мультимонитора: без display_id окно создаётся на PRIMARY, и если
         // сохранённые bounds вне primary — gpui откатывается на default_bounds() (центр + дефолт-
@@ -108,7 +110,7 @@ impl ChartTabs {
         let opts = crate::windowing::detached_window_options(
             format!(
                 "MoonTerminal — {}",
-                chart_pane_label(&self.backend, &self.group, n, core, cx)
+                chart_pane_label(&self.backend, &self.group, n, &bucket, cx)
             ),
             WindowBounds::Windowed(Bounds {
                 origin,
@@ -129,7 +131,7 @@ impl ChartTabs {
                     backend,
                     group,
                     n,
-                    core,
+                    bucket,
                     restored,
                     restore_size,
                     window,
@@ -151,22 +153,22 @@ impl ChartTabs {
         &self,
         cx: &App,
         num: u32,
-        core: Option<CoreId>,
+        bucket: &ChartBucket,
     ) -> Option<chart_persist::WinGeom> {
         self.backend
             .read(cx)
             .chart_specs
             .iter()
-            .find(|s| s.group == self.group && s.num == num && s.core == core)
+            .find(|s| s.group == self.group && s.num == num && s.bucket() == *bucket)
             .and_then(|s| s.detached)
     }
 
-    /// Найти/создать спеку вкладки (group/num/core), применить мутатор, пометить dirty.
+    /// Найти/создать спеку вкладки (group/num/bucket), применить мутатор, пометить dirty.
     fn upsert_spec(
         &self,
         cx: &mut Context<Self>,
         num: u32,
-        core: Option<CoreId>,
+        bucket: &ChartBucket,
         f: impl FnOnce(&mut chart_persist::ChartTabSpec),
     ) {
         let group = self.group.clone();
@@ -174,14 +176,15 @@ impl ChartTabs {
             if let Some(s) = b
                 .chart_specs
                 .iter_mut()
-                .find(|s| s.group == group && s.num == num && s.core == core)
+                .find(|s| s.group == group && s.num == num && s.bucket() == *bucket)
             {
                 f(s);
             } else {
                 let mut s = chart_persist::ChartTabSpec {
                     group,
                     num,
-                    core,
+                    core: None,
+                    bucket: Some(bucket.clone()),
                     scale: None,
                     detached: None,
                 };
@@ -202,11 +205,11 @@ impl ChartTabs {
             return;
         }
         let group = self.group.clone();
-        let reqs: Vec<(u32, Option<CoreId>)> = self.backend.update(cx, |b, _| {
+        let reqs: Vec<(u32, ChartBucket)> = self.backend.update(cx, |b, _| {
             let mut out = Vec::new();
             b.chart_repin_request.retain(|(g, n, c)| {
                 if *g == group {
-                    out.push((*n, *c));
+                    out.push((*n, c.clone()));
                     false
                 } else {
                     true
@@ -214,19 +217,19 @@ impl ChartTabs {
             });
             out
         });
-        for (n, core) in reqs {
+        for (n, bucket) in reqs {
             if let Some(p) = self
                 .detached
                 .iter()
-                .position(|(num, c, _)| *num == n && *c == core)
+                .position(|(num, c, _)| *num == n && *c == bucket)
             {
                 let (num, c, pnl) = self.detached.remove(p);
                 self.add.push((num, c, pnl));
-                self.add.sort_by_key(|(num, c, _)| (*num, c.unwrap_or(0)));
+                self.add.sort_by_key(|(num, c, _)| (*num, c.clone()));
             }
-            self.upsert_spec(cx, n, core, |s| s.detached = None);
+            self.upsert_spec(cx, n, &bucket, |s| s.detached = None);
             moon_core::detect_diag::line(&format!(
-                "[repin] n={n} core={core:?} → detached=None (окно закрыли/репин)"
+                "[repin] n={n} bucket={bucket:?} → detached=None (окно закрыли/репин)"
             ));
             cx.notify();
         }
@@ -234,24 +237,24 @@ impl ChartTabs {
 
     /// Сохранить масштаб каждой вкладки в charts.json (upsert при изменении). Main = num 0.
     pub(super) fn persist_scales(&self, cx: &mut Context<Self>) {
-        let mut items: Vec<(u32, Option<CoreId>, Option<f32>)> =
-            vec![(0, None, self.main.read(cx).scale())];
+        let mut items: Vec<(u32, ChartBucket, Option<f32>)> =
+            vec![(0, ChartBucket::Shared, self.main.read(cx).scale())];
         for (n, c, p) in &self.add {
-            items.push((*n, *c, p.read(cx).scale()));
+            items.push((*n, c.clone(), p.read(cx).scale()));
         }
         for (n, c, p) in &self.detached {
-            items.push((*n, *c, p.read(cx).scale()));
+            items.push((*n, c.clone(), p.read(cx).scale()));
         }
-        for (num, core, scale) in items {
+        for (num, bucket, scale) in items {
             let (cur, exists) = {
                 let specs = &self.backend.read(cx).chart_specs;
                 let found = specs
                     .iter()
-                    .find(|s| s.group == self.group && s.num == num && s.core == core);
+                    .find(|s| s.group == self.group && s.num == num && s.bucket() == bucket);
                 (found.and_then(|s| s.scale), found.is_some())
             };
             if cur != scale && (scale.is_some() || exists) {
-                self.upsert_spec(cx, num, core, move |s| s.scale = scale);
+                self.upsert_spec(cx, num, &bucket, move |s| s.scale = scale);
             }
         }
     }
@@ -273,14 +276,15 @@ impl ChartTabs {
                 // group_windows: на старте оно может быть ещё не вставлено к моменту defer →
                 // owner=None → Independent → отдельная кнопка в таскбаре.
                 let owner = Some(owner);
-                for (n, core, geom, scale) in pending {
+                for (n, bucket, geom, scale) in pending {
                     let backend = this.backend.clone();
-                    let panel = cx
-                        .new(|c| ChartPanel::new_addto(backend, n, core, epoch, theme.clone(), c));
+                    let panel = cx.new(|c| {
+                        ChartPanel::new_addto(backend, n, bucket.clone(), epoch, theme.clone(), c)
+                    });
                     if scale.is_some() {
                         panel.update(cx, |p, pcx| p.set_scale(scale, pcx));
                     }
-                    this.open_chart_window(n, core, panel, geom, true, owner, cx);
+                    this.open_chart_window(n, bucket, panel, geom, true, owner, cx);
                 }
                 cx.notify();
             });
@@ -296,7 +300,7 @@ struct DetachedChartHost {
     backend: Entity<Backend>,
     group: String,
     num: u32,
-    core: Option<CoreId>,
+    bucket: ChartBucket,
     /// Можно ли сохранять геометрию из `observe_window_bounds`. У ВОССТАНОВЛЕННОГО окна сперва
     /// false: авто-размещение gpui на не-primary DPI читается со сдвигом ×scale, и пересохранять
     /// его НЕЛЬЗЯ (иначе позиция уезжает с каждым запуском). Армируется через ~1.5с — дальше
@@ -314,7 +318,7 @@ impl DetachedChartHost {
         backend: Entity<Backend>,
         group: String,
         num: u32,
-        core: Option<CoreId>,
+        bucket: ChartBucket,
         restored: bool,
         restore_size: Option<Size<Pixels>>,
         window: &mut Window,
@@ -332,10 +336,10 @@ impl DetachedChartHost {
         // окно на исходное место и держит стабильно. (Свежий детач — persist_armed=true.)
         // Закрытие окна → репин в стрип (дренит ChartTabs). На выходе приложения запрос не
         // обработается → спека остаётся откреплённой → окно восстановится на след. запуске.
-        let (g, n, c) = (group.clone(), num, core);
+        let (g, n, c) = (group.clone(), num, bucket.clone());
         cx.on_release(move |this, app| {
             this.backend.update(app, |b, _| {
-                b.chart_repin_request.push((g.clone(), n, c));
+                b.chart_repin_request.push((g.clone(), n, c.clone()));
             });
         })
         .detach();
@@ -344,7 +348,7 @@ impl DetachedChartHost {
             backend,
             group,
             num,
-            core,
+            bucket,
             persist_armed: !restored,
             restore_size,
         }
@@ -364,12 +368,12 @@ impl DetachedChartHost {
             return;
         };
         let geom = chart_persist::WinGeom { x, y, w, h };
-        let (group, num, core) = (self.group.clone(), self.num, self.core);
+        let (group, num, bucket) = (self.group.clone(), self.num, self.bucket.clone());
         let found = self.backend.update(cx, |bk, _| {
             if let Some(s) = bk
                 .chart_specs
                 .iter_mut()
-                .find(|s| s.group == group && s.num == num && s.core == core)
+                .find(|s| s.group == group && s.num == num && s.bucket() == bucket)
             {
                 let cur = s.detached.map(|g| (g.x, g.y, g.w, g.h));
                 if cur != Some((geom.x, geom.y, geom.w, geom.h)) {
@@ -382,7 +386,7 @@ impl DetachedChartHost {
             }
         });
         moon_core::detect_diag::line(&format!(
-            "[geom] n={num} core={core:?} → x={} y={} w={} h={} (spec_found={found})",
+            "[geom] n={num} bucket={bucket:?} → x={} y={} w={} h={} (spec_found={found})",
             geom.x, geom.y, geom.w, geom.h
         ));
     }
@@ -403,7 +407,7 @@ impl Render for DetachedChartHost {
         let scale = self.panel.read(cx).scale();
         let panel = self.panel.clone();
         let close_all_panel = self.panel.clone();
-        let title = chart_pane_label(&self.backend, &self.group, self.num, self.core, cx);
+        let title = chart_pane_label(&self.backend, &self.group, self.num, &self.bucket, cx);
         let frame = MoonWindowFrame::detached_chart("detached-chart-window-frame", 0.0)
             .header_height(34.0)
             .controls(MoonWindowFrameControls::Close)

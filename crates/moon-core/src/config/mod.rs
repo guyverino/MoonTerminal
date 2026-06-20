@@ -35,7 +35,7 @@ pub use lang::Language;
 pub use layout::{DetachedLayout, GeomRect, GroupLayout, WindowLayout};
 pub use orders::{LineStyle, OrdersStyle};
 pub use secrets::Secret;
-pub use servers::{FeedFlags, ServerConfig};
+pub use servers::{ChartBucket, FeedFlags, ServerConfig};
 pub use theme::ChartTheme;
 
 use std::collections::HashSet;
@@ -201,6 +201,7 @@ impl AppConfig {
                 market,
                 color: servers::default_color(),
                 synthetic: false,
+                chart_bundle: String::new(),
             }],
             groups: Vec::new(),
             language: Language::default(),
@@ -273,8 +274,19 @@ impl AppConfig {
     /// пересоздание окон. Тема меняется живо, язык и режим рынка — без реконнекта,
     /// поэтому их исключаем (нейтрализуем дефолтом).
     pub fn structural_sig(&self) -> String {
+        // Связка чарт-вкладок (`chart_bundle`) — чисто UI-группировка вкладок AddToChart:
+        // её смена НЕ требует реконнекта ядер/ребилда сессий, только пересборки окон групп
+        // (см. apply_settings). Нейтрализуем, чтобы не считать структурной.
+        let servers: Vec<ServerConfig> = self
+            .servers
+            .iter()
+            .map(|s| ServerConfig {
+                chart_bundle: String::new(),
+                ..s.clone()
+            })
+            .collect();
         let (sf, meta) = reconcile::split(
-            &self.servers,
+            &servers,
             &self.groups,
             Language::default(),
             MarketDataMode::default(),
