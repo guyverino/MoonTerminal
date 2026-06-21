@@ -302,6 +302,18 @@ impl ChartDataState {
                 pr.market = pane.market.clone();
                 pixels_changed = true;
             }
+            // Имя ядра для угловой подписи: резолвим тут — только здесь под рукой `session`.
+            // Меняется редко (смена ядра панели), поэтому флагаем present лишь при изменении.
+            let core_name = session
+                .sessions()
+                .iter()
+                .find(|s| s.id == pane.core)
+                .map(|s| s.name.clone())
+                .unwrap_or_default();
+            if pr.core_name != core_name {
+                pr.core_name = core_name;
+                pixels_changed = true;
+            }
             let device_gen = pr.layers.device_gen();
             let device_lost = pr.last_device_gen != device_gen;
             if device_lost {

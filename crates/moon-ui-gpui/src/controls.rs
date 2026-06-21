@@ -55,7 +55,7 @@ fn toolbar_metric(
 /// Мелкая тусклая подпись группы (`size`/`sell`/`МАСШТАБ`) — стендовый `.strip-label`.
 fn strip_label(text: &'static str, p: MoonPalette, cx: &App) -> impl IntoElement {
     div()
-        .text_size(design::text_px(cx, 9.5))
+        .text_size(design::t_caption(cx))
         .font_family(design::ui_font())
         .text_color(rgb(p.text_muted))
         .child(text)

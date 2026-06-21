@@ -48,7 +48,7 @@ fn level_tag(level: log::Level, p: MoonPalette) -> Option<(&'static str, u32)> {
 }
 
 /// Рендер одной строки лога (время · [уровень] · источник · сообщение).
-pub(super) fn log_row(line: &LogLine, p: MoonPalette) -> AnyElement {
+pub(super) fn log_row(line: &LogLine, p: MoonPalette, cx: &App) -> AnyElement {
     let time = line
         .ts
         .rsplit(' ')
@@ -56,7 +56,12 @@ pub(super) fn log_row(line: &LogLine, p: MoonPalette) -> AnyElement {
         .unwrap_or(line.ts.as_str())
         .to_string();
     let flat = line.msg.replace('\n', " ⏎ ");
-    let mut row = h_flex().w_full().gap_1().items_baseline().text_xs().px_1();
+    let mut row = h_flex()
+        .w_full()
+        .gap_1()
+        .items_baseline()
+        .text_size(crate::design::t_body(cx))
+        .px_1();
     row = row.child(div().flex_none().text_color(rgb(p.text_soft)).child(time));
     if let Some((tag, col)) = level_tag(line.level, p) {
         row = row.child(

@@ -198,26 +198,24 @@ impl RenderState {
     }
 
     pub(super) fn sync_readout_params(&mut self) {
-        let Some(cursor) = self.cursor else {
-            for pr in &mut self.panes {
-                pr.readout_rects.clear();
-            }
-            return;
-        };
-
         let sf = self.pixel_scale.max(0.1);
         let bg = hex_rgba(self.ui_palette.chart_bg, 0.96);
         let border = bg;
         let border_px = 0.0;
+        let m = [border_px, 1.0, 1.0, 0.0];
         let tz_offset_sec = crate::axes::local_offset_sec();
+        let cursor = self.cursor;
+        let slot_origin = self.slot_origin;
 
         for (idx, pr) in self.panes.iter_mut().enumerate() {
             pr.readout_rects.clear();
-            if !pr.active || cursor.pane != idx {
+            if !pr.active {
                 continue;
             }
 
             let pane_left = pr.pane_bounds[0] / sf;
+            let pane_right = (pr.pane_bounds[0] + pr.pane_bounds[2]) / sf;
+            let pane_top = pr.pane_bounds[1] / sf;
             let pane_bottom = (pr.pane_bounds[1] + pr.pane_bounds[3]) / sf;
             let plot_left = pr.view.bounds[0] / sf;
             let plot_top = pr.view.bounds[1] / sf;
@@ -229,9 +227,30 @@ impl RenderState {
 
             let plot_bottom = plot_top + plot_h;
             let plot_right = plot_left + plot_w;
-            let cx_log = (self.slot_origin[0] + cursor.local[0]) / sf;
-            let cy_log = (self.slot_origin[1] + cursor.local[1]) / sf;
-            let m = [border_px, 1.0, 1.0, 0.0];
+
+            // Плашка-подложка под угловую подпись (контраст над стаканом). Всегда, не только при
+            // курсоре. Ширина — замеренная `caption_w`; строк = имя ядра (если есть) + тикер.
+            if pr.caption_w > 0.0 {
+                let lines = (!pr.core_name.is_empty()) as u32 + (!pr.market.is_empty()) as u32;
+                if lines > 0 {
+                    let cap_x = pane_right - super::text::CAPTION_PAD_X;
+                    let cap_y = pane_top + super::text::CAPTION_PAD_Y;
+                    let (pad_l, pad_r, pad_y) = (5.0_f32, 3.0_f32, 2.0_f32);
+                    let dst = [
+                        (cap_x - pr.caption_w - pad_l) * sf,
+                        (cap_y - pad_y) * sf,
+                        (pr.caption_w + pad_l + pad_r) * sf,
+                        (lines as f32 * super::text::LINE_H + pad_y * 2.0) * sf,
+                    ];
+                    pr.readout_rects.push(ReadoutRect { dst, bg, border, m });
+                }
+            }
+
+            let Some(cursor) = cursor.filter(|c| c.pane == idx) else {
+                continue;
+            };
+            let cx_log = (slot_origin[0] + cursor.local[0]) / sf;
+            let cy_log = (slot_origin[1] + cursor.local[1]) / sf;
 
             let time_to_px = (pr.view.time_to_px / sf).max(1e-6);
             if cx_log >= plot_left && cx_log <= plot_right {

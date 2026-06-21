@@ -113,10 +113,10 @@ fn metric(
         .h(design::fit_h_px(cx, 22.0, 13.0, 4.5))
         .gap(design::ui_px(cx, 5.0))
         .font_family(design::mono())
-        .text_size(design::text_px(cx, 11.0))
+        .text_size(design::t_body(cx))
         .child(
             div()
-                .text_size(design::text_px(cx, 9.0))
+                .text_size(design::t_caption(cx))
                 .font_family(design::ui_font())
                 .text_color(rgb(p.text_muted))
                 .child(label),
@@ -134,10 +134,10 @@ fn risk_meter(p: MoonPalette, cx: &App) -> impl IntoElement {
         .h(design::fit_h_px(cx, 22.0, 13.0, 4.5))
         .gap(design::ui_px(cx, 8.0))
         .font_family(design::mono())
-        .text_size(design::text_px(cx, 11.0))
+        .text_size(design::t_body(cx))
         .child(
             div()
-                .text_size(design::text_px(cx, 9.0))
+                .text_size(design::t_caption(cx))
                 .font_family(design::ui_font())
                 .text_color(rgb(p.text_muted))
                 .child("Risk"),
@@ -167,7 +167,7 @@ fn balance_label(p: MoonPalette, cx: &App) -> impl IntoElement {
     h_flex()
         .gap(px(0.0))
         .font_family(design::mono())
-        .text_size(design::text_px(cx, 11.5))
+        .text_size(design::t_body(cx))
         .text_color(rgb(p.text_soft))
         .child("Balance: ")
         .child(

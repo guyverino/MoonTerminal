@@ -474,7 +474,7 @@ impl Render for Shell {
             // own-pass (UnderScene). Хром (хедер/тулбар/панели/статус) красит свой фон сам.
             .font_family(design::mono())
             .text_color(rgb(p.text))
-            .text_size(design::text_px(cx, 11.0))
+            .text_size(design::t_body(cx))
             // ── Header ──────────────────────────────────────────────
             .child(terminal_chrome::header(
                 &self.group,
@@ -659,7 +659,7 @@ impl Shell {
                     .rounded(design::ui_px(cx, 3.0))
                     .cursor_pointer()
                     .font_family(design::mono())
-                    .text_size(design::text_px(cx, 10.0))
+                    .text_size(design::t_body(cx))
                     .text_color(rgb(p.amber))
                     .bg(rgba(0x00000044))
                     .hover(|s| s.bg(rgba(0x2A2520EE)).text_color(rgb(0xF7C663)))

@@ -8,10 +8,15 @@ use moon_chart::axes::{fmt_clock, nice_interval, price_decimals};
 use super::*;
 
 const FONT_SIZE: f32 = 11.5;
-const LINE_H: f32 = FONT_SIZE + 4.0;
+pub(super) const LINE_H: f32 = FONT_SIZE + 4.0;
 const READOUT_PAD_X: f32 = 5.0;
 const READOUT_PAD_Y: f32 = 2.5;
 const READOUT_INSET: f32 = 2.0;
+// Угловая подпись (имя ядра + тикер). По X отступаем 20px от правого края ПАНЕЛИ — ✕ закрытия
+// занимает крайние ~18px (15px кнопка + зазор), подпись садится слева от него без перекрытия.
+// pub(super): render_state строит по ним плашку-подложку.
+pub(super) const CAPTION_PAD_X: f32 = 20.0;
+pub(super) const CAPTION_PAD_Y: f32 = 4.0;
 const FIRETEST_TEXT_FONT_SIZE: f32 = 9.0;
 const FIRETEST_TEXT_LINE_H: f32 = 11.0;
 
@@ -195,14 +200,23 @@ impl RenderState {
         let mut readout_metrics_changed = false;
 
         for idx in 0..self.panes.len() {
-            let (active, pane_bounds, view, epoch_ms) = {
+            let (active, pane_bounds, view, epoch_ms, core_name, market) = {
                 let pr = &self.panes[idx];
-                (pr.active, pr.pane_bounds, pr.view, pr.epoch_ms)
+                (
+                    pr.active,
+                    pr.pane_bounds,
+                    pr.view,
+                    pr.epoch_ms,
+                    pr.core_name.clone(),
+                    pr.market.clone(),
+                )
             };
             if !active {
                 continue;
             }
             let pane_left = pane_bounds[0] / sf;
+            let pane_right = (pane_bounds[0] + pane_bounds[2]) / sf;
+            let pane_top = pane_bounds[1] / sf;
             let pane_bottom = (pane_bounds[1] + pane_bounds[3]) / sf;
             let plot_left = view.bounds[0] / sf;
             let plot_top = view.bounds[1] / sf;
@@ -218,6 +232,29 @@ impl RenderState {
             if !firetest_text_drawn {
                 self.draw_firetest_text(ctx, plot_left, plot_top, plot_w, plot_h, ink)?;
                 firetest_text_drawn = true;
+            }
+
+            // Угловая подпись: имя ядра + тикер в правом верхнем углу ПАНЕЛИ (над стаканом),
+            // рядом с угловым ✕ закрытия (panels/chart.rs) — дешёвый retained-текст (тот же
+            // gpu_canvas, что и оси). Якорим правым краем чуть левее ✕, чтобы не перекрывать.
+            // Контраст над стаканом даёт тёмная плашка-подложка (render_state по `caption_w`).
+            {
+                let cap_x = pane_right - CAPTION_PAD_X;
+                let cap_y = pane_top + CAPTION_PAD_Y;
+                let mut cap_w = 0.0_f32;
+                if !core_name.is_empty() {
+                    cap_w = cap_w.max(self.measure_text(ctx, &core_name).width.as_f32());
+                    self.draw_text(ctx, &core_name, cap_x, cap_y, 1.0, 0.0, readout)?;
+                }
+                let ticker = moon_core::symbol::display_pair(&market);
+                if !ticker.is_empty() {
+                    cap_w = cap_w.max(self.measure_text(ctx, &ticker).width.as_f32());
+                    self.draw_text(ctx, &ticker, cap_x, cap_y + LINE_H, 1.0, 0.0, ink)?;
+                }
+                if (self.panes[idx].caption_w - cap_w).abs() > 0.25 {
+                    self.panes[idx].caption_w = cap_w;
+                    readout_metrics_changed = true;
+                }
             }
 
             let price_to_px = view.price_to_px / sf;

@@ -332,14 +332,14 @@ impl Render for ReportPanel {
             .py_1()
             .child(
                 div()
-                    .text_xs()
+                    .text_size(design::t_body(cx))
                     .text_color(rgb(p.text_soft))
                     .child(t!("report.filter.core").to_string()),
             )
             .child(self.core_combo(cx))
             .child(
                 div()
-                    .text_xs()
+                    .text_size(design::t_body(cx))
                     .text_color(rgb(p.text_soft))
                     .child(t!("report.filter.coin").to_string()),
             )
@@ -353,14 +353,14 @@ impl Render for ReportPanel {
             )
             .child(
                 div()
-                    .text_xs()
+                    .text_size(design::t_body(cx))
                     .text_color(rgb(p.text_soft))
                     .child(t!("report.filter.side").to_string()),
             )
             .child(self.side_combo(cx))
             .child(
                 div()
-                    .text_xs()
+                    .text_size(design::t_body(cx))
                     .text_color(rgb(p.text_soft))
                     .child(t!("report.filter.from").to_string()),
             )
@@ -371,7 +371,7 @@ impl Render for ReportPanel {
             )
             .child(
                 div()
-                    .text_xs()
+                    .text_size(design::t_body(cx))
                     .text_color(rgb(p.text_soft))
                     .child(t!("report.filter.to").to_string()),
             )
@@ -427,7 +427,7 @@ impl Render for ReportPanel {
                             .h(design::fit_h_px(cx, 24.0, 12.0, 6.0))
                             .flex()
                             .items_center()
-                            .text_xs()
+                            .text_size(design::t_body(cx))
                             .text_color(rgb(p.text_soft))
                             .child(t!("report.empty").to_string()),
                     )
@@ -452,7 +452,7 @@ impl Render for ReportPanel {
             .py_1()
             .child(
                 div()
-                    .text_xs()
+                    .text_size(design::t_body(cx))
                     .text_color(rgb(p.text_soft))
                     .child(t!("report.totals").to_string()),
             )
@@ -464,7 +464,7 @@ impl Render for ReportPanel {
             )
             .child(
                 div()
-                    .text_xs()
+                    .text_size(design::t_body(cx))
                     .text_color(rgb(p.text_soft))
                     .child(t!("report.orders_count", count = count).to_string()),
             )
@@ -473,7 +473,7 @@ impl Render for ReportPanel {
                     .flex_1()
                     .flex()
                     .justify_end()
-                    .text_xs()
+                    .text_size(design::t_body(cx))
                     .text_color(rgb(p.text_soft))
                     .child(t!("report.shown_top", n = self.table.rows.len()).to_string()),
             );

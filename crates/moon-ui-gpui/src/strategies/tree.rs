@@ -132,8 +132,8 @@ impl StrategiesView {
             .w(px(380.0))
             .h_full()
             .bg(moon(p.shell_high))
-            .font_family("Geist Mono")
-            .text_size(design::text_px(cx, 11.0))
+            .font_family(design::mono())
+            .text_size(design::t_body(cx))
             .line_height(design::line_px(cx, 14.0))
             .border_r_1()
             .border_color(border)
@@ -360,7 +360,7 @@ impl StrategiesView {
         if !self.staged.is_empty() {
             bar = bar.child(
                 div()
-                    .text_xs()
+                    .text_size(design::t_body(cx))
                     .text_color(rgb(MoonPalette::active(cx).amber))
                     .child(t!("strat.staged", n = self.staged.len()).to_string()),
             );
@@ -538,7 +538,7 @@ impl StrategiesView {
                     )
                     .child(
                         div()
-                            .text_xs()
+                            .text_size(design::t_body(cx))
                             .text_color(moon(type_col))
                             .child(r.kind.clone()),
                     ),

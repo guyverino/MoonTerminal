@@ -100,6 +100,33 @@ pub fn line_px(cx: &App, value: f32) -> Pixels {
     px(line_value(cx, value))
 }
 
+/// Базовый кегль текста из темы moonui (`mono_font_size`, по умолчанию 11).
+/// Все три ступени ниже считаются от него, поэтому смена базы в `.toml`
+/// двигает их разом.
+fn base_text(cx: &App) -> f32 {
+    MoonTheme::active_tokens(cx).typography.mono_font_size
+}
+
+/// Три стандартные ступени кегля терминала. ЕДИНСТВЕННЫЙ источник размеров
+/// текста — больше нигде не задаём кегли числом и не используем `.text_xs()`.
+/// Всё проходит через `font()` (см. `text_px`), поэтому реагирует на слайдер
+/// «Шрифт» в Настройках.
+///
+/// `t_caption` ~9: бейджи, мелкие подписи, счётчики.
+pub fn t_caption(cx: &App) -> Pixels {
+    text_px(cx, base_text(cx) - 2.0)
+}
+
+/// `t_body` 11: основной текст, таблицы, моно-значения. База темы.
+pub fn t_body(cx: &App) -> Pixels {
+    text_px(cx, base_text(cx))
+}
+
+/// `t_title` ~14: заголовки и крупные акценты.
+pub fn t_title(cx: &App) -> Pixels {
+    text_px(cx, base_text(cx) + 3.0)
+}
+
 pub fn fit_h_px(cx: &App, base_height: f32, base_line_height: f32, base_pad_y: f32) -> Pixels {
     px(fit_h_value(cx, base_height, base_line_height, base_pad_y))
 }
@@ -167,7 +194,7 @@ pub fn top_pill(
         .border_1()
         .border_color(rgb(p.border))
         .bg(rgb(p.panel))
-        .text_size(text_px(cx, 11.0))
+        .text_size(t_body(cx))
         .font_family(mono())
         .text_color(rgb(p.text_soft))
         .child(label.into())

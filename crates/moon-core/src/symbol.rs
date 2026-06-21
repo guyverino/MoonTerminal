@@ -27,3 +27,13 @@ pub fn base_symbol<'a>(sym: &'a str, quote: &str) -> &'a str {
         sym
     }
 }
+
+/// Полный тикер для подписи на чарте: `BTCUSDT` → `BTC-USDT`. Если quote не распознан —
+/// возвращаем рынок как есть (без дефиса).
+pub fn display_pair(market: &str) -> String {
+    let quote = resolve_quote(market);
+    if quote.is_empty() {
+        return market.to_string();
+    }
+    format!("{}-{}", base_symbol(market, &quote), quote)
+}

@@ -456,11 +456,18 @@ impl SettingsView {
     /// Заголовок колонки (тусклая подпись). `pad` — левый отступ ТЕКСТА (через внутренний
     /// margin) под внутренний отступ инпута (`px_2`≈8px у MoonInput), чтобы подпись стояла
     /// над текстом поля; margin внутреннего блока НЕ меняет ширину колонки. `grow` — как в `cell`.
-    fn col_head(label: &str, basis: f32, grow: bool, pad: f32, p: MoonPalette) -> impl IntoElement {
+    fn col_head(
+        label: &str,
+        basis: f32,
+        grow: bool,
+        pad: f32,
+        p: MoonPalette,
+        cx: &App,
+    ) -> impl IntoElement {
         Self::cell(basis, grow).child(
             div()
                 .ml(px(pad))
-                .text_xs()
+                .text_size(design::t_body(cx))
                 .text_color(rgb(p.text_soft))
                 .child(label.to_string()),
         )
@@ -477,13 +484,14 @@ impl SettingsView {
         pad: f32,
         tip: SharedString,
         p: MoonPalette,
+        cx: &App,
     ) -> impl IntoElement {
         Self::cell(basis, grow)
             .id(id)
             .child(
                 div()
                     .ml(px(pad))
-                    .text_xs()
+                    .text_size(design::t_body(cx))
                     .text_color(rgb(p.text))
                     .underline()
                     .text_decoration_color(rgb(p.text_soft))
@@ -582,13 +590,13 @@ impl SettingsView {
             .gap_1()
             .items_center()
             .pl(px(20.0))
-            .child(Self::col_head_tip("h-act", &t!("conn.col.act"), 28.0, false, 0.0, t!("conn.tip.act").to_string().into(), p))
-            .child(Self::col_head_tip("h-win", &t!("conn.col.win"), 34.0, false, 0.0, t!("conn.tip.win").to_string().into(), p))
-            .child(Self::col_head(&t!("conn.col.name"), 150.0, true, 8.0, p))
-            .child(Self::col_head(&t!("conn.col.key"), 200.0, true, 8.0, p))
-            .child(Self::col_head_tip("h-group", &t!("conn.col.group"), 110.0, false, 8.0, t!("conn.tip.group").to_string().into(), p))
-            .child(Self::col_head_tip("h-bundle", &t!("conn.col.bundle"), 96.0, false, 8.0, t!("conn.tip.bundle").to_string().into(), p))
-            .child(Self::col_head_tip("h-data", &t!("conn.col.data"), 52.0, false, 0.0, t!("conn.tip.flags").to_string().into(), p))
+            .child(Self::col_head_tip("h-act", &t!("conn.col.act"), 28.0, false, 0.0, t!("conn.tip.act").to_string().into(), p, cx))
+            .child(Self::col_head_tip("h-win", &t!("conn.col.win"), 34.0, false, 0.0, t!("conn.tip.win").to_string().into(), p, cx))
+            .child(Self::col_head(&t!("conn.col.name"), 150.0, true, 8.0, p, cx))
+            .child(Self::col_head(&t!("conn.col.key"), 200.0, true, 8.0, p, cx))
+            .child(Self::col_head_tip("h-group", &t!("conn.col.group"), 110.0, false, 8.0, t!("conn.tip.group").to_string().into(), p, cx))
+            .child(Self::col_head_tip("h-bundle", &t!("conn.col.bundle"), 96.0, false, 8.0, t!("conn.tip.bundle").to_string().into(), p, cx))
+            .child(Self::col_head_tip("h-data", &t!("conn.col.data"), 52.0, false, 0.0, t!("conn.tip.flags").to_string().into(), p, cx))
             // Хвостовые плейсхолдеры под колонки строки (цвет/удалить/реконнект/статус) —
             // ОБЯЗАТЕЛЬНЫ: без них растяжимые колонки шапки получили бы лишнее место и съехали.
             .child(Self::cell(110.0, false))
@@ -673,7 +681,7 @@ impl SettingsView {
                     )
                     .child(
                         div()
-                            .text_xs()
+                            .text_size(design::t_body(cx))
                             .text_color(rgb(p.text_soft))
                             .child(t!("conn.member_count", n = member_count).to_string()),
                     )
@@ -789,7 +797,7 @@ impl SettingsView {
                             .child(
                                 div()
                                     .flex_1()
-                                    .text_xs()
+                                    .text_size(design::t_body(cx))
                                     .text_color(rgb(p.text_soft))
                                     .child(t!("conn.icon_for", name = name).to_string()),
                             )

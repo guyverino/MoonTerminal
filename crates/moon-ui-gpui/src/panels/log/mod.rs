@@ -284,7 +284,7 @@ impl Render for LogPanel {
             controls = controls
                 .child(
                     div()
-                        .text_xs()
+                        .text_size(crate::design::t_body(cx))
                         .text_color(rgb(p.text_soft))
                         .child(t!("log.file").to_string()),
                 )
@@ -312,9 +312,12 @@ impl Render for LogPanel {
                     })),
             )
             .child(
-                div().text_xs().text_color(rgb(p.text_muted)).child(
-                    t!("log.count", shown = self.lines.len(), total = total).to_string(),
-                ),
+                div()
+                    .text_size(crate::design::t_body(cx))
+                    .text_color(rgb(p.text_muted))
+                    .child(
+                        t!("log.count", shown = self.lines.len(), total = total).to_string(),
+                    ),
             );
 
         // ── Список (виртуализирован, к низу) ──
@@ -346,7 +349,7 @@ impl Render for LogPanel {
                             e.read(app)
                                 .lines
                                 .get(ix)
-                                .map(|line| render::log_row(line, p))
+                                .map(|line| render::log_row(line, p, app))
                         })
                         .unwrap_or_else(|| div().into_any_element())
                 },

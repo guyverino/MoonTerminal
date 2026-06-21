@@ -299,7 +299,7 @@ impl Render for DetectsPanel {
                                     .w_full()
                                     .justify_between()
                                     .items_end()
-                                    .text_xs()
+                                    .text_size(design::t_body(cx))
                                     .text_color(secs_color)
                                     .child(div().child(format!("{secs}s")))
                                     .child(div().child(it.core_name.clone())),

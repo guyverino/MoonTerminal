@@ -136,6 +136,12 @@ struct CursorState {
 struct PaneRender {
     core: Option<CoreId>,
     market: String,
+    /// Имя ядра для угловой подписи чарта (резолв из `SessionManager` при синке ордеров).
+    /// Тикер подписи выводим из `market` на лету (`symbol::display_pair`), его не храним.
+    core_name: String,
+    /// Изменённая ширина (лог. px) самой широкой строки угловой подписи — `prepare_text`
+    /// замеряет её, `sync_readout_params` строит по ней плашку-подложку. 0 = подписи нет.
+    caption_w: f32,
     view: ChartViewGpu,
     layers: PlatformLayers,
     background_params: BackgroundParams,
@@ -189,6 +195,8 @@ impl PaneRender {
         Self {
             core: None,
             market: String::new(),
+            core_name: String::new(),
+            caption_w: 0.0,
             view: ChartViewGpu::default(),
             layers: PlatformLayers::new(),
             background_params: BackgroundParams::default(),

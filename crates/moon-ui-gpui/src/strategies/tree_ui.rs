@@ -76,8 +76,8 @@ impl Render for DragChip {
             .border_1()
             .border_color(moon(p.blue))
             .text_color(moon(p.text))
-            .text_size(design::text_px(cx, 10.5))
-            .font_family("Geist Mono")
+            .text_size(design::t_body(cx))
+            .font_family(design::mono())
             .child(self.label.clone())
     }
 }

@@ -40,7 +40,7 @@ pub(super) fn orders_table(
                     .flex()
                     .items_center()
                     .font_family(design::mono())
-                    .text_size(design::text_px(cx, 10.5))
+                    .text_size(design::t_body(cx))
                     .text_color(rgb(p.text_muted))
                     .child(t!("orders.empty").to_string()),
             )

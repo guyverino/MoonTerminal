@@ -378,7 +378,7 @@ impl Render for AssetsView {
             .overflow_hidden()
             .track_focus(&self.focus)
             .font_family(design::mono())
-            .text_size(design::text_px(cx, 10.5))
+            .text_size(design::t_body(cx))
             .bg(rgb(p.table_body))
             .when(windowed, |this| this.child(assets_header(p, cx)))
             .child(controls)

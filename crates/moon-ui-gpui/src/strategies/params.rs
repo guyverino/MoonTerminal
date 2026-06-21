@@ -61,8 +61,8 @@ impl StrategiesView {
             .px(design::ui_px(cx, 24.0))
             .py(design::ui_px(cx, 18.0))
             .gap(design::ui_px(cx, 10.0))
-            .font_family("Geist Mono")
-            .text_size(design::text_px(cx, 11.0))
+            .font_family(design::mono())
+            .text_size(design::t_body(cx))
             .line_height(design::line_px(cx, 14.0));
 
         let ParamsPanelModel::Content {
@@ -107,7 +107,7 @@ impl StrategiesView {
                 h_flex()
                     .items_center()
                     .gap_2()
-                    .child(div().text_xs().text_color(moon(p.text_muted)).child(count))
+                    .child(div().text_size(design::t_body(cx)).text_color(moon(p.text_muted)).child(count))
                     .when(dirty > 0, |row| {
                         row.child(
                             MoonButton::new("strat-fields-apply")
@@ -422,15 +422,15 @@ impl StrategiesView {
                     .hover(move |s| s.border_color(moon_alpha(p.amber, 0.72)))
                     .child(
                         div()
-                            .font_family("Geist Mono")
-                            .text_size(design::text_px(cx, 11.0))
+                            .font_family(design::mono())
+                            .text_size(design::t_body(cx))
                             .text_color(moon(p.text))
                             .child(label),
                     )
                     .child(
                         div()
-                            .font_family("Geist Mono")
-                            .text_size(design::text_px(cx, 10.0))
+                            .font_family(design::mono())
+                            .text_size(design::t_body(cx))
                             .text_color(moon(p.text_muted))
                             .child(detail),
                     )
@@ -452,7 +452,7 @@ impl StrategiesView {
                 .border_color(moon(p.border))
                 .child(
                     div()
-                        .text_xs()
+                        .text_size(design::t_body(cx))
                         .text_color(moon(p.text_muted))
                         .child(format!("{field} · formula helper")),
                 )

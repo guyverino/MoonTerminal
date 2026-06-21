@@ -32,7 +32,7 @@ impl AssetsView {
             .py_1()
             .child(
                 div()
-                    .text_xs()
+                    .text_size(design::t_body(cx))
                     .text_color(rgb(p.text_muted))
                     .child(format!("{count}")),
             )
@@ -51,13 +51,13 @@ impl AssetsView {
             .child(div().flex_1())
             .child(
                 div()
-                    .text_xs()
+                    .text_size(design::t_body(cx))
                     .text_color(rgb(p.text_soft))
                     .child(format!("Σ {}", money(total_value))),
             )
             .child(
                 div()
-                    .text_xs()
+                    .text_size(design::t_body(cx))
                     .text_color(rgb(pnl_tone))
                     .child(format!("PnL {}", money(total_pnl))),
             )
@@ -84,13 +84,13 @@ impl AssetsView {
                     .bg(rgb(p.shell_high))
                     .child(
                         div()
-                            .text_xs()
+                            .text_size(design::t_body(cx))
                             .text_color(rgb(p.text))
                             .child(a.name.clone()),
                     )
                     .child(
                         div()
-                            .text_xs()
+                            .text_size(design::t_body(cx))
                             .text_color(rgb(p.text_soft))
                             .child(money(a.total)),
                     ),
@@ -136,7 +136,7 @@ impl AssetsView {
                 .cursor_pointer()
                 .text_color(rgb(p.text))
                 .child(div().flex_1().min_w_0().truncate().child(name.clone()))
-                .child(div().text_xs().text_color(rgb(p.text_soft)).child(format!(
+                .child(div().text_size(design::t_body(cx)).text_color(rgb(p.text_soft)).child(format!(
                     "{} / {}",
                     money(free),
                     money(total)
@@ -172,7 +172,7 @@ impl AssetsView {
                     .w_full()
                     .px(design::ui_px(cx, 8.0))
                     .py(design::ui_px(cx, 4.0))
-                    .text_xs()
+                    .text_size(design::t_body(cx))
                     .text_color(rgb(p.text_muted))
                     .child(t!("assets.cores_free_total").to_string()),
             )
@@ -260,7 +260,7 @@ pub(super) fn assets_table(
                     .flex()
                     .items_center()
                     .font_family(design::mono())
-                    .text_size(design::text_px(cx, 10.5))
+                    .text_size(design::t_body(cx))
                     .text_color(rgb(p.text_muted))
                     .child(t!("assets.empty").to_string()),
             )

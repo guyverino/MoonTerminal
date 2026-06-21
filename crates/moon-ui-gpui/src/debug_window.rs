@@ -160,7 +160,7 @@ impl DebugPerfWindow {
                 div()
                     .w(px(190.0))
                     .font_family(design::ui_font())
-                    .text_size(design::text_px(cx, 15.0))
+                    .text_size(design::t_title(cx))
                     .text_color(rgb(p.text_muted))
                     .child(label),
             )
@@ -168,7 +168,7 @@ impl DebugPerfWindow {
                 div()
                     .flex_1()
                     .font_family(design::ui_font())
-                    .text_size(design::text_px(cx, 18.0))
+                    .text_size(design::t_title(cx))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(rgb(p.amber))
                     .child(value.into()),
@@ -241,7 +241,7 @@ impl Render for DebugPerfWindow {
             .gap(design::ui_px(cx, 8.0))
             .p_4()
             .bg(rgb(p.shell))
-            .text_size(design::text_px(cx, 12.0))
+            .text_size(design::t_body(cx))
             .text_color(rgb(p.text))
             .child(
                 h_flex()
@@ -393,7 +393,7 @@ impl Render for DebugPerfWindow {
                             .rounded(design::ui_px(cx, 4.0))
                             .bg(rgba(0x00000055))
                             .font_family(design::mono())
-                            .text_size(design::text_px(cx, 10.5))
+                            .text_size(design::t_body(cx))
                             .text_color(rgb(p.text_soft))
                             .child(diag_tail),
                     ),

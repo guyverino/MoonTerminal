@@ -45,7 +45,7 @@ impl Render for AssetDragPreview {
             .border_1()
             .border_color(rgb(p.blue))
             .text_color(rgb(p.text))
-            .text_size(design::text_px(cx, 10.5))
+            .text_size(design::t_body(cx))
             .font_family(design::mono())
             .child(self.label.clone())
     }
@@ -73,7 +73,7 @@ impl AssetsView {
                     .py(design::ui_px(cx, 4.0))
                     .child(
                         div()
-                            .text_xs()
+                            .text_size(design::t_body(cx))
                             .text_color(rgb(p.text_muted))
                             .child(t!("assets.wallets_hint").to_string()),
                     )
@@ -139,7 +139,7 @@ impl AssetsView {
                 div()
                     .px(design::ui_px(cx, 6.0))
                     .py(px(2.0))
-                    .text_xs()
+                    .text_size(design::t_body(cx))
                     .text_color(rgb(p.text_muted))
                     .child("—"),
             );
@@ -213,7 +213,7 @@ impl AssetsView {
                     .px(design::ui_px(cx, 6.0))
                     .py(design::ui_px(cx, 3.0))
                     .bg(rgb(p.shell_high))
-                    .text_xs()
+                    .text_size(design::t_body(cx))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(rgb(p.text_soft))
                     .child(format!("{} ({})", kind.label(), all_items.len())),
@@ -302,7 +302,7 @@ impl AssetsView {
                         )
                         .child(
                             div()
-                                .text_xs()
+                                .text_size(design::t_body(cx))
                                 .text_color(rgb(p.text_muted))
                                 .child(t!("assets.free", n = num(pending.free)).to_string()),
                         );

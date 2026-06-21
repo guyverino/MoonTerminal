@@ -431,14 +431,14 @@ impl Render for OrdersPanel {
             .child(self.sort_menu(cx))
             .child(
                 div()
-                    .text_xs()
+                    .text_size(design::t_body(cx))
                     .text_color(rgb(p.text_muted))
                     .child(format!("{shown}")),
             );
         if view.only_current_market {
             controls = controls.child(
                 div()
-                    .text_xs()
+                    .text_size(design::t_body(cx))
                     .text_color(rgb(p.text_muted))
                     .child(format!("· {}", t!("orders.only_current"))),
             );
@@ -454,7 +454,7 @@ impl Render for OrdersPanel {
             .overflow_hidden()
             .track_focus(&self.focus)
             .font_family(design::mono())
-            .text_size(design::text_px(cx, 10.5))
+            .text_size(design::t_body(cx))
             .bg(rgb(p.table_body))
             .child(controls)
             .child(div().w_full().h(px(1.0)).flex_none().bg(rgb(p.border)))
