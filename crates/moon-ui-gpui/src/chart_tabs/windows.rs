@@ -299,6 +299,10 @@ struct DetachedChartHost {
     /// на primary, и `WM_DPICHANGED` при переезде на монитор с другим DPI пере-масштабирует
     /// РАЗМЕР (позиция уже верная) → форсим сохранённый логический размер один раз. None у детача.
     restore_size: Option<Size<Pixels>>,
+    /// Кнопку окна из таскбара убираем `ITaskbarList::DeleteTab` на первых рендерах (когда окно
+    /// уже показано и кнопка создана). Окно при этом остаётся обычным independent → FancyZones его
+    /// видит. Несколько тиков — подстраховка от гонки «кнопка ещё не появилась».
+    taskbar_hide_ticks: u8,
 }
 
 impl DetachedChartHost {
@@ -340,6 +344,7 @@ impl DetachedChartHost {
             bucket,
             persist_armed: !restored,
             restore_size,
+            taskbar_hide_ticks: 8,
         }
     }
 
@@ -388,9 +393,12 @@ impl Render for DetachedChartHost {
         if let Some(sz) = self.restore_size.take() {
             window.resize(sz);
         }
-        // Откреп-чарты независимы (не owned) → ОС даёт им кнопку в таскбаре. Прячем её через
-        // WS_EX_TOOLWINDOW (Windows). Идемпотентно: реальная смена стиля происходит один раз.
-        crate::windowing::hide_window_from_taskbar(window);
+        // Убрать кнопку из таскбара (DeleteTab), оставив окно independent → FancyZones его видит.
+        // Несколько первых рендеров — на случай, если кнопка появляется чуть позже показа окна.
+        if self.taskbar_hide_ticks > 0 {
+            crate::windowing::hide_window_from_taskbar(window);
+            self.taskbar_hide_ticks -= 1;
+        }
         let p = MoonPalette::active(cx);
         // Масштаб — СВОЙ у этой панели (по-вкладочно), правится прямо в неё.
         let scale = self.panel.read(cx).scale();
@@ -448,6 +456,9 @@ impl Render for DetachedChartHost {
                     .flex_1()
                     .w_full()
                     .overflow_hidden()
+                    // Фон тела: окно — Root(NoFill), и область ниже чарта иначе не закрашена
+                    // (на Windows = белое). Красим shell, чарт рисует поверх.
+                    .bg(rgb(p.shell))
                     .child(self.panel.clone()),
             )
     }

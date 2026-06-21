@@ -129,11 +129,14 @@ pub(crate) fn detached_panel_window_options(
     owned_window_options(title, window_bounds, display_id, None, owner, true)
 }
 
-/// Открепленное chart-окно.
+/// Открепленное chart-окно — **independent** (НЕ owned, НЕ tool-window).
 ///
-/// Chart windows намеренно independent: Win32/AppKit/X11 owned/transient связь поднимает
-/// главное окно группы при клике по графику, что ломает мультимониторный сценарий. В taskbar
-/// отдельную кнопку не показываем через явную policy и Windows fallback после создания окна.
+/// Только обычное independent-окно видит PowerToys FancyZones и снапит по зонам: tool-окна
+/// (`WS_EX_TOOLWINDOW`) и owned-окна FancyZones игнорирует (нет присутствия в таскбаре).
+/// Поэтому кнопку из таскбара убираем НЕ стилем окна, а `ITaskbarList::DeleteTab` после показа
+/// (см. `hide_window_from_taskbar`) — стиль не меняется → FancyZones продолжает работать.
+/// `taskbar Hidden` → без `WS_EX_APPWINDOW`, чтобы DeleteTab держался (APPWINDOW делает кнопку
+/// «липкой»). Independent (в отличие от owned) не поднимает окно группы при клике — это плюс.
 pub(crate) fn detached_chart_window_options(
     title: impl Into<SharedString>,
     window_bounds: WindowBounds,
@@ -297,18 +300,17 @@ pub(crate) fn set_group_window_icon(window: &Window, icon_id: u32) {
 #[cfg(not(target_os = "windows"))]
 pub(crate) fn set_group_window_icon(_: &Window, _: u32) {}
 
-/// Скрыть окно из таскбара/Alt-Tab (Windows) через `WS_EX_TOOLWINDOW` — БЕЗ owner-связи.
-/// Нужно для independent chart windows: одной `taskbar_visibility::Hidden` недостаточно
-/// для всех Win32/taskbar путей, поэтому после создания окна принудительно переводим его
-/// в tool-window style. Идемпотентно: реальная смена стиля происходит только при отличии.
+/// Убрать кнопку окна из таскбара через `ITaskbarList::DeleteTab` — БЕЗ смены стиля окна.
+/// Для откреп-чартов: они остаются обычными independent-окнами → PowerToys FancyZones их видит
+/// и снапит по зонам, но кнопки в таскбаре нет. (`WS_EX_TOOLWINDOW` дал бы «нет кнопки», но
+/// FancyZones игнорирует tool-окна; owned — тоже игнорирует. Поэтому именно DeleteTab.)
+/// Вызывать после показа окна (кнопка уже создана); идемпотентно.
 #[cfg(target_os = "windows")]
 pub(crate) fn hide_window_from_taskbar(window: &Window) {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
     use windows::Win32::Foundation::HWND;
-    use windows::Win32::UI::WindowsAndMessaging::{
-        GWL_EXSTYLE, GetWindowLongPtrW, SW_HIDE, SW_SHOWNA, SetWindowLongPtrW, ShowWindow,
-        WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
-    };
+    use windows::Win32::System::Com::{CLSCTX_ALL, CoCreateInstance};
+    use windows::Win32::UI::Shell::{ITaskbarList, TaskbarList};
 
     let Ok(handle) = HasWindowHandle::window_handle(window) else {
         return;
@@ -318,15 +320,14 @@ pub(crate) fn hide_window_from_taskbar(window: &Window) {
     };
     let hwnd = HWND(h.hwnd.get() as *mut _);
     unsafe {
-        let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
-        let want = (ex & !(WS_EX_APPWINDOW.0 as isize)) | (WS_EX_TOOLWINDOW.0 as isize);
-        if want != ex {
-            // WinAPI: чтобы кнопка таскбара исчезла, окно надо спрятать, сменить ex-style и
-            // показать обратно БЕЗ активации (SW_SHOWNA — иначе перехватит фокус у текущего).
-            let _ = ShowWindow(hwnd, SW_HIDE);
-            SetWindowLongPtrW(hwnd, GWL_EXSTYLE, want);
-            let _ = ShowWindow(hwnd, SW_SHOWNA);
+        let taskbar: ITaskbarList = match CoCreateInstance(&TaskbarList, None, CLSCTX_ALL) {
+            Ok(t) => t,
+            Err(_) => return,
+        };
+        if taskbar.HrInit().is_err() {
+            return;
         }
+        let _ = taskbar.DeleteTab(hwnd);
     }
 }
 
