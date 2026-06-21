@@ -86,15 +86,11 @@ impl AssetsView {
                     ),
             )
             .child(
-                h_flex()
-                    .w_full()
-                    .flex_1()
-                    .min_h(px(0.0))
-                    .children(
-                        WalletKind::ALL
-                            .into_iter()
-                            .map(|kind| self.wallet_column(b, core, kind, cx)),
-                    ),
+                h_flex().w_full().flex_1().min_h(px(0.0)).children(
+                    WalletKind::ALL
+                        .into_iter()
+                        .map(|kind| self.wallet_column(b, core, kind, cx)),
+                ),
             )
     }
 

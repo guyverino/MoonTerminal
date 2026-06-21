@@ -9,7 +9,7 @@ use moon_core::data::{LevelInstance, PriceLinePoint};
 
 use super::types::{
     BackgroundParams, BookStyle, ChartCross, ChartViewGpu, CursorParams, GridParams, HLineGpu,
-    MarkerGpu, ReadoutGlyph, ReadoutRect, SegGpu, ZoneGpu,
+    MarkerGpu, ReadoutRect, SegGpu, ZoneGpu,
 };
 
 const BACKGROUND_SHADER: &str = include_str!("shaders/native_background.wgsl");
@@ -106,7 +106,6 @@ struct Pipelines {
     grid: wgpu::RenderPipeline,
     cursor: wgpu::RenderPipeline,
     readout_rect: wgpu::RenderPipeline,
-    readout_glyph: wgpu::RenderPipeline,
     crosses: wgpu::RenderPipeline,
     volume: wgpu::RenderPipeline,
     price_last: wgpu::RenderPipeline,
@@ -281,7 +280,6 @@ pub struct WgpuLayers {
     grid_uniform: BufferSlot,
     cursor_uniform: BufferSlot,
     readout_rect_buffer: BufferSlot,
-    readout_glyph_buffer: BufferSlot,
     view_uniform: BufferSlot,
     book_view_uniform: BufferSlot,
     book_style_uniform: BufferSlot,
@@ -324,7 +322,6 @@ impl WgpuLayers {
             grid_uniform: BufferSlot::default(),
             cursor_uniform: BufferSlot::default(),
             readout_rect_buffer: BufferSlot::default(),
-            readout_glyph_buffer: BufferSlot::default(),
             view_uniform: BufferSlot::default(),
             book_view_uniform: BufferSlot::default(),
             book_style_uniform: BufferSlot::default(),
@@ -432,7 +429,6 @@ impl WgpuLayers {
         self.grid_uniform = BufferSlot::default();
         self.cursor_uniform = BufferSlot::default();
         self.readout_rect_buffer = BufferSlot::default();
-        self.readout_glyph_buffer = BufferSlot::default();
         self.view_uniform = BufferSlot::default();
         self.book_view_uniform = BufferSlot::default();
         self.book_style_uniform = BufferSlot::default();
@@ -453,11 +449,11 @@ impl WgpuLayers {
     pub fn render(
         &mut self,
         view: &ChartViewGpu,
+        pane_bounds: [f32; 4],
         background_params: &BackgroundParams,
         grid_params: &GridParams,
         cursor_params: &CursorParams,
         readout_rects: &[ReadoutRect],
-        readout_glyphs: &[ReadoutGlyph],
         orderbook_view: &ChartViewGpu,
         gpu: &RawGpuAccess,
     ) -> anyhow::Result<()> {
@@ -474,7 +470,6 @@ impl WgpuLayers {
             grid_params,
             cursor_params,
             readout_rects,
-            readout_glyphs,
         );
         self.prepare_bind_groups(device);
         let sc = scissor_rect(view, orderbook_view, gpu.width(), gpu.height());
@@ -485,7 +480,9 @@ impl WgpuLayers {
         } else {
             self.draw_base_layers(pass);
         }
-        self.draw_cursor_layer(pass, cursor_params, readout_rects, readout_glyphs);
+        let sc = bounds_scissor(pane_bounds, gpu.width(), gpu.height());
+        pass.set_scissor_rect(sc.0, sc.1, sc.2, sc.3);
+        self.draw_cursor_layer(pass, cursor_params, readout_rects);
         Ok(())
     }
 
@@ -588,7 +585,6 @@ impl WgpuLayers {
         pass: &mut wgpu::RenderPass<'_>,
         cursor_params: &CursorParams,
         readout_rects: &[ReadoutRect],
-        readout_glyphs: &[ReadoutGlyph],
     ) {
         let pipelines = self.pipelines.as_ref().unwrap();
         let binds = self.prepared_binds.as_ref().unwrap();
@@ -603,15 +599,6 @@ impl WgpuLayers {
                 &binds.readout,
                 6,
                 readout_rects.len() as u32,
-            );
-        }
-        if !readout_glyphs.is_empty() {
-            draw_pipeline(
-                pass,
-                &pipelines.readout_glyph,
-                &binds.readout,
-                6,
-                readout_glyphs.len() as u32,
             );
         }
     }
@@ -765,13 +752,6 @@ impl WgpuLayers {
             wgpu::BufferUsages::STORAGE,
             &[] as &[ReadoutRect],
         );
-        binds_dirty |= self.readout_glyph_buffer.write(
-            device,
-            queue,
-            "moon_chart_readout_glyphs",
-            wgpu::BufferUsages::STORAGE,
-            &[] as &[ReadoutGlyph],
-        );
         binds_dirty |= self.view_uniform.write(
             device,
             queue,
@@ -884,7 +864,6 @@ impl WgpuLayers {
         grid_params: &GridParams,
         cursor_params: &CursorParams,
         readout_rects: &[ReadoutRect],
-        readout_glyphs: &[ReadoutGlyph],
     ) {
         let mut view = *view;
         view.volume_buy_inv = 1.0 / self.volume_buy_max.max(1e-6);
@@ -918,13 +897,6 @@ impl WgpuLayers {
             "moon_chart_readout_rects",
             wgpu::BufferUsages::STORAGE,
             readout_rects,
-        );
-        binds_dirty |= self.readout_glyph_buffer.write(
-            device,
-            queue,
-            "moon_chart_readout_glyphs",
-            wgpu::BufferUsages::STORAGE,
-            readout_glyphs,
         );
         binds_dirty |= self.view_uniform.write(
             device,
@@ -991,16 +963,10 @@ impl WgpuLayers {
         device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("moon_chart_readout_bind"),
             layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: self.readout_rect_buffer.binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: self.readout_glyph_buffer.binding(),
-                },
-            ],
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: self.readout_rect_buffer.binding(),
+            }],
         })
     }
 
@@ -1174,6 +1140,18 @@ fn scissor_rect(
     (l, t, (r - l).max(1), (b - t).max(1))
 }
 
+fn bounds_scissor(bounds: [f32; 4], width: u32, height: u32) -> (u32, u32, u32, u32) {
+    let l = bounds[0].floor().max(0.0) as u32;
+    let t = bounds[1].floor().max(0.0) as u32;
+    let r = (bounds[0] + bounds[2])
+        .ceil()
+        .clamp(l as f32 + 1.0, width.max(1) as f32) as u32;
+    let b = (bounds[1] + bounds[3])
+        .ceil()
+        .clamp(t as f32 + 1.0, height.max(1) as f32) as u32;
+    (l, t, (r - l).max(1), (b - t).max(1))
+}
+
 fn panel_dst(
     view: &ChartViewGpu,
     orderbook_view: &ChartViewGpu,
@@ -1227,7 +1205,7 @@ fn create_pipelines(device: &wgpu::Device, format: wgpu::TextureFormat) -> Pipel
     });
     let readout_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("moon_chart_readout_layout"),
-        entries: &[storage_entry(0), storage_entry(1)],
+        entries: &[storage_entry(0)],
     });
     let view_storage_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("moon_chart_view_storage_layout"),
@@ -1276,14 +1254,6 @@ fn create_pipelines(device: &wgpu::Device, format: wgpu::TextureFormat) -> Pipel
         &readout_layout,
         "readout_rect_vertex",
         "readout_rect_fragment",
-    );
-    let readout_glyph = pipeline(
-        device,
-        format,
-        &readout_shader,
-        &readout_layout,
-        "readout_glyph_vertex",
-        "readout_glyph_fragment",
     );
     let crosses = pipeline(
         device,
@@ -1382,7 +1352,6 @@ fn create_pipelines(device: &wgpu::Device, format: wgpu::TextureFormat) -> Pipel
         grid,
         cursor,
         readout_rect,
-        readout_glyph,
         crosses,
         volume,
         price_last,

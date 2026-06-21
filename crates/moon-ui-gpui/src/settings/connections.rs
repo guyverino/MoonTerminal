@@ -84,8 +84,9 @@ fn conn_color(
     i: usize,
     init: [u8; 3],
 ) -> Entity<MoonColorPickerState> {
-    let st =
-        cx.new(|cx| MoonColorPickerState::new(window, cx).default_value(rgb(design::rgb_to_u32(init)).into()));
+    let st = cx.new(|cx| {
+        MoonColorPickerState::new(window, cx).default_value(rgb(design::rgb_to_u32(init)).into())
+    });
     cx.subscribe(&st, move |this, _e, ev: &MoonColorPickerEvent, cx| {
         let MoonColorPickerEvent::Change(h) = ev;
         let c = hsla_u8(*h);
@@ -496,7 +497,8 @@ impl SettingsView {
                     .child(label.to_string()),
             )
             .tooltip(move |_window, cx| {
-                cx.new(|_| MoonTooltipView::new(tip).max_width(320.0)).into()
+                cx.new(|_| MoonTooltipView::new(tip).max_width(320.0))
+                    .into()
             })
     }
 
@@ -516,7 +518,8 @@ impl SettingsView {
             .text_decoration_color(rgb(p.text_soft))
             .child(label.into())
             .tooltip(move |_window, cx| {
-                cx.new(|_| MoonTooltipView::new(tip).max_width(360.0)).into()
+                cx.new(|_| MoonTooltipView::new(tip).max_width(360.0))
+                    .into()
             })
     }
 

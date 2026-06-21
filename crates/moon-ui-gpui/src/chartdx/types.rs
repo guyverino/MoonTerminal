@@ -146,16 +146,6 @@ pub struct ReadoutRect {
     pub m: [f32; 4],
 }
 
-/// One fixed 5x7 bitmap glyph quad for native cursor readouts.
-#[repr(C)]
-#[derive(Clone, Copy, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct ReadoutGlyph {
-    pub dst: [f32; 4],
-    pub color: [f32; 4],
-    /// x = ASCII codepoint.
-    pub m: [u32; 4],
-}
-
 #[repr(C)]
 #[derive(Clone, Copy, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct BookStyle {

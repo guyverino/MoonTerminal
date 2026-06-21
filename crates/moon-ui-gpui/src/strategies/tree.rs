@@ -70,12 +70,16 @@ impl StrategiesView {
                     // DnD: сброс на ядро = перенос/копирование в КОРЕНЬ этого ядра.
                     .drag_over::<super::tree_ui::StratDrag>(move |s, _, _, _| s.bg(core_dnd_bg))
                     .drag_over::<super::tree_ui::FolderDrag>(move |s, _, _, _| s.bg(core_dnd_bg))
-                    .on_drop(cx.listener(move |this, drag: &super::tree_ui::StratDrag, _w, cx| {
-                        this.drop_strategies(cid, Vec::new(), drag, cx);
-                    }))
-                    .on_drop(cx.listener(move |this, drag: &super::tree_ui::FolderDrag, _w, cx| {
-                        this.drop_folder(cid, Vec::new(), drag, cx);
-                    })),
+                    .on_drop(
+                        cx.listener(move |this, drag: &super::tree_ui::StratDrag, _w, cx| {
+                            this.drop_strategies(cid, Vec::new(), drag, cx);
+                        }),
+                    )
+                    .on_drop(cx.listener(
+                        move |this, drag: &super::tree_ui::FolderDrag, _w, cx| {
+                            this.drop_folder(cid, Vec::new(), drag, cx);
+                        },
+                    )),
             );
             if !open {
                 continue;
@@ -438,12 +442,16 @@ impl StrategiesView {
                     )
                     .drag_over::<super::tree_ui::StratDrag>(move |s, _, _, _| s.bg(dnd_bg))
                     .drag_over::<super::tree_ui::FolderDrag>(move |s, _, _, _| s.bg(dnd_bg))
-                    .on_drop(cx.listener(move |this, drag: &super::tree_ui::StratDrag, _w, cx| {
-                        this.drop_strategies(core_id, strat_drop.clone(), drag, cx);
-                    }))
-                    .on_drop(cx.listener(move |this, drag: &super::tree_ui::FolderDrag, _w, cx| {
-                        this.drop_folder(core_id, folder_drop.clone(), drag, cx);
-                    }))
+                    .on_drop(
+                        cx.listener(move |this, drag: &super::tree_ui::StratDrag, _w, cx| {
+                            this.drop_strategies(core_id, strat_drop.clone(), drag, cx);
+                        }),
+                    )
+                    .on_drop(
+                        cx.listener(move |this, drag: &super::tree_ui::FolderDrag, _w, cx| {
+                            this.drop_folder(core_id, folder_drop.clone(), drag, cx);
+                        }),
+                    )
                     .into_any_element(),
             );
             if fopen {
@@ -602,5 +610,4 @@ impl StrategiesView {
     }
 
     // ── Панель 2: разделы (секции) ────────────────────────────────────────────
-
 }

@@ -134,12 +134,11 @@ impl AssetsView {
                 .cursor_pointer()
                 .text_color(rgb(p.text))
                 .child(div().flex_1().min_w_0().truncate().child(name.clone()))
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(rgb(p.text_soft))
-                        .child(format!("{} / {}", money(free), money(total))),
-                )
+                .child(div().text_xs().text_color(rgb(p.text_soft)).child(format!(
+                    "{} / {}",
+                    money(free),
+                    money(total)
+                )))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     if this.selected_core != Some(cid) {
                         this.selected_core = Some(cid);

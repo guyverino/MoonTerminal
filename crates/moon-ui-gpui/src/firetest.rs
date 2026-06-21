@@ -13,18 +13,22 @@ use crate::{Backend, diag};
 
 const DEFAULT_MARKET: &str = "BTCUSDT";
 const START_DELAY: Duration = Duration::from_millis(1000);
-const BASELINE: Duration = Duration::from_millis(2000);
+const BASELINE: Duration = Duration::from_millis(5000);
+const BASELINE_WARMUP: Duration = Duration::from_millis(1500);
 const COOLDOWN: Duration = Duration::from_millis(1200);
+const TEXT_WARMUP: Duration = Duration::from_millis(2500);
 const OPEN_TIMEOUT: Duration = Duration::from_millis(10_000);
 const PROBE_TIMEOUT: Duration = Duration::from_millis(10_000);
 const DEFAULT_MOUSE_HZ: f64 = 5000.0;
 const DEFAULT_STORM: Duration = Duration::from_millis(5000);
+const DEFAULT_TEXT_LABELS: usize = 0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Phase {
     WaitStartup,
     WaitOpen,
     WaitProbe,
+    WarmText,
     Baseline,
     Storm,
     Cooldown,
@@ -42,6 +46,7 @@ pub(crate) struct Config {
     market: String,
     storm: Duration,
     mouse_hz: f64,
+    text_labels: usize,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -80,6 +85,8 @@ pub(crate) struct Runtime {
     samples: Vec<Sample>,
     storm: Option<MouseStorm>,
     opened_target: Option<(CoreId, String)>,
+    text_overlay_enabled: bool,
+    present_pressure_enabled: bool,
     last_wait_log: Instant,
 }
 
@@ -121,11 +128,16 @@ impl Config {
             .map(Duration::from_millis)
             .filter(|v| *v >= Duration::from_millis(1000))
             .unwrap_or(DEFAULT_STORM);
+        let text_labels = std::env::var("MOON_FIRETEST_TEXT_LABELS")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(DEFAULT_TEXT_LABELS);
         Ok(Some(Self {
             script,
             market,
             storm,
             mouse_hz,
+            text_labels,
         }))
     }
 }
@@ -164,11 +176,12 @@ impl Runtime {
         diag::force_enable();
         let now = Instant::now();
         firetest_info(&format!(
-            "[firetest] script={:?} market={} storm_ms={} mouse_hz={:.0}",
+            "[firetest] script={:?} market={} storm_ms={} mouse_hz={:.0} text_labels={}",
             config.script,
             config.market,
             config.storm.as_millis(),
-            config.mouse_hz
+            config.mouse_hz,
+            config.text_labels
         ));
         Self {
             config,
@@ -179,6 +192,8 @@ impl Runtime {
             samples: Vec::new(),
             storm: None,
             opened_target: None,
+            text_overlay_enabled: false,
+            present_pressure_enabled: false,
             last_wait_log: now,
         }
     }
@@ -208,6 +223,9 @@ impl Runtime {
         if self.phase == Phase::Done {
             return;
         }
+        if self.phase == Phase::Baseline && self.phase_since.elapsed() < BASELINE_WARMUP {
+            return;
+        }
         self.samples.push(Sample {
             phase: self.phase,
             rates: rates.to_vec(),
@@ -234,14 +252,29 @@ impl Runtime {
             }
             Phase::WaitProbe => {
                 if self.probe.is_some() {
-                    self.set_phase(Phase::Baseline);
+                    let text_applied = self.enable_text_overlay(backend, cx);
+                    if self.config.text_labels > 0 && text_applied == 0 {
+                        self.fail("chart opened but firetest text overlay did not attach");
+                        return;
+                    }
+                    if self.config.text_labels == 0 {
+                        self.set_phase(Phase::Baseline);
+                    } else {
+                        self.set_phase(Phase::WarmText);
+                    }
                 } else if self.phase_since.elapsed() >= PROBE_TIMEOUT {
                     self.fail("chart opened but no chart bounds probe arrived");
                 } else {
                     self.wait_log("waiting for chart bounds probe");
                 }
             }
+            Phase::WarmText => {
+                if self.phase_since.elapsed() >= TEXT_WARMUP {
+                    self.set_phase(Phase::Baseline);
+                }
+            }
             Phase::Baseline => {
+                self.set_present_pressure(backend, true);
                 if self.phase_since.elapsed() >= BASELINE {
                     let Some(probe) = self.probe else {
                         self.fail("missing chart probe before mouse storm");
@@ -257,6 +290,7 @@ impl Runtime {
                 }
             }
             Phase::Storm => {
+                self.set_present_pressure(backend, true);
                 let done = self.storm.as_ref().is_some_and(MouseStorm::is_done);
                 if done || self.phase_since.elapsed() >= self.config.storm {
                     self.stop_storm();
@@ -264,6 +298,7 @@ impl Runtime {
                 }
             }
             Phase::Cooldown => {
+                self.set_present_pressure(backend, false);
                 if self.phase_since.elapsed() >= COOLDOWN {
                     self.evaluate_and_exit();
                 }
@@ -316,6 +351,42 @@ impl Runtime {
         true
     }
 
+    fn set_present_pressure(&mut self, backend: &mut Backend, enabled: bool) {
+        if self.present_pressure_enabled == enabled {
+            return;
+        }
+        self.present_pressure_enabled = enabled;
+        for chart in backend.live_chart_consumers() {
+            chart.set_firetest_force_present(enabled);
+        }
+    }
+
+    fn enable_text_overlay(&mut self, backend: &mut Backend, cx: &mut Context<Backend>) -> usize {
+        if self.text_overlay_enabled {
+            return 0;
+        }
+        self.text_overlay_enabled = true;
+        let count = self.config.text_labels;
+        if count == 0 {
+            firetest_info("[firetest] text overlay disabled");
+            return 0;
+        }
+        let consumers = backend.live_chart_consumers();
+        let mut applied = 0usize;
+        for chart in consumers {
+            if chart.set_firetest_text_labels(count) {
+                applied += 1;
+            }
+        }
+        firetest_info(&format!(
+            "[firetest] text overlay labels={count} applied_to={applied}"
+        ));
+        if applied > 0 {
+            cx.notify();
+        }
+        applied
+    }
+
     fn stop_storm(&mut self) {
         if let Some(storm) = self.storm.take() {
             storm.stop();
@@ -342,6 +413,14 @@ impl Runtime {
         let avg_rate = |label: &str| -> f64 {
             storm.iter().map(|s| rate(s, label)).sum::<f64>() / storm.len() as f64
         };
+        let baseline_max_rate = |label: &str| -> f64 {
+            baseline
+                .iter()
+                .map(|s| rate(s, label))
+                .fold(0.0_f64, f64::max)
+        };
+        let rate_delta =
+            |label: &str| -> f64 { (avg_rate(label) - baseline_max_rate(label)).max(0.0) };
         let max_rate =
             |label: &str| -> f64 { storm.iter().map(|s| rate(s, label)).fold(0.0_f64, f64::max) };
         let avg_cpu = storm
@@ -409,7 +488,23 @@ impl Runtime {
             &mut fail,
             "chart_mouse_move",
             avg_rate("chart_mouse_move"),
-            300.0,
+            100.0,
+        );
+        let chart_mouse = avg_rate("chart_mouse_move");
+        let fast_mouse = avg_rate("chart_mouse_move_fast");
+        if chart_mouse > 1.0 {
+            check_min(
+                &mut fail,
+                "chart_mouse_fast_coverage",
+                fast_mouse / chart_mouse,
+                0.90,
+            );
+        }
+        check_max(
+            &mut fail,
+            "chart_mouse_move_entity",
+            max_rate("chart_mouse_move_entity"),
+            5.0,
         );
         check_max(&mut fail, "shell_render", max_rate("shell_render"), 10.0);
         check_max(&mut fail, "orders_render", max_rate("orders_render"), 10.0);
@@ -426,6 +521,47 @@ impl Runtime {
             max_rate("chart_canvas_notify"),
             5.0,
         );
+        check_max(
+            &mut fail,
+            "chart_gpu_prepare_delta",
+            rate_delta("chart_gpu_prepare"),
+            8.0,
+        );
+        check_max(&mut fail, "bg_draw_delta", rate_delta("bg_draw"), 12.0);
+        check_max(&mut fail, "grid_draw_delta", rate_delta("grid_draw"), 12.0);
+        check_max(&mut fail, "combo_draw_delta", rate_delta("combo_draw"), 12.0);
+        check_max(
+            &mut fail,
+            "userdata_draw_delta",
+            rate_delta("userdata_draw"),
+            12.0,
+        );
+        check_max(
+            &mut fail,
+            "base_bake_delta",
+            rate_delta("base_bake"),
+            8.0,
+        );
+        check_max(
+            &mut fail,
+            "combo_bake_delta",
+            rate_delta("combo_bake"),
+            8.0,
+        );
+        check_max(
+            &mut fail,
+            "orderbook_bake_delta",
+            rate_delta("orderbook_bake"),
+            8.0,
+        );
+        if self.config.text_labels > 0 {
+            check_max(
+                &mut fail,
+                "firetest_text_cold",
+                max_rate("firetest_text_cold"),
+                100.0,
+            );
+        }
         check_max(&mut fail, "cpu_process_avg", avg_cpu, 25.0);
         check_max(&mut fail, "cpu_process_delta", cpu_delta, 12.0);
         check_max(&mut fail, "cpu_process_max", max_cpu, 40.0);
@@ -441,7 +577,7 @@ impl Runtime {
         check_max(&mut fail, "mem_growth_mb", mem_growth, 96.0);
 
         let summary = format!(
-            "mouse_sent={:.0}/s chart_mouse={:.0}/s fast={:.0}/s entity={:.0}/s fast_stop={:.0}/s shell={:.0}/s orders={:.0}/s chart_render={:.0}/s input_notify={:.0}/s cpu_avg={:.1}% cpu_delta={:.1}% gpu_proc_avg={:.1}% gpu_proc_delta={:.1}% gpu_proc_max={:.1}% gpu_frame_avg={:.3}ms gpu_frame_max={:.3}ms mem_growth={:.1}MB present={:.0}/s cam_step={:.0}/s base_bake={:.0}/s combo_bake={:.0}/s book_bake={:.0}/s",
+            "mouse_sent={:.0}/s chart_mouse={:.0}/s fast={:.0}/s entity={:.0}/s fast_stop={:.0}/s shell={:.0}/s orders={:.0}/s chart_render={:.0}/s input_notify={:.0}/s text_draw={:.0}/s text_cold={:.0}/s cpu_avg={:.1}% cpu_delta={:.1}% gpu_proc_avg={:.1}% gpu_proc_delta={:.1}% gpu_proc_max={:.1}% gpu_frame_avg={:.3}ms gpu_frame_max={:.3}ms mem_growth={:.1}MB present={:.0}/s cam_step={:.0}/s gpu_prepare={:.0}/s(+{:.0}) bg_draw={:.0}/s(+{:.0}) combo_draw={:.0}/s(+{:.0}) base_bake={:.0}/s(+{:.0}) combo_bake={:.0}/s(+{:.0}) book_bake={:.0}/s(+{:.0})",
             avg_rate("firetest_mouse_sent"),
             avg_rate("chart_mouse_move"),
             avg_rate("chart_mouse_move_fast"),
@@ -451,6 +587,8 @@ impl Runtime {
             avg_rate("orders_render"),
             avg_rate("chart_render"),
             avg_rate("chart_input_notify"),
+            avg_rate("firetest_text_draw"),
+            avg_rate("firetest_text_cold"),
             avg_cpu,
             cpu_delta,
             avg_gpu_process,
@@ -461,9 +599,18 @@ impl Runtime {
             mem_growth,
             avg_rate("chart_present"),
             avg_rate("chart_cam_step"),
+            avg_rate("chart_gpu_prepare"),
+            rate_delta("chart_gpu_prepare"),
+            avg_rate("bg_draw"),
+            rate_delta("bg_draw"),
+            avg_rate("combo_draw"),
+            rate_delta("combo_draw"),
             avg_rate("base_bake"),
+            rate_delta("base_bake"),
             avg_rate("combo_bake"),
+            rate_delta("combo_bake"),
             avg_rate("orderbook_bake"),
+            rate_delta("orderbook_bake"),
         );
         if fail.is_empty() {
             firetest_info(&format!("[firetest] result=PASS {summary}"));
@@ -566,8 +713,12 @@ fn start_mouse_storm(
 ) -> Result<MouseStorm, String> {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
-    use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
-    use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_MOUSEMOVE};
+    use windows::Win32::Foundation::{HWND, POINT};
+    use windows::Win32::Graphics::Gdi::ClientToScreen;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetCursorPos, HWND_TOP, SW_RESTORE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SetCursorPos,
+        SetForegroundWindow, SetWindowPos, ShowWindow,
+    };
 
     let hwnd = probe
         .hwnd
@@ -582,6 +733,21 @@ fn start_mouse_storm(
         .spawn(move || {
             let start = Instant::now();
             let hwnd = HWND(hwnd as *mut _);
+            unsafe {
+                let _ = ShowWindow(hwnd, SW_RESTORE);
+                let _ = SetWindowPos(
+                    hwnd,
+                    Some(HWND_TOP),
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
+                );
+                let _ = SetForegroundWindow(hwnd);
+            }
+            let mut restore = POINT { x: 0, y: 0 };
+            let restore_cursor = unsafe { GetCursorPos(&mut restore).is_ok() };
             let left = probe.left * probe.scale_factor;
             let top = probe.top * probe.scale_factor;
             let width = probe.width * probe.scale_factor;
@@ -595,10 +761,15 @@ fn start_mouse_storm(
                 let angle = sent as f32 * step;
                 let x = (cx + angle.cos() * r).round() as i32;
                 let y = (cy + angle.sin() * r).round() as i32;
-                let lparam = mouse_lparam(x, y);
-                match unsafe { PostMessageW(Some(hwnd), WM_MOUSEMOVE, WPARAM(0), LPARAM(lparam)) } {
-                    Ok(()) => diag::bump(&diag::FIRETEST_MOUSE_SENT),
-                    Err(_) => diag::bump(&diag::FIRETEST_MOUSE_POST_FAIL),
+                let mut point = POINT { x, y };
+                let moved = unsafe {
+                    ClientToScreen(hwnd, &mut point).as_bool()
+                        && SetCursorPos(point.x, point.y).is_ok()
+                };
+                if moved {
+                    diag::bump(&diag::FIRETEST_MOUSE_SENT);
+                } else {
+                    diag::bump(&diag::FIRETEST_MOUSE_POST_FAIL);
                 }
                 sent = sent.wrapping_add(1);
                 let target = Duration::from_secs_f64(sent as f64 / mouse_hz.max(1.0));
@@ -609,17 +780,15 @@ fn start_mouse_storm(
                     std::thread::yield_now();
                 }
             }
+            if restore_cursor {
+                unsafe {
+                    let _ = SetCursorPos(restore.x, restore.y);
+                }
+            }
             thread_done.store(true, Ordering::Relaxed);
         })
         .map_err(|e| format!("failed to spawn mouse storm thread: {e}"))?;
     Ok(MouseStorm { stop, done })
-}
-
-#[cfg(target_os = "windows")]
-fn mouse_lparam(x: i32, y: i32) -> isize {
-    let lo = (x as i16 as u16) as u32;
-    let hi = (y as i16 as u16) as u32;
-    ((hi << 16) | lo) as isize
 }
 
 #[cfg(target_os = "macos")]

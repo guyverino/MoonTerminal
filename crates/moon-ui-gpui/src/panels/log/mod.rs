@@ -335,7 +335,10 @@ impl Render for LogPanel {
                 move |ix, _w, app| {
                     weak.upgrade()
                         .and_then(|e| {
-                            e.read(app).lines.get(ix).map(|line| render::log_row(line, p))
+                            e.read(app)
+                                .lines
+                                .get(ix)
+                                .map(|line| render::log_row(line, p))
                         })
                         .unwrap_or_else(|| div().into_any_element())
                 },

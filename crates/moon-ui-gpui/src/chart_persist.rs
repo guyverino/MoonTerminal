@@ -7,7 +7,7 @@
 //! Положение/зум самого чарта НЕ персистим: при загрузке вкладка пуста (нечего восстанавливать),
 //! а появившиеся монеты идут в live-follow.
 
-use moon_core::config::{paths, ChartBucket};
+use moon_core::config::{ChartBucket, paths};
 use moon_core::session::CoreId;
 use serde::{Deserialize, Serialize};
 

@@ -74,6 +74,8 @@ diag_counters!(
     CHART_CURSOR_UPDATE => "chart_cursor_update",
     FIRETEST_MOUSE_SENT => "firetest_mouse_sent",
     FIRETEST_MOUSE_POST_FAIL => "firetest_mouse_post_fail",
+    FIRETEST_TEXT_DRAW => "firetest_text_draw",
+    FIRETEST_TEXT_COLD => "firetest_text_cold",
 );
 
 #[derive(Clone, Debug)]
@@ -110,6 +112,13 @@ pub fn force_enable() {
 pub fn bump(c: &AtomicU64) {
     if enabled() {
         c.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+#[inline]
+pub fn bump_by(c: &AtomicU64, n: u64) {
+    if enabled() && n > 0 {
+        c.fetch_add(n, std::sync::atomic::Ordering::Relaxed);
     }
 }
 

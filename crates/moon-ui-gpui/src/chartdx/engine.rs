@@ -23,6 +23,9 @@ impl ChartEngine {
             last_gpu_prepare_generation: 0,
             text_runs: Vec::new(),
             text_run_cursor: 0,
+            firetest_text_labels: Vec::new(),
+            firetest_text_runs: Vec::new(),
+            firetest_force_present: false,
             ui_palette: moon_ui::MoonPalette::TERMINAL,
             slot_origin: [0.0, 0.0],
             cursor: None,
@@ -432,5 +435,4 @@ impl ChartEngine {
             })
             .collect()
     }
-
 }

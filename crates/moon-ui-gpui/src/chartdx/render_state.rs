@@ -4,6 +4,72 @@
 
 use super::*;
 
+const READOUT_FALLBACK_FONT_W: f32 = 8.5;
+const READOUT_LINE_H: f32 = 15.5;
+const READOUT_PAD_X: f32 = 5.0;
+const READOUT_PAD_Y: f32 = 2.5;
+const READOUT_INSET: f32 = 2.0;
+
+fn bounds_clip(bounds: [f32; 4], res: [f32; 2]) -> [f32; 4] {
+    let l = bounds[0].floor().clamp(0.0, res[0].max(1.0));
+    let t = bounds[1].floor().clamp(0.0, res[1].max(1.0));
+    let r = (bounds[0] + bounds[2])
+        .ceil()
+        .clamp(l + 1.0, res[0].max(1.0));
+    let b = (bounds[1] + bounds[3])
+        .ceil()
+        .clamp(t + 1.0, res[1].max(1.0));
+    [l, t, r, b]
+}
+
+fn readout_text_width(label: &str, measured: f32) -> f32 {
+    measured.max(label.chars().count() as f32 * READOUT_FALLBACK_FONT_W)
+}
+
+fn readout_rect_dst(
+    anchor_x: f32,
+    anchor_y: f32,
+    text_w: f32,
+    ax: f32,
+    ay: f32,
+    scale: f32,
+) -> [f32; 4] {
+    let x = anchor_x - text_w * ax - READOUT_PAD_X;
+    let y = anchor_y - READOUT_LINE_H * ay - READOUT_PAD_Y;
+    [
+        x * scale,
+        y * scale,
+        (text_w + READOUT_PAD_X * 2.0) * scale,
+        (READOUT_LINE_H + READOUT_PAD_Y * 2.0) * scale,
+    ]
+}
+
+fn clamp_anchor(value: f32, min: f32, max: f32) -> f32 {
+    if min <= max {
+        value.clamp(min, max)
+    } else {
+        (min + max) * 0.5
+    }
+}
+
+fn hex_rgba(hex: u32, alpha: f32) -> [f32; 4] {
+    [
+        ((hex >> 16) & 0xff) as f32 / 255.0,
+        ((hex >> 8) & 0xff) as f32 / 255.0,
+        (hex & 0xff) as f32 / 255.0,
+        alpha.clamp(0.0, 1.0),
+    ]
+}
+
+fn sync_readout_resolution(rects: &mut [ReadoutRect], res: [f32; 2]) {
+    let w = res[0].max(1.0);
+    let h = res[1].max(1.0);
+    for rect in rects {
+        rect.m[1] = w;
+        rect.m[2] = h;
+    }
+}
+
 impl RenderState {
     pub(super) fn set_target_present_rate_hz(&mut self, hz: f32) {
         let hz = hz.clamp(1.0, 240.0);
@@ -83,6 +149,17 @@ impl RenderState {
         true
     }
 
+    pub(super) fn set_firetest_force_present(&mut self, enabled: bool) -> bool {
+        if self.firetest_force_present == enabled {
+            return false;
+        }
+        self.firetest_force_present = enabled;
+        if enabled {
+            self.needs_present = true;
+        }
+        true
+    }
+
     pub(super) fn sync_cursor_params(&mut self) {
         for (idx, pr) in self.panes.iter_mut().enumerate() {
             let right = (pr.orderbook_view.bounds[0] + pr.orderbook_view.bounds[2])
@@ -121,9 +198,69 @@ impl RenderState {
     }
 
     pub(super) fn sync_readout_params(&mut self) {
-        for pr in &mut self.panes {
+        let Some(cursor) = self.cursor else {
+            for pr in &mut self.panes {
+                pr.readout_rects.clear();
+            }
+            return;
+        };
+
+        let sf = self.pixel_scale.max(0.1);
+        let bg = hex_rgba(self.ui_palette.chart_bg, 0.96);
+        let border = bg;
+        let border_px = 0.0;
+        let tz_offset_sec = crate::axes::local_offset_sec();
+
+        for (idx, pr) in self.panes.iter_mut().enumerate() {
             pr.readout_rects.clear();
-            pr.readout_glyphs.clear();
+            if !pr.active || cursor.pane != idx {
+                continue;
+            }
+
+            let pane_left = pr.pane_bounds[0] / sf;
+            let pane_bottom = (pr.pane_bounds[1] + pr.pane_bounds[3]) / sf;
+            let plot_left = pr.view.bounds[0] / sf;
+            let plot_top = pr.view.bounds[1] / sf;
+            let plot_w = pr.view.bounds[2] / sf;
+            let plot_h = pr.view.bounds[3] / sf;
+            if plot_w < 60.0 || plot_h < 60.0 || pr.view.price_to_px <= 0.0 {
+                continue;
+            }
+
+            let plot_bottom = plot_top + plot_h;
+            let plot_right = plot_left + plot_w;
+            let cx_log = (self.slot_origin[0] + cursor.local[0]) / sf;
+            let cy_log = (self.slot_origin[1] + cursor.local[1]) / sf;
+            let m = [border_px, 1.0, 1.0, 0.0];
+
+            let time_to_px = (pr.view.time_to_px / sf).max(1e-6);
+            if cx_log >= plot_left && cx_log <= plot_right {
+                let left_unix = pr.epoch_ms + pr.view.view_time0 as f64;
+                let unix = left_unix + (cx_log - plot_left) as f64 / time_to_px as f64;
+                let label = moon_chart::axes::fmt_clock(unix, tz_offset_sec, true);
+                let text_w = readout_text_width(&label, pr.readout_time_width);
+                let half_w = text_w * 0.5;
+                let x = clamp_anchor(
+                    cx_log,
+                    plot_left + half_w + READOUT_PAD_X + READOUT_INSET,
+                    plot_right - half_w - READOUT_PAD_X - READOUT_INSET,
+                );
+                let dst = readout_rect_dst(x, pane_bottom - 1.0, text_w, 0.5, 1.0, sf);
+                pr.readout_rects.push(ReadoutRect { dst, bg, border, m });
+            }
+
+            if cy_log >= plot_top && cy_log <= plot_bottom {
+                let price_to_px = pr.view.price_to_px / sf;
+                let price_range = plot_h / price_to_px.max(1e-6);
+                let y_min = pr.view.view_price0;
+                let dec = moon_chart::axes::price_decimals(y_min + price_range * 0.5);
+                let price = y_min + (plot_bottom - cy_log) / price_to_px.max(1e-6);
+                let label = format!("{price:.dec$}");
+                let text_w = readout_text_width(&label, pr.readout_price_width);
+                let x = (plot_left - 3.0).max(pane_left + READOUT_INSET + READOUT_PAD_X + text_w);
+                let dst = readout_rect_dst(x, cy_log, text_w, 1.0, 0.5, sf);
+                pr.readout_rects.push(ReadoutRect { dst, bg, border, m });
+            }
         }
     }
 
@@ -136,6 +273,9 @@ impl RenderState {
 
         let now_ms = now_unix_ms();
         let mut wants_present = std::mem::take(&mut self.needs_present);
+        if self.firetest_force_present {
+            wants_present = true;
+        }
         let cap_due = self.last_present_ms <= 0.0
             || now_ms - self.last_present_ms >= self.target_present_interval_ms;
         let mut camera_moved = false;
@@ -389,55 +529,40 @@ impl RenderState {
                 let scissor_rs = self.scissor_rs.clone().unwrap();
                 let prev_rs = unsafe { context.RSGetState().ok() };
 
-                if self.base_dirty {
-                    self.render_window_background_d3d(res, &device, &context, &rtv, gpu);
-                    self.render_chart_base_d3d(res, &device, &context, &rtv, gpu, &scissor_rs);
-                    self.base_cache.invalidate();
+                if self.base_dirty || self.base_cache.needs_rebuild(gpu) {
+                    let base_rtv = self.base_cache.begin_rebuild(&device, &context, gpu)?;
+                    self.render_window_background_d3d(res, &device, &context, &base_rtv, gpu);
+                    self.render_chart_base_d3d(
+                        res,
+                        &device,
+                        &context,
+                        &base_rtv,
+                        gpu,
+                        &scissor_rs,
+                    );
                     self.base_dirty = false;
-                } else {
-                    if self.base_cache.needs_rebuild(gpu) {
-                        let base_rtv = self.base_cache.begin_rebuild(&device, &context, gpu)?;
-                        self.render_window_background_d3d(res, &device, &context, &base_rtv, gpu);
-                        self.render_chart_base_d3d(
-                            res,
-                            &device,
-                            &context,
-                            &base_rtv,
-                            gpu,
-                            &scissor_rs,
-                        );
-                    }
-                    self.base_cache.blit_to(&context, &rtv, gpu);
                 }
+                self.base_cache.blit_to(&context, &rtv, gpu);
 
                 for pr in &mut self.panes {
                     if !pr.active {
                         continue;
                     }
                     let mut cursor_params = pr.cursor_params;
-                    let mut view = pr.view;
-                    let mut orderbook_view = pr.orderbook_view;
                     cursor_params.resolution = res;
-                    view.resolution = res;
-                    orderbook_view.resolution = res;
-                    let panel_clip = [
-                        view.bounds[0],
-                        view.bounds[1],
-                        orderbook_view.bounds[0] + orderbook_view.bounds[2],
-                        view.bounds[1] + view.bounds[3],
-                    ];
+                    sync_readout_resolution(&mut pr.readout_rects, res);
+                    let pane_clip = bounds_clip(pr.pane_bounds, res);
                     gpu::set_scissor(
                         &context,
                         &scissor_rs,
-                        panel_clip[0],
-                        panel_clip[1],
-                        panel_clip[2],
-                        panel_clip[3],
+                        pane_clip[0],
+                        pane_clip[1],
+                        pane_clip[2],
+                        pane_clip[3],
                     );
                     pr.layers.render_cursor_d3d(
                         &cursor_params,
                         &pr.readout_rects,
-                        &pr.readout_glyphs,
                         &device,
                         &context,
                         &rtv,
@@ -464,13 +589,14 @@ impl RenderState {
                         grid_params.resolution = res;
                         cursor_params.resolution = res;
                         orderbook_view.resolution = res;
+                        sync_readout_resolution(&mut pr.readout_rects, res);
                         pr.layers.render_wgpu(
                             &view,
+                            pr.pane_bounds,
                             &background_params,
                             &grid_params,
                             &cursor_params,
                             &pr.readout_rects,
-                            &pr.readout_glyphs,
                             &orderbook_view,
                             gpu,
                         )?;
@@ -493,13 +619,14 @@ impl RenderState {
                         grid_params.resolution = res;
                         cursor_params.resolution = res;
                         orderbook_view.resolution = res;
+                        sync_readout_resolution(&mut pr.readout_rects, res);
                         pr.layers.render_metal(
                             &view,
+                            pr.pane_bounds,
                             &background_params,
                             &grid_params,
                             &cursor_params,
                             &pr.readout_rects,
-                            &pr.readout_glyphs,
                             &orderbook_view,
                             gpu,
                         )?;
@@ -511,4 +638,3 @@ impl RenderState {
         }
     }
 }
-

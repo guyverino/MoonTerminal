@@ -319,16 +319,17 @@ impl StrategiesView {
                         window,
                         cx,
                     );
-                    let mut input = MoonInput::new(SharedString::from(format!("field-input-{row_id}")))
-                        .state(&state)
-                        .small()
-                        .tone(if differ || matches!(f.ui, SchemaFieldUi::Color) {
-                            MoonTone::Warning
-                        } else {
-                            MoonTone::Info
-                        })
-                        .selected(dirty || differ)
-                        .disabled(!active);
+                    let mut input =
+                        MoonInput::new(SharedString::from(format!("field-input-{row_id}")))
+                            .state(&state)
+                            .small()
+                            .tone(if differ || matches!(f.ui, SchemaFieldUi::Color) {
+                                MoonTone::Warning
+                            } else {
+                                MoonTone::Info
+                            })
+                            .selected(dirty || differ)
+                            .disabled(!active);
                     if differ {
                         input = input.placeholder("разные значения");
                     }

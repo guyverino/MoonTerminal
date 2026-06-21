@@ -17,9 +17,9 @@ use gpui::prelude::FluentBuilder;
 use gpui::*;
 use moon_ui::{
     DockArea, MoonButtonSize, MoonButtonVariant, MoonDataCell, MoonDataRow, MoonDataTable,
-    MoonDataTableColumn, MoonDataTableState, MoonDropdown, MoonInput, MoonInputEvent, MoonInputState,
-    MoonMenuItem, MoonMenuSize, MoonPalette, MoonText, MoonTone, Panel, PanelEvent, PanelState,
-    StyledExt, h_flex, v_flex,
+    MoonDataTableColumn, MoonDataTableState, MoonDropdown, MoonInput, MoonInputEvent,
+    MoonInputState, MoonMenuItem, MoonMenuSize, MoonPalette, MoonText, MoonTone, Panel, PanelEvent,
+    PanelState, StyledExt, h_flex, v_flex,
 };
 use rusqlite::Connection;
 use rusqlite::types::Value;

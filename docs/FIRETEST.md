@@ -13,7 +13,7 @@ Remove-Item -ErrorAction SilentlyContinue firetest.log, render_diag.log
 .\target\x86_64-pc-windows-msvc\debug\moonterminal.exe --debug-script chart-smoke
 ```
 
-`chart-smoke` ждёт старт приложения, открывает BTC-график, находит реальные bounds графика и 5 секунд шлёт частый native mousemove storm в окно. На Windows storm делается через `WM_MOUSEMOVE`, на macOS — через CoreGraphics mouse move events. В обоих случаях это настоящий оконный input path, а не прямой вызов chart API.
+`chart-smoke` ждёт старт приложения, открывает BTC-график, находит реальные bounds графика, прогревает high-present baseline без курсора, а потом 5 секунд двигает системную мышь по графику частым native mousemove storm. На Windows storm делается через реальный `SetCursorPos` в client-area окна, на macOS — через CoreGraphics mouse move events. В обоих случаях это настоящий оконный input path, а не прямой вызов chart API.
 
 На macOS тестовой машине может понадобиться выдать терминалу/приложению право Accessibility или Input Monitoring: это политика macOS для программной отправки событий мыши.
 
@@ -22,17 +22,23 @@ Remove-Item -ErrorAction SilentlyContinue firetest.log, render_diag.log
 - `MOON_FIRETEST_MARKET` — рынок, по умолчанию `BTCUSDT`.
 - `MOON_FIRETEST_MOUSE_HZ` — целевая частота mousemove storm, по умолчанию `5000`.
 - `MOON_FIRETEST_STORM_MS` — длительность storm, по умолчанию `5000`.
+- `MOON_FIRETEST_TEXT_LABELS` — дополнительный text-stress поверх графика. По умолчанию `0`: стандартный `chart-smoke` проверяет cursor/readout hot path. Для отдельной проверки retained text path можно запускать `MOON_FIRETEST_TEXT_LABELS=100000`; если этот сценарий красный, это отдельная проблема text-layer retention, а не провал cursor/readout.
 
 ## Что тест обязан ловить
 
 - cursor-only mousemove не должен будить `ChartPanel` entity path;
 - cursor-only mousemove не должен делать `cx.notify()` для chart input/canvas;
 - Shell/Orders/Chart GPUI render не должны улетать в сотни render/s;
+- cursor-only mousemove не должен увеличивать частоту дорогих chart base draw/bake (`bg_draw`, `grid_draw`, `combo_draw`, `base_bake`, `combo_bake`, `orderbook_bake`) сверх baseline;
 - CPU процесса не должен заметно расти от одной возни мышью;
 - RAM не должна расти;
 - на Windows дополнительно пишется process GPU `%` через PDH `GPU Engine`;
 - на macOS системный process GPU `%` не подделывается: вместо него FireTest получает реальное Metal `GPUStartTime/GPUEndTime` completed command buffer и проверяет `gpu_frame_ms`;
 - Linux mouse storm пока не закрыт: X11 можно сделать через XTest, Wayland требует synthetic/platform test hook или uinput/compositor-specific runner.
+
+## Почему есть high-present baseline
+
+График на живом BTC сам по себе может часто печь base/combo из-за live-data и авто-Y. Поэтому FireTest не сравнивает mouse storm с “тихим” idle. Перед storm он включает такой же частый `gpu_canvas` present без курсора и использует максимум baseline-сэмплов как опору. Красный результат означает не “рынок был активен”, а “mousemove/readout добавили дорогую работу сверх уже горячего chart-present режима”.
 
 ## Критерий
 

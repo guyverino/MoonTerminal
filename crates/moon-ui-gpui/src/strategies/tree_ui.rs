@@ -9,7 +9,11 @@ use moon_core::feed::NewStrategySpec;
 /// Активная модалка операции (взаимоисключающая; рисуется оверлеем поверх окна).
 pub(super) enum TreeOp {
     /// Создать стратегию: целевая папка + выбранный вид (kind ordinal).
-    CreateStrategy { core: CoreId, target: String, kind: Option<u8> },
+    CreateStrategy {
+        core: CoreId,
+        target: String,
+        kind: Option<u8>,
+    },
     /// Создать (UI-)папку: целевой родитель.
     CreateFolder { core: CoreId, target: String },
     /// Переименовать папку: ядро + путь папки (сегменты).
@@ -17,7 +21,11 @@ pub(super) enum TreeOp {
     /// Подтверждение удаления стратегий выделения (id переderives при подтверждении).
     ConfirmDeleteStrategies { label: String },
     /// Подтверждение удаления папки: ядро + путь, подпись.
-    ConfirmDeleteFolder { core: CoreId, path: Vec<String>, label: String },
+    ConfirmDeleteFolder {
+        core: CoreId,
+        path: Vec<String>,
+        label: String,
+    },
 }
 
 /// Открытое контекст-меню: цель + позиция курсора.
@@ -76,7 +84,12 @@ impl StrategiesView {
         store
             .core(core)
             .and_then(|cd| cd.schema.as_ref())
-            .map(|s| s.kinds.iter().map(|k| (k.ordinal, k.name.clone())).collect())
+            .map(|s| {
+                s.kinds
+                    .iter()
+                    .map(|k| (k.ordinal, k.name.clone()))
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
@@ -258,17 +271,30 @@ impl StrategiesView {
                 let store = self.backend.read(cx).session.store();
                 let rows: Vec<&StrategyRow> = store
                     .core(target_core)
-                    .map(|c| c.strategies.iter().filter(|r| ids.contains(&r.id)).collect())
+                    .map(|c| {
+                        c.strategies
+                            .iter()
+                            .filter(|r| ids.contains(&r.id))
+                            .collect()
+                    })
                     .unwrap_or_default();
                 tree_ops::move_to(&rows, &target)
             };
-            self.backend.read(cx).session.move_strategies(target_core, moves);
+            self.backend
+                .read(cx)
+                .session
+                .move_strategies(target_core, moves);
         } else {
             let specs = {
                 let store = self.backend.read(cx).session.store();
                 let rows: Vec<&StrategyRow> = store
                     .core(drag.core)
-                    .map(|c| c.strategies.iter().filter(|r| ids.contains(&r.id)).collect())
+                    .map(|c| {
+                        c.strategies
+                            .iter()
+                            .filter(|r| ids.contains(&r.id))
+                            .collect()
+                    })
                     .unwrap_or_default();
                 let clip = tree_ops::copy_rows(&rows);
                 let taken: std::collections::HashSet<String> = store
@@ -277,7 +303,10 @@ impl StrategiesView {
                     .unwrap_or_default();
                 specs_from(tree_ops::paste_plan(&clip, &target, &taken))
             };
-            self.backend.read(cx).session.create_strategies(target_core, specs);
+            self.backend
+                .read(cx)
+                .session
+                .create_strategies(target_core, specs);
             self.filter.only_active = false;
         }
         self.expanded_cores.insert(target_core);
@@ -305,7 +334,10 @@ impl StrategiesView {
             if moves.is_empty() {
                 return; // в себя/потомка или пустая папка
             }
-            self.backend.read(cx).session.move_strategies(target_core, moves);
+            self.backend
+                .read(cx)
+                .session
+                .move_strategies(target_core, moves);
         } else {
             let specs = {
                 let store = self.backend.read(cx).session.store();
@@ -319,7 +351,10 @@ impl StrategiesView {
                     .unwrap_or_default();
                 specs_from(tree_ops::paste_plan(&clip, &target, &taken))
             };
-            self.backend.read(cx).session.create_strategies(target_core, specs);
+            self.backend
+                .read(cx)
+                .session
+                .create_strategies(target_core, specs);
             self.filter.only_active = false;
         }
         self.expanded_cores.insert(target_core);
@@ -700,7 +735,11 @@ impl StrategiesView {
                     .w_full()
                     .p_3()
                     .gap_2()
-                    .child(div().text_color(moon(p.text_muted)).child(format!("папка: {target_label}")))
+                    .child(
+                        div()
+                            .text_color(moon(p.text_muted))
+                            .child(format!("папка: {target_label}")),
+                    )
                     .child(
                         MoonDropdown::new("create-kind")
                             .label(format!("{kind_name} ▾"))
@@ -765,7 +804,11 @@ impl StrategiesView {
                     .w_full()
                     .p_3()
                     .gap_2()
-                    .child(div().text_color(moon(p.text_muted)).child(format!("в: {target_label}")))
+                    .child(
+                        div()
+                            .text_color(moon(p.text_muted))
+                            .child(format!("в: {target_label}")),
+                    )
                     .children(
                         self.op_input
                             .as_ref()
@@ -803,15 +846,11 @@ impl StrategiesView {
     ) -> AnyElement {
         self.modal_shell("Переименовать папку", p, cx)
             .child(
-                v_flex()
-                    .w_full()
-                    .p_3()
-                    .gap_2()
-                    .children(
-                        self.op_input
-                            .as_ref()
-                            .map(|inp| MoonInput::new("rename-name").state(inp).small()),
-                    ),
+                v_flex().w_full().p_3().gap_2().children(
+                    self.op_input
+                        .as_ref()
+                        .map(|inp| MoonInput::new("rename-name").state(inp).small()),
+                ),
             )
             .child(self.modal_buttons(
                 "Переименовать",
@@ -832,12 +871,7 @@ impl StrategiesView {
             .into_any_element()
     }
 
-    fn modal_confirm_delete(
-        &self,
-        label: &str,
-        p: &MoonPalette,
-        cx: &Context<Self>,
-    ) -> AnyElement {
+    fn modal_confirm_delete(&self, label: &str, p: &MoonPalette, cx: &Context<Self>) -> AnyElement {
         self.modal_shell("Удалить?", p, cx)
             .child(
                 div()

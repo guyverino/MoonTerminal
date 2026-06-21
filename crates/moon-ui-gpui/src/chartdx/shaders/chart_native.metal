@@ -56,12 +56,6 @@ struct ReadoutRect {
     float4 m;
 };
 
-struct ReadoutGlyph {
-    float4 dst;
-    float4 color;
-    uint4 m;
-};
-
 struct BookStyle {
     float4 book_bg;
     float4 bid;
@@ -185,51 +179,6 @@ fragment float4 cursor_fragment(CursorOut in [[stage_in]]) {
     return in.color;
 }
 
-static inline uint glyph_packed_lo(uint code) {
-    if (code == 48u) return 26922542u;
-    if (code == 49u) return 4329860u;
-    if (code == 50u) return 4261422u;
-    if (code == 51u) return 1508414u;
-    if (code == 52u) return 33106114u;
-    if (code == 53u) return 2048543u;
-    if (code == 54u) return 18825478u;
-    if (code == 55u) return 8521791u;
-    if (code == 56u) return 18302510u;
-    if (code == 57u) return 1558062u;
-    if (code == 58u) return 4198528u;
-    if (code == 46u) return 0u;
-    if (code == 45u) return 458752u;
-    if (code == 43u) return 5214336u;
-    if (code == 47u) return 8521761u;
-    return 0u;
-}
-
-static inline uint glyph_packed_hi(uint code) {
-    if (code == 48u) return 465u;
-    if (code == 49u) return 452u;
-    if (code == 50u) return 1000u;
-    if (code == 51u) return 961u;
-    if (code == 52u) return 66u;
-    if (code == 53u) return 961u;
-    if (code == 54u) return 465u;
-    if (code == 55u) return 264u;
-    if (code == 56u) return 465u;
-    if (code == 57u) return 386u;
-    if (code == 58u) return 4u;
-    if (code == 46u) return 396u;
-    if (code == 45u) return 0u;
-    if (code == 43u) return 4u;
-    if (code == 47u) return 528u;
-    return 0u;
-}
-
-static inline uint glyph_row(uint code, uint row) {
-    uint bits = row < 5u
-        ? (glyph_packed_lo(code) >> (row * 5u))
-        : (glyph_packed_hi(code) >> ((row - 5u) * 5u));
-    return bits & 31u;
-}
-
 struct ReadoutRectOut {
     float4 position [[position]];
     float2 uv;
@@ -251,30 +200,6 @@ fragment float4 readout_rect_fragment(ReadoutRectOut in [[stage_in]]) {
     float2 px = in.uv * in.dst.zw;
     float edge = min(min(px.x, in.dst.z - px.x), min(px.y, in.dst.w - px.y));
     return edge <= in.border_width ? in.border : in.bg;
-}
-
-struct ReadoutGlyphOut {
-    float4 position [[position]];
-    float2 uv;
-    float4 color;
-    uint code [[flat]];
-};
-
-vertex ReadoutGlyphOut readout_glyph_vertex(uint vid [[vertex_id]], uint iid [[instance_id]],
-                                            const device ReadoutGlyph* glyphs [[buffer(1)]]) {
-    ReadoutGlyph g = glyphs[iid];
-    float2 c = CORNERS_01[vid];
-    float2 px = g.dst.xy + c * g.dst.zw;
-    float2 resolution = float2(as_type<float>(g.m.y), as_type<float>(g.m.z));
-    return { to_clip(px, resolution), c, g.color, g.m.x };
-}
-
-fragment float4 readout_glyph_fragment(ReadoutGlyphOut in [[stage_in]]) {
-    uint col = min((uint)floor(in.uv.x * 5.0), 4u);
-    uint row = min((uint)floor(in.uv.y * 7.0), 6u);
-    uint bits = glyph_row(in.code, row);
-    uint mask = 1u << (4u - col);
-    return (bits & mask) != 0u ? in.color : float4(in.color.rgb, 0.0);
 }
 
 struct CrossOut { float4 position [[position]]; float2 uv; uint side [[flat]]; };

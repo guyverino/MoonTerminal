@@ -40,7 +40,6 @@ type FieldEditKey = (CoreId, u64, String);
 
 const STRATEGIES_HEADER_H: f32 = 32.0;
 
-
 fn moon(hex: u32) -> Hsla {
     rgba_from(hex, 1.0)
 }
@@ -470,7 +469,11 @@ impl StrategiesView {
         for (c, _) in cores {
             self.expanded_cores.insert(*c);
             let Some(cd) = store.core(*c) else { continue };
-            let paths: Vec<String> = cd.strategies.iter().map(|r| r.folder_path.clone()).collect();
+            let paths: Vec<String> = cd
+                .strategies
+                .iter()
+                .map(|r| r.folder_path.clone())
+                .collect();
             for path in paths {
                 self.expand_path(*c, tree_ops::path_segments(&path));
             }
@@ -572,7 +575,6 @@ impl StrategiesView {
     }
 
     // ── Панель 3: параметры выбранной секции ────────────────────────────────
-
 }
 
 fn strategies_sig(b: &Backend) -> u64 {
@@ -657,8 +659,11 @@ impl Render for StrategiesView {
         // Свежий ввод модалки на каждое открытие (FORK_BUGS: пересоздание = свежий layout).
         if self.op.is_some() && self.op_input.is_none() {
             let init = self.op_input_init.clone();
-            self.op_input =
-                Some(cx.new(|cx| MoonInputState::new(window, cx).default_value(init).placeholder("имя")));
+            self.op_input = Some(cx.new(|cx| {
+                MoonInputState::new(window, cx)
+                    .default_value(init)
+                    .placeholder("имя")
+            }));
         } else if self.op.is_none() && self.op_input.is_some() {
             self.op_input = None;
         }
@@ -745,7 +750,6 @@ fn strategies_header(p: MoonPalette, cx: &App) -> impl IntoElement {
             )
         })
 }
-
 
 /// Открыть окно «Стратегии» (отдельное ОС-окно). Дедуп окон — в `Backend`.
 pub fn open(backend: Entity<Backend>, _owner: Option<AnyWindowHandle>, cx: &mut App) {

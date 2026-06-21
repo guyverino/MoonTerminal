@@ -19,7 +19,10 @@ pub(super) fn row(store: &CoreStore, core: CoreId, id: u64) -> Option<&StrategyR
 }
 
 /// Выбранная строка стратегии (по `selected`).
-pub(super) fn selected_row<'a>(st: &StrategiesView, store: &'a CoreStore) -> Option<&'a StrategyRow> {
+pub(super) fn selected_row<'a>(
+    st: &StrategiesView,
+    store: &'a CoreStore,
+) -> Option<&'a StrategyRow> {
     let (core, id) = st.selected?;
     row(store, core, id)
 }

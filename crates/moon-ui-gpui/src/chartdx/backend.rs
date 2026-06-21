@@ -6,8 +6,7 @@ use moon_chart::layers::{LineInstance, MarkerInstance, SegInstance, ZoneInstance
 use moon_core::data::{LevelInstance, PriceLinePoint};
 
 use super::types::{
-    BackgroundParams, BookStyle, ChartCross, ChartViewGpu, CursorParams, GridParams, ReadoutGlyph,
-    ReadoutRect,
+    BackgroundParams, BookStyle, ChartCross, ChartViewGpu, CursorParams, GridParams, ReadoutRect,
 };
 
 #[cfg(target_os = "macos")]
@@ -279,7 +278,6 @@ impl PlatformLayers {
         &mut self,
         cursor_params: &CursorParams,
         readout_rects: &[ReadoutRect],
-        readout_glyphs: &[ReadoutGlyph],
         device: &ID3D11Device,
         context: &ID3D11DeviceContext,
         rtv: &ID3D11RenderTargetView,
@@ -290,28 +288,28 @@ impl PlatformLayers {
         }
         self.cursor.render(cursor_params, device, context, rtv, gpu);
         self.readout
-            .render(readout_rects, readout_glyphs, device, context, rtv, gpu);
+            .render(readout_rects, device, context, rtv, gpu);
     }
 
     #[cfg(target_os = "linux")]
     pub fn render_wgpu(
         &mut self,
         view: &ChartViewGpu,
+        pane_bounds: [f32; 4],
         background_params: &BackgroundParams,
         grid_params: &GridParams,
         cursor_params: &CursorParams,
         readout_rects: &[ReadoutRect],
-        readout_glyphs: &[ReadoutGlyph],
         orderbook_view: &ChartViewGpu,
         gpu: &gpui::RawGpuAccess,
     ) -> anyhow::Result<()> {
         self.wgpu.render(
             view,
+            pane_bounds,
             background_params,
             grid_params,
             cursor_params,
             readout_rects,
-            readout_glyphs,
             orderbook_view,
             gpu,
         )
@@ -321,21 +319,21 @@ impl PlatformLayers {
     pub fn render_metal(
         &mut self,
         view: &ChartViewGpu,
+        pane_bounds: [f32; 4],
         background_params: &BackgroundParams,
         grid_params: &GridParams,
         cursor_params: &CursorParams,
         readout_rects: &[ReadoutRect],
-        readout_glyphs: &[ReadoutGlyph],
         orderbook_view: &ChartViewGpu,
         gpu: &gpui::RawGpuAccess,
     ) -> anyhow::Result<()> {
         self.metal.render(
             view,
+            pane_bounds,
             background_params,
             grid_params,
             cursor_params,
             readout_rects,
-            readout_glyphs,
             orderbook_view,
             gpu,
         )

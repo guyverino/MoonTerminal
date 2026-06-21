@@ -17,7 +17,7 @@ use std::ffi::c_void;
 
 use super::types::{
     BackgroundParams, BookStyle, ChartCross, ChartViewGpu, CursorParams, GridParams, HLineGpu,
-    MarkerGpu, ReadoutGlyph, ReadoutRect, SegGpu, ZoneGpu,
+    MarkerGpu, ReadoutRect, SegGpu, ZoneGpu,
 };
 
 const SHADER: &str = include_str!("shaders/chart_native.metal");
@@ -95,7 +95,6 @@ struct Pipelines {
     grid: RenderPipelineState,
     cursor: RenderPipelineState,
     readout_rect: RenderPipelineState,
-    readout_glyph: RenderPipelineState,
     crosses: RenderPipelineState,
     volume: RenderPipelineState,
     price_last: RenderPipelineState,
@@ -234,7 +233,6 @@ pub struct MetalLayers {
     grid_uniform: BufferSlot,
     cursor_uniform: BufferSlot,
     readout_rect_buffer: BufferSlot,
-    readout_glyph_buffer: BufferSlot,
     view_uniform: BufferSlot,
     book_view_uniform: BufferSlot,
     book_style_uniform: BufferSlot,
@@ -276,7 +274,6 @@ impl MetalLayers {
             grid_uniform: BufferSlot::default(),
             cursor_uniform: BufferSlot::default(),
             readout_rect_buffer: BufferSlot::default(),
-            readout_glyph_buffer: BufferSlot::default(),
             view_uniform: BufferSlot::default(),
             book_view_uniform: BufferSlot::default(),
             book_style_uniform: BufferSlot::default(),
@@ -378,11 +375,11 @@ impl MetalLayers {
     pub fn render(
         &mut self,
         view: &ChartViewGpu,
+        pane_bounds: [f32; 4],
         background_params: &BackgroundParams,
         grid_params: &GridParams,
         cursor_params: &CursorParams,
         readout_rects: &[ReadoutRect],
-        readout_glyphs: &[ReadoutGlyph],
         orderbook_view: &ChartViewGpu,
         gpu: &RawGpuAccess,
     ) -> anyhow::Result<()> {
@@ -398,7 +395,6 @@ impl MetalLayers {
             grid_params,
             cursor_params,
             readout_rects,
-            readout_glyphs,
         );
         let sc = scissor_rect(view, orderbook_view, gpu.width(), gpu.height());
         encoder.set_scissor_rect(sc);
@@ -411,7 +407,8 @@ impl MetalLayers {
         } else {
             self.draw_base_layers(encoder);
         }
-        self.draw_cursor_layer(encoder, cursor_params, readout_rects, readout_glyphs);
+        encoder.set_scissor_rect(bounds_scissor(pane_bounds, gpu.width(), gpu.height()));
+        self.draw_cursor_layer(encoder, cursor_params, readout_rects);
         Ok(())
     }
 
@@ -499,7 +496,6 @@ impl MetalLayers {
         encoder: &RenderCommandEncoderRef,
         cursor_params: &CursorParams,
         readout_rects: &[ReadoutRect],
-        readout_glyphs: &[ReadoutGlyph],
     ) {
         let pipelines = self.pipelines.as_ref().unwrap();
         if cursor_params.enabled > 0.0 {
@@ -514,15 +510,6 @@ impl MetalLayers {
                 &pipelines.readout_rect,
                 6,
                 readout_rects.len() as u64,
-            );
-        }
-        if !readout_glyphs.is_empty() {
-            set_storage(encoder, 1, self.readout_glyph_buffer.buffer());
-            draw(
-                encoder,
-                &pipelines.readout_glyph,
-                6,
-                readout_glyphs.len() as u64,
             );
         }
     }
@@ -646,11 +633,6 @@ impl MetalLayers {
             .write(device, "moon_chart_cursor_uniform", &[*cursor_params]);
         self.readout_rect_buffer
             .write(device, "moon_chart_readout_rects", &[] as &[ReadoutRect]);
-        self.readout_glyph_buffer.write(
-            device,
-            "moon_chart_readout_glyphs",
-            &[] as &[ReadoutGlyph],
-        );
         self.view_uniform
             .write(device, "moon_chart_view_uniform", &[view]);
         self.book_view_uniform
@@ -703,7 +685,6 @@ impl MetalLayers {
         grid_params: &GridParams,
         cursor_params: &CursorParams,
         readout_rects: &[ReadoutRect],
-        readout_glyphs: &[ReadoutGlyph],
     ) {
         let mut view = *view;
         view.volume_buy_inv = 1.0 / self.volume_buy_max.max(1e-6);
@@ -717,8 +698,6 @@ impl MetalLayers {
             .write(device, "moon_chart_cursor_uniform", &[*cursor_params]);
         self.readout_rect_buffer
             .write(device, "moon_chart_readout_rects", readout_rects);
-        self.readout_glyph_buffer
-            .write(device, "moon_chart_readout_glyphs", readout_glyphs);
         self.view_uniform
             .write(device, "moon_chart_view_uniform", &[view]);
         self.book_view_uniform
@@ -830,6 +809,23 @@ fn scissor_rect(
     }
 }
 
+fn bounds_scissor(bounds: [f32; 4], width: u32, height: u32) -> MTLScissorRect {
+    let x = bounds[0].floor().max(0.0) as u64;
+    let y = bounds[1].floor().max(0.0) as u64;
+    let r = (bounds[0] + bounds[2])
+        .ceil()
+        .clamp(x as f32 + 1.0, width.max(1) as f32) as u64;
+    let b = (bounds[1] + bounds[3])
+        .ceil()
+        .clamp(y as f32 + 1.0, height.max(1) as f32) as u64;
+    MTLScissorRect {
+        x,
+        y,
+        width: (r - x).max(1),
+        height: (b - y).max(1),
+    }
+}
+
 fn panel_dst(
     view: &ChartViewGpu,
     orderbook_view: &ChartViewGpu,
@@ -876,13 +872,6 @@ fn create_pipelines(device: &DeviceRef, pixel_format: MTLPixelFormat) -> Pipelin
             pixel_format,
             "readout_rect_vertex",
             "readout_rect_fragment",
-        ),
-        readout_glyph: pipeline(
-            device,
-            &library,
-            pixel_format,
-            "readout_glyph_vertex",
-            "readout_glyph_fragment",
         ),
         crosses: pipeline(
             device,

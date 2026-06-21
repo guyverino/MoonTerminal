@@ -67,8 +67,8 @@ use windows::Win32::Graphics::Direct3D11::{
 use backend::PlatformLayers;
 use pane::{Container, ContainerKind, Mode};
 use types::{
-    BackgroundParams, BookStyle, ChartCross, ChartViewGpu, CursorParams, GridParams, ReadoutGlyph,
-    ReadoutRect, cover_uv, fill_cross_upload, fill_price_upload, rgb4,
+    BackgroundParams, BookStyle, ChartCross, ChartViewGpu, CursorParams, GridParams, ReadoutRect,
+    cover_uv, fill_cross_upload, fill_price_upload, rgb4,
 };
 
 const CHART_PHOTO_BACKGROUND_ENABLED: bool = false;
@@ -142,7 +142,8 @@ struct PaneRender {
     grid_params: GridParams,
     cursor_params: CursorParams,
     readout_rects: Vec<ReadoutRect>,
-    readout_glyphs: Vec<ReadoutGlyph>,
+    readout_time_width: f32,
+    readout_price_width: f32,
     history_cursor: ChartHistoryCursor,
     history_buffers: ChartHistoryBuffers,
     cross_upload: Vec<ChartCross>,
@@ -194,7 +195,8 @@ impl PaneRender {
             grid_params: GridParams::default(),
             cursor_params: CursorParams::default(),
             readout_rects: Vec::new(),
-            readout_glyphs: Vec::new(),
+            readout_time_width: 0.0,
+            readout_price_width: 0.0,
             history_cursor: ChartHistoryCursor::default(),
             history_buffers: ChartHistoryBuffers::default(),
             cross_upload: Vec::new(),
@@ -268,6 +270,9 @@ struct RenderState {
     last_gpu_prepare_generation: u64,
     text_runs: Vec<GpuCanvasTextRun>,
     text_run_cursor: usize,
+    firetest_text_labels: Vec<String>,
+    firetest_text_runs: Vec<GpuCanvasTextRun>,
+    firetest_force_present: bool,
     ui_palette: moon_ui::MoonPalette,
     /// Левый верхний угол chart slot в backbuffer. Cursor приходит из UI в локальных
     /// device-px слота, а own-pass рисует в координатах окна.
@@ -315,6 +320,27 @@ impl ChartDataHandle {
             return false;
         };
         inner.borrow_mut().sync_orders_if_visible(session, force)
+    }
+
+    pub fn set_firetest_text_labels(&self, count: usize) -> bool {
+        let Some(inner) = self.inner.upgrade() else {
+            return false;
+        };
+        let mut data = inner.borrow_mut();
+        let render = data.render.clone();
+        let changed = render.borrow_mut().set_firetest_text_labels(count);
+        if changed {
+            data.mark_view_dirty();
+        }
+        changed
+    }
+
+    pub fn set_firetest_force_present(&self, enabled: bool) -> bool {
+        let Some(inner) = self.inner.upgrade() else {
+            return false;
+        };
+        let render = inner.borrow().render.clone();
+        render.borrow_mut().set_firetest_force_present(enabled)
     }
 
     #[cfg(any(debug_assertions, moon_profile_debug, feature = "debug-tools"))]

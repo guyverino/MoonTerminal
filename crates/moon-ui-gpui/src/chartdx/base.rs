@@ -53,10 +53,6 @@ impl BaseCache {
                 .is_some_and(|tex| tex.w == w && tex.h == h && tex.generation == generation)
     }
 
-    pub fn invalidate(&mut self) {
-        self.valid = false;
-    }
-
     pub fn needs_rebuild(&self, gpu: &RawGpuAccess) -> bool {
         !self.is_valid_for(gpu)
     }

@@ -354,7 +354,10 @@ mod tests {
         assert_eq!(ns.folder_path, "folder/x");
         // имя — в поле StrategyName
         let name = ns.fields.iter().find(|(n, _)| n == STRATEGY_NAME_FIELD);
-        assert_eq!(name, Some(&(STRATEGY_NAME_FIELD.to_string(), "My Strat".to_string())));
+        assert_eq!(
+            name,
+            Some(&(STRATEGY_NAME_FIELD.to_string(), "My Strat".to_string()))
+        );
         // дефолты схемы
         let amount = ns.fields.iter().find(|(n, _)| n == "Amount");
         assert_eq!(amount.map(|(_, v)| v.as_str()), Some("100"));
@@ -426,8 +429,20 @@ mod tests {
         assert_eq!(plan[0].folder_path, "dest");
         assert_eq!(plan[1].folder_path, "dest/sub");
         // оба имени уникализированы, не пересекаются между собой
-        let n0 = plan[0].fields.iter().find(|(n, _)| n == STRATEGY_NAME_FIELD).unwrap().1.clone();
-        let n1 = plan[1].fields.iter().find(|(n, _)| n == STRATEGY_NAME_FIELD).unwrap().1.clone();
+        let n0 = plan[0]
+            .fields
+            .iter()
+            .find(|(n, _)| n == STRATEGY_NAME_FIELD)
+            .unwrap()
+            .1
+            .clone();
+        let n1 = plan[1]
+            .fields
+            .iter()
+            .find(|(n, _)| n == STRATEGY_NAME_FIELD)
+            .unwrap()
+            .1
+            .clone();
         assert_eq!(n0, "S (copy)");
         assert_eq!(n1, "S (2)");
         assert_ne!(n0, n1);
@@ -461,7 +476,11 @@ mod tests {
         assert!(tree_ops_move_folder(&rows, "src/fld", "src/fld/sub").is_empty());
     }
 
-    fn tree_ops_move_folder(rows: &[StrategyRow], folder: &str, target: &str) -> Vec<(u64, String)> {
+    fn tree_ops_move_folder(
+        rows: &[StrategyRow],
+        folder: &str,
+        target: &str,
+    ) -> Vec<(u64, String)> {
         move_folder(rows, &split_path(folder), &split_path(target))
     }
 

@@ -238,7 +238,11 @@ impl ChartDataState {
         true
     }
 
-    pub(super) fn sync_orders_from_session(&mut self, session: &SessionManager, force: bool) -> bool {
+    pub(super) fn sync_orders_from_session(
+        &mut self,
+        session: &SessionManager,
+        force: bool,
+    ) -> bool {
         let area = Rect {
             x: 0.0,
             y: 0.0,

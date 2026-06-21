@@ -278,13 +278,7 @@ impl ChartTabs {
                 for (n, bucket, geom, scale) in pending {
                     let backend = this.backend.clone();
                     let panel = cx.new(|_| {
-                        AddChartStack::new(
-                            backend,
-                            n,
-                            bucket.clone(),
-                            epoch,
-                            theme.clone(),
-                        )
+                        AddChartStack::new(backend, n, bucket.clone(), epoch, theme.clone())
                     });
                     if scale.is_some() {
                         panel.update(cx, |p, pcx| p.set_scale(scale, pcx));

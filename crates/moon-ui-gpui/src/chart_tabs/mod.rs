@@ -171,7 +171,9 @@ impl AddChartStack {
 
     fn set_scene_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
         for entry in &self.charts {
-            entry.panel.update(cx, |panel, _| panel.set_scene_visible(visible));
+            entry
+                .panel
+                .update(cx, |panel, _| panel.set_scene_visible(visible));
         }
     }
 
@@ -248,10 +250,13 @@ impl Render for AddChartStack {
             .id(format!("add-chart-stack-scroll-{}", self.num))
             .size_full()
             .overflow_y_scroll()
+            .bg(rgb(palette.panel))
             .child(
                 v_flex()
                     .w_full()
-                    .children(self.charts.iter().enumerate().map(|(ix, entry)| {
+                    .gap(px(4.0))
+                    .p(px(2.0))
+                    .children(self.charts.iter().map(|entry| {
                         let core = entry.core;
                         let market = entry.market.clone();
                         div()
@@ -265,14 +270,18 @@ impl Render for AddChartStack {
                             .flex_none()
                             .relative()
                             .overflow_hidden()
-                            .border_t_1()
-                            .border_color(if ix > 0 {
-                                rgb(palette.border)
-                            } else {
-                                rgba(0x00000000)
-                            })
-                            .bg(rgb(palette.chart_bg))
-                            .child(entry.panel.clone())
+                            .border_1()
+                            .border_color(rgb(palette.border))
+                            .bg(rgb(palette.panel))
+                            .p(px(1.0))
+                            .child(
+                                div()
+                                    .size_full()
+                                    .relative()
+                                    .overflow_hidden()
+                                    .bg(rgb(palette.chart_bg))
+                                    .child(entry.panel.clone()),
+                            )
                             .on_click(cx.listener(move |this, _event, _window, cx| {
                                 this.toggle_fullscreen(core, market.clone(), cx);
                             }))
@@ -466,7 +475,13 @@ impl ChartTabs {
                     mx = mx.max(det.seq);
                     if det.add_to_chart > 0 {
                         let ttl = (det.keep_in_chart_secs.max(1) as f64) * 1000.0;
-                        fresh.push((det.add_to_chart, id, bucket.clone(), det.market.clone(), ttl));
+                        fresh.push((
+                            det.add_to_chart,
+                            id,
+                            bucket.clone(),
+                            det.market.clone(),
+                            ttl,
+                        ));
                     }
                 }
                 if mx != last {
@@ -518,13 +533,7 @@ impl ChartTabs {
                 tab.update(cx, |p, pcx| p.add_coin(core, &market, ttl, pcx));
             } else {
                 let panel = cx.new(|_| {
-                    AddChartStack::new(
-                        backend.clone(),
-                        n,
-                        bucket.clone(),
-                        epoch,
-                        theme.clone(),
-                    )
+                    AddChartStack::new(backend.clone(), n, bucket.clone(), epoch, theme.clone())
                 });
                 // Восстановить сохранённый масштаб этой вкладки (charts.json), если был.
                 let saved_scale = self
@@ -772,7 +781,10 @@ impl Render for ChartTabs {
                         if !matches!(tab_id, Tab::Main) && event.click_count() >= 2 {
                             this.detach(tab_id, Some(owner), cx);
                         } else if matches!(tab_id, Tab::Main)
-                            || this.add.iter().any(|(n, c, _)| Tab::Add(*n, c.clone()) == tab_id)
+                            || this
+                                .add
+                                .iter()
+                                .any(|(n, c, _)| Tab::Add(*n, c.clone()) == tab_id)
                         {
                             if this.active != tab_id {
                                 this.active = tab_id;
@@ -793,7 +805,8 @@ impl Render for ChartTabs {
                         return;
                     }
                     view.update(app, |this, cx| {
-                        this.add.retain(|(n, c, _)| Tab::Add(*n, c.clone()) != tab_id);
+                        this.add
+                            .retain(|(n, c, _)| Tab::Add(*n, c.clone()) != tab_id);
                         if this.active == tab_id {
                             this.active = Tab::Main;
                         }

@@ -377,7 +377,13 @@ impl SettingsView {
                 s.detached = None;
             }
             b.chart_specs_dirty = true;
-            (handles, chart_handles, b.config.clone(), b.epoch, b.layout.clone())
+            (
+                handles,
+                chart_handles,
+                b.config.clone(),
+                b.epoch,
+                b.layout.clone(),
+            )
         });
         for h in handles {
             let _ = h.update(cx, |_, window, _| window.remove_window());
