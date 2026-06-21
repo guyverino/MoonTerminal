@@ -4,6 +4,7 @@
 //! `Backend`. Визуальные контролы берём из палитры, выведенной из HTML-эталона.
 
 use gpui::*;
+use rust_i18n::t;
 
 use moon_ui::{
     MoonAccent, MoonButton, MoonButtonSegment, MoonButtonSize, MoonButtonVariant, MoonDropdown,
@@ -140,7 +141,10 @@ pub(crate) fn scale_dropdown(
     };
     div()
         .id("toolbar-scale-tip")
-        .tooltip(|_window, cx| cx.new(|_| MoonTooltipView::new("Масштаб")).into())
+        .tooltip(|_window, cx| {
+            cx.new(|_| MoonTooltipView::new(t!("toolbar.scale").to_string()))
+                .into()
+        })
         .child(
             MoonDropdown::new("toolbar-scale-dropdown")
                 .trigger_width(72.0)
@@ -192,7 +196,10 @@ pub(crate) fn scale_dropdown_for_add_stack(
     };
     div()
         .id("detached-stack-scale-tip")
-        .tooltip(|_window, cx| cx.new(|_| MoonTooltipView::new("Масштаб")).into())
+        .tooltip(|_window, cx| {
+            cx.new(|_| MoonTooltipView::new(t!("toolbar.scale").to_string()))
+                .into()
+        })
         .child(
             MoonDropdown::new("detached-stack-scale-dropdown")
                 .trigger_width(72.0)
@@ -258,7 +265,11 @@ pub fn toolbar(backend: &Entity<Backend>, cx: &App) -> impl IntoElement {
             })
             .size(MoonButtonSize::Toolbar)
             .selected(follow)
-            .label(if follow { "Live" } else { "Пауза" })
+            .label(if follow {
+                t!("toolbar.live").to_string()
+            } else {
+                t!("toolbar.pause").to_string()
+            })
             .on_click(move |_, _, cx| {
                 backend.update(cx, |b, bcx| {
                     b.follow = !b.follow;

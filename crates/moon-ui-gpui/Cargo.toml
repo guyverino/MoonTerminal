@@ -36,6 +36,9 @@ moon-ui = { package = "moon-ui", git = "https://github.com/Moonbot-Tech/MoonUI",
 anyhow = "1"
 log = "0.4"
 env_logger = "0.11"
+# Локализация интерфейса: словари в корневом `locales/*.yml` (см. locales/README.md).
+# Версия = как в MoonUI (rust-i18n 4.1), чтобы глобальный backend локали был общий.
+rust-i18n = "4.1"
 # Окно «Отчёт» читает локальную SQLite напрямую (как egui ReportView). Версия и
 # фича bundled унифицируются с moon-core — отдельной сборки SQLite не будет.
 rusqlite = "0.32"

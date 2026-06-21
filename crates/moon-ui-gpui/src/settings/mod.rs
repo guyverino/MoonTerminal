@@ -20,6 +20,7 @@ use std::hash::{Hash, Hasher};
 
 use gpui::prelude::FluentBuilder;
 use gpui::*;
+use rust_i18n::t;
 use moon_ui::{
     IndexPath, MoonBackgroundPolicy, MoonButton, MoonButtonSize, MoonButtonVariant,
     MoonColorPicker, MoonColorPickerState, MoonPalette, MoonSelectEvent, MoonSelectItem,
@@ -48,13 +49,24 @@ enum Tab {
 
 impl Tab {
     const ALL: [Tab; 4] = [Tab::Connections, Tab::General, Tab::Interface, Tab::Lines];
-    fn title(self) -> &'static str {
+    /// Стабильный id вкладки (для `MoonButton::new`/ключей) — НЕ переводим.
+    fn id(self) -> &'static str {
         match self {
             Tab::Connections => "Подключения",
             Tab::General => "Общие",
             Tab::Interface => "Интерфейс",
             Tab::Lines => "Линии",
         }
+    }
+    /// Локализованная подпись вкладки (порт `tab.*`).
+    fn title(self) -> String {
+        match self {
+            Tab::Connections => t!("tab.connections"),
+            Tab::General => t!("tab.general"),
+            Tab::Interface => t!("tab.interface"),
+            Tab::Lines => t!("tab.lines"),
+        }
+        .to_string()
     }
 }
 
@@ -137,10 +149,11 @@ pub(super) fn color_row(
         )
 }
 
-/// Метки режима источника данных (вкладка «Подключения») — точные строки локали.
+/// Режимы источника данных (вкладка «Подключения») — стабильный i18n-ключ + режим;
+/// подпись локализуется на use-сайте (`conn.market_dedup`/`conn.market_percore`).
 const MODE_LABELS: [(&str, MarketDataMode); 2] = [
-    ("Дедуп (провайдер на биржу)", MarketDataMode::Dedup),
-    ("По ядрам (без дедупа)", MarketDataMode::PerCore),
+    ("conn.market_dedup", MarketDataMode::Dedup),
+    ("conn.market_percore", MarketDataMode::PerCore),
 ];
 
 pub struct SettingsView {
@@ -220,7 +233,7 @@ impl SettingsView {
         // Источник данных — выпадающий список (порт egui ComboBox).
         let mode_items = MODE_LABELS
             .iter()
-            .map(|(label, mode)| MoonSelectItem::new(*mode, *label))
+            .map(|(key, mode)| MoonSelectItem::new(*mode, t!(*key).to_string()))
             .collect::<Vec<_>>();
         let mode_idx = MODE_LABELS
             .iter()
@@ -296,7 +309,7 @@ impl SettingsView {
         });
         match res {
             Ok(()) => {
-                self.status = Some(("Сохранено".into(), false));
+                self.status = Some((t!("settings.saved").to_string(), false));
                 self.apply_settings(&before, cx);
             }
             Err(e) => self.status = Some((e.to_string(), true)),
@@ -309,10 +322,18 @@ impl SettingsView {
     /// • структурные изменения серверов/групп → рестарт `SessionManager` + пересоздание
     ///   окон групп; • смена режима рынка — живо (`set_market_mode`); • смена «чарт на
     ///   ядро» без структурных изменений → тоже пересборка окон (новые чарт-вкладки).
-    /// Язык в GPUI-хроме захардкожен (нет i18n-слоя) — меняем только сохранённое
-    /// значение, перетесселяции нет.
+    /// • смена языка — живо: ставим локаль rust-i18n и помечаем ВСЕ окна на перерисовку
+    ///   (`refresh_windows`). Окна/подключения/раскладка не трогаются — строки через `t!`
+    ///   читают локаль на рендере, поэтому достаточно одного redraw.
     fn apply_settings(&mut self, before: &AppConfig, cx: &mut Context<Self>) {
         let after = self.backend.read(cx).config.clone();
+
+        // Язык — применяем живо: глобальная локаль + перерисовка всех окон (БЕЗ пересоздания
+        // окон и рестарта сессий). `t!` подхватит новую локаль на ближайшем рендере.
+        if before.language != after.language {
+            rust_i18n::set_locale(after.language.code());
+            cx.refresh_windows();
+        }
 
         // Файловый лог — применяем живо: включили запись или сократили срок → чистим.
         if before.log_to_file != after.log_to_file
@@ -438,7 +459,7 @@ impl Render for SettingsView {
         for t in Tab::ALL {
             let on = self.active == t;
             tabs = tabs.child(
-                MoonButton::new(t.title())
+                MoonButton::new(t.id())
                     .variant(if on {
                         MoonButtonVariant::Blue
                     } else {
@@ -505,7 +526,7 @@ impl Render for SettingsView {
                     .primary()
                     .small()
                     .width(110.0)
-                    .label("Сохранить")
+                    .label(t!("settings.save").to_string())
                     .on_click(cx.listener(|this, _, _, cx| this.save(cx)))
                     .render(),
             )
@@ -548,7 +569,7 @@ fn settings_header(p: MoonPalette, cx: &App) -> impl IntoElement {
         .border_color(rgba_from(p.border, 1.0))
         .child(
             MoonWindowFrame::tool("settings-titlebar-title", 0.0)
-                .title_cluster("Настройки", cx)
+                .title_cluster(t!("settings.title").to_string(), cx)
                 .h_full()
                 .flex_1()
                 .min_w_0(),
@@ -659,7 +680,7 @@ pub fn open(backend: Entity<Backend>, owner: Option<AnyWindowHandle>, cx: &mut A
             .map(|d| d.id())
     });
     let mut opts = crate::windowing::tool_window_options(
-        "MoonTerminal — Настройки",
+        t!("settings.window_title").to_string(),
         WindowBounds::Windowed(bounds),
         Some(size(px(620.0), px(420.0))),
         owner,

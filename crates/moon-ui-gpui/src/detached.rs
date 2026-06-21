@@ -18,6 +18,8 @@ use moon_ui::{
 };
 use serde::{Deserialize, Serialize};
 
+use rust_i18n::t;
+
 use crate::Backend;
 use crate::panels::{AssetsView, LogPanel, OrdersPanel, ReportPanel, StubPanel};
 use moon_core::config::paths;
@@ -71,14 +73,14 @@ pub fn save_all(list: &[DetachedSpec]) {
     }
 }
 
-/// Заголовок (ru) и панель по `panel_name` — единый источник для окна/репина.
-fn panel_title(name: &str) -> &'static str {
+/// Заголовок (локализованный) и панель по `panel_name` — единый источник для окна/репина.
+fn panel_title(name: &str) -> String {
     match name {
-        "Orders" => "Ордера",
-        "Assets" => "Активы",
-        "Log" => "Лог",
-        "Report" => "Отчёт",
-        _ => "Панель",
+        "Orders" => t!("dock.tab.orders").to_string(),
+        "Assets" => t!("dock.tab.assets").to_string(),
+        "Log" => t!("dock.tab.log").to_string(),
+        "Report" => t!("dock.tab.report").to_string(),
+        _ => t!("dock.tab.generic").to_string(),
     }
 }
 
@@ -275,7 +277,15 @@ pub fn spawn(
                 })
                 .into(),
             _ => cx
-                .new(|cx| StubPanel::new("?", "Панель", spec.group.clone(), backend.clone(), cx))
+                .new(|cx| {
+                    StubPanel::new(
+                        "?",
+                        t!("dock.tab.generic").to_string(),
+                        spec.group.clone(),
+                        backend.clone(),
+                        cx,
+                    )
+                })
                 .into(),
         };
         let dw = cx.new(|cx| {

@@ -3,6 +3,7 @@
 
 use gpui::*;
 use moon_ui::{MoonButton, MoonButtonSize, MoonButtonVariant, Panel, PanelEvent, v_flex};
+use rust_i18n::t;
 
 pub struct OrderPanel {
     focus: FocusHandle,
@@ -25,7 +26,7 @@ impl Panel for OrderPanel {
         "Order"
     }
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        SharedString::from("Ордер")
+        SharedString::from(t!("order.title").to_string())
     }
 }
 impl Render for OrderPanel {

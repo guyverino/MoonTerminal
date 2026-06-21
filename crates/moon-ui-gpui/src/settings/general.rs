@@ -7,6 +7,7 @@ use moon_ui::{
     MoonButton, MoonButtonSize, MoonCheckbox, MoonCheckboxSize, MoonMenuSize, MoonPalette,
     MoonSelect, StyledExt, h_flex, rgba_from, v_flex,
 };
+use rust_i18n::t;
 
 use super::SettingsView;
 use crate::design;
@@ -92,7 +93,7 @@ impl SettingsView {
                 d.log_retention_days,
             )
         };
-        let hint = |t: &str| div().text_color(muted).child(t.to_string());
+        let hint = |s: &str| div().text_color(muted).child(s.to_string());
 
         v_flex()
             .w_full()
@@ -102,7 +103,7 @@ impl SettingsView {
                 h_flex()
                     .gap(px(10.0))
                     .items_center()
-                    .child(div().font_bold().child("Язык интерфейса"))
+                    .child(div().font_bold().child(t!("general.language").to_string()))
                     .child(
                         div().w(px(220.0)).child(
                             MoonSelect::new(&self.lang)
@@ -112,12 +113,12 @@ impl SettingsView {
                         ),
                     ),
             )
-            .child(hint("Применяется после сохранения."))
+            .child(hint(&t!("general.language_hint")))
             .child(super::separator(p, cx))
             // Отдельная чарт-вкладка на каждое ядро.
             .child(
                 MoonCheckbox::new("split")
-                    .label("Отдельная чарт-вкладка на каждое ядро")
+                    .label(t!("general.charts_split_by_core").to_string())
                     .checked(split)
                     .size(MoonCheckboxSize::Normal)
                     .on_change(cx.listener(|this, ch: &bool, _w, cx| {
@@ -138,13 +139,13 @@ impl SettingsView {
                         }
                     })),
             )
-            .child(hint("AddToChart по умолчанию: вкл — своя вкладка на ядро, выкл — все ядра группы в одной. Колонка «Связка» у ядра (Подключения) переопределяет это: ядра с одинаковым именем связки сводятся в одну вкладку."))
+            .child(hint(&t!("general.charts_split_by_core_hint")))
             .child(super::separator(p, cx))
             // Раскладка вкладки с несколькими графиками: скролл / как раньше (масштаб по
             // вертикали). Высота графика и «сжимать по заполнению» активны только при скролле.
             .child(
                 MoonCheckbox::new("stack-scroll")
-                    .label("Показывать графики со скроллом")
+                    .label(t!("general.charts_scroll").to_string())
                     .checked(scroll)
                     .size(MoonCheckboxSize::Normal)
                     .on_change(cx.listener(|this, ch: &bool, _w, cx| {
@@ -152,13 +153,13 @@ impl SettingsView {
                         this.toggle_cfg_bool(v, |p| &mut p.charts_stack_scroll, cx);
                     })),
             )
-            .child(hint("Вкл — каждый график фиксированной высоты, вертикальный скролл. Выкл (как раньше) — графики делят высоту окна (масштаб по вертикали)."))
+            .child(hint(&t!("general.charts_scroll_hint")))
             // Высота графика — активна только при скролле (как срок хранения при логах).
             .child(
                 h_flex()
                     .gap(design::ui_px(cx, 8.0))
                     .items_center()
-                    .child(div().text_color(if scroll { rgba_from(p.text, 1.0) } else { muted }).child("Высота графика, px"))
+                    .child(div().text_color(if scroll { rgba_from(p.text, 1.0) } else { muted }).child(t!("general.chart_height").to_string()))
                     .child(
                         MoonButton::new("stack-h-")
                             .ghost()
@@ -190,7 +191,7 @@ impl SettingsView {
             // Сжимать по заполнению — только в скролл-режиме.
             .child(
                 MoonCheckbox::new("stack-compress")
-                    .label("Сжимать по заполнению (без скролла)")
+                    .label(t!("general.compress_fill").to_string())
                     .checked(compress)
                     .disabled(!scroll)
                     .size(MoonCheckboxSize::Normal)
@@ -199,12 +200,12 @@ impl SettingsView {
                         this.toggle_cfg_bool(v, |p| &mut p.charts_stack_compress, cx);
                     })),
             )
-            .child(hint("Скролл не появляется: графики рисуются заданной высоты, пока не упрутся в конец окна, затем сжимаются (как без скролла)."))
+            .child(hint(&t!("general.compress_fill_hint")))
             .child(super::separator(p, cx))
             // Логи в файлы + срок хранения.
             .child(
                 MoonCheckbox::new("logf")
-                    .label("Писать лог в файлы")
+                    .label(t!("general.log_to_file").to_string())
                     .checked(logf)
                     .size(MoonCheckboxSize::Normal)
                     .on_change(cx.listener(|this, ch: &bool, _w, cx| {
@@ -225,7 +226,7 @@ impl SettingsView {
                         }
                     })),
             )
-            .child(hint("Лог приложения и ядер пишется в logs/<дата>_<источник>.log (по файлу на источник в день)."))
+            .child(hint(&t!("general.log_to_file_hint")))
             // Срок хранения активен только при включённой записи лога (порт
             // egui `add_enabled_ui(cfg.log_to_file, ...)`): кнопки −/+ задизейблены,
             // значение/подписи тусклые, пока «Писать лог в файлы» выключено.
@@ -233,7 +234,7 @@ impl SettingsView {
                 h_flex()
                     .gap(design::ui_px(cx, 8.0))
                     .items_center()
-                    .child(div().text_color(if logf { rgba_from(p.text, 1.0) } else { muted }).child("Хранить лог, дней"))
+                    .child(div().text_color(if logf { rgba_from(p.text, 1.0) } else { muted }).child(t!("general.log_retention").to_string()))
                     .child(
                         MoonButton::new("ret-")
                             .ghost()
@@ -249,7 +250,7 @@ impl SettingsView {
                             .w(px(56.0))
                             .text_center()
                             .text_color(if logf { rgba_from(p.text, 1.0) } else { muted })
-                            .child(format!("{ret} дн.")),
+                            .child(format!("{ret} {}", t!("general.days"))),
                     )
                     .child(
                         MoonButton::new("ret+")
@@ -262,6 +263,6 @@ impl SettingsView {
                             .render(),
                     ),
             )
-            .child(hint("Файлы старше указанного срока удаляются при запуске и раз в сутки. 0 — хранить всё."))
+            .child(hint(&t!("general.log_retention_hint")))
     }
 }

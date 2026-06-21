@@ -1,6 +1,7 @@
 //! Поля-списки источника и файла панели «Лог».
 
 use super::*;
+use rust_i18n::t;
 
 impl LogPanel {
     /// Комбобокс источника.
@@ -13,7 +14,7 @@ impl LogPanel {
             .iter()
             .find(|s| s.source == self.source)
             .map(|s| s.display.clone())
-            .unwrap_or_else(|| "Локальный".into());
+            .unwrap_or_else(|| t!("log.source.local").to_string());
         let view = cx.entity();
         let items: Vec<(LogSource, String)> = sources
             .iter()
@@ -45,13 +46,13 @@ impl LogPanel {
         cx: &Context<Self>,
     ) -> impl IntoElement {
         let cur = match &self.file {
-            LogFile::Live => "Live (текущий)".to_string(),
+            LogFile::Live => t!("log.live").to_string(),
             LogFile::Named(n) => n.clone(),
         };
         let label = self.file_label(sources);
         let view = cx.entity();
         let mut items = vec![
-            MoonMenuItem::with_key("lf-live", "Live (текущий)")
+            MoonMenuItem::with_key("lf-live", t!("log.live").to_string())
                 .selected(matches!(self.file, LogFile::Live))
                 .on_click({
                     let view = view.clone();

@@ -21,6 +21,8 @@ use moon_ui::{
     PanelState, StyledExt, h_flex, v_flex,
 };
 
+use rust_i18n::t;
+
 use crate::Backend;
 use moon_core::applog::{self, LogLine};
 use moon_core::session::{CoreId, CoreStore};
@@ -79,7 +81,8 @@ impl LogPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let query = cx.new(|cx| MoonInputState::new(window, cx).placeholder("Поиск..."));
+        let query =
+            cx.new(|cx| MoonInputState::new(window, cx).placeholder(t!("log.search").to_string()));
         cx.subscribe(&query, |_t, _e, ev: &MoonInputEvent, cx| {
             if matches!(ev, MoonInputEvent::Change) {
                 cx.notify();
@@ -120,15 +123,15 @@ impl LogPanel {
             LogSourceItem {
                 source: LogSource::Aggregate,
                 display: if scoped {
-                    "Лог группы".into()
+                    t!("log.source.group").to_string()
                 } else {
-                    "Все ядра".into()
+                    t!("log.source.all").to_string()
                 },
                 file_label: String::new(),
             },
             LogSourceItem {
                 source: LogSource::Local,
-                display: "Локальный".into(),
+                display: t!("log.source.local").to_string(),
                 file_label: "app".into(),
             },
         ];
@@ -211,7 +214,7 @@ impl Panel for LogPanel {
         "Log"
     }
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        SharedString::from("Лог")
+        SharedString::from(t!("dock.tab.log").to_string())
     }
     fn dump(&self, _cx: &App) -> PanelState {
         crate::dock_persist::panel_state_with_group("Log", &self.group)
@@ -279,7 +282,12 @@ impl Render for LogPanel {
         controls = controls.child(self.source_combo(&sources, cx));
         if !is_agg {
             controls = controls
-                .child(div().text_xs().text_color(rgb(p.text_soft)).child("Файл"))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(rgb(p.text_soft))
+                        .child(t!("log.file").to_string()),
+                )
                 .child(self.file_combo(&sources, cx));
         }
         controls = controls
@@ -293,7 +301,7 @@ impl Render for LogPanel {
             )
             .child(
                 MoonCheckbox::new("log-errors-only")
-                    .label("Только ошибки")
+                    .label(t!("log.errors_only").to_string())
                     .checked(self.errors_only)
                     .size(MoonCheckboxSize::Compact)
                     .on_change(cx.listener(|t, ch: &bool, _, cx| {
@@ -303,19 +311,19 @@ impl Render for LogPanel {
                         }
                     })),
             )
-            .child(div().text_xs().text_color(rgb(p.text_muted)).child(format!(
-                "{} из {}",
-                self.lines.len(),
-                total
-            )));
+            .child(
+                div().text_xs().text_color(rgb(p.text_muted)).child(
+                    t!("log.count", shown = self.lines.len(), total = total).to_string(),
+                ),
+            );
 
         // ── Список (виртуализирован, к низу) ──
         let weak = cx.entity().downgrade();
         let body: AnyElement = if self.lines.is_empty() {
             let msg = if total == 0 {
-                "Лог пуст"
+                t!("dock.log.empty").to_string()
             } else {
-                "Нет строк по фильтру"
+                t!("log.empty_filtered").to_string()
             };
             div()
                 .flex_1()

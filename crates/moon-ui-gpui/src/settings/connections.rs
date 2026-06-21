@@ -13,6 +13,7 @@ use moon_ui::{
     MoonInputState, MoonMenuItem, MoonMenuSize, MoonPalette, MoonSelect, MoonTooltipView,
     StyledExt, h_flex, v_flex,
 };
+use rust_i18n::t;
 
 use super::{SettingsView, hsla_u8};
 use crate::{Backend, design};
@@ -30,22 +31,19 @@ pub(super) struct ConnRow {
     color: Entity<MoonColorPickerState>,
 }
 
-/// 8 фид-флагов приёма данных ядра (локализованная подпись, геттер, сеттер) — для
-/// поповера «Данные». Подписи = строки локали `conn.tip.*` (RU), к каждой в поповере
-/// добавляется суффикс «(фильтр на клиенте)» (`conn.filter_note`).
+/// 8 фид-флагов приёма данных ядра (i18n-ключ подписи, геттер, сеттер) — для
+/// поповера «Данные». Ключи `conn.tip.*` (подпись локализуется на use-сайте, см.
+/// `feed_popover`); к каждой в поповере добавляется суффикс «(фильтр на клиенте)»
+/// (`conn.filter_note`). Const хранит `&'static str` ключ, а не готовую строку.
 const FEED_FLAGS: [(&str, fn(&FeedFlags) -> bool, fn(&mut FeedFlags, bool)); 8] = [
-    ("Открытые ордера", |f| f.orders, |f, v| f.orders = v),
-    ("Детекты", |f| f.detects, |f, v| f.detects = v),
-    (
-        "Отчёты по закрытым ордерам → SQLite",
-        |f| f.reports,
-        |f, v| f.reports = v,
-    ),
-    ("Балансы / аккаунт", |f| f.balance, |f, v| f.balance = v),
-    ("Стратегии", |f| f.strategies, |f, v| f.strategies = v),
-    ("Серверный лог", |f| f.log, |f, v| f.log = v),
-    ("Chart-алерты / текст", |f| f.alerts, |f, v| f.alerts = v),
-    ("Арбитраж", |f| f.arb, |f, v| f.arb = v),
+    ("conn.tip.orders", |f| f.orders, |f, v| f.orders = v),
+    ("conn.tip.detects", |f| f.detects, |f, v| f.detects = v),
+    ("conn.tip.reports", |f| f.reports, |f, v| f.reports = v),
+    ("conn.tip.balance", |f| f.balance, |f, v| f.balance = v),
+    ("conn.tip.strat", |f| f.strategies, |f, v| f.strategies = v),
+    ("conn.tip.log", |f| f.log, |f, v| f.log = v),
+    ("conn.tip.alerts", |f| f.alerts, |f, v| f.alerts = v),
+    ("conn.tip.arb", |f| f.arb, |f, v| f.arb = v),
 ];
 
 /// TextInput, привязанный к полю сервера `servers[i]` (пишет в draft).
@@ -173,19 +171,13 @@ fn status_dot(
     p: MoonPalette,
 ) -> impl IntoElement {
     let (color, tip) = match status {
-        _ if !active => (
-            p.text_soft,
-            "Не подключается (галка «Акт» снята)".to_string(),
-        ),
-        Some(ConnStatus::Ready) => (p.green, "Подключено".to_string()),
-        Some(ConnStatus::Connecting) => (p.amber, "Подключение…".to_string()),
-        Some(ConnStatus::Stage(s)) => (p.amber, format!("Подключение: {s}")),
-        Some(ConnStatus::Failed(e)) => (p.red, format!("Ошибка: {e}")),
-        Some(ConnStatus::Disconnected) => (p.text_soft, "Отключено".to_string()),
-        None => (
-            p.text_soft,
-            "Нет данных (сохрани настройки, чтобы подключиться)".to_string(),
-        ),
+        _ if !active => (p.text_soft, t!("conn.status.inactive").to_string()),
+        Some(ConnStatus::Ready) => (p.green, t!("conn.status.ready").to_string()),
+        Some(ConnStatus::Connecting) => (p.amber, t!("conn.status.connecting").to_string()),
+        Some(ConnStatus::Stage(s)) => (p.amber, t!("conn.status.stage", stage = s).to_string()),
+        Some(ConnStatus::Failed(e)) => (p.red, t!("conn.status.failed", err = e).to_string()),
+        Some(ConnStatus::Disconnected) => (p.text_soft, t!("conn.status.disconnected").to_string()),
+        None => (p.text_soft, t!("conn.status.none").to_string()),
     };
     div()
         .id(SharedString::from(format!("st-{i}")))
@@ -303,13 +295,13 @@ impl SettingsView {
         let tinted = on < FEED_FLAGS.len();
 
         let mut items = Vec::new();
-        for (ix, (lbl, get, set)) in FEED_FLAGS.iter().copied().enumerate() {
+        for (ix, (key, get, set)) in FEED_FLAGS.iter().copied().enumerate() {
             let cur = get(&feed);
             let backend = self.backend.clone();
             items.push(
                 MoonMenuItem::with_key(
                     format!("feed-{i}-{ix}"),
-                    format!("{lbl} (фильтр на клиенте)"),
+                    format!("{} ({})", t!(key), t!("conn.filter_note")),
                 )
                 .checked(cur)
                 .on_click(move |_, _, cx| {
@@ -355,7 +347,9 @@ impl SettingsView {
         let recon: AnyElement = if active {
             div()
                 .id(SharedString::from(format!("rec-tip-{i}")))
-                .tooltip(|_window, cx| cx.new(|_| MoonTooltipView::new("Переподключить")).into())
+                .tooltip(|_window, cx| {
+                    cx.new(|_| MoonTooltipView::new(t!("conn.reconnect").to_string())).into()
+                })
                 .child(
                     MoonButton::new(SharedString::from(format!("rec-{i}")))
                         .ghost()
@@ -481,7 +475,7 @@ impl SettingsView {
         basis: f32,
         grow: bool,
         pad: f32,
-        tip: &'static str,
+        tip: SharedString,
         p: MoonPalette,
     ) -> impl IntoElement {
         Self::cell(basis, grow)
@@ -496,7 +490,7 @@ impl SettingsView {
                     .child(label.to_string()),
             )
             .tooltip(move |_window, cx| {
-                cx.new(|_| MoonTooltipView::new(tip).max_width(320.0))
+                cx.new(|_| MoonTooltipView::new(tip.clone()).max_width(320.0))
                     .into()
             })
     }
@@ -506,7 +500,7 @@ impl SettingsView {
     fn hint_label(
         id: &'static str,
         label: impl Into<SharedString>,
-        tip: &'static str,
+        tip: SharedString,
         p: MoonPalette,
     ) -> impl IntoElement {
         div()
@@ -517,7 +511,7 @@ impl SettingsView {
             .text_decoration_color(rgb(p.text_soft))
             .child(label.into())
             .tooltip(move |_window, cx| {
-                cx.new(|_| MoonTooltipView::new(tip).max_width(360.0))
+                cx.new(|_| MoonTooltipView::new(tip.clone()).max_width(360.0))
                     .into()
             })
     }
@@ -588,13 +582,13 @@ impl SettingsView {
             .gap_1()
             .items_center()
             .pl(px(20.0))
-            .child(Self::col_head_tip("h-act", "Акт", 28.0, false, 0.0, "Подключаться к ядру", p))
-            .child(Self::col_head_tip("h-win", "Окн", 34.0, false, 0.0, "Рисовать окно/чарт. Выкл = headless: данные в БД/память без окна", p))
-            .child(Self::col_head("Имя", 150.0, true, 8.0, p))
-            .child(Self::col_head("Ключ", 200.0, true, 8.0, p))
-            .child(Self::col_head_tip("h-group", "Группа", 110.0, false, 8.0, "Группа = ОТДЕЛЬНОЕ главное окно. Все ядра с одинаковым именем группы живут в одном окне; новое имя группы → новое главное окно.", p))
-            .child(Self::col_head_tip("h-bundle", "Чарты", 96.0, false, 8.0, "Имя чарт-связки: детекты AddToChart с НЕСКОЛЬКИХ ядер одной группы с одинаковым именем сводятся в ОДИН чарт (одну вкладку, имя — в её заголовке). Пусто = по глобальной настройке (своя вкладка на ядро / все в одной).", p))
-            .child(Self::col_head_tip("h-data", "Данные", 52.0, false, 0.0, "Приём данных от ядра. Серая = принимаем всё; цветная = часть категорий выключена. Клик — настроить.", p))
+            .child(Self::col_head_tip("h-act", &t!("conn.col.act"), 28.0, false, 0.0, t!("conn.tip.act").to_string().into(), p))
+            .child(Self::col_head_tip("h-win", &t!("conn.col.win"), 34.0, false, 0.0, t!("conn.tip.win").to_string().into(), p))
+            .child(Self::col_head(&t!("conn.col.name"), 150.0, true, 8.0, p))
+            .child(Self::col_head(&t!("conn.col.key"), 200.0, true, 8.0, p))
+            .child(Self::col_head_tip("h-group", &t!("conn.col.group"), 110.0, false, 8.0, t!("conn.tip.group").to_string().into(), p))
+            .child(Self::col_head_tip("h-bundle", &t!("conn.col.bundle"), 96.0, false, 8.0, t!("conn.tip.bundle").to_string().into(), p))
+            .child(Self::col_head_tip("h-data", &t!("conn.col.data"), 52.0, false, 0.0, t!("conn.tip.flags").to_string().into(), p))
             // Хвостовые плейсхолдеры под колонки строки (цвет/удалить/реконнект/статус) —
             // ОБЯЗАТЕЛЬНЫ: без них растяжимые колонки шапки получили бы лишнее место и съехали.
             .child(Self::cell(110.0, false))
@@ -608,8 +602,8 @@ impl SettingsView {
             .gap_1()
             .child(Self::hint_label(
                 "h-section",
-                "Ядра по группам",
-                "Группа = отдельное главное окно (ядра группы в одном окне). Колонка «Чарты» сводит детекты с нескольких ядер группы в один график.",
+                t!("conn.groups_panel_heading").to_string(),
+                t!("conn.groups_panel_tip").to_string().into(),
                 p,
             ))
             .child(col_head_row);
@@ -619,7 +613,7 @@ impl SettingsView {
             list_col = list_col.child(
                 div()
                     .text_color(rgb(p.text_soft))
-                    .child("добавь ядро ниже и впиши ему «Группу» — появится ветка группы"),
+                    .child(t!("conn.no_groups").to_string()),
             );
         }
 
@@ -681,14 +675,16 @@ impl SettingsView {
                         div()
                             .text_xs()
                             .text_color(rgb(p.text_soft))
-                            .child(format!("{member_count} ядр.")),
+                            .child(t!("conn.member_count", n = member_count).to_string()),
                     )
                     .child(
                         div()
                             .id(SharedString::from(format!("eye-tip-{name}")))
                             .tooltip(|_window, cx| {
-                                cx.new(|_| MoonTooltipView::new("Показать окно группы"))
-                                    .into()
+                                cx.new(|_| {
+                                    MoonTooltipView::new(t!("conn.show_group").to_string())
+                                })
+                                .into()
                             })
                             .child(
                                 MoonButton::new(SharedString::from(format!("eye-{name}")))
@@ -711,7 +707,7 @@ impl SettingsView {
                             .outline()
                             .size(MoonButtonSize::Micro)
                             .width(54.0)
-                            .label("Иконка")
+                            .label(t!("conn.icon_btn").to_string())
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.picking = Some(nm_pick.clone());
                                 cx.notify();
@@ -723,7 +719,7 @@ impl SettingsView {
                             .outline()
                             .size(MoonButtonSize::Micro)
                             .width(56.0)
-                            .label("+ ядро")
+                            .label(format!("+ {}", t!("conn.add_core_short")))
                             .on_click(cx.listener(move |this, _, w, cx| {
                                 this.add_server(nm_add.clone(), w, cx)
                             }))
@@ -795,7 +791,7 @@ impl SettingsView {
                                     .flex_1()
                                     .text_xs()
                                     .text_color(rgb(p.text_soft))
-                                    .child(format!("Иконка для «{name}»")),
+                                    .child(t!("conn.icon_for", name = name).to_string()),
                             )
                             .child(
                                 MoonButton::new("pick-close")
@@ -827,7 +823,7 @@ impl SettingsView {
                 .outline()
                 .small()
                 .width(220.0)
-                .label("+ Добавить ядро (в «default»)")
+                .label(format!("+ {}", t!("conn.add_core")))
                 .on_click(cx.listener(|this, _, w, cx| this.add_server("default".into(), w, cx)))
                 .render(),
         );
@@ -844,12 +840,12 @@ impl SettingsView {
                         div()
                             .id("market-src-lbl")
                             .font_bold()
-                            .child("Источник рыночных данных")
+                            .child(t!("conn.market_src").to_string())
                             .tooltip(|_window, cx| {
-                                cx.new(|_| MoonTooltipView::new(
-                                    "Откуда брать крестики и стакан. Дедуп: одно ядро-провайдер на биржу тянет рынок за всех (экономно при многих ядрах). По ядрам: каждый чарт берёт рынок со своего ядра (без дедупа).",
-                                )
-                                .max_width(420.0))
+                                cx.new(|_| {
+                                    MoonTooltipView::new(t!("conn.market_src_tip").to_string())
+                                        .max_width(420.0)
+                                })
                                 .into()
                             }),
                     )

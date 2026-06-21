@@ -22,6 +22,8 @@ use moon_ui::{
     Panel, PanelEvent, PanelInfo, PanelState, h_flex, v_flex,
 };
 
+use rust_i18n::t;
+
 use crate::Backend;
 use crate::design;
 use crate::panels::{RenderGate, num};
@@ -345,7 +347,7 @@ impl Panel for OrdersPanel {
         true
     }
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        SharedString::from("Ордера")
+        SharedString::from(t!("dock.tab.orders").to_string())
     }
     fn dump(&self, _cx: &App) -> PanelState {
         // Группа (для реконструкции) + состояние вида: сортировка/тип/фильтр. `source`
@@ -438,7 +440,7 @@ impl Render for OrdersPanel {
                 div()
                     .text_xs()
                     .text_color(rgb(p.text_muted))
-                    .child("· Только ордера текущего маркета"),
+                    .child(format!("· {}", t!("orders.only_current"))),
             );
         }
 

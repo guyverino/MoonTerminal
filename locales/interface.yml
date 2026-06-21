@@ -2,6 +2,14 @@
 # Формат rust-i18n `_version: 2`: ключ → карта локаль→строка. Интерполяция: %{var}.
 _version: 2
 
+iface.sec_font:
+  ru: "Интерфейс: шрифт"
+  en: "Interface: font"
+  es: "Interfaz: fuente"
+iface.font_delta:
+  ru: "Прибавка к размеру шрифта"
+  en: "Font size increase"
+  es: "Aumento del tamaño de fuente"
 iface.sec_chart:
   ru: "График: фон и сетка"
   en: "Chart: background & grid"
@@ -58,6 +66,10 @@ iface.book_ask:
   ru: "Цвет продаж (ask)"
   en: "Ask color"
   es: "Color de venta (ask)"
+iface.book_level_alpha:
+  ru: "Яркость линий уровней"
+  en: "Level lines brightness"
+  es: "Brillo de las líneas de niveles"
 iface.sec_panels:
   ru: "Панели"
   en: "Panels"

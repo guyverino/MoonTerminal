@@ -50,6 +50,11 @@ use moon_core::config::{AppConfig, WindowLayout};
 use moon_core::metrics::{Metrics, MetricsSnapshot};
 use moon_core::session::{CoreId, SessionManager};
 
+// Локализация: грузит корневые `locales/*.yml` (путь относительно манифеста крейта).
+// `t!("ключ")` тянет строку из этого набора; язык — `rust_i18n::set_locale` (глобальный,
+// общий с MoonUI). Fallback на английский, если ключа нет в выбранной локали.
+rust_i18n::i18n!("../../locales", fallback = "en");
+
 fn embedded_fonts() -> Vec<Cow<'static, [u8]>> {
     vec![
         include_bytes!("../../../assets/fonts/Inter-400.ttf")
@@ -374,6 +379,8 @@ fn main() -> anyhow::Result<()> {
     }
 
     let cfg = AppConfig::load()?;
+    // Язык интерфейса из конфига → глобальная локаль rust-i18n (для t! здесь и в MoonUI).
+    rust_i18n::set_locale(cfg.language.code());
     // Файловый лог: режим из конфига + одноразовая чистка старых файлов при старте.
     moon_core::applog::set_file_logging(cfg.log_to_file, cfg.log_retention_days);
     moon_core::applog::purge_old();

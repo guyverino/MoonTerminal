@@ -9,6 +9,7 @@ use moon_core::feed::NewStrategySpec;
 use moon_ui::MoonContextMenuWindowExt as _;
 use moon_ui::components::WindowExt as _;
 use moon_ui::components::notification::Notification;
+use rust_i18n::t;
 
 /// Активная модалка операции (взаимоисключающая; рисуется оверлеем поверх окна).
 #[derive(Clone)]
@@ -81,20 +82,24 @@ impl Render for DragChip {
     }
 }
 
-fn op_title(op: &TreeOp) -> &'static str {
+fn op_title(op: &TreeOp) -> String {
     match op {
-        TreeOp::CreateStrategy { .. } => "Новая стратегия",
-        TreeOp::CreateFolder { .. } => "Новая папка",
-        TreeOp::RenameFolder { .. } => "Переименовать папку",
-        TreeOp::ConfirmDeleteStrategies { .. } | TreeOp::ConfirmDeleteFolder { .. } => "Удалить?",
+        TreeOp::CreateStrategy { .. } => t!("dialogs.new_strategy").to_string(),
+        TreeOp::CreateFolder { .. } => t!("dialogs.new_folder").to_string(),
+        TreeOp::RenameFolder { .. } => t!("dialogs.rename_folder").to_string(),
+        TreeOp::ConfirmDeleteStrategies { .. } | TreeOp::ConfirmDeleteFolder { .. } => {
+            t!("dialogs.delete_q").to_string()
+        }
     }
 }
 
-fn op_ok_label(op: &TreeOp) -> &'static str {
+fn op_ok_label(op: &TreeOp) -> String {
     match op {
-        TreeOp::CreateStrategy { .. } | TreeOp::CreateFolder { .. } => "Создать",
-        TreeOp::RenameFolder { .. } => "Переименовать",
-        TreeOp::ConfirmDeleteStrategies { .. } | TreeOp::ConfirmDeleteFolder { .. } => "Да",
+        TreeOp::CreateStrategy { .. } | TreeOp::CreateFolder { .. } => t!("dialogs.create").to_string(),
+        TreeOp::RenameFolder { .. } => t!("dialogs.rename").to_string(),
+        TreeOp::ConfirmDeleteStrategies { .. } | TreeOp::ConfirmDeleteFolder { .. } => {
+            t!("dialogs.yes").to_string()
+        }
     }
 }
 
@@ -138,9 +143,9 @@ fn op_dialog_body(
             let kind_name = kind
                 .and_then(|k| kinds.iter().find(|(o, _)| *o == k))
                 .map(|(_, n)| n.clone())
-                .unwrap_or_else(|| "выберите вид".to_string());
+                .unwrap_or_else(|| t!("strat.pick_kind").to_string());
             let target_label = if target.is_empty() {
-                "корень".to_string()
+                t!("strat.root").to_string()
             } else {
                 target
             };
@@ -166,7 +171,7 @@ fn op_dialog_body(
                 .child(
                     div()
                         .text_color(moon(p.text_muted))
-                        .child(format!("папка: {target_label}")),
+                        .child(t!("dialogs.folder_prefix", path = target_label).to_string()),
                 )
                 .child(
                     MoonDropdown::new("create-kind")
@@ -186,14 +191,14 @@ fn op_dialog_body(
         }
         TreeOp::CreateFolder { target, .. } => {
             let target_label = if target.is_empty() {
-                "корень".to_string()
+                t!("strat.root").to_string()
             } else {
                 target
             };
             let mut body = v_flex().w_full().gap_2().child(
                 div()
                     .text_color(moon(p.text_muted))
-                    .child(format!("в: {target_label}")),
+                    .child(t!("dialogs.into_prefix", path = target_label).to_string()),
             );
             if let Some(input) = input {
                 body = body.child(MoonInput::new("folder-name").state(&input).small());
@@ -212,7 +217,7 @@ fn op_dialog_body(
                 div()
                     .w_full()
                     .text_color(moon(p.text))
-                    .child(format!("Удалить {label}? Действие необратимо."))
+                    .child(t!("dialogs.delete_confirm", what = label).to_string())
                     .into_any_element(),
             )
         }
@@ -225,7 +230,7 @@ fn op_dialog_footer(
     ok_label: impl Into<SharedString>,
 ) -> AnyElement {
     let ok_label = ok_label.into();
-    let ok_variant = if ok_label == SharedString::from("Да") {
+    let ok_variant = if ok_label == SharedString::from(t!("dialogs.yes").to_string()) {
         MoonButtonVariant::Danger
     } else {
         MoonButtonVariant::Blue
@@ -240,7 +245,7 @@ fn op_dialog_footer(
             MoonButton::new("modal-cancel")
                 .ghost()
                 .size(MoonButtonSize::Micro)
-                .label("Отмена")
+                .label(t!("dialogs.cancel").to_string())
                 .on_click(move |_, window, cx| {
                     cancel_view.update(cx, |this, cx| this.close_op_dialog(cx));
                     window.close_dialog(cx);
@@ -361,7 +366,7 @@ impl StrategiesView {
             self.op_input = Some(cx.new(|cx| {
                 MoonInputState::new(window, cx)
                     .default_value(init)
-                    .placeholder("имя")
+                    .placeholder(t!("dialogs.name_ph").to_string())
             }));
         }
     }
@@ -441,8 +446,13 @@ impl StrategiesView {
                     .op
                     .as_ref()
                     .map(op_title)
-                    .unwrap_or("Операция");
-                let ok_label = view.read(cx).op.as_ref().map(op_ok_label).unwrap_or("OK");
+                    .unwrap_or_else(|| t!("dialogs.operation").to_string());
+                let ok_label = view
+                    .read(cx)
+                    .op
+                    .as_ref()
+                    .map(op_ok_label)
+                    .unwrap_or_else(|| "OK".to_string());
                 let close_button = view
                     .read(cx)
                     .op
@@ -499,7 +509,7 @@ impl StrategiesView {
         // Выделение может охватывать разные ядра — подтверждение одно, диспетч группирует
         // по ядрам (см. delete_selection, переderives выделение).
         self.op = Some(TreeOp::ConfirmDeleteStrategies {
-            label: format!("{} стратеги(й)", rows.len()),
+            label: t!("strat.count_strategies", n = rows.len()).to_string(),
         });
         self.open_op_dialog(window, cx);
         cx.notify();
@@ -519,7 +529,8 @@ impl StrategiesView {
         if !tree_ops::all_off(&under) {
             return; // есть запущенные — нельзя
         }
-        let label = format!("папку «{}»", path.last().cloned().unwrap_or_default());
+        let label = t!("strat.folder_named", name = path.last().cloned().unwrap_or_default())
+            .to_string();
         self.op = Some(TreeOp::ConfirmDeleteFolder { core, path, label });
         self.open_op_dialog(window, cx);
         cx.notify();
@@ -928,7 +939,7 @@ impl StrategiesView {
                                 .outline()
                                 .size(MoonButtonSize::Micro)
                                 .full_width()
-                                .label("копировать")
+                                .label(t!("strat.action_copy").to_string())
                                 .disabled(!has_sel)
                                 .on_click(cx.listener(|this, _, _, cx| this.copy_selection(cx)))
                                 .render(),
@@ -940,7 +951,7 @@ impl StrategiesView {
                                 .outline()
                                 .size(MoonButtonSize::Micro)
                                 .full_width()
-                                .label("вставить")
+                                .label(t!("strat.action_paste").to_string())
                                 .disabled(!can_paste)
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     // вставка в папку первичной стратегии (или корень).
@@ -967,7 +978,7 @@ impl StrategiesView {
                     .danger()
                     .size(MoonButtonSize::Micro)
                     .full_width()
-                    .label("удалить")
+                    .label(t!("strat.action_delete").to_string())
                     .disabled(!has_sel || !all_off)
                     .on_click(
                         cx.listener(|this, _, window, cx| {
@@ -989,14 +1000,14 @@ impl StrategiesView {
         let view = cx.entity();
         let t1 = target.clone();
         let items = vec![
-            MoonMenuItem::with_key("new-strat", "Новая стратегия…").on_click({
+            MoonMenuItem::with_key("new-strat", t!("strat.menu_new_strategy").to_string()).on_click({
                 let view = view.clone();
                 move |_, window, app| {
                     let (core, t) = (core, t1.clone());
                     view.update(app, |this, c| this.open_create_strategy(core, t, window, c));
                 }
             }),
-            MoonMenuItem::with_key("new-folder", "Новая папка…").on_click({
+            MoonMenuItem::with_key("new-folder", t!("strat.menu_new_folder").to_string()).on_click({
                 let view = view.clone();
                 let t2 = target.clone();
                 move |_, window, app| {
@@ -1006,7 +1017,7 @@ impl StrategiesView {
             }),
         ];
         MoonDropdown::new("strat-create")
-            .label("＋ Создать ▾")
+            .label(format!("＋ {} ▾", t!("strat.menu_create")))
             .trigger_variant(MoonButtonVariant::Soft)
             .trigger_size(MoonButtonSize::Action)
             .trigger_width(110.0)
@@ -1028,7 +1039,7 @@ impl StrategiesView {
             MenuTarget::Folder(path) => {
                 let pp = path.clone();
                 items.push(
-                    MoonMenuItem::with_key("rename-folder", "Переименовать…").on_click({
+                    MoonMenuItem::with_key("rename-folder", t!("strat.menu_rename").to_string()).on_click({
                         let view = view.clone();
                         move |_, window, app| {
                             window.close_context_menu(app);
@@ -1040,7 +1051,7 @@ impl StrategiesView {
                 );
                 let pp = path.clone();
                 items.push(
-                    MoonMenuItem::with_key("copy-folder", "Копировать").on_click({
+                    MoonMenuItem::with_key("copy-folder", t!("strat.menu_copy").to_string()).on_click({
                         let view = view.clone();
                         move |_, window, app| {
                             window.close_context_menu(app);
@@ -1054,7 +1065,7 @@ impl StrategiesView {
                 if can_paste {
                     let t = tree_ops::join_path(path);
                     items.push(
-                        MoonMenuItem::with_key("paste-here", "Вставить сюда").on_click({
+                        MoonMenuItem::with_key("paste-here", t!("strat.menu_paste_here").to_string()).on_click({
                             let view = view.clone();
                             move |_, window, app| {
                                 window.close_context_menu(app);
@@ -1068,7 +1079,7 @@ impl StrategiesView {
                 }
                 let t = tree_ops::join_path(path);
                 items.push(
-                    MoonMenuItem::with_key("new-strategy-here", "Новая стратегия здесь…").on_click(
+                    MoonMenuItem::with_key("new-strategy-here", t!("strat.menu_new_strategy_here").to_string()).on_click(
                         {
                             let view = view.clone();
                             move |_, window, app| {
@@ -1082,7 +1093,7 @@ impl StrategiesView {
                 );
                 let t = tree_ops::join_path(path);
                 items.push(
-                    MoonMenuItem::with_key("new-folder-here", "Новая папка здесь…").on_click({
+                    MoonMenuItem::with_key("new-folder-here", t!("strat.menu_new_folder_here").to_string()).on_click({
                         let view = view.clone();
                         move |_, window, app| {
                             window.close_context_menu(app);
@@ -1094,7 +1105,7 @@ impl StrategiesView {
                 );
                 let pp = path.clone();
                 items.push(
-                    MoonMenuItem::with_key("delete-folder", "Удалить папку…")
+                    MoonMenuItem::with_key("delete-folder", t!("strat.menu_delete_folder").to_string())
                         .tone(MoonTone::Danger)
                         .on_click({
                             let view = view.clone();
@@ -1109,7 +1120,7 @@ impl StrategiesView {
             }
             MenuTarget::Strategy(_id) => {
                 items.push(
-                    MoonMenuItem::with_key("copy-strategy", "Копировать").on_click({
+                    MoonMenuItem::with_key("copy-strategy", t!("strat.menu_copy").to_string()).on_click({
                         let view = view.clone();
                         move |_, window, app| {
                             window.close_context_menu(app);
@@ -1121,7 +1132,7 @@ impl StrategiesView {
                     }),
                 );
                 items.push(
-                    MoonMenuItem::with_key("delete-strategy", "Удалить…")
+                    MoonMenuItem::with_key("delete-strategy", t!("strat.menu_delete_strategy").to_string())
                         .tone(MoonTone::Danger)
                         .on_click({
                             let view = view.clone();

@@ -12,9 +12,13 @@ settings.saved:
   en: "Saved"
   es: "Guardado"
 settings.window_title:
-  ru: "Настройки — MoonTerminal"
-  en: "Settings — MoonTerminal"
-  es: "Ajustes — MoonTerminal"
+  ru: "MoonTerminal — Настройки"
+  en: "MoonTerminal — Settings"
+  es: "MoonTerminal — Ajustes"
+settings.title:
+  ru: "Настройки"
+  en: "Settings"
+  es: "Ajustes"
 
 # --- Ярлыки вкладок настроек ---
 tab.connections:

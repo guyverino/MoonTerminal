@@ -2,22 +2,23 @@
 
 use super::columns::header_for;
 use super::*;
+use rust_i18n::t;
 
 impl ReportPanel {
     /// Комбобокс выбора ядра (Все + ядра из БД).
     pub(super) fn core_combo(&self, cx: &Context<Self>) -> impl IntoElement {
         let cur = if self.sel_core == 0 {
-            "Все".to_string()
+            t!("report.filter.all").to_string()
         } else {
             self.cores
                 .get(self.sel_core - 1)
                 .map(|(_, n)| n.clone())
-                .unwrap_or_else(|| "Все".into())
+                .unwrap_or_else(|| t!("report.filter.all").to_string())
         };
         let view = cx.entity();
         let cores = self.cores.clone();
         let mut items = vec![
-            MoonMenuItem::with_key("rc-all", "Все")
+            MoonMenuItem::with_key("rc-all", t!("report.filter.all").to_string())
                 .selected(self.sel_core == 0)
                 .on_click({
                     let view = view.clone();
@@ -50,15 +51,15 @@ impl ReportPanel {
     /// Комбобокс стороны (Все/Лонг/Шорт).
     pub(super) fn side_combo(&self, cx: &Context<Self>) -> impl IntoElement {
         let cur = match self.side {
-            SideFilter::All => "Все",
-            SideFilter::Long => "Лонг",
-            SideFilter::Short => "Шорт",
+            SideFilter::All => t!("report.filter.all").to_string(),
+            SideFilter::Long => t!("report.side.long").to_string(),
+            SideFilter::Short => t!("report.side.short").to_string(),
         };
         let view = cx.entity();
         let opts = [
-            (SideFilter::All, "Все"),
-            (SideFilter::Long, "Лонг"),
-            (SideFilter::Short, "Шорт"),
+            (SideFilter::All, t!("report.filter.all").to_string()),
+            (SideFilter::Long, t!("report.side.long").to_string()),
+            (SideFilter::Short, t!("report.side.short").to_string()),
         ];
         MoonDropdown::new("rep-side")
             .label(format!("{cur} ▾"))
@@ -92,7 +93,7 @@ impl ReportPanel {
                 })
         });
         MoonDropdown::new("rep-cols")
-            .label("Колонки ▾")
+            .label(format!("{} ▾", t!("report.columns_menu")))
             .trigger_variant(MoonButtonVariant::Soft)
             .trigger_size(MoonButtonSize::Action)
             .trigger_width(110.0)

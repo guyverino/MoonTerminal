@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use gpui::*;
 use moon_ui::{MoonPalette, Panel, PanelEvent, PanelState, h_flex, v_flex};
+use rust_i18n::t;
 
 use crate::{Backend, design};
 use moon_chart::paint::now_unix_ms;
@@ -232,7 +233,7 @@ impl Panel for DetectsPanel {
         "Detects"
     }
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        SharedString::from("Детекты")
+        SharedString::from(t!("dock.tab.detects").to_string())
     }
     fn dump(&self, _cx: &App) -> PanelState {
         crate::dock_persist::panel_state_with_group("Detects", &self.group)

@@ -23,6 +23,7 @@ use moon_ui::{
 };
 use rusqlite::Connection;
 use rusqlite::types::Value;
+use rust_i18n::t;
 
 use crate::{Backend, design};
 use moon_core::db::{self, ReportFilter, ReportTable, SideFilter};
@@ -118,9 +119,12 @@ impl ReportPanel {
             state.set_sort(sort_key.clone(), !sort_desc);
         });
 
-        let coin = cx.new(|cx| MoonInputState::new(window, cx).placeholder("все"));
-        let from = cx.new(|cx| MoonInputState::new(window, cx).placeholder("ГГГГ-ММ-ДД"));
-        let to = cx.new(|cx| MoonInputState::new(window, cx).placeholder("ГГГГ-ММ-ДД"));
+        let coin =
+            cx.new(|cx| MoonInputState::new(window, cx).placeholder(t!("report.filter.coin_ph").to_string()));
+        let from =
+            cx.new(|cx| MoonInputState::new(window, cx).placeholder(t!("report.filter.date_ph").to_string()));
+        let to =
+            cx.new(|cx| MoonInputState::new(window, cx).placeholder(t!("report.filter.date_ph").to_string()));
         for st in [&coin, &from, &to] {
             cx.subscribe(st, |t, _e, ev: &MoonInputEvent, cx| {
                 if matches!(ev, MoonInputEvent::Change) {
@@ -278,7 +282,7 @@ impl Panel for ReportPanel {
         "Report"
     }
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        SharedString::from("Отчёт")
+        SharedString::from(t!("dock.tab.report").to_string())
     }
     fn dump(&self, _cx: &App) -> PanelState {
         crate::dock_persist::panel_state_with_group("Report", &self.group)
@@ -326,13 +330,18 @@ impl Render for ReportPanel {
             .items_center()
             .px_2()
             .py_1()
-            .child(div().text_xs().text_color(rgb(p.text_soft)).child("Ядро:"))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(p.text_soft))
+                    .child(t!("report.filter.core").to_string()),
+            )
             .child(self.core_combo(cx))
             .child(
                 div()
                     .text_xs()
                     .text_color(rgb(p.text_soft))
-                    .child("Монета:"),
+                    .child(t!("report.filter.coin").to_string()),
             )
             .child(
                 div().w(px(90.0)).child(
@@ -346,16 +355,26 @@ impl Render for ReportPanel {
                 div()
                     .text_xs()
                     .text_color(rgb(p.text_soft))
-                    .child("Сторона:"),
+                    .child(t!("report.filter.side").to_string()),
             )
             .child(self.side_combo(cx))
-            .child(div().text_xs().text_color(rgb(p.text_soft)).child("С:"))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(p.text_soft))
+                    .child(t!("report.filter.from").to_string()),
+            )
             .child(
                 div()
                     .w(px(110.0))
                     .child(MoonInput::new("rep-from").state(&self.from).small()),
             )
-            .child(div().text_xs().text_color(rgb(p.text_soft)).child("По:"))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(p.text_soft))
+                    .child(t!("report.filter.to").to_string()),
+            )
             .child(
                 div()
                     .w(px(110.0))
@@ -371,7 +390,7 @@ impl Render for ReportPanel {
             div()
                 .p_3()
                 .text_color(rgb(p.text_soft))
-                .child("Все колонки скрыты — включите в «Колонки».")
+                .child(t!("report.all_cols_hidden").to_string())
                 .into_any_element()
         } else {
             let table = self.table.clone();
@@ -410,7 +429,7 @@ impl Render for ReportPanel {
                             .items_center()
                             .text_xs()
                             .text_color(rgb(p.text_soft))
-                            .child("Нет отчётов под фильтр (или БД пуста)."),
+                            .child(t!("report.empty").to_string()),
                     )
                 })
                 .into_any_element()
@@ -435,7 +454,7 @@ impl Render for ReportPanel {
                 div()
                     .text_xs()
                     .text_color(rgb(p.text_soft))
-                    .child("Итого за период:"),
+                    .child(t!("report.totals").to_string()),
             )
             .child(
                 div()
@@ -447,7 +466,7 @@ impl Render for ReportPanel {
                 div()
                     .text_xs()
                     .text_color(rgb(p.text_soft))
-                    .child(format!("ордеров: {count}")),
+                    .child(t!("report.orders_count", count = count).to_string()),
             )
             .child(
                 div()
@@ -456,7 +475,7 @@ impl Render for ReportPanel {
                     .justify_end()
                     .text_xs()
                     .text_color(rgb(p.text_soft))
-                    .child(format!("показано (топ): {}", self.table.rows.len())),
+                    .child(t!("report.shown_top", n = self.table.rows.len()).to_string()),
             );
 
         v_flex()

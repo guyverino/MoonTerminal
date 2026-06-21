@@ -30,6 +30,7 @@ use moon_ui::{
 use crate::{Backend, design};
 use moon_core::feed::{SchemaField, SchemaFieldUi, SchemaSection, StrategyRow};
 use moon_core::session::{CoreId, CoreStore};
+use rust_i18n::t;
 
 use filter::StrategyFilter;
 use logic::*;
@@ -106,7 +107,8 @@ pub struct StrategiesView {
 
 impl StrategiesView {
     fn new(backend: Entity<Backend>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let search = cx.new(|cx| MoonInputState::new(window, cx).placeholder("поиск"));
+        let search =
+            cx.new(|cx| MoonInputState::new(window, cx).placeholder(t!("strat.search").to_string()));
         // Печать в поиске → перерисовать (значение читаем из инпута в render).
         cx.subscribe(&search, |_this, _e, ev: &MoonInputEvent, cx| {
             if matches!(ev, MoonInputEvent::Change) {
@@ -487,7 +489,7 @@ impl StrategiesView {
             .px(design::ui_px(cx, 10.0))
             .py(design::ui_px(cx, 12.0))
             .gap(design::ui_px(cx, 7.0))
-            .child(div().font_weight(FontWeight::SEMIBOLD).child("Разделы"))
+            .child(div().font_weight(FontWeight::SEMIBOLD).child(t!("strat.sections").to_string()))
             .child(div().w_full().h(px(1.0)).bg(border));
 
         let Some(sections) = selected_sections(self, store) else {
@@ -496,7 +498,7 @@ impl StrategiesView {
                     div()
                         .mt_2()
                         .text_color(moon(p.text_muted))
-                        .child("выберите стратегию в дереве"),
+                        .child(t!("strat.no_selection").to_string()),
                 )
                 .into_any_element();
         };
@@ -506,7 +508,7 @@ impl StrategiesView {
                     div()
                         .mt_2()
                         .text_color(moon(p.text_muted))
-                        .child("схема не получена"),
+                        .child(t!("strat.no_schema").to_string()),
                 )
                 .into_any_element();
         }
@@ -705,7 +707,7 @@ fn strategies_header(p: MoonPalette, cx: &App) -> impl IntoElement {
         .border_color(moon_alpha(p.border, 1.0))
         .child(
             MoonWindowFrame::tool("strategies-titlebar-title", 0.0)
-                .title_cluster("Стратегии", cx)
+                .title_cluster(t!("strat.window_title").to_string(), cx)
                 .h_full()
                 .flex_1()
                 .min_w_0(),
@@ -754,7 +756,7 @@ pub fn open(backend: Entity<Backend>, owner: Option<AnyWindowHandle>, cx: &mut A
             .map(|d| d.id())
     });
     let mut opts = crate::windowing::tool_window_options(
-        "MoonTerminal — Стратегии",
+        t!("strat.window_title").to_string(),
         WindowBounds::Windowed(bounds),
         Some(size(px(920.0), px(560.0))),
         owner,

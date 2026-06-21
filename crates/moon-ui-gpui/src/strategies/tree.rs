@@ -3,6 +3,7 @@
 //! `impl StrategiesView`; состояние и чистые помощники — в [`super`]/[`super::logic`].
 
 use super::*;
+use rust_i18n::t;
 
 impl StrategiesView {
     pub(super) fn tree_panel(
@@ -117,9 +118,9 @@ impl StrategiesView {
             .kind
             .and_then(|k| kinds.iter().find(|(o, _)| *o == k))
             .map(|(_, n)| n.clone())
-            .unwrap_or_else(|| "все типы".to_string());
+            .unwrap_or_else(|| t!("strat.all_kinds").to_string());
         let dir_text = match self.filter.dir {
-            None => "все".to_string(),
+            None => t!("strat.all_dirs").to_string(),
             Some(true) => "SHORT".to_string(),
             Some(false) => "LONG".to_string(),
         };
@@ -170,7 +171,7 @@ impl StrategiesView {
                             .justify_between()
                             .child(
                                 MoonCheckbox::new("flt-active")
-                                    .label("только активные")
+                                    .label(t!("strat.only_active").to_string())
                                     .checked(self.filter.only_active)
                                     .size(MoonCheckboxSize::Compact)
                                     .on_change(cx.listener(|this, ch: &bool, _, cx| {
@@ -228,7 +229,7 @@ impl StrategiesView {
         let view = cx.entity();
         let selected_kind = self.filter.kind;
         let mut items = vec![
-            MoonMenuItem::with_key("kind-all", "все типы")
+            MoonMenuItem::with_key("kind-all", t!("strat.all_kinds").to_string())
                 .selected(selected_kind.is_none())
                 .on_click({
                     let view = view.clone();
@@ -275,13 +276,16 @@ impl StrategiesView {
     /// Комбобокс фильтра направления (все/LONG/SHORT).
     fn combo_dir(&self, current: String, cx: &Context<Self>) -> AnyElement {
         let view = cx.entity();
-        let opts: [(&str, Option<bool>); 3] =
-            [("все", None), ("LONG", Some(false)), ("SHORT", Some(true))];
+        let opts: [(&str, String, Option<bool>); 3] = [
+            ("all", t!("strat.all_dirs").to_string(), None),
+            ("LONG", "LONG".to_string(), Some(false)),
+            ("SHORT", "SHORT".to_string(), Some(true)),
+        ];
         let mut items = Vec::with_capacity(opts.len());
-        for (label, val) in opts {
+        for (id, label, val) in opts {
             let view = view.clone();
             items.push(
-                MoonMenuItem::with_key(format!("dir-{label}"), label)
+                MoonMenuItem::with_key(format!("dir-{id}"), label)
                     .selected(self.filter.dir == val)
                     .on_click(move |_, _, app| {
                         view.update(app, |this, c| {
@@ -321,7 +325,7 @@ impl StrategiesView {
                 MoonButton::new("start-checked")
                     .primary()
                     .size(MoonButtonSize::Micro)
-                    .label("▶ отмеченных")
+                    .label(format!("▶ {}", t!("strat.start_checked")))
                     .on_click({
                         let cs = cs.clone();
                         cx.listener(move |this, _, _, cx| {
@@ -335,7 +339,7 @@ impl StrategiesView {
                 MoonButton::new("stop-checked")
                     .outline()
                     .size(MoonButtonSize::Micro)
-                    .label("■ отмеченных")
+                    .label(format!("■ {}", t!("strat.stop_checked")))
                     .on_click({
                         let cs = cs.clone();
                         cx.listener(move |this, _, _, cx| {
@@ -358,7 +362,7 @@ impl StrategiesView {
                 div()
                     .text_xs()
                     .text_color(rgb(MoonPalette::active(cx).amber))
-                    .child(format!("изменений: {}", self.staged.len())),
+                    .child(t!("strat.staged", n = self.staged.len()).to_string()),
             );
         }
         bar.child(right).into_any_element()
@@ -501,7 +505,7 @@ impl StrategiesView {
         // Источник DnD: тащим весь мультивыбор этого ядра (если строка в выборе) или одну.
         let drag_ids = self.drag_ids_for(core, r.id);
         let drag_label: SharedString = if drag_ids.len() > 1 {
-            format!("{} стратегий", drag_ids.len()).into()
+            t!("strat.count_strategies", n = drag_ids.len()).to_string().into()
         } else {
             r.name.clone().into()
         };

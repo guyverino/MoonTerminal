@@ -31,6 +31,7 @@ use crate::design;
 use crate::panels::{RenderGate, num};
 use moon_core::feed::{AssetRow, TransferAssetRow, WalletKind};
 use moon_core::session::CoreId;
+use rust_i18n::t;
 
 use wallets::PendingTransfer;
 
@@ -296,7 +297,7 @@ impl Panel for AssetsView {
         true
     }
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        SharedString::from("Активы")
+        SharedString::from(t!("dock.tab.assets").to_string())
     }
     fn dump(&self, _cx: &App) -> PanelState {
         let group = match &self.scope {
@@ -414,7 +415,7 @@ fn assets_header(p: MoonPalette, cx: &App) -> impl IntoElement {
         .border_color(rgb(p.border))
         .child(
             MoonWindowFrame::tool("assets-titlebar-title", 0.0)
-                .title_cluster("Активы", cx)
+                .title_cluster(t!("dock.tab.assets").to_string(), cx)
                 .h_full()
                 .flex_1()
                 .min_w_0(),
@@ -460,7 +461,7 @@ pub fn open(backend: Entity<Backend>, owner: Option<AnyWindowHandle>, cx: &mut A
             .map(|d| d.id())
     });
     let mut opts = crate::windowing::tool_window_options(
-        "MoonTerminal — Активы",
+        t!("assets.window_title").to_string(),
         WindowBounds::Windowed(bounds),
         Some(size(px(900.0), px(560.0))),
         owner,

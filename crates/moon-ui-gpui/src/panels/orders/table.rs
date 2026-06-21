@@ -1,6 +1,7 @@
 //! Таблица панели «Ордера»: колонки, строки/ячейки, клик по токену.
 
 use super::*;
+use rust_i18n::t;
 
 pub(super) fn orders_table(
     entries: Vec<OrderEntry>,
@@ -41,7 +42,7 @@ pub(super) fn orders_table(
                     .font_family(design::mono())
                     .text_size(design::text_px(cx, 10.5))
                     .text_color(rgb(p.text_muted))
-                    .child("нет открытых ордеров"),
+                    .child(t!("orders.empty").to_string()),
             )
         })
 }

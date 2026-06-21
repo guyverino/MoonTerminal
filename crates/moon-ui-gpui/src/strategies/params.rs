@@ -3,6 +3,7 @@
 //! формул) + попап полного значения. Методы — `impl StrategiesView` (в [`super`]).
 
 use super::*;
+use rust_i18n::t;
 
 pub(super) enum ParamsPanelModel {
     NoSelection,
@@ -74,8 +75,8 @@ impl StrategiesView {
         } = model
         else {
             let text = match model {
-                ParamsPanelModel::NoSelection => "выберите стратегию в дереве",
-                ParamsPanelModel::NoSchema => "схема не получена",
+                ParamsPanelModel::NoSelection => t!("strat.no_selection").to_string(),
+                ParamsPanelModel::NoSchema => t!("strat.no_schema").to_string(),
                 ParamsPanelModel::Content { .. } => unreachable!(),
             };
             return col
@@ -86,9 +87,9 @@ impl StrategiesView {
 
         // Заголовок раздела + счётчик (полей / выбрано) справа.
         let count = if multi {
-            format!("выбрано: {}", row_pairs.len())
+            t!("strat.selected_count", n = row_pairs.len()).to_string()
         } else {
-            format!("полей: {}", section.fields.len())
+            t!("strat.fields_count", n = section.fields.len()).to_string()
         };
         let dirty = self.field_edits.len();
         let mut header = h_flex()
@@ -138,7 +139,7 @@ impl StrategiesView {
             .child(header)
             .child(
                 MoonCheckbox::new("params-only-active")
-                    .label("только активные")
+                    .label(t!("strat.only_active").to_string())
                     .checked(self.only_active_params)
                     .size(MoonCheckboxSize::Compact)
                     .on_change(cx.listener(|this, ch: &bool, _, cx| {
@@ -331,7 +332,7 @@ impl StrategiesView {
                             .selected(dirty || differ)
                             .disabled(!active);
                     if differ {
-                        input = input.placeholder("разные значения");
+                        input = input.placeholder(t!("strat.mixed_values").to_string());
                     }
                     input.into_any_element()
                 }

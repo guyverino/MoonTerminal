@@ -7,6 +7,7 @@ use moon_ui::{
     MoonColorPickerEvent, MoonColorPickerState, MoonPalette, MoonSliderEvent, MoonSliderState,
     v_flex,
 };
+use rust_i18n::t;
 
 use super::{SettingsView, color_row, hsla_u8, section, separator, slider_row};
 use crate::{Backend, design};
@@ -229,47 +230,47 @@ impl SettingsView {
             .w_full()
             .gap_1()
             // UI: шрифты и масштаб
-            .child(section("Интерфейс: шрифт", p, cx))
-            .child(slider_row("Прибавка к размеру шрифта", &i.ui_font_delta, cx))
+            .child(section(&t!("iface.sec_font"), p, cx))
+            .child(slider_row(&t!("iface.font_delta"), &i.ui_font_delta, cx))
             .child(separator(p, cx))
             // График: фон и сетка
-            .child(section("График: фон и сетка", p, cx))
-            .child(color_row("Цвет фона графика", &i.bg, p, cx))
-            .child(color_row("Цвет сетки", &i.grid, p, cx))
-            .child(slider_row("Видимость сетки", &i.grid_alpha, cx))
+            .child(section(&t!("iface.sec_chart"), p, cx))
+            .child(color_row(&t!("iface.bg"), &i.bg, p, cx))
+            .child(color_row(&t!("iface.grid"), &i.grid, p, cx))
+            .child(slider_row(&t!("iface.grid_alpha"), &i.grid_alpha, cx))
             .child(separator(p, cx))
             // График: перекрестие
-            .child(section("График: перекрестие", p, cx))
-            .child(color_row("Цвет перекрестия", &i.cross, p, cx))
-            .child(slider_row("Прозрачность линий", &i.cross_alpha, cx))
-            .child(slider_row("Толщина линий", &i.cross_thickness, cx))
-            .child(slider_row("Радиус ореола", &i.halo_radius, cx))
-            .child(slider_row("Яркость ореола", &i.halo_intensity, cx))
+            .child(section(&t!("iface.sec_cross"), p, cx))
+            .child(color_row(&t!("iface.cross"), &i.cross, p, cx))
+            .child(slider_row(&t!("iface.cross_alpha"), &i.cross_alpha, cx))
+            .child(slider_row(&t!("iface.cross_thickness"), &i.cross_thickness, cx))
+            .child(slider_row(&t!("iface.halo_radius"), &i.halo_radius, cx))
+            .child(slider_row(&t!("iface.halo_intensity"), &i.halo_intensity, cx))
             .child(separator(p, cx))
             // Стакан
-            .child(section("Стакан", p, cx))
-            .child(color_row("Фон стакана", &i.book_bg, p, cx))
-            .child(color_row("Цвет покупок (bid)", &i.book_bid, p, cx))
-            .child(color_row("Цвет продаж (ask)", &i.book_ask, p, cx))
-            .child(slider_row("Яркость линий уровней", &i.book_level_alpha, cx))
+            .child(section(&t!("iface.sec_book"), p, cx))
+            .child(color_row(&t!("iface.book_bg"), &i.book_bg, p, cx))
+            .child(color_row(&t!("iface.book_bid"), &i.book_bid, p, cx))
+            .child(color_row(&t!("iface.book_ask"), &i.book_ask, p, cx))
+            .child(slider_row(&t!("iface.book_level_alpha"), &i.book_level_alpha, cx))
             .child(separator(p, cx))
             // Панели
-            .child(section("Панели", p, cx))
+            .child(section(&t!("iface.sec_panels"), p, cx))
             .child(color_row(
-                "Фон панелей (тулбар, ордер, док, статус)",
+                &t!("iface.panel_bg"),
                 &i.panel_bg,
                 p,
                 cx,
             ))
             .child(separator(p, cx))
             // Закрытый график
-            .child(section("Закрытый график", p, cx))
-            .child(color_row("Фон пустого контейнера", &i.closed_bg, p, cx))
+            .child(section(&t!("iface.sec_closed"), p, cx))
+            .child(color_row(&t!("iface.closed_bg"), &i.closed_bg, p, cx))
             .child(
                 div()
                     .mt_2()
                     .text_color(rgb(p.text_soft))
-                    .child("Меняется вживую. «Сохранить» пишет theme.toml рядом с программой — им можно делиться."),
+                    .child(t!("iface.hint").to_string()),
             )
     }
 }

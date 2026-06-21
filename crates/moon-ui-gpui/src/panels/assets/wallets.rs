@@ -6,6 +6,7 @@ use super::*;
 use anyhow::Result;
 use moon_ui::components::WindowExt as _;
 use moon_ui::components::notification::Notification;
+use rust_i18n::t;
 
 /// Полезная нагрузка drag&drop переноса актива между кошельками.
 #[derive(Clone)]
@@ -74,7 +75,7 @@ impl AssetsView {
                         div()
                             .text_xs()
                             .text_color(rgb(p.text_muted))
-                            .child("Кошельки · перетащи монету между контейнерами"),
+                            .child(t!("assets.wallets_hint").to_string()),
                     )
                     .child(
                         MoonButton::new("assets-refresh-transfer")
@@ -259,12 +260,13 @@ impl AssetsView {
         let view = cx.entity();
         window.open_unique_dialog("assets-transfer-dialog", cx, move |dialog, _window, cx| {
             let p = MoonPalette::active(cx);
-            let title = format!(
-                "Перенос {}: {} → {}",
-                pending.asset,
-                pending.from.label(),
-                pending.to.label()
-            );
+            let title = t!(
+                "assets.transfer_title",
+                coin = pending.asset,
+                from = pending.from.label(),
+                to = pending.to.label()
+            )
+            .to_string();
             let content_view = view.clone();
             let cancel_view = view.clone();
             let close_view = view.clone();
@@ -302,7 +304,7 @@ impl AssetsView {
                             div()
                                 .text_xs()
                                 .text_color(rgb(p.text_muted))
-                                .child(format!("свободно: {}", num(pending.free))),
+                                .child(t!("assets.free", n = num(pending.free)).to_string()),
                         );
                     if let Some(input) = input {
                         body = body.child(MoonInput::new("transfer-amount").state(&input).small());
@@ -318,7 +320,7 @@ impl AssetsView {
                             MoonButton::new("transfer-cancel")
                                 .outline()
                                 .size(MoonButtonSize::Action)
-                                .label("Отмена")
+                                .label(t!("dialogs.cancel").to_string())
                                 .on_click(move |_, window, cx| {
                                     footer_cancel_view
                                         .update(cx, |this, cx| this.close_transfer_dialog(cx));
@@ -330,7 +332,7 @@ impl AssetsView {
                             MoonButton::new("transfer-confirm")
                                 .primary()
                                 .size(MoonButtonSize::Action)
-                                .label("Перенести")
+                                .label(t!("assets.transfer_btn").to_string())
                                 .on_click(move |_, window, cx| {
                                     match footer_confirm_view
                                         .update(cx, |this, cx| this.confirm_transfer(cx))

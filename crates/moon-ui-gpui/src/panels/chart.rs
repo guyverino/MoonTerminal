@@ -15,6 +15,8 @@ use moon_ui::{
     Panel, PanelEvent,
 };
 
+use rust_i18n::t;
+
 use crate::chartdx::ChartEngine;
 use crate::{Backend, axes, input};
 use moon_chart::container::ContainerKind;
@@ -504,7 +506,7 @@ impl ChartPanel {
         if let Some(n) = self.num {
             return match market {
                 Some(m) => format!("{n} · {m}"),
-                None => format!("Чарт {n}"),
+                None => t!("chartwin.tab_title", n = n).to_string(),
             };
         }
         market.unwrap_or_else(|| "Main".into())

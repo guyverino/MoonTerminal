@@ -2,6 +2,7 @@
 //! значений БД в текст+цвет, человекочитаемые заголовки и ширины.
 
 use super::*;
+use rust_i18n::t;
 
 pub(super) fn report_columns(vis: &[usize]) -> Vec<MoonDataTableColumn> {
     vis.iter()
@@ -83,12 +84,12 @@ fn cell(col: &str, v: &Value, p: MoonPalette) -> (String, Option<u32>) {
             (as_i64(v).map(db::fmt_unix).unwrap_or_default(), None)
         }
         "isshort" => match as_i64(v) {
-            Some(1) => ("Шорт".into(), Some(p.red)),
-            Some(0) => ("Лонг".into(), Some(p.green)),
+            Some(1) => (t!("report.side.short").to_string(), Some(p.red)),
+            Some(0) => (t!("report.side.long").to_string(), Some(p.green)),
             _ => (String::new(), Some(p.text_soft)),
         },
         "emulator" => match as_i64(v) {
-            Some(1) => ("эму".into(), Some(p.text_soft)),
+            Some(1) => (t!("report.cell.emu").to_string(), Some(p.text_soft)),
             _ => (String::new(), None),
         },
         "profitbtc" | "gainedbtc" => {
@@ -129,36 +130,36 @@ fn value_to_string(v: &Value) -> String {
 }
 
 /// Человекочитаемый заголовок колонки (порт `header_for`).
-pub(super) fn header_for(col: &str) -> &str {
+pub(super) fn header_for(col: &str) -> String {
     match col {
-        "buydate" => "Открыт (UTC)",
-        "closedate" => "Закрыт (UTC)",
-        "sellsetdate" => "Sell set",
-        "last_update_at" => "Обновлён",
-        "core_name" => "Ядро",
-        "db_id" => "ID",
-        "taskid" => "TaskID",
-        "exorderid" => "ExOrderID",
-        "coin" => "Монета",
-        "isshort" => "Сторона",
-        "quantity" => "Кол-во",
-        "boughtq" => "Куплено",
-        "buyprice" => "Покупка",
-        "sellprice" => "Продажа",
-        "spentbtc" => "Влож.BTC",
-        "gainedbtc" => "Получ.BTC",
-        "profitbtc" => "Профит BTC",
-        "lev" => "Плечо",
-        "strategyid" => "Strat",
-        "channelname" => "Канал",
-        "signaltype" => "Сигнал",
-        "fname" => "Файл",
-        "basecurrency" => "BaseCur",
-        "emulator" => "Эму",
-        "status" => "Статус",
-        "sellreason" => "Причина",
-        "comment" => "Коммент",
-        other => other,
+        "buydate" => t!("report.col.buydate").to_string(),
+        "closedate" => t!("report.col.closedate").to_string(),
+        "sellsetdate" => "Sell set".to_string(),
+        "last_update_at" => t!("report.col.last_update").to_string(),
+        "core_name" => t!("report.col.core").to_string(),
+        "db_id" => "ID".to_string(),
+        "taskid" => "TaskID".to_string(),
+        "exorderid" => "ExOrderID".to_string(),
+        "coin" => t!("report.col.coin").to_string(),
+        "isshort" => t!("report.col.side").to_string(),
+        "quantity" => t!("report.col.quantity").to_string(),
+        "boughtq" => t!("report.col.bought").to_string(),
+        "buyprice" => t!("report.col.buyprice").to_string(),
+        "sellprice" => t!("report.col.sellprice").to_string(),
+        "spentbtc" => t!("report.col.spentbtc").to_string(),
+        "gainedbtc" => t!("report.col.gainedbtc").to_string(),
+        "profitbtc" => t!("report.col.profitbtc").to_string(),
+        "lev" => t!("report.col.lev").to_string(),
+        "strategyid" => "Strat".to_string(),
+        "channelname" => t!("report.col.channel").to_string(),
+        "signaltype" => t!("report.col.signal").to_string(),
+        "fname" => t!("report.col.file").to_string(),
+        "basecurrency" => "BaseCur".to_string(),
+        "emulator" => t!("report.col.emulator").to_string(),
+        "status" => t!("report.col.status").to_string(),
+        "sellreason" => t!("report.col.reason").to_string(),
+        "comment" => t!("report.col.comment").to_string(),
+        other => other.to_string(),
     }
 }
 

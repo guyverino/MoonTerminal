@@ -6,6 +6,7 @@
 
 use gpui::prelude::FluentBuilder;
 use gpui::*;
+use rust_i18n::t;
 use moon_ui::components::{progress::Progress, tag::Tag};
 use moon_ui::{
     MoonButton, MoonButtonSize, MoonButtonVariant, MoonPalette, MoonWindowFrame, h_flex,
@@ -69,7 +70,7 @@ pub fn header(
                 .child(design::vline(16.0, p))
                 .child(header_action(
                     "strategies",
-                    "Стратегии",
+                    t!("toolbar.strategies").to_string(),
                     {
                         let backend = backend.clone();
                         move |_, window, cx| {

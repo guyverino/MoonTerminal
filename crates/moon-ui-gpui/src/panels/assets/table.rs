@@ -3,6 +3,7 @@
 
 use super::*;
 use moon_ui::components::{WindowExt as _, notification::Notification};
+use rust_i18n::t;
 
 impl AssetsView {
     /// Верхняя панель управления: счётчик, галка «показать всё», итоги (Σ стоимость / Σ PnL).
@@ -37,7 +38,7 @@ impl AssetsView {
             )
             .child(
                 MoonCheckbox::new("assets-show-all")
-                    .label("показать всё")
+                    .label(t!("assets.show_all").to_string())
                     .checked(self.show_all)
                     .size(MoonCheckboxSize::Compact)
                     .on_change(cx.listener(|this, ch: &bool, _, cx| {
@@ -173,7 +174,7 @@ impl AssetsView {
                     .py(design::ui_px(cx, 4.0))
                     .text_xs()
                     .text_color(rgb(p.text_muted))
-                    .child("Ядра · своб/итого"),
+                    .child(t!("assets.cores_free_total").to_string()),
             )
             .child(
                 div()
@@ -190,7 +191,7 @@ impl AssetsView {
             None => div()
                 .p_4()
                 .text_color(rgb(p.text_muted))
-                .child("нет ядер")
+                .child(t!("assets.no_cores").to_string())
                 .into_any_element(),
         };
 
@@ -206,18 +207,19 @@ impl AssetsView {
 }
 
 fn assets_columns() -> Vec<MoonDataTableColumn> {
-    let numeric =
-        |title: &str, w: f32| MoonDataTableColumn::new(title.to_lowercase(), title, w).right();
+    let numeric = |key: &'static str, title: String, w: f32| {
+        MoonDataTableColumn::new(key, title, w).right()
+    };
     vec![
-        MoonDataTableColumn::new("core", "Ядро", 90.0),
-        MoonDataTableColumn::new("coin", "Актив", 70.0),
-        numeric("Кол-во", 90.0),
-        numeric("Цена", 84.0),
-        numeric("Стоим.$", 92.0),
-        numeric("Поз.", 80.0),
-        numeric("Поз.цена", 84.0),
-        numeric("Профит", 86.0),
-        MoonDataTableColumn::new("kind", "Рынок", 80.0),
+        MoonDataTableColumn::new("core", t!("assets.col.core").to_string(), 90.0),
+        MoonDataTableColumn::new("coin", t!("assets.col.coin").to_string(), 70.0),
+        numeric("qty", t!("assets.col.qty").to_string(), 90.0),
+        numeric("price", t!("assets.col.price").to_string(), 84.0),
+        numeric("value", t!("assets.col.value").to_string(), 92.0),
+        numeric("pos", t!("assets.col.pos").to_string(), 80.0),
+        numeric("pos_price", t!("assets.col.pos_price").to_string(), 84.0),
+        numeric("profit", t!("assets.col.profit").to_string(), 86.0),
+        MoonDataTableColumn::new("kind", t!("assets.col.kind").to_string(), 80.0),
     ]
 }
 
@@ -260,7 +262,7 @@ pub(super) fn assets_table(
                     .font_family(design::mono())
                     .text_size(design::text_px(cx, 10.5))
                     .text_color(rgb(p.text_muted))
-                    .child("нет активов"),
+                    .child(t!("assets.empty").to_string()),
             )
         })
 }

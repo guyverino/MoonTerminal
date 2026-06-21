@@ -4,6 +4,7 @@
 
 use gpui::*;
 use moon_ui::{DockArea, MoonPalette, Panel, PanelEvent, PanelState};
+use rust_i18n::t;
 
 use crate::Backend;
 
@@ -94,6 +95,6 @@ impl Render for StubPanel {
             .p_4()
             .track_focus(&self.focus)
             .text_color(rgb(p.text_soft))
-            .child(format!("{} — скоро", self.title))
+            .child(t!("dock.stub_soon", name = self.title).to_string())
     }
 }

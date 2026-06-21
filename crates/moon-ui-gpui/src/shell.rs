@@ -6,6 +6,7 @@ use std::rc::Rc;
 use std::time::Instant;
 
 use gpui::*;
+use rust_i18n::t;
 
 use moon_ui::{
     DockArea, DockEvent, DockItem, DockPlacement, MoonBackgroundPolicy, MoonPalette, MoonStatusBar,
@@ -548,10 +549,10 @@ impl Shell {
             .iter()
             .filter_map(|(name, st)| {
                 let reason = match st {
-                    ConnStatus::Connecting => "подключение…".to_string(),
+                    ConnStatus::Connecting => t!("status.connecting").to_string(),
                     ConnStatus::Stage(s) => s.clone(),
                     ConnStatus::Failed(e) => e.clone(),
-                    ConnStatus::Disconnected => "отключено".to_string(),
+                    ConnStatus::Disconnected => t!("status.disconnected").to_string(),
                     ConnStatus::Ready => return None,
                 };
                 Some(format!("{name}: {reason}"))
