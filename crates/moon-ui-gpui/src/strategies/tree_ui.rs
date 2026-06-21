@@ -913,8 +913,8 @@ impl StrategiesView {
         let has_sel = !rows.is_empty();
         let all_off = rows.iter().all(|(_, r)| !r.checked);
         let can_paste = self.clipboard.is_some();
-        // Левая группа фикс. ширины: ряд [копировать][вставить], под ними [удалить] по центру
-        // во всю ширину (MoonButton не тянется — центрируем в своих слотах).
+        // Левая группа фикс. ширины: ряд [копировать][вставить] (каждая тянется на свою
+        // половину), под ними [удалить] во всю ширину — через `MoonButton::full_width()`.
         v_flex()
             .w(px(176.0))
             .gap_1()
@@ -923,10 +923,11 @@ impl StrategiesView {
                     .w_full()
                     .gap_1()
                     .child(
-                        div().flex_1().flex().justify_center().child(
+                        div().flex_1().child(
                             MoonButton::new("sel-copy")
                                 .outline()
                                 .size(MoonButtonSize::Micro)
+                                .full_width()
                                 .label("копировать")
                                 .disabled(!has_sel)
                                 .on_click(cx.listener(|this, _, _, cx| this.copy_selection(cx)))
@@ -934,10 +935,11 @@ impl StrategiesView {
                         ),
                     )
                     .child(
-                        div().flex_1().flex().justify_center().child(
+                        div().flex_1().child(
                             MoonButton::new("sel-paste")
                                 .outline()
                                 .size(MoonButtonSize::Micro)
+                                .full_width()
                                 .label("вставить")
                                 .disabled(!can_paste)
                                 .on_click(cx.listener(|this, _, _, cx| {
@@ -961,17 +963,16 @@ impl StrategiesView {
                     ),
             )
             .child(
-                div().w_full().flex().justify_center().child(
-                    MoonButton::new("sel-delete")
-                        .danger()
-                        .size(MoonButtonSize::Micro)
-                        .label("удалить")
-                        .disabled(!has_sel || !all_off)
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.request_delete_selection(window, cx)
-                        }))
-                        .render(),
-                ),
+                MoonButton::new("sel-delete")
+                    .danger()
+                    .size(MoonButtonSize::Micro)
+                    .full_width()
+                    .label("удалить")
+                    .disabled(!has_sel || !all_off)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.request_delete_selection(window, cx)
+                    }))
+                    .render(),
             )
             .into_any_element()
     }

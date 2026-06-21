@@ -510,6 +510,9 @@ impl StrategiesView {
             .flex_1()
             .min_w_0()
             .h(design::fit_h_px(cx, 23.0, 14.0, 4.5))
+            // Центрируем содержимое по вертикали (иначе текст прижат к верхнему краю строки).
+            .flex()
+            .items_center()
             .px(design::ui_px(cx, 6.0))
             .rounded(design::ui_px(cx, 3.0))
             .border_1()
