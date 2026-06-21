@@ -172,6 +172,22 @@ impl SettingsView {
         let lines = lines::build(&backend, window, cx);
         let conn = connections::build_conn(&backend, window, cx);
 
+        // Сохранять положение/размер окна «Настройки» в layout — чтобы открывалось на прежнем
+        // месте. Дебаунс-сейв делает дренаж по `layout_dirty` (как у Стратегий/Активов).
+        cx.observe_window_bounds(window, |this, window, cx| {
+            let Some((x, y, w, h)) = crate::windowing::window_geom(window) else {
+                return;
+            };
+            this.backend.update(cx, |b, _| {
+                if b.layout.settings_window.map(|g| (g.x, g.y, g.w, g.h)) != Some((x, y, w, h)) {
+                    b.layout.settings_window =
+                        Some(moon_core::config::layout::GeomRect { x, y, w, h });
+                    b.layout_dirty = true;
+                }
+            });
+        })
+        .detach();
+
         // Язык — выпадающий список (порт egui ComboBox). Init = текущий язык draft.
         let (cur_lang, cur_mode) = {
             let b = backend.read(cx);
@@ -621,15 +637,34 @@ pub fn open(backend: Entity<Backend>, owner: Option<AnyWindowHandle>, cx: &mut A
         return;
     }
     backend.update(cx, |b, _| b.preview = Some(b.config.clone()));
-    let opts = crate::windowing::tool_window_options(
-        "MoonTerminal — Настройки",
-        WindowBounds::Windowed(Bounds {
+    // Геометрию восстанавливаем из layout (её сохраняет SettingsView), как у Стратегий/Активов.
+    let saved = backend.read(cx).layout.settings_window;
+    let bounds = saved.map_or(
+        Bounds {
             origin: point(px(160.0), px(120.0)),
             size: size(px(860.0), px(620.0)),
-        }),
+        },
+        |g| Bounds {
+            origin: point(px(g.x as f32), px(g.y as f32)),
+            size: size(px(g.w as f32), px(g.h as f32)),
+        },
+    );
+    // Мультимонитор: без display_id окно создаётся на primary и при bounds вне него gpui
+    // откатывается на дефолт — ищем монитор, содержащий сохранённую точку.
+    let display_id = saved.and_then(|g| {
+        let origin = point(px(g.x as f32), px(g.y as f32));
+        cx.displays()
+            .into_iter()
+            .find(|d| d.bounds().contains(&origin))
+            .map(|d| d.id())
+    });
+    let mut opts = crate::windowing::tool_window_options(
+        "MoonTerminal — Настройки",
+        WindowBounds::Windowed(bounds),
         Some(size(px(620.0), px(420.0))),
         owner,
     );
+    opts.display_id = display_id;
     let b = backend.clone();
     match cx.open_window(opts, move |window, cx| {
         let view = cx.new(|cx| SettingsView::new(b, window, cx));
