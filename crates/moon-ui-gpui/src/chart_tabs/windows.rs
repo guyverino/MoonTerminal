@@ -100,7 +100,7 @@ impl ChartTabs {
             .into_iter()
             .find(|d| d.bounds().contains(&origin))
             .map(|d| d.id());
-        let opts = crate::windowing::detached_chart_window_options(
+        let mut opts = crate::windowing::detached_chart_window_options(
             format!(
                 "MoonTerminal — {}",
                 chart_pane_label(&self.backend, &self.group, n, &bucket, cx)
@@ -111,6 +111,12 @@ impl ChartTabs {
             }),
             display_id,
         );
+        // Цвет clear окна — из темы (фон чарта). Тело окна прозрачное (own-pass UnderScene нельзя
+        // перекрывать), поэтому подложку под/между чартами даёт именно clear; без этого он белый.
+        let bg = self.theme.bg;
+        opts.window_clear_color = Some(gpui::rgb(
+            ((bg[0] as u32) << 16) | ((bg[1] as u32) << 8) | bg[2] as u32,
+        ));
         let backend = self.backend.clone();
         let group = self.group.clone();
         // Для восстановленного окна — сохранённый логический размер, чтобы скорректировать

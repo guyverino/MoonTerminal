@@ -97,6 +97,12 @@ pub(crate) fn spawn_group_window(
         Some(size(px(520.0), px(340.0))),
     );
     opts.window_background = WindowBackgroundAppearance::Opaque;
+    // Цвет clear из темы (фон чарта): иначе не закрытые сценой пиксели = белые (дефолт рендерера),
+    // что мелькает при старте/ресайзе и под чартом (own-pass UnderScene нельзя перекрывать фоном).
+    let cbg = cfg.theme.bg;
+    opts.window_clear_color = Some(gpui::rgb(
+        ((cbg[0] as u32) << 16) | ((cbg[1] as u32) << 8) | cbg[2] as u32,
+    ));
     let theme = cfg.theme.clone();
     let b = backend.clone();
     let g = group.clone();

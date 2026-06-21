@@ -276,15 +276,25 @@ impl RenderState {
                 }
             }
 
+            // Прореживание по вертикали: при низком окне «nice»-шаг даёт подписи плотнее строки —
+            // рисуем следующую, только если она отстоит от ПРЕДЫДУЩЕЙ нарисованной на высоту
+            // строки (иначе пропуск → «через одну»). last_y идёт сверху вниз (p растёт → y ↓).
+            let min_v_gap = LINE_H;
+            let mut last_y = f32::INFINITY;
             let mut p = (y_min / interval).ceil() * interval;
             let mut guard = 0;
             while p <= top_price && guard < 256 {
                 let y = plot_bottom - (p - y_min) * price_to_px;
                 let overlaps_readout = skip_price_label_y
                     .is_some_and(|(top, bottom)| y >= top - 1.0 && y <= bottom + 1.0);
-                if y >= plot_top - 1.0 && y <= plot_bottom + 1.0 && !overlaps_readout {
+                if y >= plot_top - 1.0
+                    && y <= plot_bottom + 1.0
+                    && !overlaps_readout
+                    && (last_y - y).abs() >= min_v_gap
+                {
                     let label = format!("{p:.dec$}");
                     self.draw_text(ctx, &label, plot_left - 4.0, y, 1.0, 0.5, ink)?;
+                    last_y = y;
                 }
                 p += interval;
                 guard += 1;
@@ -292,6 +302,11 @@ impl RenderState {
 
             let div_sec = window_ms / 1000.0 / 6.0;
             let with_sec = div_sec < 60.0;
+            // Прореживание по горизонтали: при узком окне 7 подписей налезают друг на друга —
+            // рисуем подпись, только если её левый край отстоит от ПРАВОГО края предыдущей
+            // нарисованной (иначе пропуск → «через одну»).
+            let min_h_gap = 6.0;
+            let mut last_right = f32::NEG_INFINITY;
             for k in 0..=6 {
                 let frac = k as f64 / 6.0;
                 let x = plot_left + (frac as f32) * plot_w;
@@ -304,8 +319,9 @@ impl RenderState {
                 let overlaps_readout = skip_time_label_x.is_some_and(|(skip_left, skip_right)| {
                     right >= skip_left && left <= skip_right
                 });
-                if !overlaps_readout {
+                if !overlaps_readout && left >= last_right + min_h_gap {
                     self.draw_text(ctx, &label, x, pane_bottom - 2.0, 0.5, 1.0, ink)?;
+                    last_right = right;
                 }
             }
         }
