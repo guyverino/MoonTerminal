@@ -53,6 +53,12 @@ pub struct AppConfig {
     pub market_mode: MarketDataMode,
     /// Отдельная чарт-вкладка на каждое ядро для AddToChart (settings.toml).
     pub charts_split_by_core: bool,
+    /// AddToChart-стек: вертикальный скролл (true) / делить высоту окна (false, как раньше).
+    pub charts_stack_scroll: bool,
+    /// Скролл-стек: сжимать по заполнению (скролл не появляется). Дефолт false.
+    pub charts_stack_compress: bool,
+    /// Скролл-стек: высота одного графика (лог. px). Дефолт 360.
+    pub chart_stack_height: u16,
     /// Писать лог (приложения и ядер) в файлы logs/ (settings.toml). Дефолт on.
     pub log_to_file: bool,
     /// Срок хранения файлов лога, дней; 0 = хранить всё (settings.toml). Дефолт 14.
@@ -88,6 +94,9 @@ impl AppConfig {
                 language: merged.language,
                 market_mode: merged.market_mode,
                 charts_split_by_core: merged.charts_split_by_core,
+                charts_stack_scroll: merged.charts_stack_scroll,
+                charts_stack_compress: merged.charts_stack_compress,
+                chart_stack_height: merged.chart_stack_height,
                 log_to_file: merged.log_to_file,
                 log_retention_days: merged.log_retention_days,
                 ui_font_delta: merged.ui_font_delta,
@@ -117,6 +126,7 @@ impl AppConfig {
             cfg.theme = theme;
             cfg.orders = orders;
             cfg.charts_split_by_core = true;
+            cfg.chart_stack_height = schema::default_chart_stack_height();
             cfg.log_to_file = true;
             cfg.log_retention_days = 14;
             cfg.ui_font_delta = schema::default_ui_font_delta();
@@ -131,6 +141,7 @@ impl AppConfig {
             cfg.theme = theme;
             cfg.orders = orders;
             cfg.charts_split_by_core = true;
+            cfg.chart_stack_height = schema::default_chart_stack_height();
             cfg.log_to_file = true;
             cfg.log_retention_days = 14;
             cfg.ui_font_delta = schema::default_ui_font_delta();
@@ -146,6 +157,7 @@ impl AppConfig {
             theme,
             orders,
             charts_split_by_core: true, // дефолт — отдельная вкладка на ядро
+            chart_stack_height: schema::default_chart_stack_height(),
             log_to_file: true,
             log_retention_days: 14,
             ui_font_delta: schema::default_ui_font_delta(),
@@ -207,6 +219,9 @@ impl AppConfig {
             language: Language::default(),
             market_mode: MarketDataMode::default(),
             charts_split_by_core: true,
+            charts_stack_scroll: false,
+            charts_stack_compress: false,
+            chart_stack_height: schema::default_chart_stack_height(),
             log_to_file: true,
             log_retention_days: servers::default_log_retention_days(),
             ui_font_delta: schema::default_ui_font_delta(),
@@ -229,6 +244,9 @@ impl AppConfig {
             self.language,
             self.market_mode,
             self.charts_split_by_core,
+            self.charts_stack_scroll,
+            self.charts_stack_compress,
+            self.chart_stack_height,
             self.log_to_file,
             self.log_retention_days,
             self.ui_font_delta,
@@ -291,6 +309,9 @@ impl AppConfig {
             Language::default(),
             MarketDataMode::default(),
             true, // нейтрализуем: тумблер чартов не влияет на структуру (без ребилда)
+            false, // charts_stack_scroll — чисто визуальный, не структурный
+            false, // charts_stack_compress — чисто визуальный
+            schema::default_chart_stack_height(), // высота стека — не структурная
             true, // лог-настройки тоже не структурные (без реконнекта/ребилда)
             14,
             schema::default_ui_font_delta(),

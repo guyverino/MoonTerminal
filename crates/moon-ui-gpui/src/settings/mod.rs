@@ -554,6 +554,9 @@ fn settings_sig(b: &Backend) -> u64 {
     cfg.language.code().hash(&mut h);
     cfg.market_mode.code().hash(&mut h);
     cfg.charts_split_by_core.hash(&mut h);
+    cfg.charts_stack_scroll.hash(&mut h);
+    cfg.charts_stack_compress.hash(&mut h);
+    cfg.chart_stack_height.hash(&mut h);
     cfg.log_to_file.hash(&mut h);
     cfg.log_retention_days.hash(&mut h);
     cfg.ui_font_delta.to_bits().hash(&mut h);

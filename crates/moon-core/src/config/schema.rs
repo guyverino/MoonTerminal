@@ -19,7 +19,8 @@ use crate::market::MarketDataMode;
 /// v4: добавлено `charts_split_by_core`. v5: добавлены `log_to_file` + `log_retention_days`.
 /// v6: добавлены `ui_font_delta` + `ui_scale`.
 /// v7: добавлен `chart_memory_percent`. v8: добавлен per-server `chart_bundle`.
-pub const SCHEMA_VERSION: u32 = 8;
+/// v9: добавлен `charts_stack_scroll`.
+pub const SCHEMA_VERSION: u32 = 9;
 
 /// Старые файлы без поля `version` читаются как 0 → меньше SCHEMA_VERSION →
 /// триггерят досейв с дослоением новых дефолтов.
@@ -41,6 +42,14 @@ pub fn default_chart_memory_percent() -> u16 {
 
 pub fn clamp_chart_memory_percent(value: u16) -> u16 {
     value.clamp(100, 800)
+}
+
+pub fn default_chart_stack_height() -> u16 {
+    360
+}
+
+pub fn clamp_chart_stack_height(value: u16) -> u16 {
+    value.clamp(120, 2000)
 }
 
 /// Запись сервера в servers.enc (секрет + стабильный uid).
@@ -106,6 +115,18 @@ pub struct SettingsFile {
     /// false = все ядра в одной вкладке 1-HL. Старые файлы → дефолт true.
     #[serde(default = "servers::default_true")]
     pub charts_split_by_core: bool,
+    /// AddToChart-вкладка с несколькими графиками: true = вертикальный скролл (фикс. высота
+    /// каждого графика), false = делить высоту окна (как раньше — масштаб по вертикали).
+    /// Старые файлы → дефолт false.
+    #[serde(default)]
+    pub charts_stack_scroll: bool,
+    /// Скролл-режим: сжимать по заполнению — скролл не появляется, графики рисуются заданной
+    /// высоты, пока не упрутся в конец окна, затем сжимаются (как без скролла). Дефолт false.
+    #[serde(default)]
+    pub charts_stack_compress: bool,
+    /// Скролл-режим: высота одного графика в логических px. Дефолт 360.
+    #[serde(default = "default_chart_stack_height")]
+    pub chart_stack_height: u16,
     /// Писать лог (приложения и ядер) в файлы logs/<дата>_<источник>.log. Дефолт on.
     #[serde(default = "servers::default_true")]
     pub log_to_file: bool,

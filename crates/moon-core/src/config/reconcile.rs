@@ -7,7 +7,8 @@
 use super::groups::GroupConfig;
 use super::lang::Language;
 use super::schema::{
-    clamp_chart_memory_percent, ServerEntry, ServerMeta, ServersFile, SettingsFile, SCHEMA_VERSION,
+    clamp_chart_memory_percent, clamp_chart_stack_height, ServerEntry, ServerMeta, ServersFile,
+    SettingsFile, SCHEMA_VERSION,
 };
 use super::servers;
 use super::ServerConfig;
@@ -23,6 +24,12 @@ pub struct Merged {
     pub market_mode: MarketDataMode,
     /// Отдельная чарт-вкладка на ядро (AddToChart).
     pub charts_split_by_core: bool,
+    /// AddToChart-стек: вертикальный скролл (true) / делить высоту окна (false).
+    pub charts_stack_scroll: bool,
+    /// Скролл-стек: сжимать по заполнению (без скролла).
+    pub charts_stack_compress: bool,
+    /// Скролл-стек: высота одного графика (лог. px).
+    pub chart_stack_height: u16,
     /// Писать лог в файлы logs/.
     pub log_to_file: bool,
     /// Срок хранения файлов лога (дней; 0 = хранить всё).
@@ -46,6 +53,9 @@ pub fn merge(sf: ServersFile, meta: SettingsFile) -> Merged {
     let language = meta.language;
     let market_mode = meta.market_mode;
     let charts_split_by_core = meta.charts_split_by_core;
+    let charts_stack_scroll = meta.charts_stack_scroll;
+    let charts_stack_compress = meta.charts_stack_compress;
+    let chart_stack_height = clamp_chart_stack_height(meta.chart_stack_height);
     let log_to_file = meta.log_to_file;
     let log_retention_days = meta.log_retention_days;
     let ui_font_delta = meta.ui_font_delta;
@@ -99,6 +109,9 @@ pub fn merge(sf: ServersFile, meta: SettingsFile) -> Merged {
         language,
         market_mode,
         charts_split_by_core,
+        charts_stack_scroll,
+        charts_stack_compress,
+        chart_stack_height,
         log_to_file,
         log_retention_days,
         ui_font_delta,
@@ -116,6 +129,9 @@ pub fn split(
     language: Language,
     market_mode: MarketDataMode,
     charts_split_by_core: bool,
+    charts_stack_scroll: bool,
+    charts_stack_compress: bool,
+    chart_stack_height: u16,
     log_to_file: bool,
     log_retention_days: u32,
     ui_font_delta: f32,
@@ -137,6 +153,9 @@ pub fn split(
         language,
         market_mode,
         charts_split_by_core,
+        charts_stack_scroll,
+        charts_stack_compress,
+        chart_stack_height: clamp_chart_stack_height(chart_stack_height),
         log_to_file,
         log_retention_days,
         ui_font_delta,

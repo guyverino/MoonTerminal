@@ -535,7 +535,24 @@ impl RenderState {
                     self.render_chart_base_d3d(res, &device, &context, &base_rtv, gpu, &scissor_rs);
                     self.base_dirty = false;
                 }
-                self.base_cache.blit_to(&context, &rtv, gpu);
+                // Клип блита = слот ЭТОГО чарта (объединение баундов его активных панелей),
+                // НЕ весь бэкбуфер: при нескольких gpu_canvas в одном окне (стек выносного
+                // окна) полноэкранный блит window_bg затирал бы соседние чарты. Нет активных
+                // панелей → не блитим (пусто = логотип GPUI поверх).
+                let mut blit_clip: Option<[f32; 4]> = None;
+                for pr in &self.panes {
+                    if !pr.active {
+                        continue;
+                    }
+                    let c = bounds_clip(pr.pane_bounds, res);
+                    blit_clip = Some(match blit_clip {
+                        Some(u) => [u[0].min(c[0]), u[1].min(c[1]), u[2].max(c[2]), u[3].max(c[3])],
+                        None => c,
+                    });
+                }
+                if let Some(clip) = blit_clip {
+                    self.base_cache.blit_to(&context, &rtv, gpu, clip);
+                }
 
                 for pr in &mut self.panes {
                     if !pr.active {

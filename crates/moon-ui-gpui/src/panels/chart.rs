@@ -707,6 +707,20 @@ impl Render for ChartPanel {
                 let Some((pos, within)) = this.chart_local(e.position, sf) else {
                     return;
                 };
+                // В AddToChart-стеке колесо НАД ЦЕНОВОЙ ОСЬЮ (левее графика) скроллит сам стек,
+                // а не зумит: не потребляем событие → оно всплывёт к MoonVirtualList. Над
+                // графиком+стаканом — зум (ниже) + stop_propagation, чтобы стек не скроллился.
+                if this.num.is_some() && within {
+                    if let Some(idx) = this.input.pane_at(pos.0, pos.1) {
+                        if let Some((_, rect)) =
+                            this.input.pane_rects.iter().find(|(i, _)| *i == idx)
+                        {
+                            if pos.0 <= rect.x + moon_chart::PRICE_AXIS_W * sf {
+                                return;
+                            }
+                        }
+                    }
+                }
                 let dy = match e.delta {
                     ScrollDelta::Lines(p) => p.y,
                     ScrollDelta::Pixels(p) => f32::from(p.y) / 40.0,
@@ -727,6 +741,8 @@ impl Render for ChartPanel {
                     crate::diag::bump(&crate::diag::CHART_INPUT_NOTIFY);
                     cx.notify();
                 }
+                // Зум-зона графика: гасим всплытие, иначе колесо ещё и проскроллит стек.
+                cx.stop_propagation();
             }))
             .on_mouse_down(
                 MouseButton::Left,
@@ -918,12 +934,21 @@ impl Render for ChartPanel {
                     }
                 }
             }))
-            .child(self.chart.canvas().text_over().absolute().size_full())
+            // own-pass добавляем ТОЛЬКО после первого замера слота (chart_bounds). Иначе первый
+            // кадр рисуется в дефолтном chart_dev=(1024×576) → «график распахивается на весь слот
+            // и сжимается». До замера слот пуст (тёмный clear), замер приходит тем же кадром через
+            // probe-canvas ниже → notify → следующий кадр уже корректного размера.
+            .when(self.chart_bounds.is_some(), |this| {
+                this.child(self.chart.canvas().text_over().absolute().size_full())
+            })
             .when(show_empty_logo, |this| {
+                // Непрозрачный фон поверх own-pass: пустой слот = логотип на фоне чарта, без
+                // просвечивания старого графика (own-pass рисуется ПОД сценой GPUI).
                 this.child(
                     div()
                         .absolute()
                         .size_full()
+                        .bg(rgb(palette.chart_bg))
                         .flex()
                         .items_center()
                         .justify_center()

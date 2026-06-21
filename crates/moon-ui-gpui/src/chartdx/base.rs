@@ -9,8 +9,8 @@ use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC};
 
 use super::gpu::{
-    BlitParams, create_dynamic_cb, create_no_scissor_rasterizer, create_point_sampler,
-    full_viewport, make_ps, make_vs, update_dynamic,
+    BlitParams, create_dynamic_cb, create_point_sampler, create_scissor_rasterizer, full_viewport,
+    make_ps, make_vs, set_scissor_rect, update_dynamic,
 };
 
 const BLIT_HLSL: &str = include_str!("shaders/blit.hlsl");
@@ -26,7 +26,7 @@ struct BaseTex {
     blit_ps: ID3D11PixelShader,
     blit_cb: ID3D11Buffer,
     sampler: ID3D11SamplerState,
-    no_scissor_rs: ID3D11RasterizerState,
+    scissor_rs: ID3D11RasterizerState,
 }
 
 pub struct BaseCache {
@@ -86,11 +86,15 @@ impl BaseCache {
         Ok(tex.rtv.clone())
     }
 
+    /// `clip` (l,t,r,b в device-px backbuffer) — слот ЭТОГО чарта. Блитим строго в него:
+    /// при нескольких `gpu_canvas` в одном окне (стек выносного окна) полноэкранный блит
+    /// window_bg затирал бы соседние чарты. Текстура база — на весь экран, scissor вырезает слот.
     pub fn blit_to(
         &mut self,
         context: &ID3D11DeviceContext,
         rtv: &ID3D11RenderTargetView,
         gpu: &RawGpuAccess,
+        clip: [f32; 4],
     ) {
         let Some(tex) = self.tex.as_ref() else {
             return;
@@ -106,9 +110,10 @@ impl BaseCache {
         unsafe {
             context.OMSetRenderTargets(Some(&[Some(rtv.clone())]), None);
             context.RSSetViewports(Some(&[full_viewport(gpu)]));
-            // Scissor OFF на весь backbuffer: иначе блит наследует scissor-rect нижней
-            // панели от предыдущего прохода и верхние панели не покрываются (мигают).
-            context.RSSetState(&tex.no_scissor_rs);
+            // Scissor на слот этого чарта: текстура база полноэкранная, но писать в backbuffer
+            // можно только в свой слот, иначе затрём соседние gpu_canvas того же окна.
+            set_scissor_rect(context, clip[0], clip[1], clip[2], clip[3]);
+            context.RSSetState(&tex.scissor_rs);
             context.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
             context.VSSetShader(&tex.blit_vs, None);
             context.PSSetShader(&tex.blit_ps, None);
@@ -170,7 +175,7 @@ impl BaseCache {
             blit_ps: make_ps(device, BLIT_HLSL, "blit_opaque_fragment"),
             blit_cb: create_dynamic_cb(device, std::mem::size_of::<BlitParams>() as u32),
             sampler: create_point_sampler(device),
-            no_scissor_rs: create_no_scissor_rasterizer(device),
+            scissor_rs: create_scissor_rasterizer(device),
         }
     }
 }

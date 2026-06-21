@@ -254,6 +254,12 @@ impl ChartDataState {
         let mut st = self.render.borrow_mut();
         let mut container = self.container.borrow_mut();
         let mut pixels_changed = false;
+        // Смена числа панелей (в т.ч. удаление последней монеты → пусто) обязана пометить
+        // base_dirty: иначе base-кэш продолжит блитить СТАРЫЙ чарт сквозь пустой слот (логотип
+        // прозрачный). Зеркалит проверку в sync_from_market_source.
+        if st.panes.len() != container.panes.len() {
+            pixels_changed = true;
+        }
         st.panes.resize_with(container.panes.len(), PaneRender::new);
 
         for (idx, _) in &layout {

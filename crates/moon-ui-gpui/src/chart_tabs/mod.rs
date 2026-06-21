@@ -14,8 +14,8 @@ use std::rc::Rc;
 
 use gpui::*;
 use moon_ui::{
-    MoonBackgroundPolicy, MoonRect, MoonTabItem, MoonTabStrip, Panel, PanelEvent, PanelState,
-    v_flex,
+    MoonBackgroundPolicy, MoonRect, MoonScrollbarVisibility, MoonTabItem, MoonTabStrip,
+    MoonVirtualList, MoonVirtualListScrollHandle, Panel, PanelEvent, PanelState, v_flex,
 };
 
 use crate::Backend;
@@ -86,7 +86,8 @@ pub(crate) struct AddChartStack {
     theme: ChartTheme,
     charts: Vec<AddChartEntry>,
     scale: Option<f32>,
-    fullscreen: Option<(CoreId, String)>,
+    /// Скролл-хэндл вертикального MoonVirtualList (scroll-режим стека).
+    scroll: MoonVirtualListScrollHandle,
 }
 
 impl AddChartStack {
@@ -105,7 +106,7 @@ impl AddChartStack {
             theme,
             charts: Vec::new(),
             scale: None,
-            fullscreen: None,
+            scroll: MoonVirtualListScrollHandle::new(),
         }
     }
 
@@ -184,16 +185,6 @@ impl AddChartStack {
                 .update(cx, |panel, pcx| panel.close_all_panes(pcx));
         }
         self.charts.clear();
-        self.fullscreen = None;
-        cx.notify();
-    }
-
-    fn toggle_fullscreen(&mut self, core: CoreId, market: String, cx: &mut Context<Self>) {
-        if self.fullscreen.as_ref() == Some(&(core, market.clone())) {
-            self.fullscreen = None;
-        } else {
-            self.fullscreen = Some((core, market));
-        }
         cx.notify();
     }
 }
@@ -203,8 +194,11 @@ impl Render for AddChartStack {
         self.prune_empty(cx);
         let palette = moon_ui::MoonPalette::active(cx);
         if self.charts.is_empty() {
+            // Непрозрачный фон: в выносном окне Root=NoFill и own-pass нет → без фона
+            // сквозь логотип просвечивает белая подложка окна.
             return div()
                 .size_full()
+                .bg(rgb(palette.chart_bg))
                 .flex()
                 .items_center()
                 .justify_center()
@@ -212,81 +206,109 @@ impl Render for AddChartStack {
                 .into_any_element();
         }
 
-        let fullscreen = self.fullscreen.clone().filter(|(core, market)| {
-            self.charts
-                .iter()
-                .any(|entry| entry.core == *core && entry.market == *market)
-        });
-        if self.fullscreen != fullscreen {
-            self.fullscreen = fullscreen.clone();
-        }
+        // Режим раскладки стека (Настройки):
+        //  • scroll=false               → FIT: графики делят высоту окна (масштаб по вертикали);
+        //  • scroll=true, compress=false → SCROLL: каждый график фикс. высоты, MoonVirtualList
+        //    со скроллбаром MoonUI;
+        //  • scroll=true, compress=true  → COMPRESS: фикс. высоты, без скролла — при
+        //    переполнении окна графики сжимаются (как в FIT).
+        // ВАЖНО: чарт-слоты ПРОЗРАЧНЫЕ. own-pass (combo/стакан) — слой GpuCanvasLayer::UnderScene
+        // (под сценой); любой непрозрачный `.bg()` над слотом его перекрывает. Разделитель — рамка.
+        let (scroll, compress, stack_h) = {
+            let b = self.backend.read(cx);
+            (
+                b.config.charts_stack_scroll,
+                b.config.charts_stack_compress,
+                b.config.chart_stack_height.clamp(120, 2000) as f32,
+            )
+        };
+        let num = self.num;
 
-        if let Some((core, market)) = fullscreen {
-            let Some(entry) = self
-                .charts
-                .iter()
-                .find(|entry| entry.core == core && entry.market == market)
-            else {
-                return div().size_full().into_any_element();
-            };
-            let core = entry.core;
-            let market = entry.market.clone();
+        if scroll && !compress {
+            // SCROLL: MoonUI-скроллбар + виртуальный список фикс. высоты stack_h. Рендер плитки —
+            // через weak-entity (как лог-панель), т.к. render-фабрика MoonVirtualList отдаёт App.
+            let weak = cx.entity().downgrade();
+            let count = self.charts.len();
+            let border = palette.border;
+            let list = MoonVirtualList::new(
+                format!("add-chart-stack-vlist-{num:?}"),
+                count,
+                stack_h,
+                move |ix, _window, app| {
+                    let Some(entity) = weak.upgrade() else {
+                        return div().into_any_element();
+                    };
+                    let Some(panel) = entity
+                        .read(app)
+                        .charts
+                        .get(ix)
+                        .map(|e| e.panel.clone())
+                    else {
+                        return div().into_any_element();
+                    };
+                    div()
+                        .id(("add-chart-stack-tile", ix))
+                        .w_full()
+                        .h(px(stack_h))
+                        .relative()
+                        .overflow_hidden()
+                        .border_1()
+                        .border_color(rgb(border))
+                        .child(
+                            div()
+                                .size_full()
+                                .relative()
+                                .overflow_hidden()
+                                .child(panel),
+                        )
+                        .into_any_element()
+                },
+            )
+            .track_scroll(&self.scroll)
+            .surface(false)
+            .border(false)
+            .radius(0.0)
+            .scrollbar_visibility(MoonScrollbarVisibility::Scrolling);
             return div()
-                .id(format!(
-                    "add-chart-stack-fullscreen-{}-{}-{}",
-                    self.num, core, market
-                ))
+                .id(format!("add-chart-stack-scroll-{num:?}"))
                 .size_full()
-                .relative()
-                .overflow_hidden()
-                .child(entry.panel.clone())
-                .on_click(cx.listener(move |this, _event, _window, cx| {
-                    this.toggle_fullscreen(core, market.clone(), cx);
-                }))
+                .child(list)
                 .into_any_element();
         }
 
-        div()
-            .id(format!("add-chart-stack-scroll-{}", self.num))
-            .size_full()
-            .overflow_y_scroll()
-            .bg(rgb(palette.panel))
-            .child(
-                v_flex()
-                    .w_full()
-                    .gap(px(4.0))
-                    .p(px(2.0))
-                    .children(self.charts.iter().map(|entry| {
-                        let core = entry.core;
-                        let market = entry.market.clone();
-                        div()
-                            .id(format!(
-                                "add-chart-stack-{}-{}-{}",
-                                self.num, entry.core, entry.market
-                            ))
-                            .h(px(360.0))
-                            .min_h(px(280.0))
-                            .w_full()
-                            .flex_none()
-                            .relative()
-                            .overflow_hidden()
-                            .border_1()
-                            .border_color(rgb(palette.border))
-                            .bg(rgb(palette.panel))
-                            .p(px(1.0))
-                            .child(
-                                div()
-                                    .size_full()
-                                    .relative()
-                                    .overflow_hidden()
-                                    .bg(rgb(palette.chart_bg))
-                                    .child(entry.panel.clone()),
-                            )
-                            .on_click(cx.listener(move |this, _event, _window, cx| {
-                                this.toggle_fullscreen(core, market.clone(), cx);
-                            }))
-                    })),
+        // FIT / COMPRESS: без скролла, v_flex на всю высоту окна.
+        let compress_mode = compress;
+        let tiles = self.charts.iter().map(|entry| {
+            let tile = div()
+                .id(format!(
+                    "add-chart-stack-{}-{}-{}",
+                    num, entry.core, entry.market
+                ))
+                .w_full()
+                .relative()
+                .overflow_hidden()
+                .border_1()
+                .border_color(rgb(palette.border));
+            let tile = if compress_mode {
+                // COMPRESS: целевая высота, но даём сжиматься при переполнении (min_h=0).
+                tile.h(px(stack_h)).min_h(px(0.0))
+            } else {
+                // FIT: делим высоту окна поровну.
+                tile.flex_1().min_h(px(0.0))
+            };
+            tile.child(
+                div()
+                    .size_full()
+                    .relative()
+                    .overflow_hidden()
+                    .child(entry.panel.clone()),
             )
+        });
+        div()
+            .id(format!("add-chart-stack-fit-{num:?}"))
+            .size_full()
+            .overflow_hidden()
+            .child(v_flex().size_full().children(tiles))
             .into_any_element()
     }
 }
@@ -633,6 +655,16 @@ fn chart_tabs_sig(b: &Backend, group: &str) -> u64 {
     sig = sig
         .wrapping_mul(31)
         .wrapping_add(u64::from(b.config.charts_split_by_core));
+    // Раскладка стека (скролл/сжатие/высота) — перерисовать активный стек при смене настройки.
+    sig = sig
+        .wrapping_mul(31)
+        .wrapping_add(u64::from(b.config.charts_stack_scroll));
+    sig = sig
+        .wrapping_mul(31)
+        .wrapping_add(u64::from(b.config.charts_stack_compress));
+    sig = sig
+        .wrapping_mul(31)
+        .wrapping_add(u64::from(b.config.chart_stack_height));
     #[cfg(any(debug_assertions, moon_profile_debug, feature = "debug-tools"))]
     if b.debug_fill_main_chart_group.as_deref() == Some(group) {
         sig = sig

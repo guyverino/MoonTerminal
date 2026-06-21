@@ -302,29 +302,6 @@ pub fn create_scissor_rasterizer(device: &ID3D11Device) -> ID3D11RasterizerState
     }
 }
 
-/// Растеризатор с ВЫКЛЮЧЕННЫМ scissor — для полноэкранных операций (блит базы на весь
-/// backbuffer). Без него blit наследует scissor-rect от предыдущего per-pane прохода и
-/// обрезается зоной одной панели → верхние панели не покрываются и мигают clear'ом.
-pub fn create_no_scissor_rasterizer(device: &ID3D11Device) -> ID3D11RasterizerState {
-    let desc = D3D11_RASTERIZER_DESC {
-        FillMode: D3D11_FILL_SOLID,
-        CullMode: D3D11_CULL_NONE,
-        FrontCounterClockwise: false.into(),
-        DepthBias: 0,
-        DepthBiasClamp: 0.0,
-        SlopeScaledDepthBias: 0.0,
-        DepthClipEnable: true.into(),
-        ScissorEnable: false.into(),
-        MultisampleEnable: true.into(),
-        AntialiasedLineEnable: false.into(),
-    };
-    unsafe {
-        let mut s = None;
-        device.CreateRasterizerState(&desc, Some(&mut s)).unwrap();
-        s.unwrap()
-    }
-}
-
 /// Поставить scissor-прямоугольник (px окна) + scissor-растеризатор. Прямоугольник =
 /// зона рисования слоя (плот+стакан панели); всё вне него растеризатор отбросит.
 pub fn set_scissor(
