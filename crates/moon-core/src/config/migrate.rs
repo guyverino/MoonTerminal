@@ -53,6 +53,7 @@ pub fn from_legacy_enc() -> anyhow::Result<AppConfig> {
             color: s.color,
             synthetic: false,
             chart_bundle: String::new(),
+            order_sizes: None,
         })
         .collect();
     Ok(AppConfig {
@@ -94,6 +95,7 @@ pub fn from_legacy_toml() -> anyhow::Result<AppConfig> {
             color: servers::default_color(),
             synthetic: false,
             chart_bundle: String::new(),
+            order_sizes: None,
         }],
         groups: Vec::new(),
         language: super::Language::default(),

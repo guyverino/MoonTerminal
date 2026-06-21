@@ -97,6 +97,12 @@ pub struct ServerConfig {
     /// вкладку, а имя связки идёт в её заголовок. Имя локально для группы.
     #[serde(default)]
     pub chart_bundle: String,
+    /// 6 пресетов размера ручного ордера (кнопки F1-F6 тулбара), в БАЗОВОЙ монете ядра.
+    /// `None` = не настроено → берём дефолт по базе ядра (`default_order_sizes`), т.к.
+    /// для BTC-базы нужны ~0.01..0.5, а для USDT — крупные (~50..2500). В moonproto
+    /// значений buy-size НЕТ (только sell-пресеты ClientSettings) — это локальный конфиг.
+    #[serde(default)]
+    pub order_sizes: Option<[f64; 6]>,
 }
 
 /// Ключ чарт-вкладки AddToChart внутри группы — куда сводить графики ядра.
@@ -124,6 +130,13 @@ impl ServerConfig {
             ChartBucket::Shared
         }
     }
+
+    /// 6 пресетов размера ручного ордера для тулбара: настроенные (`order_sizes`) или
+    /// дефолт по базовой монете ядра `base` ("BTC"/"USDT"/…). `base` UI берёт из
+    /// `SessionManager::core_base`.
+    pub fn order_sizes_or_default(&self, base: &str) -> [f64; 6] {
+        self.order_sizes.unwrap_or_else(|| default_order_sizes(base))
+    }
 }
 
 pub fn default_color() -> [u8; 3] {
@@ -136,6 +149,17 @@ pub fn default_group() -> String {
 
 pub fn default_market() -> String {
     "BTCUSDT".to_string()
+}
+
+/// Дефолтные пресеты размера ордера (F1-F6) по базовой монете ядра. BTC-база → мелкие
+/// (как было захардкожено в тулбаре); прочее (USDT/стейблы/альты) → крупные. Это лишь
+/// стартовые значения — пользователь правит их в Настройках ядра (`order_sizes`).
+pub fn default_order_sizes(base: &str) -> [f64; 6] {
+    if base.eq_ignore_ascii_case("BTC") {
+        [0.01, 0.025, 0.05, 0.10, 0.25, 0.50]
+    } else {
+        [50.0, 100.0, 250.0, 500.0, 1000.0, 2500.0]
+    }
 }
 
 pub fn default_true() -> bool {

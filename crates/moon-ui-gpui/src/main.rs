@@ -161,6 +161,16 @@ struct Backend {
     price_scale_rev: u64,
     /// Live-follow тулбара: true = вид бежит за «сейчас», false = пауза (заморозка).
     follow: bool,
+    /// Выбранный пресет размера ручного ордера (индекс кнопки F1-F6, 0..=5) НА ЯДРО:
+    /// база разная (BTC vs USDT) → значения и выбор per-core. Значение размера для
+    /// `PlaceOrder` = `ServerConfig::order_sizes_or_default(base)[sel]`. Нет записи = дефолт.
+    order_size_sel: HashMap<CoreId, usize>,
+    /// Ревизия выбора размера ордера (++ при клике в тулбаре) — для notify/перерисовки.
+    order_size_rev: u64,
+    /// Запрос инлайн-редактирования значения кнопки размера (дабл-клик в тулбаре):
+    /// `(ядро, индекс F1-F6)`. Shell забирает его в render, открывает инпут поверх кнопки
+    /// и фокусирует; по Blur/Enter пишет значение в `ServerConfig.order_sizes` + save.
+    order_size_edit_req: Option<(CoreId, usize)>,
     /// Backend-level notify is only for slow GPUI chrome/status/overlays. High-rate chart
     /// data goes straight into retained chart handles and must not dirty the whole tree.
     backend_dirty_since_notify: bool,
@@ -449,6 +459,9 @@ fn main() -> anyhow::Result<()> {
             price_scale: None,
             price_scale_rev: 0,
             follow: true,
+            order_size_sel: HashMap::new(),
+            order_size_rev: 0,
+            order_size_edit_req: None,
             backend_dirty_since_notify: false,
             last_backend_notify: None,
             reconnect_request: Vec::new(),

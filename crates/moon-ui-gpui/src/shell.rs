@@ -9,8 +9,9 @@ use gpui::*;
 use rust_i18n::t;
 
 use moon_ui::{
-    DockArea, DockEvent, DockItem, DockPlacement, MoonBackgroundPolicy, MoonPalette, MoonStatusBar,
-    MoonStatusIndicator, MoonStatusItem, MoonTooltipView, MoonWindowFrame, PanelView, v_flex,
+    DockArea, DockEvent, DockItem, DockPlacement, MoonBackgroundPolicy, MoonInputEvent,
+    MoonInputState, MoonPalette, MoonStatusBar, MoonStatusIndicator, MoonStatusItem,
+    MoonTooltipView, MoonWindowFrame, PanelView, v_flex,
 };
 
 use moon_core::config::GroupLayout;
@@ -42,10 +43,18 @@ pub(crate) struct Shell {
     /// Прошлое виденное значение масштаба. Это тоже клик юзера, а не фоновая телеметрия:
     /// тулбар должен менять подпись сразу, даже при троттле Shell observe.
     last_price_scale: Option<f32>,
+    /// Прошлая виденная ревизия выбора размера ордера (F1-F6). Клик юзера → выбранную
+    /// кнопку отражаем мгновенно, мимо 250мс-троттла (иначе selected «залипает» до ¼с).
+    last_order_size_rev: u64,
     pending_detach: Vec<String>,
     /// Имена панелей, чью × нажали (DockEvent::PanelCloseRequested). Обрабатываются в render
     /// (нужен window): панель убирается с текущего места и возвращается в нижнюю строку.
     pending_close: Vec<String>,
+    /// Инпут инлайн-редактирования значения кнопки размера ордера (дабл-клик в тулбаре).
+    /// Один на Shell, переиспользуется для любой F-кнопки.
+    size_input: Entity<MoonInputState>,
+    /// Что сейчас редактируется в тулбаре: `(ядро, индекс F1-F6)`. None = не редактируем.
+    size_edit: Option<(CoreId, usize)>,
 }
 
 /// Имена dock-панелей нижней строки в порядке их «домашних» позиций. Возврат
@@ -191,16 +200,19 @@ impl Shell {
             // Follow/Live и Scale меняются по КЛИКУ юзера — отражаем мгновенно,
             // мимо 250мс-троттла.
             // Прочее (tick/book/cpu/fps) меняется само и человеку хватает ≤4 Гц → троттлим.
-            let (follow, price_scale) = {
+            let (follow, price_scale, order_size_rev) = {
                 let b = backend.read(cx);
-                (b.follow, b.price_scale)
+                (b.follow, b.price_scale, b.order_size_rev)
             };
             let follow_changed = follow != this.last_follow;
             let scale_changed = price_scale != this.last_price_scale;
+            let size_changed = order_size_rev != this.last_order_size_rev;
             this.last_follow = follow;
             this.last_price_scale = price_scale;
+            this.last_order_size_rev = order_size_rev;
             let due = follow_changed
                 || scale_changed
+                || size_changed
                 || this
                     .last_notify
                     .map(|t| now.duration_since(t).as_millis() >= 250)
@@ -231,6 +243,44 @@ impl Shell {
         })
         .detach();
 
+        // Инпут инлайн-редактирования размера ордера (дабл-клик по кнопке F1-F6). По Blur
+        // (клик вне) или Enter — пишем значение в `ServerConfig.order_sizes` фокусного ядра
+        // и сохраняем на диск (config.save). Пустой/нечисловой ввод — отмена без записи.
+        let size_input = cx.new(|cx| MoonInputState::new(window, cx));
+        cx.subscribe(&size_input, |this, inp, ev: &MoonInputEvent, cx| {
+            if !matches!(ev, MoonInputEvent::Blur | MoonInputEvent::PressEnter { .. }) {
+                return;
+            }
+            let Some((core, ix)) = this.size_edit.take() else {
+                return;
+            };
+            let raw = inp.read(cx).value().to_string();
+            if let Ok(v) = raw.trim().replace(',', ".").parse::<f64>() {
+                if v > 0.0 && ix < 6 {
+                    this.backend.update(cx, |b, bcx| {
+                        let base = b.session.core_base(core).unwrap_or("").to_string();
+                        let mut saved = false;
+                        if let Some(s) = b.config.servers.iter_mut().find(|s| s.id == core) {
+                            let mut arr = s.order_sizes.unwrap_or_else(|| {
+                                moon_core::config::servers::default_order_sizes(&base)
+                            });
+                            arr[ix] = v;
+                            s.order_sizes = Some(arr);
+                            saved = true;
+                        }
+                        if saved {
+                            if let Err(e) = b.config.save() {
+                                log::warn!("save order size failed: {e}");
+                            }
+                        }
+                        bcx.notify();
+                    });
+                }
+            }
+            cx.notify();
+        })
+        .detach();
+
         Self {
             backend,
             group,
@@ -240,8 +290,11 @@ impl Shell {
             last_notify: None,
             last_follow: true,
             last_price_scale: None,
+            last_order_size_rev: 0,
             pending_detach: Vec::new(),
             pending_close: Vec::new(),
+            size_input,
+            size_edit: None,
         }
     }
 }
@@ -249,6 +302,31 @@ impl Shell {
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::diag::bump(&crate::diag::SHELL_RENDER);
+        // Инлайн-редактирование размера: дабл-клик по кнопке F1-F6 кладёт запрос в Backend.
+        // Забираем его, открываем инпут на текущем значении кнопки ядра и фокусируем.
+        let edit_req = self
+            .backend
+            .update(cx, |b, _| b.order_size_edit_req.take());
+        if let Some((core, ix)) = edit_req.filter(|(_, i)| *i < 6) {
+            let cur = {
+                let b = self.backend.read(cx);
+                let base = b.session.core_base(core).unwrap_or("");
+                b.config
+                    .servers
+                    .iter()
+                    .find(|s| s.id == core)
+                    .map(|s| s.order_sizes_or_default(base)[ix])
+                    .unwrap_or_else(|| {
+                        moon_core::config::servers::default_order_sizes(base)[ix]
+                    })
+            };
+            self.size_edit = Some((core, ix));
+            let val = format!("{cur}");
+            self.size_input.update(cx, |st, c| {
+                st.set_value(val, window, c);
+                st.focus(window, c);
+            });
+        }
         // Репин: вернуть в док панели, чьи окна открепления закрыли (запрос из Backend).
         // Закрытие окна открепления → DetachedWindow.on_release → repin_request; здесь
         // (своя группа) строим свежую панель, добавляем в свой DockArea, убираем спеку.
@@ -485,7 +563,13 @@ impl Render for Shell {
             ))
             // ── Тулбар: тонкая фикс. полоса (Размеры/Продажа/Масштаб+Live), порт верхней
             //    полосы стенда. Не dock-панель — единый ряд на высоту кнопки. ──
-            .child(controls::toolbar(&self.backend, cx))
+            .child(controls::toolbar(
+                &self.backend,
+                &self.group,
+                self.size_edit,
+                &self.size_input,
+                cx,
+            ))
             // ── Центр: единый DockArea (чарт=center, детекты+ордер=right, вкладки=bottom) ──
             .child(
                 div()

@@ -259,6 +259,7 @@ impl SettingsView {
                     color: default_color,
                     synthetic: false,
                     chart_bundle: String::new(),
+                    order_sizes: None,
                 });
                 bcx.notify();
             }

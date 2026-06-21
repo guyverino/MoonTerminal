@@ -67,6 +67,10 @@ pub fn run(
     let _ = tx.send(FeedMsg::Status(ConnStatus::Ready));
     // Синт-биржа (код 200) — координатор изберёт это ядро провайдером (одно на «биржу»).
     let _ = tx.send(FeedMsg::Identity(ExchangeId(200)));
+    // Синт-база — USDT (для дефолтов размера ордера в UI).
+    let _ = tx.send(FeedMsg::CoreBase {
+        base: "USDT".to_string(),
+    });
 
     // AddToChart: окно w (1..=WINDOWS) ← CHARTS рынков в контейнер Chart{w}. TTL ~год.
     let mut dets = Vec::new();

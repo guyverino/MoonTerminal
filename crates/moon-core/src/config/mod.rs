@@ -214,6 +214,7 @@ impl AppConfig {
                 color: servers::default_color(),
                 synthetic: false,
                 chart_bundle: String::new(),
+                order_sizes: None,
             }],
             groups: Vec::new(),
             language: Language::default(),
@@ -292,14 +293,15 @@ impl AppConfig {
     /// пересоздание окон. Тема меняется живо, язык и режим рынка — без реконнекта,
     /// поэтому их исключаем (нейтрализуем дефолтом).
     pub fn structural_sig(&self) -> String {
-        // Связка чарт-вкладок (`chart_bundle`) — чисто UI-группировка вкладок AddToChart:
-        // её смена НЕ требует реконнекта ядер/ребилда сессий, только пересборки окон групп
-        // (см. apply_settings). Нейтрализуем, чтобы не считать структурной.
+        // Связка чарт-вкладок (`chart_bundle`) и пресеты размера ордера (`order_sizes`) —
+        // чисто UI/локальные настройки: их смена НЕ требует реконнекта ядер/ребилда сессий
+        // (см. apply_settings). Нейтрализуем, чтобы не считать структурными.
         let servers: Vec<ServerConfig> = self
             .servers
             .iter()
             .map(|s| ServerConfig {
                 chart_bundle: String::new(),
+                order_sizes: None,
                 ..s.clone()
             })
             .collect();

@@ -61,6 +61,9 @@ pub struct SessionManager {
     mode: MarketDataMode,
     /// Ядро → биржа (из `Identity`). Без идентичности провайдер не назначается.
     core_key: HashMap<CoreId, ExchangeId>,
+    /// Ядро → базовая валюта аккаунта (из `CoreBase`): "USDT"/"BTC"/…. Нужна UI для
+    /// дефолтов размера ордера по базе (BTC vs USDT). Пусто, пока ядро не идентифицировано.
+    core_base: HashMap<CoreId, String>,
     /// Ядро → ядро-провайдер его рыночных данных (dedup: один на биржу; per-core: сам).
     core_provider: HashMap<CoreId, CoreId>,
     /// Биржа → избранный провайдер (для удержания/failover в режиме Dedup).
@@ -223,6 +226,7 @@ impl SessionManager {
             market_source,
             mode: MarketDataMode::default(),
             core_key: HashMap::new(),
+            core_base: HashMap::new(),
             core_provider: HashMap::new(),
             providers: HashMap::new(),
             wanted: HashMap::new(),
@@ -243,6 +247,10 @@ impl SessionManager {
                 match msg {
                     FeedMsg::Identity(ex) => {
                         self.core_key.insert(sess.id, ex);
+                        stats.ui_state = true;
+                    }
+                    FeedMsg::CoreBase { base } => {
+                        self.core_base.insert(sess.id, base);
                         stats.ui_state = true;
                     }
                     FeedMsg::Ticks { market, ticks } => {
@@ -409,6 +417,7 @@ impl SessionManager {
         }
         // Сброс координации для ядра: пусть провайдер/роль переизберутся заново.
         self.core_key.remove(&id);
+        self.core_base.remove(&id);
         self.core_provider.remove(&id);
         self.providers.retain(|_, prov| *prov != id);
         self.last_cmd.remove(&id);
@@ -590,6 +599,12 @@ impl SessionManager {
     /// Живые сессии ядер (id/имя/группа) — read-only срез для UI.
     pub fn sessions(&self) -> &[CoreSession] {
         &self.sessions
+    }
+
+    /// Базовая валюта аккаунта ядра ("USDT"/"BTC"/…), если ядро уже идентифицировано
+    /// (`CoreBase`). UI берёт её для дефолтов размера ордера по базе.
+    pub fn core_base(&self, core: CoreId) -> Option<&str> {
+        self.core_base.get(&core).map(String::as_str)
     }
 
     pub fn feed_wake(&self) -> Option<FeedWakeTx> {

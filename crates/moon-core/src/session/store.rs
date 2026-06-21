@@ -145,6 +145,7 @@ impl CoreData {
             }
             // Рыночные/идентификационные сообщения сюда не маршрутизируются.
             FeedMsg::Identity(_)
+            | FeedMsg::CoreBase { .. }
             | FeedMsg::Ticks { .. }
             | FeedMsg::PriceLine { .. }
             | FeedMsg::OrderBook { .. }

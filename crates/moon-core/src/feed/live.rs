@@ -434,9 +434,16 @@ pub fn run(
         // Биржа ядра (из server_info после BaseCheck) — координатору для группировки
         // и выбора провайдера. Шлём один раз, как только идентичность известна.
         if !identity_sent {
-            if let Some(code) = client.server_info().and_then(|i| i.exchange_code) {
-                let _ = tx.send(FeedMsg::Identity(ExchangeId(code.to_byte())));
-                identity_sent = true;
+            if let Some(info) = client.server_info() {
+                if let Some(code) = info.exchange_code {
+                    let _ = tx.send(FeedMsg::Identity(ExchangeId(code.to_byte())));
+                    // Базовая валюта аккаунта — для дефолтов размера ордера в UI (BTC vs USDT).
+                    let base = info.base_currency_name.unwrap_or_default();
+                    if !base.is_empty() {
+                        let _ = tx.send(FeedMsg::CoreBase { base });
+                    }
+                    identity_sent = true;
+                }
             }
         }
 

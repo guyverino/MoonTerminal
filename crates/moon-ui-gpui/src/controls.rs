@@ -8,9 +8,11 @@ use rust_i18n::t;
 
 use moon_ui::{
     MoonAccent, MoonButton, MoonButtonSegment, MoonButtonSize, MoonButtonVariant, MoonDropdown,
-    MoonMenuItem, MoonMenuSize, MoonPalette, MoonSegmentItem, MoonSegmentedControl,
-    MoonTooltipView, h_flex,
+    MoonInput, MoonInputState, MoonMenuItem, MoonMenuSize, MoonPalette, MoonSegmentItem,
+    MoonSegmentedControl, MoonTooltipView, h_flex,
 };
+
+use moon_core::session::CoreId;
 
 use crate::{Backend, design};
 
@@ -66,21 +68,81 @@ fn divider(p: MoonPalette) -> impl IntoElement {
     design::vline(16.0, p)
 }
 
-fn size_strip() -> impl IntoElement {
-    MoonSegmentedControl::new("toolbar-size-presets")
+/// Ширины кнопок размера (как в исходном тулбаре) — визуал не меняем.
+const SIZE_W: [f32; 6] = [54.0, 61.0, 56.0, 56.0, 56.0, 56.0];
+
+/// Дефолтный выбранный пресет размера (F3), когда у ядра ещё нет своего выбора.
+const SIZE_SEL_DEFAULT: usize = 2;
+
+/// Компактная подпись значения размера: целые без дроби (USDT: "1000"), дробные —
+/// без хвостовых нулей (BTC: "0.05").
+fn fmt_size(v: f64) -> String {
+    if v.fract() == 0.0 {
+        format!("{}", v as i64)
+    } else {
+        let s = format!("{v:.4}");
+        s.trim_end_matches('0').trim_end_matches('.').to_string()
+    }
+}
+
+/// Полоса пресетов размера ордера (F1-F6). Значения — из конфига ядра (или дефолт по
+/// базе BTC/USDT), выбор хранится per-core в `Backend::order_size_sel`. Одиночный клик —
+/// выбор; дабл-клик — запрос инлайн-редактирования значения (`order_size_edit_req`), Shell
+/// открывает инпут поверх кнопки. `edit_ix` — индекс редактируемой сейчас кнопки (рисуем
+/// поверх неё `input`). `core=None` (нет ядра группы) → клики игнорируются.
+fn size_strip(
+    values: [f64; 6],
+    sel: usize,
+    edit_ix: Option<usize>,
+    input: &Entity<MoonInputState>,
+    backend: Entity<Backend>,
+    core: Option<CoreId>,
+) -> impl IntoElement {
+    let items: Vec<MoonSegmentItem> = (0..6)
+        .map(|i| {
+            let mut it = MoonSegmentItem::new(SIZE_KEYS[i], fmt_size(values[i])).width(SIZE_W[i]);
+            if i == sel {
+                it = it.selected(true);
+            }
+            it
+        })
+        .collect();
+    let seg = MoonSegmentedControl::new("toolbar-size-presets")
         .accent(MoonAccent::Amber)
-        .items([
-            MoonSegmentItem::new("F1", "0.01").width(54.0),
-            MoonSegmentItem::new("F2", "0.025").width(61.0),
-            MoonSegmentItem::new("F3", "0.05")
-                .width(56.0)
-                .selected(true),
-            MoonSegmentItem::new("F4", "0.10").width(56.0),
-            MoonSegmentItem::new("F5", "0.25").width(56.0),
-            MoonSegmentItem::new("F6", "0.50").width(56.0),
-        ])
-        .on_click(|ix, _, _, _| log::info!("[ui] size {} (todo)", SIZE_KEYS[ix]))
-        .render()
+        .items(items)
+        .on_click(move |ix, event, _w, cx| {
+            let Some(core) = core else {
+                return;
+            };
+            // Дабл-клик → редактирование значения кнопки; одиночный → выбор пресета.
+            let dbl = matches!(event, ClickEvent::Mouse(m) if m.up.click_count >= 2);
+            backend.update(cx, |b, bcx| {
+                if dbl {
+                    b.order_size_edit_req = Some((core, ix));
+                } else {
+                    b.order_size_sel.insert(core, ix);
+                }
+                b.order_size_rev = b.order_size_rev.wrapping_add(1);
+                bcx.notify();
+            });
+        })
+        .render();
+
+    let mut root = div().relative().flex().items_center().child(seg);
+    // Инпут поверх редактируемой кнопки (absolute по сумме ширин предыдущих).
+    if let Some(ix) = edit_ix.filter(|i| *i < 6) {
+        let left: f32 = SIZE_W.iter().take(ix).sum();
+        root = root.child(
+            div()
+                .absolute()
+                .left(px(left))
+                .top(px(0.0))
+                .w(px(SIZE_W[ix]))
+                .h_full()
+                .child(MoonInput::new("toolbar-size-edit").state(input).small()),
+        );
+    }
+    root
 }
 
 fn sell_strip() -> impl IntoElement {
@@ -223,10 +285,47 @@ pub(crate) fn scale_dropdown_for_add_stack(
 
 /// Полоса тулбара: рисуется как обычный child `Shell` (между шапкой и доком), не dock-панель.
 /// Читает текущий масштаб/follow из `backend`, клики пишут обратно (+notify → перерисовка).
-pub fn toolbar(backend: &Entity<Backend>, cx: &App) -> impl IntoElement {
-    let (scale, follow) = {
+pub fn toolbar(
+    backend: &Entity<Backend>,
+    group: &str,
+    size_edit: Option<(CoreId, usize)>,
+    size_input: &Entity<MoonInputState>,
+    cx: &App,
+) -> impl IntoElement {
+    let (scale, follow, focus_core, size_values, size_sel) = {
         let b = backend.read(cx);
-        (b.price_scale, b.follow)
+        // Фокусное ядро группы (как market_label в header): первое ядро группы. Размер
+        // ордера per-core, т.к. база (BTC/USDT) и значения разные.
+        let focus_core = b
+            .session
+            .sessions()
+            .iter()
+            .find(|s| s.group == group)
+            .map(|s| s.id);
+        let (size_values, size_sel) = match focus_core {
+            Some(core) => {
+                let base = b.session.core_base(core).unwrap_or("");
+                let sizes = b
+                    .config
+                    .servers
+                    .iter()
+                    .find(|s| s.id == core)
+                    .map(|s| s.order_sizes_or_default(base))
+                    .unwrap_or_else(|| moon_core::config::servers::default_order_sizes(base));
+                let sel = b
+                    .order_size_sel
+                    .get(&core)
+                    .copied()
+                    .unwrap_or(SIZE_SEL_DEFAULT)
+                    .min(5);
+                (sizes, sel)
+            }
+            None => (
+                moon_core::config::servers::default_order_sizes(""),
+                SIZE_SEL_DEFAULT,
+            ),
+        };
+        (b.price_scale, b.follow, focus_core, size_values, size_sel)
     };
     let p = MoonPalette::active(cx);
 
@@ -247,7 +346,17 @@ pub fn toolbar(backend: &Entity<Backend>, cx: &App) -> impl IntoElement {
         .child(toolbar_metric("toolbar-lev", "Lev", "×1", p.text, 61.6, p))
         .child(divider(p))
         .child(strip_label("size", p, cx))
-        .child(size_strip())
+        .child(size_strip(
+            size_values,
+            size_sel,
+            // Редактируем инпутом только если запрос относится к ФОКУСНОМУ ядру тулбара.
+            size_edit
+                .filter(|(c, _)| Some(*c) == focus_core)
+                .map(|(_, i)| i),
+            size_input,
+            backend.clone(),
+            focus_core,
+        ))
         .child(divider(p))
         .child(strip_label("sell", p, cx))
         .child(sell_strip())

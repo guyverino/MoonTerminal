@@ -99,6 +99,10 @@ pub struct ServerMeta {
     /// глобальной настройке. Старые файлы → пустая строка (дефолт).
     #[serde(default)]
     pub chart_bundle: String,
+    /// 6 пресетов размера ручного ордера (F1-F6) в базовой монете. `None`/старые файлы →
+    /// дефолт по базе ядра (см. `ServerConfig::order_sizes`).
+    #[serde(default)]
+    pub order_sizes: Option<[f64; 6]>,
 }
 
 #[derive(Default, Serialize, Deserialize)]

@@ -398,6 +398,9 @@ pub enum FeedMsg {
     Status(ConnStatus),
     /// Биржа ядра (из server_info после BaseCheck). Шлётся один раз.
     Identity(ExchangeId),
+    /// Базовая валюта аккаунта ядра ("USDT"/"BTC"/…) из `server_info`. Шлётся один раз
+    /// (рядом с `Identity`). Нужна UI для дефолтов размера ордера по базе (BTC vs USDT).
+    CoreBase { base: String },
     /// Пачка новых тиков рынка (append-only по времени). Только от провайдера.
     Ticks {
         market: String,
