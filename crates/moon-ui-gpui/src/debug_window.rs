@@ -445,6 +445,7 @@ pub(crate) fn open_debug_perf_window(
     if let Ok(handle) = cx.open_window(opts, move |window, cx| {
         #[cfg(target_os = "windows")]
         windowing::configure_dwm_window(window);
+        windowing::configure_shell_clear_color(window, cx);
         let view = cx.new(|cx| DebugPerfWindow::new(b, g, cx));
         cx.new(|cx| Root::new(view, window, cx).background_policy(MoonBackgroundPolicy::Opaque))
     }) {
@@ -551,6 +552,7 @@ pub(crate) fn spawn_debug_chart_windows(cx: &mut App, backend: Entity<Backend>) 
         let opened_window = cx.open_window(opts, move |window, cx| {
             #[cfg(target_os = "windows")]
             windowing::configure_dwm_window(window);
+            windowing::configure_chart_clear_color(window, cx);
             let panel = cx.new(|cx| {
                 ChartPanel::new(
                     backend_for_panel,

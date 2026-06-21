@@ -102,6 +102,7 @@ pub(crate) fn spawn_group_window(
     let g = group.clone();
     if let Ok(handle) = cx.open_window(opts, move |window, cx| {
         windowing::configure_dwm_window(window);
+        windowing::configure_shell_clear_color(window, cx);
         windowing::set_group_window_icon(window, icon_id);
         let view = cx.new(|cx| Shell::new(b, g, focus, epoch, theme, window, cx));
         cx.new(|cx| Root::new(view, window, cx).background_policy(MoonBackgroundPolicy::NoFill))

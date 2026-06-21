@@ -87,6 +87,18 @@ fn app_window_options(
     }
 }
 
+fn rgb_to_rgba(rgb_hex: u32) -> Rgba {
+    rgba((rgb_hex << 8) | 0xFF)
+}
+
+pub(crate) fn configure_shell_clear_color(window: &Window, cx: &App) {
+    window.set_clear_color(Some(rgb_to_rgba(moon_ui::MoonPalette::active(cx).shell)));
+}
+
+pub(crate) fn configure_chart_clear_color(window: &Window, cx: &App) {
+    window.set_clear_color(Some(rgb_to_rgba(moon_ui::MoonPalette::active(cx).chart_bg)));
+}
+
 pub(crate) fn trading_window_options(
     title: impl Into<SharedString>,
     group: &str,
