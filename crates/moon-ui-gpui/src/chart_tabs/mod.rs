@@ -15,8 +15,8 @@ use std::rc::Rc;
 use gpui::*;
 use moon_ui::{
     MoonBackgroundPolicy, MoonButton, MoonButtonSize, MoonButtonVariant, MoonRect,
-    MoonScrollbarVisibility, MoonTabItem, MoonTabStrip, MoonVirtualList, MoonVirtualListScrollHandle,
-    Panel, PanelEvent, PanelState, v_flex,
+    MoonScrollbarVisibility, MoonTabItem, MoonTabStrip, MoonVirtualList,
+    MoonVirtualListScrollHandle, Panel, PanelEvent, PanelState, v_flex,
 };
 
 use crate::Backend;
@@ -239,11 +239,7 @@ impl Render for AddChartStack {
                     let Some(entity) = weak.upgrade() else {
                         return div().into_any_element();
                     };
-                    let Some(panel) = entity
-                        .read(app)
-                        .charts
-                        .get(ix)
-                        .map(|e| e.panel.clone())
+                    let Some(panel) = entity.read(app).charts.get(ix).map(|e| e.panel.clone())
                     else {
                         return div().into_any_element();
                     };
@@ -255,13 +251,7 @@ impl Render for AddChartStack {
                         .overflow_hidden()
                         .border_1()
                         .border_color(rgb(border))
-                        .child(
-                            div()
-                                .size_full()
-                                .relative()
-                                .overflow_hidden()
-                                .child(panel),
-                        )
+                        .child(div().size_full().relative().overflow_hidden().child(panel))
                         .into_any_element()
                 },
             )

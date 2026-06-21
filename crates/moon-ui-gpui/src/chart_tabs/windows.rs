@@ -123,6 +123,7 @@ impl ChartTabs {
         // DPICHANGED-сжатие на первом render (см. DetachedChartHost.restore_size).
         let restore_size = restored.then(|| size(px(geom.w as f32), px(geom.h as f32)));
         let opened = cx.open_window(opts, move |window, cx| {
+            crate::windowing::configure_chart_clear_color(window, cx);
             let host = cx.new(|cx| {
                 DetachedChartHost::new(
                     panel,

@@ -258,6 +258,7 @@ pub fn spawn(
     let backend = backend.clone();
     let spec = spec.clone();
     app.open_window(opts, move |window, cx| {
+        crate::windowing::configure_shell_clear_color(window, cx);
         let content: AnyView = match spec.panel.as_str() {
             "Orders" => cx
                 .new(|cx| OrdersPanel::new(backend.clone(), spec.group.clone(), window, cx))

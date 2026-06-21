@@ -7,7 +7,9 @@
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use moon_ui::components::{progress::Progress, tag::Tag};
-use moon_ui::{MoonButton, MoonButtonSize, MoonButtonVariant, MoonPalette, MoonWindowFrame, h_flex};
+use moon_ui::{
+    MoonButton, MoonButtonSize, MoonButtonVariant, MoonPalette, MoonWindowFrame, h_flex,
+};
 
 use crate::{Backend, design, settings, strategies};
 
