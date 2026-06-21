@@ -13,7 +13,7 @@ Remove-Item -ErrorAction SilentlyContinue firetest.log, render_diag.log
 .\target\x86_64-pc-windows-msvc\debug\moonterminal.exe --debug-script chart-smoke
 ```
 
-`chart-smoke` — один связный поведенческий прогон. Он ждёт старт приложения, открывает BTC-график, находит реальные bounds графика, прогревает high-present baseline без курсора, а потом 5 секунд двигает системную мышь по графику частым native mousemove storm. После этого включает static text stress на графике и повторяет mouse storm. Только после горячего chart path FireTest проверяет runtime-контракт ошибок доставки команд в core, открывает tool-окна Settings/Strategies/Assets и проверяет их dedup, проверяет Root-owned overlay слой на реальном окне, затем проверяет прохождение масштаба `50% → 20% → Auto` до активного chart state. На Windows storm делается через реальный `SetCursorPos` в client-area окна, на macOS — через CoreGraphics mouse move events. В обоих случаях это настоящий оконный input path, а не прямой вызов chart API.
+`chart-smoke` — один связный поведенческий прогон. Он ждёт старт приложения, открывает BTC-график, находит реальные bounds графика, прогревает high-present baseline без курсора, а потом 5 секунд двигает системную мышь по графику частым native mousemove storm. После этого включает static text stress на графике и повторяет mouse storm. Только после горячего chart path FireTest проверяет runtime-контракт ошибок доставки команд в core, открывает tool-окна Settings/Strategies/Assets и проверяет их dedup, проверяет Root-owned overlay слой на реальном окне, затем переключает язык интерфейса живым apply-путём (`rust_i18n::set_locale` + `refresh_windows`) и проверяет его долёт без пересоздания tool-окон, после чего проверяет прохождение масштаба `50% → 20% → Auto` до активного chart state. На Windows storm делается через реальный `SetCursorPos` в client-area окна, на macOS — через CoreGraphics mouse move events. В обоих случаях это настоящий оконный input path, а не прямой вызов chart API.
 
 На macOS тестовой машине может понадобиться выдать терминалу/приложению право Accessibility или Input Monitoring: это политика macOS для программной отправки событий мыши.
 
@@ -30,6 +30,7 @@ Static text stress входит в стандартный `chart-smoke`: FireTes
 - команда UI в отсутствующее ядро должна возвращать runtime-ошибку, а не успешный no-op;
 - tool-окна Settings/Strategies/Assets должны открываться реальными GPUI окнами и повторный open должен фокусировать существующее окно, а не создавать второе;
 - Root-owned overlay слой должен открывать context menu, закрывать его при открытии dialog, заменять unique dialog по id, показывать notification и очищаться без висящих оверлеев;
+- смена языка интерфейса должна живо доходить до глобальной локали rust-i18n и НЕ пересоздавать tool-окна (только redraw);
 - выбор масштаба из toolbar-path должен дойти до активного chart state: `50%`, затем `20%`, затем `Auto`;
 - cursor-only mousemove не должен делать `cx.notify()` для chart input/canvas;
 - static text stress поверх графика не должен ломать mouse/input hot path и GPU frame budget;
@@ -64,6 +65,8 @@ Static text stress входит в стандартный `chart-smoke`: FireTes
 [firetest] stage=tool_windows_dedup
 [firetest] stage=tool_windows_verify_dedup
 [firetest] stage=root_overlay_contract
+[firetest] stage=locale_switch
+[firetest] stage=locale_switch_verify
 [firetest] stage=price_scale_50
 [firetest] stage=price_scale_20
 [firetest] stage=price_scale_auto

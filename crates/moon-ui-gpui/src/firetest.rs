@@ -6,7 +6,7 @@
 use std::time::{Duration, Instant};
 
 use gpui::{Context, IntoElement, ParentElement, div, px};
-use moon_core::config::ChartBucket;
+use moon_core::config::{ChartBucket, Language};
 use moon_core::metrics::MetricsSnapshot;
 use moon_ui::components::notification::Notification;
 
@@ -41,6 +41,8 @@ enum Phase {
     ToolWindowsDedup,
     ToolWindowsVerifyDedup,
     RootOverlayContract,
+    LocaleSwitch,
+    LocaleSwitchVerify,
     PriceScale50,
     PriceScale20,
     PriceScaleAuto,
@@ -53,7 +55,7 @@ enum Phase {
 }
 
 #[cfg(test)]
-const STAGE_PLAN: [Phase; 20] = [
+const STAGE_PLAN: [Phase; 22] = [
     Phase::WaitStartup,
     Phase::WaitOpen,
     Phase::WaitProbe,
@@ -68,6 +70,8 @@ const STAGE_PLAN: [Phase; 20] = [
     Phase::ToolWindowsDedup,
     Phase::ToolWindowsVerifyDedup,
     Phase::RootOverlayContract,
+    Phase::LocaleSwitch,
+    Phase::LocaleSwitchVerify,
     Phase::PriceScale50,
     Phase::PriceScale20,
     Phase::PriceScaleAuto,
@@ -93,6 +97,8 @@ impl Phase {
             Phase::ToolWindowsDedup => "tool_windows_dedup",
             Phase::ToolWindowsVerifyDedup => "tool_windows_verify_dedup",
             Phase::RootOverlayContract => "root_overlay_contract",
+            Phase::LocaleSwitch => "locale_switch",
+            Phase::LocaleSwitchVerify => "locale_switch_verify",
             Phase::PriceScale50 => "price_scale_50",
             Phase::PriceScale20 => "price_scale_20",
             Phase::PriceScaleAuto => "price_scale_auto",
@@ -155,6 +161,7 @@ pub(crate) struct Runtime {
     storm: Option<MouseStorm>,
     opened_group: Option<String>,
     tool_window_ids: Option<(String, String, String)>,
+    locale_switch: Option<(Language, Language)>,
     text_overlay_enabled: bool,
     present_pressure_enabled: bool,
     last_wait_log: Instant,
@@ -260,6 +267,7 @@ impl Runtime {
             storm: None,
             opened_group: None,
             tool_window_ids: None,
+            locale_switch: None,
             text_overlay_enabled: false,
             present_pressure_enabled: false,
             last_wait_log: now,
@@ -430,6 +438,23 @@ impl Runtime {
             Phase::RootOverlayContract => {
                 if self.phase_since.elapsed() >= STAGE_GAP {
                     if let Err(error) = self.verify_root_overlay_contract(backend, cx) {
+                        self.fail(&error);
+                    } else {
+                        self.set_phase(Phase::LocaleSwitch);
+                    }
+                }
+            }
+            Phase::LocaleSwitch => {
+                if self.phase_since.elapsed() >= STAGE_GAP {
+                    self.request_locale_switch(backend, cx);
+                    self.set_phase(Phase::LocaleSwitchVerify);
+                }
+            }
+            Phase::LocaleSwitchVerify => {
+                if self.phase_since.elapsed() >= STAGE_GAP {
+                    let result = self.verify_locale_switch(backend);
+                    self.restore_locale(backend, cx);
+                    if let Err(error) = result {
                         self.fail(&error);
                     } else {
                         self.set_phase(Phase::PriceScale50);
@@ -753,6 +778,67 @@ impl Runtime {
             scale_label(actual)
         ));
         Ok(())
+    }
+
+    /// Сменить язык интерфейса тем же live-apply путём, что и Settings::apply_settings:
+    /// глобальная локаль rust-i18n + `refresh_windows()` (БЕЗ пересоздания окон). Цель —
+    /// любой язык, отличный от текущего; исходный запоминаем для восстановления.
+    fn request_locale_switch(&mut self, backend: &mut Backend, cx: &mut Context<Backend>) {
+        let original = backend.config.language;
+        let target = if original == Language::En {
+            Language::Ru
+        } else {
+            Language::En
+        };
+        self.locale_switch = Some((original, target));
+        backend.config.language = target;
+        rust_i18n::set_locale(target.code());
+        cx.refresh_windows();
+        cx.notify();
+        firetest_info(&format!(
+            "[firetest] locale_switch from={} to={}",
+            original.code(),
+            target.code()
+        ));
+    }
+
+    /// Долёт смены языка: глобальная локаль обязана стать целевой, а tool-окна — остаться
+    /// теми же (смена языка живая, окна не пересоздаются — иначе dedup/раскладка ломаются).
+    fn verify_locale_switch(&self, backend: &Backend) -> Result<(), String> {
+        let (_, target) = self
+            .locale_switch
+            .ok_or_else(|| "locale switch contract has no recorded target".to_string())?;
+        let active = rust_i18n::locale();
+        if &*active != target.code() {
+            return Err(format!(
+                "locale switch did not reach rust-i18n: expected {}, got {}",
+                target.code(),
+                &*active
+            ));
+        }
+        let before = self
+            .tool_window_ids
+            .as_ref()
+            .ok_or_else(|| "locale switch has no tool window baseline ids".to_string())?;
+        let after = Self::tool_window_ids(backend)?;
+        if *before != after {
+            return Err("locale switch recreated a tool window instead of redrawing it".into());
+        }
+        firetest_info(&format!(
+            "[firetest] locale_switch_verify locale={} windows_stable=true",
+            target.code()
+        ));
+        Ok(())
+    }
+
+    /// Вернуть исходный язык, чтобы стадия не отравляла локаль для остального прогона/логов.
+    fn restore_locale(&mut self, backend: &mut Backend, cx: &mut Context<Backend>) {
+        if let Some((original, _)) = self.locale_switch.take() {
+            backend.config.language = original;
+            rust_i18n::set_locale(original.code());
+            cx.refresh_windows();
+            cx.notify();
+        }
     }
 
     fn set_present_pressure(&mut self, backend: &mut Backend, enabled: bool) {
@@ -1299,6 +1385,8 @@ mod tests {
                 "tool_windows_dedup",
                 "tool_windows_verify_dedup",
                 "root_overlay_contract",
+                "locale_switch",
+                "locale_switch_verify",
                 "price_scale_50",
                 "price_scale_20",
                 "price_scale_auto",

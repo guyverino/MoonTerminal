@@ -400,6 +400,29 @@ pub fn run(
                     }
                     log::info!("core {} convert dust", server.id);
                 }
+                Ok(CoreCmd::PlaceOrder {
+                    market,
+                    short,
+                    price,
+                    size,
+                    strategy_id,
+                }) => {
+                    super::trade::place_order(
+                        &client,
+                        server.id,
+                        market,
+                        short,
+                        price,
+                        size,
+                        strategy_id,
+                    );
+                }
+                Ok(CoreCmd::MoveOrder { uid, new_price }) => {
+                    super::trade::move_order(&client, server.id, uid, new_price);
+                }
+                Ok(CoreCmd::CancelOrder { uid }) => {
+                    super::trade::cancel_order(&client, server.id, uid);
+                }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
                     let _ = client.disconnect();

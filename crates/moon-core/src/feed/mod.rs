@@ -6,6 +6,7 @@ pub mod live;
 mod report;
 mod strategies;
 pub mod synth;
+mod trade;
 pub mod types;
 
 pub use types::*;
@@ -127,6 +128,22 @@ pub enum CoreCmd {
     RefreshTransferAssets,
     /// Сконвертировать мелкие остатки («пыль») в BNB (необратимо). Per-core.
     ConvertDust,
+    /// Поставить ордер вручную (ручная торговля с главного экрана) на `market`
+    /// ядра. `short` — сторона ПОЗИЦИИ (Long/Short, зеркало `is_short`); `size` —
+    /// размер в базовой монете; `strategy_id=None` → `StratID=0` (ордер без
+    /// стратегии). Транслируется в moonproto `new_order` (см. feed::trade).
+    PlaceOrder {
+        market: String,
+        short: bool,
+        price: f64,
+        size: f64,
+        strategy_id: Option<u64>,
+    },
+    /// Переставить (move/replace) существующий ордер ядра по `uid` на новую цену —
+    /// «потянуть за линию». Транслируется в moonproto `orders().move_order`.
+    MoveOrder { uid: u64, new_price: f64 },
+    /// Отменить ордер ядра по `uid`. Транслируется в moonproto `orders().cancel`.
+    CancelOrder { uid: u64 },
 }
 
 #[derive(Clone)]

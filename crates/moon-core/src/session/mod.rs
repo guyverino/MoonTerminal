@@ -539,6 +539,48 @@ impl SessionManager {
         self.send_core_cmd(core, CoreCmd::ConvertDust, "convert dust")
     }
 
+    /// Поставить ордер вручную на рынке `market` ядра (ручная торговля). `short` —
+    /// сторона позиции (Long/Short); `strategy_id=None` → `StratID=0` (ордер без
+    /// стратегии). `price`/`size` должны быть положительными, иначе no-op.
+    pub fn place_order(
+        &self,
+        core: CoreId,
+        market: String,
+        short: bool,
+        price: f64,
+        size: f64,
+        strategy_id: Option<u64>,
+    ) -> Result<()> {
+        if market.is_empty() || !(price > 0.0) || !(size > 0.0) {
+            return Ok(());
+        }
+        self.send_core_cmd(
+            core,
+            CoreCmd::PlaceOrder {
+                market,
+                short,
+                price,
+                size,
+                strategy_id,
+            },
+            "place order",
+        )
+    }
+
+    /// Переставить (move/replace) ордер ядра по `uid` на новую цену — «потянуть за
+    /// линию». `new_price` должен быть положительным, иначе no-op.
+    pub fn move_order(&self, core: CoreId, uid: u64, new_price: f64) -> Result<()> {
+        if !(new_price > 0.0) {
+            return Ok(());
+        }
+        self.send_core_cmd(core, CoreCmd::MoveOrder { uid, new_price }, "move order")
+    }
+
+    /// Отменить ордер ядра по `uid`.
+    pub fn cancel_order(&self, core: CoreId, uid: u64) -> Result<()> {
+        self.send_core_cmd(core, CoreCmd::CancelOrder { uid }, "cancel order")
+    }
+
     /// Read-only доступ к аккаунтному плану (статусы/ордера/детекты/стратегии).
     /// Наружу отдаём только `&` — мутирует store исключительно сам менеджер.
     pub fn store(&self) -> &CoreStore {
