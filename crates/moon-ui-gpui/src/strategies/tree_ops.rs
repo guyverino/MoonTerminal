@@ -34,22 +34,6 @@ fn starts_with(path: &[String], prefix: &[String]) -> bool {
     path.len() >= prefix.len() && prefix.iter().zip(path).all(|(a, b)| a == b)
 }
 
-/// Общий префикс набора путей (для копирования мультивыбора — относительный путь
-/// считаем от него, чтобы вставка сохранила взаимную структуру).
-pub fn common_prefix(paths: &[Vec<String>]) -> Vec<String> {
-    let Some(first) = paths.first() else {
-        return Vec::new();
-    };
-    let mut len = first.len();
-    for p in &paths[1..] {
-        len = len.min(p.len());
-        while len > 0 && p[..len] != first[..len] {
-            len -= 1;
-        }
-    }
-    first[..len].to_vec()
-}
-
 /// Все строки (включая вложенные) под префиксом пути.
 pub fn rows_under<'a>(rows: &'a [StrategyRow], prefix: &[String]) -> Vec<&'a StrategyRow> {
     rows.iter()
@@ -132,12 +116,19 @@ fn clip_with_base(rows: &[&StrategyRow], base: &[String]) -> Vec<ClipItem> {
         .collect()
 }
 
-/// Снять выбранные стратегии в буфер; относительный путь — от общего предка выбора
-/// (взаимная структура папок сохраняется, общая часть «схлопывается» в цель).
+/// Снять выбранные стратегии в буфер ПЛОСКО: `rel_path` пуст у всех → при вставке копии
+/// падают ПРЯМО в целевую папку (исходные пути не сохраняются — мультивыбор может быть из
+/// разных папок, и пользователь ждёт копии там, куда вставляет, а не по старым путям).
 pub fn copy_rows(rows: &[&StrategyRow]) -> Vec<ClipItem> {
-    let paths: Vec<Vec<String>> = rows.iter().map(|r| split_path(&r.folder_path)).collect();
-    let base = common_prefix(&paths);
-    clip_with_base(rows, &base)
+    rows.iter()
+        .map(|r| ClipItem {
+            kind_ordinal: r.kind_ordinal,
+            kind: r.kind.clone(),
+            name: r.name.clone(),
+            rel_path: Vec::new(),
+            fields: r.fields.clone(),
+        })
+        .collect()
 }
 
 /// Снять ПАПКУ в буфер; относительный путь — от РОДИТЕЛЯ папки (имя папки сохраняется
@@ -243,20 +234,11 @@ pub fn move_folder(
         .collect()
 }
 
-/// Перенос выбранных стратегий в целевую папку: `(id, новый folder_path)`. База —
-/// общий предок выбора (как при копировании), цель — `target`.
+/// Перенос выбранных стратегий ПЛОСКО в целевую папку: каждая → прямо в `target`
+/// (исходные пути не сохраняются; мультивыбор может быть из разных папок).
 pub fn move_to(rows: &[&StrategyRow], target: &[String]) -> Vec<(u64, String)> {
-    let paths: Vec<Vec<String>> = rows.iter().map(|r| split_path(&r.folder_path)).collect();
-    let base = common_prefix(&paths);
-    rows.iter()
-        .map(|r| {
-            let path = split_path(&r.folder_path);
-            let rel = path.get(base.len()..).unwrap_or(&[]).to_vec();
-            let mut full = target.to_vec();
-            full.extend(rel);
-            (r.id, join_path(&full))
-        })
-        .collect()
+    let path = join_path(target);
+    rows.iter().map(|r| (r.id, path.clone())).collect()
 }
 
 #[cfg(test)]
@@ -314,19 +296,6 @@ mod tests {
     }
 
     #[test]
-    fn common_prefix_basic() {
-        let p = vec![
-            split_path("a/b/c"),
-            split_path("a/b/d"),
-            split_path("a/b/e/f"),
-        ];
-        assert_eq!(common_prefix(&p), vec!["a", "b"]);
-        let p2 = vec![split_path("a/b"), split_path("x/y")];
-        assert_eq!(common_prefix(&p2), Vec::<String>::new());
-        assert_eq!(common_prefix(&[]), Vec::<String>::new());
-    }
-
-    #[test]
     fn rows_under_includes_nested() {
         let rows = vec![
             row(1, "s1", "a/b", false),
@@ -378,16 +347,18 @@ mod tests {
     }
 
     #[test]
-    fn copy_rows_relative_to_common_ancestor() {
+    fn copy_rows_flattens_to_target() {
+        // Мультивыбор из РАЗНЫХ папок: rel_path пуст у всех → вставка кладёт всех в цель.
         let rows = vec![
-            row(1, "a", "core/grp/p1", false),
-            row(2, "b", "core/grp/sub/p2", false),
+            row(1, "a", "grpA/p1", false),
+            row(2, "b", "grpB/sub/p2", false),
         ];
         let refs: Vec<&StrategyRow> = rows.iter().collect();
         let clip = copy_rows(&refs);
-        // общий предок = core/grp → rel: [p1], [sub/p2] (листовая папка сохраняется)
-        assert_eq!(clip[0].rel_path, vec!["p1"]);
-        assert_eq!(clip[1].rel_path, vec!["sub", "p2"]);
+        assert!(clip.iter().all(|c| c.rel_path.is_empty()));
+        // и paste_plan кладёт обе ПРЯМО в целевую папку
+        let plan = paste_plan(&clip, &split_path("dest"), &HashSet::new());
+        assert!(plan.iter().all(|n| n.folder_path == "dest"));
     }
 
     #[test]
@@ -485,14 +456,15 @@ mod tests {
     }
 
     #[test]
-    fn move_to_rebases_from_common_ancestor() {
+    fn move_to_flattens_to_target() {
+        // Перенос мультивыбора из разных папок → каждая прямо в целевую папку.
         let rows = vec![
             row(1, "a", "src/p1", false),
-            row(2, "b", "src/grp/p2", false),
+            row(2, "b", "other/grp/p2", false),
         ];
         let refs: Vec<&StrategyRow> = rows.iter().collect();
         let edits = move_to(&refs, &split_path("dest"));
-        assert!(edits.contains(&(1, "dest/p1".to_string())));
-        assert!(edits.contains(&(2, "dest/grp/p2".to_string())));
+        assert!(edits.contains(&(1, "dest".to_string())));
+        assert!(edits.contains(&(2, "dest".to_string())));
     }
 }
