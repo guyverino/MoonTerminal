@@ -546,7 +546,12 @@ impl RenderState {
                     }
                     let c = bounds_clip(pr.pane_bounds, res);
                     blit_clip = Some(match blit_clip {
-                        Some(u) => [u[0].min(c[0]), u[1].min(c[1]), u[2].max(c[2]), u[3].max(c[3])],
+                        Some(u) => [
+                            u[0].min(c[0]),
+                            u[1].min(c[1]),
+                            u[2].max(c[2]),
+                            u[3].max(c[3]),
+                        ],
                         None => c,
                     });
                 }

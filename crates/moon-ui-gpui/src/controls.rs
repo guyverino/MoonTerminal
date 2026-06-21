@@ -7,8 +7,8 @@ use gpui::*;
 
 use moon_ui::{
     MoonAccent, MoonButton, MoonButtonSegment, MoonButtonSize, MoonButtonVariant, MoonDropdown,
-    MoonMenuItem, MoonMenuSize, MoonPalette, MoonSegmentItem, MoonSegmentedControl, MoonTooltipView,
-    h_flex,
+    MoonMenuItem, MoonMenuSize, MoonPalette, MoonSegmentItem, MoonSegmentedControl,
+    MoonTooltipView, h_flex,
 };
 
 use crate::{Backend, design};
@@ -133,7 +133,11 @@ pub(crate) fn scale_dropdown(
     }
 
     // Лупа вместо слова «МАСШТАБ» + «А» для Авто (компактнее); подсказка «Масштаб» — тултипом.
-    let trigger_val = if scale.is_none() { "А" } else { selected_label };
+    let trigger_val = if scale.is_none() {
+        "А"
+    } else {
+        selected_label
+    };
     div()
         .id("toolbar-scale-tip")
         .tooltip(|_window, cx| cx.new(|_| MoonTooltipView::new("Масштаб")).into())
@@ -144,8 +148,16 @@ pub(crate) fn scale_dropdown(
                 .trigger_size(MoonButtonSize::Toolbar)
                 .menu_width(116.0)
                 .menu_size(MoonMenuSize::Compact)
-                .segment(MoonButtonSegment::new("🔍").color(p.text_muted).weight(400.0))
-                .segment(MoonButtonSegment::new(trigger_val).color(p.text).weight(500.0))
+                .segment(
+                    MoonButtonSegment::new("🔍")
+                        .color(p.text_muted)
+                        .weight(400.0),
+                )
+                .segment(
+                    MoonButtonSegment::new(trigger_val)
+                        .color(p.text)
+                        .weight(500.0),
+                )
                 .items(items),
         )
 }
@@ -173,7 +185,11 @@ pub(crate) fn scale_dropdown_for_add_stack(
     }
 
     // Лупа вместо слова «МАСШТАБ» + «А» для Авто (компактнее); подсказка «Масштаб» — тултипом.
-    let trigger_val = if scale.is_none() { "А" } else { selected_label };
+    let trigger_val = if scale.is_none() {
+        "А"
+    } else {
+        selected_label
+    };
     div()
         .id("detached-stack-scale-tip")
         .tooltip(|_window, cx| cx.new(|_| MoonTooltipView::new("Масштаб")).into())
@@ -184,8 +200,16 @@ pub(crate) fn scale_dropdown_for_add_stack(
                 .trigger_size(MoonButtonSize::Toolbar)
                 .menu_width(116.0)
                 .menu_size(MoonMenuSize::Compact)
-                .segment(MoonButtonSegment::new("🔍").color(p.text_muted).weight(400.0))
-                .segment(MoonButtonSegment::new(trigger_val).color(p.text).weight(500.0))
+                .segment(
+                    MoonButtonSegment::new("🔍")
+                        .color(p.text_muted)
+                        .weight(400.0),
+                )
+                .segment(
+                    MoonButtonSegment::new(trigger_val)
+                        .color(p.text)
+                        .weight(500.0),
+                )
                 .items(items),
         )
 }

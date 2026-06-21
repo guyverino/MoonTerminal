@@ -969,9 +969,11 @@ impl StrategiesView {
                     .full_width()
                     .label("удалить")
                     .disabled(!has_sel || !all_off)
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.request_delete_selection(window, cx)
-                    }))
+                    .on_click(
+                        cx.listener(|this, _, window, cx| {
+                            this.request_delete_selection(window, cx)
+                        }),
+                    )
                     .render(),
             )
             .into_any_element()
