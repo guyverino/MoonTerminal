@@ -439,7 +439,9 @@ impl Render for DetachedChartHost {
                     ))
                     .child(
                         MoonButton::new("detached-close-all")
-                            .label("Закрыть все графики")
+                            .label("🗑")
+                            .tooltip("Закрыть все графики")
+                            .width(34.0)
                             .size(MoonButtonSize::Action)
                             .variant(MoonButtonVariant::OutlineRed)
                             .on_click(move |_, _w, app| {
@@ -456,9 +458,9 @@ impl Render for DetachedChartHost {
                     .flex_1()
                     .w_full()
                     .overflow_hidden()
-                    // Фон тела: окно — Root(NoFill), и область ниже чарта иначе не закрашена
-                    // (на Windows = белое). Красим shell, чарт рисует поверх.
-                    .bg(rgb(p.shell))
+                    // БЕЗ .bg(): own-pass чарта — слой UnderScene (под сценой), любой непрозрачный
+                    // фон тела его перекрывает (видны лишь оси — они OverScene). Подложку под/между
+                    // чартами закрывает тёмный clear окна (правка форка MoonUI), белого нет.
                     .child(self.panel.clone()),
             )
     }

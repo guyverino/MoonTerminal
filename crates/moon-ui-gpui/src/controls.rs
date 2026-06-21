@@ -7,7 +7,8 @@ use gpui::*;
 
 use moon_ui::{
     MoonAccent, MoonButton, MoonButtonSegment, MoonButtonSize, MoonButtonVariant, MoonDropdown,
-    MoonMenuItem, MoonMenuSize, MoonPalette, MoonSegmentItem, MoonSegmentedControl, h_flex,
+    MoonMenuItem, MoonMenuSize, MoonPalette, MoonSegmentItem, MoonSegmentedControl, MoonTooltipView,
+    h_flex,
 };
 
 use crate::{Backend, design};
@@ -131,23 +132,22 @@ pub(crate) fn scale_dropdown(
         );
     }
 
-    MoonDropdown::new("toolbar-scale-dropdown")
-        .trigger_width(112.0)
-        .trigger_variant(MoonButtonVariant::Neutral)
-        .trigger_size(MoonButtonSize::Toolbar)
-        .menu_width(116.0)
-        .menu_size(MoonMenuSize::Compact)
-        .segment(
-            MoonButtonSegment::new("МАСШТАБ")
-                .color(p.text_muted)
-                .weight(400.0),
+    // Лупа вместо слова «МАСШТАБ» + «А» для Авто (компактнее); подсказка «Масштаб» — тултипом.
+    let trigger_val = if scale.is_none() { "А" } else { selected_label };
+    div()
+        .id("toolbar-scale-tip")
+        .tooltip(|_window, cx| cx.new(|_| MoonTooltipView::new("Масштаб")).into())
+        .child(
+            MoonDropdown::new("toolbar-scale-dropdown")
+                .trigger_width(72.0)
+                .trigger_variant(MoonButtonVariant::Neutral)
+                .trigger_size(MoonButtonSize::Toolbar)
+                .menu_width(116.0)
+                .menu_size(MoonMenuSize::Compact)
+                .segment(MoonButtonSegment::new("🔍").color(p.text_muted).weight(400.0))
+                .segment(MoonButtonSegment::new(trigger_val).color(p.text).weight(500.0))
+                .items(items),
         )
-        .segment(
-            MoonButtonSegment::new(selected_label)
-                .color(p.text)
-                .weight(500.0),
-        )
-        .items(items)
 }
 
 /// Дропдаун масштаба для AddToChart-stack: пишет масштаб во все отдельные ChartPanel внутри
@@ -172,23 +172,22 @@ pub(crate) fn scale_dropdown_for_add_stack(
         );
     }
 
-    MoonDropdown::new("detached-stack-scale-dropdown")
-        .trigger_width(112.0)
-        .trigger_variant(MoonButtonVariant::Neutral)
-        .trigger_size(MoonButtonSize::Toolbar)
-        .menu_width(116.0)
-        .menu_size(MoonMenuSize::Compact)
-        .segment(
-            MoonButtonSegment::new("МАСШТАБ")
-                .color(p.text_muted)
-                .weight(400.0),
+    // Лупа вместо слова «МАСШТАБ» + «А» для Авто (компактнее); подсказка «Масштаб» — тултипом.
+    let trigger_val = if scale.is_none() { "А" } else { selected_label };
+    div()
+        .id("detached-stack-scale-tip")
+        .tooltip(|_window, cx| cx.new(|_| MoonTooltipView::new("Масштаб")).into())
+        .child(
+            MoonDropdown::new("detached-stack-scale-dropdown")
+                .trigger_width(72.0)
+                .trigger_variant(MoonButtonVariant::Neutral)
+                .trigger_size(MoonButtonSize::Toolbar)
+                .menu_width(116.0)
+                .menu_size(MoonMenuSize::Compact)
+                .segment(MoonButtonSegment::new("🔍").color(p.text_muted).weight(400.0))
+                .segment(MoonButtonSegment::new(trigger_val).color(p.text).weight(500.0))
+                .items(items),
         )
-        .segment(
-            MoonButtonSegment::new(selected_label)
-                .color(p.text)
-                .weight(500.0),
-        )
-        .items(items)
 }
 
 /// Полоса тулбара: рисуется как обычный child `Shell` (между шапкой и доком), не dock-панель.
