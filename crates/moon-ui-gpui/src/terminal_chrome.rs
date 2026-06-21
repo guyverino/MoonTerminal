@@ -6,7 +6,8 @@
 
 use gpui::prelude::FluentBuilder;
 use gpui::*;
-use moon_ui::{MoonPalette, MoonWindowFrame, h_flex};
+use moon_ui::components::{progress::Progress, tag::Tag};
+use moon_ui::{MoonButton, MoonButtonSize, MoonButtonVariant, MoonPalette, MoonWindowFrame, h_flex};
 
 use crate::{Backend, design, settings, strategies};
 
@@ -139,28 +140,21 @@ fn risk_meter(p: MoonPalette, cx: &App) -> impl IntoElement {
                 .child("Risk"),
         )
         .child(
-            div()
-                .w(px(64.0))
-                .h(design::ui_px(cx, 4.0))
-                .rounded(design::ui_px(cx, 2.0))
-                .bg(rgb(p.panel))
-                .child(div().w(px(12.0)).h(design::ui_px(cx, 4.0)).bg(rgb(p.green))),
+            div().w(px(64.0)).child(
+                Progress::new("risk-meter")
+                    .value(18.0)
+                    .color(rgb(p.green))
+                    .h(design::ui_px(cx, 4.0))
+                    .rounded(design::ui_px(cx, 2.0)),
+            ),
         )
         .child(div().text_color(rgb(p.green)).child("18%"))
 }
 
 fn exchange_pill(p: MoonPalette, cx: &App) -> impl IntoElement {
-    h_flex()
-        .h(design::fit_h_px(cx, 24.0, 13.0, 5.5))
-        .gap(design::ui_px(cx, 7.0))
-        .px(design::ui_px(cx, 10.0))
-        .rounded(design::ui_px(cx, 999.0))
-        .border_1()
-        .border_color(rgb(p.border))
-        .bg(rgb(p.panel))
-        .font_family(design::mono())
-        .text_size(design::text_px(cx, 11.0))
-        .text_color(rgb(p.text_soft))
+    Tag::new()
+        .outline()
+        .rounded_full()
         .child(design::status_dot(p.green, cx))
         .child("Binance Futures")
         .child(div().text_color(rgb(p.text_muted)).child("▾"))
@@ -186,24 +180,14 @@ fn header_action(
     id: impl Into<SharedString>,
     label: impl Into<SharedString>,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-    p: MoonPalette,
-    cx: &App,
+    _p: MoonPalette,
+    _cx: &App,
 ) -> impl IntoElement {
-    div()
-        .id(id.into())
-        .h(design::fit_h_px(cx, 24.0, 13.0, 5.5))
-        .flex()
-        .items_center()
-        .px(design::ui_px(cx, 10.0))
-        .rounded(design::ui_px(cx, 4.0))
-        .border_1()
-        .border_color(rgb(p.border))
-        .bg(rgb(p.panel))
-        .font_family(design::mono())
-        .text_size(design::text_px(cx, 11.0))
-        .text_color(rgb(p.text_soft))
-        .cursor_pointer()
-        .hover(move |s| s.bg(rgb(p.panel_high)).text_color(rgb(p.text)))
-        .child(label.into())
+    let id: SharedString = id.into();
+    MoonButton::new(id)
+        .label(label)
+        .size(MoonButtonSize::Action)
+        .variant(MoonButtonVariant::Panel)
         .on_click(on_click)
+        .render()
 }

@@ -6,8 +6,8 @@
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use moon_ui::{
-    MoonBackgroundPolicy, MoonPalette, MoonWindowFrame, MoonWindowFrameControls, Root, h_flex,
-    v_flex,
+    MoonBackgroundPolicy, MoonButton, MoonButtonSize, MoonButtonVariant, MoonPalette,
+    MoonWindowFrame, MoonWindowFrameControls, Root, h_flex, v_flex,
 };
 
 use super::{AddChartStack, ChartTabs, Tab, chart_pane_label};
@@ -430,23 +430,14 @@ impl Render for DetachedChartHost {
                         p,
                     ))
                     .child(
-                        div()
-                            .id("detached-close-all")
-                            .px(design::ui_px(cx, 8.0))
-                            .h(design::fit_h_px(cx, 22.0, 13.0, 4.5))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .rounded(design::ui_px(cx, 3.0))
-                            .text_size(design::text_px(cx, 11.0))
-                            .text_color(rgba(0xC8CCD0FF))
-                            .bg(rgba(0x00000059))
-                            .cursor_pointer()
-                            .hover(|s| s.bg(rgba(0xE04848CC)).text_color(rgb(0xFFFFFF)))
-                            .child("Закрыть все графики")
-                            .on_mouse_down(MouseButton::Left, move |_e, _w, app| {
+                        MoonButton::new("detached-close-all")
+                            .label("Закрыть все графики")
+                            .size(MoonButtonSize::Action)
+                            .variant(MoonButtonVariant::OutlineRed)
+                            .on_click(move |_, _w, app| {
                                 close_all_panel.update(app, |p, cx| p.close_all_panes(cx));
-                            }),
+                            })
+                            .render(),
                     )
                     .when(design::show_custom_window_controls(), |this| {
                         this.child(frame.visual_controls(cx))

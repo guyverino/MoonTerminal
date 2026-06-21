@@ -4,9 +4,10 @@
 //! Состояние редактора — [`Lines`]; раскрытость блоков живёт в `SettingsView.open_lines`.
 
 use gpui::*;
+use moon_ui::components::accordion::Accordion;
 use moon_ui::{
     MoonCheckbox, MoonCheckboxSize, MoonColorPicker, MoonColorPickerEvent, MoonColorPickerState,
-    MoonPalette, MoonSliderEvent, MoonSliderState, StyledExt, h_flex, rgba_from, v_flex,
+    MoonPalette, MoonSliderEvent, MoonSliderState, StyledExt, h_flex, v_flex,
 };
 
 use super::{SettingsView, hsla_u8, separator, slider_row};
@@ -254,46 +255,34 @@ impl SettingsView {
             }))
     }
 
-    /// Кликабельный заголовок сворачиваемого блока (порт egui `CollapsingHeader`):
-    /// стрелка ▸/▾ + жирная подпись; клик переключает `open_lines[key]`.
-    fn collapse_header(
+    /// Сворачиваемый блок на компоненте MoonUI `Accordion` (один item на ключ): заголовок
+    /// с шевроном + тело. Раскрытость хранится во `SettingsView.open_lines[key]`; клик по
+    /// заголовку переключает её через `on_toggle_click` (для single-item: открыт ⇔ ix `[0]`).
+    fn collapse_section(
         &self,
         cx: &Context<Self>,
         key: &'static str,
         title: &str,
+        body: AnyElement,
     ) -> impl IntoElement {
         let open = self.open_lines.contains(key);
-        let p = MoonPalette::active(cx);
-        h_flex()
-            .id(key)
-            .cursor_pointer()
-            .w_full()
-            .h(design::fit_h_px(cx, 26.0, 14.0, 6.0))
-            .gap(design::ui_px(cx, 8.0))
-            .px(design::ui_px(cx, 8.0))
-            .rounded(design::ui_px(cx, 4.0))
-            .border_1()
-            .border_color(rgba_from(p.border, if open { 1.0 } else { 0.74 }))
-            .bg(rgba_from(p.shell_high, if open { 0.98 } else { 0.72 }))
-            .hover(|s| s.bg(rgba_from(0xFFFFFF, 0.055)))
-            .items_center()
-            .child(
-                div()
-                    .w(px(12.0))
-                    .text_color(rgba_from(p.text_muted, 1.0))
-                    .child(if open { "v" } else { ">" }),
-            )
-            .child(
-                div()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child(title.to_string()),
-            )
-            .on_click(cx.listener(move |this, _, _, cx| {
-                if !this.open_lines.insert(key) {
-                    this.open_lines.remove(key);
-                }
-                cx.notify();
-            }))
+        let title: SharedString = title.to_string().into();
+        let entity = cx.entity();
+        Accordion::new(SharedString::from(format!("lines-acc-{key}")))
+            .item(move |item| item.title(title).open(open).child(body))
+            .on_toggle_click(move |open_ixs, _window, cx| {
+                let now_open = !open_ixs.is_empty();
+                entity.update(cx, |this, c| {
+                    let changed = if now_open {
+                        this.open_lines.insert(key)
+                    } else {
+                        this.open_lines.remove(key)
+                    };
+                    if changed {
+                        c.notify();
+                    }
+                });
+            })
     }
 
     /// Тело блока ордер-линии (порт egui `line_block`): цвет+толщина в строке, `dashed`,
@@ -350,22 +339,14 @@ impl SettingsView {
         markers: bool,
         checks: &[Check],
     ) -> impl IntoElement {
-        let open = self.open_lines.contains(key);
-        let mut section = v_flex()
-            .w_full()
-            .gap(design::ui_px(cx, 6.0))
-            .child(self.collapse_header(cx, key, title));
-        if open {
-            section = section.child(self.line_body(cx, ed, markers, checks));
-        }
-        section
+        let body = self.line_body(cx, ed, markers, checks);
+        self.collapse_section(cx, key, title, body)
     }
 
     /// Вкладка «Линии» — порт egui `settings/lines.rs` точь-в-точь: «Order lines», по
     /// сворачиваемому блоку на вид линии (англ. подписи), затем «Path» и «Global».
     pub(super) fn lines_tab(&self, cx: &Context<Self>) -> impl IntoElement {
         let l = &self.lines;
-        let path_open = self.open_lines.contains("path");
         v_flex()
             .w_full()
             .gap_1()
@@ -587,40 +568,33 @@ impl SettingsView {
             .child(separator(MoonPalette::active(cx), cx))
             // Path (trail / змейка) — свой сворачиваемый блок.
             .child({
-                let mut section = v_flex()
+                let body = v_flex()
                     .w_full()
-                    .gap(design::ui_px(cx, 6.0))
-                    .child(self.collapse_header(cx, "path", "Path (trail / змейка)"));
-                if path_open {
-                    section = section.child(
-                        v_flex()
-                            .w_full()
-                            .gap_1()
-                            .pl_4()
-                            .child(self.ord_check(
-                                cx,
-                                "path-show",
-                                "show path",
-                                |o| o.path.show,
-                                |o, v| o.path.show = v,
-                            ))
-                            .child(
-                                h_flex()
-                                    .gap(px(10.0))
-                                    .items_center()
-                                    .child(MoonColorPicker::new(&l.path_color))
-                                    .child(slider_row("thickness", &l.path_thickness, cx)),
-                            )
-                            .child(self.ord_check(
-                                cx,
-                                "path-dash",
-                                "dashed",
-                                |o| o.path.dashed,
-                                |o, v| o.path.dashed = v,
-                            )),
-                    );
-                }
-                section
+                    .gap_1()
+                    .pl_4()
+                    .child(self.ord_check(
+                        cx,
+                        "path-show",
+                        "show path",
+                        |o| o.path.show,
+                        |o, v| o.path.show = v,
+                    ))
+                    .child(
+                        h_flex()
+                            .gap(px(10.0))
+                            .items_center()
+                            .child(MoonColorPicker::new(&l.path_color))
+                            .child(slider_row("thickness", &l.path_thickness, cx)),
+                    )
+                    .child(self.ord_check(
+                        cx,
+                        "path-dash",
+                        "dashed",
+                        |o| o.path.dashed,
+                        |o, v| o.path.dashed = v,
+                    ))
+                    .into_any_element();
+                self.collapse_section(cx, "path", "Path (trail / змейка)", body)
             })
             .child(separator(MoonPalette::active(cx), cx))
             .child(div().mt_1().font_bold().child("Global"))

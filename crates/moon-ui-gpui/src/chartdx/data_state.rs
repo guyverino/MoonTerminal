@@ -149,6 +149,32 @@ impl ChartDataState {
         self.view_dirty = true;
     }
 
+    /// Применить геометрию слота из bounds канваса (логич. px) к движку: размер/origin/pixel-scale.
+    /// Источник — `GpuFrameInfo` (форк), синхронно в `frame()` → own-pass всегда в актуальном слоте.
+    fn apply_slot_geometry(&mut self, info: &GpuFrameInfo) {
+        if info.bounds.is_empty() {
+            return;
+        }
+        let sf = info.scale_factor.max(0.1);
+        let w = (f32::from(info.bounds.size.width) * sf).round().max(1.0) as u32;
+        let h = (f32::from(info.bounds.size.height) * sf).round().max(1.0) as u32;
+        let ox = f32::from(info.bounds.origin.x) * sf;
+        let oy = f32::from(info.bounds.origin.y) * sf;
+        if self.w != w || self.h != h {
+            self.w = w;
+            self.h = h;
+            self.mark_view_dirty();
+        }
+        if self.origin != (ox, oy) {
+            self.origin = (ox, oy);
+            self.mark_view_dirty();
+        }
+        self.last_ppp = sf;
+        let mut st = self.render.borrow_mut();
+        st.set_slot_origin(ox, oy); // self-guard: dirty/present только при смене
+        st.set_pixel_scale(sf);
+    }
+
     pub(super) fn set_market_source(&mut self, source: Option<MarketDataSource>) -> bool {
         let changed = match (&self.market_source, &source) {
             (Some(a), Some(b)) => !a.ptr_eq(b),
@@ -163,6 +189,11 @@ impl ChartDataState {
     }
 
     pub(super) fn frame(&mut self, info: GpuFrameInfo) -> GpuFrameDecision {
+        // Геометрия слота — СИНХРОННО из info.bounds (форк отдаёт реальные bounds канваса этого
+        // кадра, ДО present). Применяем до pull/sync, чтобы own-pass рисовал в текущем слоте без
+        // лага probe→notify→render→present (1–2 кадра): иначе при рефлоу стека освободившийся/
+        // сдвинутый слот кадр-два мигал clear'ом окна.
+        self.apply_slot_geometry(&info);
         let now_ms = now_unix_ms();
         if self.observe_present_rate(now_ms) {
             if let Some(source) = self.market_source.clone() {

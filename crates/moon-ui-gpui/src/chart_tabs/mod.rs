@@ -14,8 +14,9 @@ use std::rc::Rc;
 
 use gpui::*;
 use moon_ui::{
-    MoonBackgroundPolicy, MoonRect, MoonScrollbarVisibility, MoonTabItem, MoonTabStrip,
-    MoonVirtualList, MoonVirtualListScrollHandle, Panel, PanelEvent, PanelState, v_flex,
+    MoonBackgroundPolicy, MoonButton, MoonButtonSize, MoonButtonVariant, MoonRect,
+    MoonScrollbarVisibility, MoonTabItem, MoonTabStrip, MoonVirtualList, MoonVirtualListScrollHandle,
+    Panel, PanelEvent, PanelState, v_flex,
 };
 
 use crate::Backend;
@@ -857,29 +858,17 @@ impl Render for ChartTabs {
             .filter(|(g, _)| *g == self.group)
             .count();
         let gather_btn = (detached_count > 0).then(|| {
-            div()
-                .absolute()
-                .right(px(6.0))
-                .top(px(4.0))
-                .w(px(24.0))
-                .h(px(22.0))
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(px(4.0))
-                .text_size(px(13.0))
-                .text_color(rgba(0xC8CCD0FF))
-                .bg(rgba(0x00000059))
-                .cursor_pointer()
-                .hover(|s| s.bg(rgba(0x2A2E37FF)).text_color(rgb(0xFFFFFF)))
-                .child("▦")
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(|this, _e: &MouseDownEvent, _w, cx| {
-                        this.gather_windows(cx);
-                        cx.stop_propagation();
-                    }),
-                )
+            let entity = cx.entity();
+            div().absolute().right(px(6.0)).top(px(4.0)).child(
+                MoonButton::new("chart-gather-windows")
+                    .label("▦")
+                    .size(MoonButtonSize::Micro)
+                    .variant(MoonButtonVariant::Ghost)
+                    .on_click(move |_, _w, app| {
+                        entity.update(app, |this, cx| this.gather_windows(cx));
+                    })
+                    .render(),
+            )
         });
 
         v_flex()

@@ -10,10 +10,13 @@ use std::time::Duration;
 
 use gpui::prelude::FluentBuilder;
 use gpui::*;
-use moon_ui::{MoonBackgroundPolicy, MoonPalette, Panel, PanelEvent};
+use moon_ui::{
+    MoonBackgroundPolicy, MoonButton, MoonButtonSize, MoonButtonVariant, MoonPalette, MoonRect,
+    Panel, PanelEvent,
+};
 
 use crate::chartdx::ChartEngine;
-use crate::{Backend, axes, design, input};
+use crate::{Backend, axes, input};
 use moon_chart::container::ContainerKind;
 use moon_chart::paint::now_unix_ms;
 use moon_core::config::{ChartBucket, ChartTheme, OrdersStyle};
@@ -934,13 +937,10 @@ impl Render for ChartPanel {
                     }
                 }
             }))
-            // own-pass добавляем ТОЛЬКО после первого замера слота (chart_bounds). Иначе первый
-            // кадр рисуется в дефолтном chart_dev=(1024×576) → «график распахивается на весь слот
-            // и сжимается». До замера слот пуст (тёмный clear), замер приходит тем же кадром через
-            // probe-canvas ниже → notify → следующий кадр уже корректного размера.
-            .when(self.chart_bounds.is_some(), |this| {
-                this.child(self.chart.canvas().text_over().absolute().size_full())
-            })
+            // own-pass: геометрию слота движок берёт синхронно из `GpuFrameInfo.bounds` в
+            // `frame()` (см. data_state::apply_slot_geometry) — поэтому уже первый present рисует
+            // в реальном слоте, без «распахивания» дефолтного chart_dev и без лага при рефлоу.
+            .child(self.chart.canvas().text_over().absolute().size_full())
             .when(show_empty_logo, |this| {
                 // Непрозрачный фон поверх own-pass: пустой слот = логотип на фоне чарта, без
                 // просвечивания старого графика (own-pass рисуется ПОД сценой GPUI).
@@ -1001,63 +1001,34 @@ impl Render for ChartPanel {
                 .size_full()
             })
             .children(close_btns.into_iter().map(|(idx, right, top)| {
-                div()
-                    .absolute()
-                    .left(px(right - 18.0))
-                    .top(px(top + 3.0))
-                    .w(px(15.0))
-                    .h(px(15.0))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded(design::ui_px(cx, 3.0))
-                    .text_size(design::text_px(cx, 11.0))
-                    .text_color(rgba(0xC8CCD0FF))
-                    .bg(rgba(0x00000059))
-                    .cursor_pointer()
-                    .hover(|s| s.bg(rgba(0xE04848CC)).text_color(rgb(0xFFFFFF)))
-                    .child("×")
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, _e: &MouseDownEvent, _w, cx| {
-                            this.remove_pane(idx, cx);
-                            cx.stop_propagation();
-                        }),
-                    )
+                let entity = cx.entity();
+                MoonButton::new(SharedString::from(format!("chart-close-{idx}")))
+                    .label("×")
+                    .size(MoonButtonSize::Micro)
+                    .variant(MoonButtonVariant::Ghost)
+                    .bounds(MoonRect::new(right - 18.0, top + 3.0, 15.0, 15.0))
+                    .on_click(move |_, _w, app| {
+                        entity.update(app, |this, cx| this.remove_pane(idx, cx));
+                    })
+                    .render()
             }))
             .children(pin_btns.into_iter().map(|(idx, pinned, left, top)| {
                 // Пин-кнопка в левом верхнем углу: заполненный кружок = приколото, контур = нет (П.2).
-                div()
-                    .absolute()
-                    .left(px(left + 3.0))
-                    .top(px(top + 3.0))
-                    .w(px(15.0))
-                    .h(px(15.0))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded(design::ui_px(cx, 3.0))
-                    .text_size(design::text_px(cx, 11.0))
-                    .text_color(if pinned {
-                        rgb(0xFFFFFF)
+                let entity = cx.entity();
+                MoonButton::new(SharedString::from(format!("chart-pin-{idx}")))
+                    .label(if pinned { "●" } else { "○" })
+                    .size(MoonButtonSize::Micro)
+                    .variant(if pinned {
+                        MoonButtonVariant::Blue
                     } else {
-                        rgba(0xC8CCD0FF)
+                        MoonButtonVariant::Ghost
                     })
-                    .bg(if pinned {
-                        rgba(0x3B82F6CC)
-                    } else {
-                        rgba(0x00000059)
+                    .selected(pinned)
+                    .bounds(MoonRect::new(left + 3.0, top + 3.0, 15.0, 15.0))
+                    .on_click(move |_, _w, app| {
+                        entity.update(app, |this, cx| this.toggle_pin(idx, cx));
                     })
-                    .cursor_pointer()
-                    .hover(|s| s.bg(rgba(0x3B82F6CC)).text_color(rgb(0xFFFFFF)))
-                    .child(if pinned { "●" } else { "○" })
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, _e: &MouseDownEvent, _w, cx| {
-                            this.toggle_pin(idx, cx);
-                            cx.stop_propagation();
-                        }),
-                    )
+                    .render()
             }))
     }
 }
