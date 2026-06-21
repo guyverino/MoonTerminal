@@ -3,6 +3,9 @@
 //! количества (дефолт — всё свободное).
 
 use super::*;
+use anyhow::Result;
+use moon_ui::components::WindowExt as _;
+use moon_ui::components::notification::Notification;
 
 /// Полезная нагрузка drag&drop переноса актива между кошельками.
 #[derive(Clone)]
@@ -78,8 +81,16 @@ impl AssetsView {
                             .ghost()
                             .size(MoonButtonSize::Micro)
                             .label("↻")
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.backend.read(cx).session.refresh_transfer_assets(core);
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                if let Err(error) =
+                                    this.backend.read(cx).session.refresh_transfer_assets(core)
+                                {
+                                    log::warn!("assets refresh failed for core {core}: {error}");
+                                    window.push_notification(
+                                        Notification::error(error.to_string()),
+                                        cx,
+                                    );
+                                }
                                 cx.notify();
                             }))
                             .render(),
@@ -236,21 +247,115 @@ impl AssetsView {
     ) {
         let default_qty = num(drag.free);
         let input = cx.new(|cx| MoonInputState::new(window, cx).default_value(&default_qty));
-        self.pending_transfer = Some(PendingTransfer {
+        let pending = PendingTransfer {
             core: drag.core,
             asset: drag.asset.clone(),
             from: drag.from,
             to,
             free: drag.free,
-        });
+        };
+        self.pending_transfer = Some(pending.clone());
         self.transfer_input = Some(input);
+        let view = cx.entity();
+        window.open_unique_dialog("assets-transfer-dialog", cx, move |dialog, _window, cx| {
+            let p = MoonPalette::active(cx);
+            let title = format!(
+                "Перенос {}: {} → {}",
+                pending.asset,
+                pending.from.label(),
+                pending.to.label()
+            );
+            let content_view = view.clone();
+            let cancel_view = view.clone();
+            let close_view = view.clone();
+            let footer_cancel_view = view.clone();
+            let footer_confirm_view = view.clone();
+
+            dialog
+                .w(px(320.0))
+                .close_button(true)
+                .overlay(true)
+                .overlay_closable(true)
+                .bg(rgb(p.shell_high))
+                .border_color(rgb(p.border))
+                .rounded(px(8.0))
+                .text_color(rgb(p.text))
+                .on_cancel(move |_, _, cx| {
+                    cancel_view.update(cx, |this, cx| this.close_transfer_dialog(cx));
+                    true
+                })
+                .on_close(move |_, _, cx| {
+                    close_view.update(cx, |this, cx| this.close_transfer_dialog(cx));
+                })
+                .content(move |content, _window, cx| {
+                    let input = content_view.read(cx).transfer_input.clone();
+                    let mut body = v_flex()
+                        .gap(design::ui_px(cx, 10.0))
+                        .font_family(design::mono())
+                        .child(
+                            div()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(rgb(p.text))
+                                .child(title.clone()),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(rgb(p.text_muted))
+                                .child(format!("свободно: {}", num(pending.free))),
+                        );
+                    if let Some(input) = input {
+                        body = body.child(MoonInput::new("transfer-amount").state(&input).small());
+                    }
+                    content.child(body)
+                })
+                .footer(
+                    h_flex()
+                        .w_full()
+                        .gap_2()
+                        .justify_end()
+                        .child(
+                            MoonButton::new("transfer-cancel")
+                                .outline()
+                                .size(MoonButtonSize::Action)
+                                .label("Отмена")
+                                .on_click(move |_, window, cx| {
+                                    footer_cancel_view
+                                        .update(cx, |this, cx| this.close_transfer_dialog(cx));
+                                    window.close_dialog(cx);
+                                })
+                                .render(),
+                        )
+                        .child(
+                            MoonButton::new("transfer-confirm")
+                                .primary()
+                                .size(MoonButtonSize::Action)
+                                .label("Перенести")
+                                .on_click(move |_, window, cx| {
+                                    match footer_confirm_view
+                                        .update(cx, |this, cx| this.confirm_transfer(cx))
+                                    {
+                                        Ok(()) => window.close_dialog(cx),
+                                        Err(error) => {
+                                            log::warn!("asset transfer failed: {error}");
+                                            window.push_notification(
+                                                Notification::error(error.to_string()),
+                                                cx,
+                                            );
+                                        }
+                                    }
+                                })
+                                .render(),
+                        ),
+                )
+        });
         cx.notify();
     }
 
     /// Подтвердить перенос: прочитать количество из поля, выполнить и закрыть диалог.
-    fn confirm_transfer(&mut self, cx: &mut Context<Self>) {
+    fn confirm_transfer(&mut self, cx: &mut Context<Self>) -> Result<()> {
         let Some(pt) = self.pending_transfer.clone() else {
-            return;
+            return Ok(());
         };
         let qty = self
             .transfer_input
@@ -265,79 +370,15 @@ impl AssetsView {
                 qty,
                 pt.from,
                 pt.to,
-            );
+            )?;
         }
         self.close_transfer_dialog(cx);
+        Ok(())
     }
 
     fn close_transfer_dialog(&mut self, cx: &mut Context<Self>) {
         self.pending_transfer = None;
         self.transfer_input = None;
         cx.notify();
-    }
-
-    /// Оверлей-диалог количества переноса (по центру окна).
-    pub(super) fn transfer_dialog(
-        &self,
-        pt: &PendingTransfer,
-        cx: &Context<Self>,
-    ) -> impl IntoElement {
-        let p = MoonPalette::active(cx);
-        let title = format!(
-            "Перенос {}: {} → {}",
-            pt.asset,
-            pt.from.label(),
-            pt.to.label()
-        );
-        let mut card = v_flex()
-            .w(px(320.0))
-            .gap(design::ui_px(cx, 10.0))
-            .p(design::ui_px(cx, 14.0))
-            .rounded(px(8.0))
-            .bg(rgb(p.shell_high))
-            .border_1()
-            .border_color(rgb(p.border))
-            .child(div().text_color(rgb(p.text)).child(title))
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(rgb(p.text_muted))
-                    .child(format!("свободно: {}", num(pt.free))),
-            );
-        if let Some(input) = &self.transfer_input {
-            card = card.child(MoonInput::new("transfer-amount").state(input).small());
-        }
-        card = card.child(
-            h_flex()
-                .w_full()
-                .gap_2()
-                .justify_end()
-                .child(
-                    MoonButton::new("transfer-cancel")
-                        .outline()
-                        .size(MoonButtonSize::Action)
-                        .label("Отмена")
-                        .on_click(cx.listener(|this, _, _, cx| this.close_transfer_dialog(cx)))
-                        .render(),
-                )
-                .child(
-                    MoonButton::new("transfer-confirm")
-                        .primary()
-                        .size(MoonButtonSize::Action)
-                        .label("Перенести")
-                        .on_click(cx.listener(|this, _, _, cx| this.confirm_transfer(cx)))
-                        .render(),
-                ),
-        );
-
-        // Затемнённый фон на всё окно + карточка по центру.
-        div()
-            .absolute()
-            .inset_0()
-            .flex()
-            .items_center()
-            .justify_center()
-            .bg(rgba(0x00000099))
-            .child(card)
     }
 }

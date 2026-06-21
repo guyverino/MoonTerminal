@@ -4,9 +4,14 @@
 
 use super::tree_ops;
 use super::*;
+use anyhow::Result;
 use moon_core::feed::NewStrategySpec;
+use moon_ui::MoonContextMenuWindowExt as _;
+use moon_ui::components::WindowExt as _;
+use moon_ui::components::notification::Notification;
 
 /// Активная модалка операции (взаимоисключающая; рисуется оверлеем поверх окна).
+#[derive(Clone)]
 pub(super) enum TreeOp {
     /// Создать стратегию: целевая папка + выбранный вид (kind ordinal).
     CreateStrategy {
@@ -28,7 +33,7 @@ pub(super) enum TreeOp {
     },
 }
 
-/// Открытое контекст-меню: цель + позиция курсора.
+/// Запрос контекст-меню: цель + позиция курсора. Само открытое меню хранится в MoonUI Root.
 pub(super) struct ContextMenu {
     pub(super) core: CoreId,
     pub(super) target: MenuTarget,
@@ -74,6 +79,193 @@ impl Render for DragChip {
             .font_family("Geist Mono")
             .child(self.label.clone())
     }
+}
+
+fn op_title(op: &TreeOp) -> &'static str {
+    match op {
+        TreeOp::CreateStrategy { .. } => "Новая стратегия",
+        TreeOp::CreateFolder { .. } => "Новая папка",
+        TreeOp::RenameFolder { .. } => "Переименовать папку",
+        TreeOp::ConfirmDeleteStrategies { .. } | TreeOp::ConfirmDeleteFolder { .. } => "Удалить?",
+    }
+}
+
+fn op_ok_label(op: &TreeOp) -> &'static str {
+    match op {
+        TreeOp::CreateStrategy { .. } | TreeOp::CreateFolder { .. } => "Создать",
+        TreeOp::RenameFolder { .. } => "Переименовать",
+        TreeOp::ConfirmDeleteStrategies { .. } | TreeOp::ConfirmDeleteFolder { .. } => "Да",
+    }
+}
+
+fn op_has_close_button(op: &TreeOp) -> bool {
+    !matches!(
+        op,
+        TreeOp::ConfirmDeleteStrategies { .. } | TreeOp::ConfirmDeleteFolder { .. }
+    )
+}
+
+fn op_dialog_body(
+    view: Entity<StrategiesView>,
+    _window: &mut Window,
+    cx: &mut App,
+) -> Option<AnyElement> {
+    let p = MoonPalette::active(cx);
+    let (op, input, backend) = {
+        let this = view.read(cx);
+        (
+            this.op.clone()?,
+            this.op_input.clone(),
+            this.backend.clone(),
+        )
+    };
+
+    match op {
+        TreeOp::CreateStrategy { core, target, kind } => {
+            let kinds: Vec<(u8, String)> = backend
+                .read(cx)
+                .session
+                .store()
+                .core(core)
+                .and_then(|cd| cd.schema.as_ref())
+                .map(|s| {
+                    s.kinds
+                        .iter()
+                        .map(|k| (k.ordinal, k.name.clone()))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let kind_name = kind
+                .and_then(|k| kinds.iter().find(|(o, _)| *o == k))
+                .map(|(_, n)| n.clone())
+                .unwrap_or_else(|| "выберите вид".to_string());
+            let target_label = if target.is_empty() {
+                "корень".to_string()
+            } else {
+                target
+            };
+            let mut kind_items = Vec::with_capacity(kinds.len());
+            for (ord, name) in kinds {
+                let item_view = view.clone();
+                kind_items.push(
+                    MoonMenuItem::with_key(format!("ck-{ord}"), name)
+                        .selected(kind == Some(ord))
+                        .on_click(move |_, _, app| {
+                            item_view.update(app, |this, c| {
+                                if let Some(TreeOp::CreateStrategy { kind, .. }) = &mut this.op {
+                                    *kind = Some(ord);
+                                    c.notify();
+                                }
+                            });
+                        }),
+                );
+            }
+            let mut body = v_flex()
+                .w_full()
+                .gap_2()
+                .child(
+                    div()
+                        .text_color(moon(p.text_muted))
+                        .child(format!("папка: {target_label}")),
+                )
+                .child(
+                    MoonDropdown::new("create-kind")
+                        .label(format!("{kind_name} ▾"))
+                        .trigger_variant(MoonButtonVariant::Soft)
+                        .trigger_size(MoonButtonSize::Action)
+                        .trigger_width(320.0)
+                        .menu_width(320.0)
+                        .menu_size(MoonMenuSize::Compact)
+                        .menu_max_height(240.0)
+                        .items(kind_items),
+                );
+            if let Some(input) = input {
+                body = body.child(MoonInput::new("create-name").state(&input).small());
+            }
+            Some(body.into_any_element())
+        }
+        TreeOp::CreateFolder { target, .. } => {
+            let target_label = if target.is_empty() {
+                "корень".to_string()
+            } else {
+                target
+            };
+            let mut body = v_flex().w_full().gap_2().child(
+                div()
+                    .text_color(moon(p.text_muted))
+                    .child(format!("в: {target_label}")),
+            );
+            if let Some(input) = input {
+                body = body.child(MoonInput::new("folder-name").state(&input).small());
+            }
+            Some(body.into_any_element())
+        }
+        TreeOp::RenameFolder { .. } => {
+            let mut body = v_flex().w_full().gap_2();
+            if let Some(input) = input {
+                body = body.child(MoonInput::new("rename-name").state(&input).small());
+            }
+            Some(body.into_any_element())
+        }
+        TreeOp::ConfirmDeleteStrategies { label } | TreeOp::ConfirmDeleteFolder { label, .. } => {
+            Some(
+                div()
+                    .w_full()
+                    .text_color(moon(p.text))
+                    .child(format!("Удалить {label}? Действие необратимо."))
+                    .into_any_element(),
+            )
+        }
+    }
+}
+
+fn op_dialog_footer(
+    view: Entity<StrategiesView>,
+    p: MoonPalette,
+    ok_label: impl Into<SharedString>,
+) -> AnyElement {
+    let ok_label = ok_label.into();
+    let ok_variant = if ok_label == SharedString::from("Да") {
+        MoonButtonVariant::Danger
+    } else {
+        MoonButtonVariant::Blue
+    };
+    let cancel_view = view.clone();
+    let ok_view = view;
+    h_flex()
+        .w_full()
+        .justify_end()
+        .gap_2()
+        .child(
+            MoonButton::new("modal-cancel")
+                .ghost()
+                .size(MoonButtonSize::Micro)
+                .label("Отмена")
+                .on_click(move |_, window, cx| {
+                    cancel_view.update(cx, |this, cx| this.close_op_dialog(cx));
+                    window.close_dialog(cx);
+                })
+                .render(),
+        )
+        .child(
+            MoonButton::new("modal-ok")
+                .size(MoonButtonSize::Micro)
+                .variant(ok_variant)
+                .label(ok_label)
+                .on_click(move |_, window, cx| {
+                    match ok_view.update(cx, |this, cx| this.confirm_op_dialog(cx)) {
+                        Ok(true) => window.close_dialog(cx),
+                        Ok(false) => {}
+                        Err(error) => {
+                            log::warn!("strategies operation failed: {error}");
+                            window.push_notification(Notification::error(error.to_string()), cx);
+                        }
+                    }
+                })
+                .render(),
+        )
+        .text_color(moon(p.text))
+        .into_any_element()
 }
 
 impl StrategiesView {
@@ -122,14 +314,15 @@ impl StrategiesView {
         &mut self,
         core: CoreId,
         target: String,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let store = self.backend.read(cx).session.store();
         let kind = self.kinds_of(store, core).first().map(|(o, _)| *o);
-        self.menu = None;
         self.op_input_init = String::new();
-        self.op_input = None; // render пересоздаст свежий ввод
+        self.op_input = None; // каждое открытие получает свежий input entity/layout
         self.op = Some(TreeOp::CreateStrategy { core, target, kind });
+        self.open_op_dialog(window, cx);
         cx.notify();
     }
 
@@ -137,12 +330,13 @@ impl StrategiesView {
         &mut self,
         core: CoreId,
         target: String,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.menu = None;
         self.op_input_init = String::new();
         self.op_input = None;
         self.op = Some(TreeOp::CreateFolder { core, target });
+        self.open_op_dialog(window, cx);
         cx.notify();
     }
 
@@ -150,19 +344,149 @@ impl StrategiesView {
         &mut self,
         core: CoreId,
         old_path: Vec<String>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let cur = old_path.last().cloned().unwrap_or_default();
-        self.menu = None;
         self.op_input_init = cur;
         self.op_input = None;
         self.op = Some(TreeOp::RenameFolder { core, old_path });
+        self.open_op_dialog(window, cx);
         cx.notify();
     }
 
+    fn ensure_op_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.op.is_some() && self.op_input.is_none() {
+            let init = self.op_input_init.clone();
+            self.op_input = Some(cx.new(|cx| {
+                MoonInputState::new(window, cx)
+                    .default_value(init)
+                    .placeholder("имя")
+            }));
+        }
+    }
+
+    fn close_op_dialog(&mut self, cx: &mut Context<Self>) {
+        self.op = None;
+        self.op_input = None;
+        cx.notify();
+    }
+
+    fn confirm_op_dialog(&mut self, cx: &mut Context<Self>) -> Result<bool> {
+        let Some(op) = self.op.clone() else {
+            return Ok(true);
+        };
+
+        match op {
+            TreeOp::CreateStrategy { core, target, kind } => {
+                let name = self
+                    .op_input
+                    .as_ref()
+                    .map(|i| i.read(cx).value().to_string())
+                    .unwrap_or_default();
+                if name.trim().is_empty() {
+                    return Ok(false);
+                }
+                if let Some(kind) = kind {
+                    self.confirm_create_strategy(core, target, kind, name, cx)?;
+                }
+            }
+            TreeOp::CreateFolder { core, target } => {
+                let name = self
+                    .op_input
+                    .as_ref()
+                    .map(|i| i.read(cx).value().to_string())
+                    .unwrap_or_default();
+                if !name.trim().is_empty() {
+                    self.add_ui_folder(core, &target, name.trim());
+                }
+            }
+            TreeOp::RenameFolder { core, old_path } => {
+                let name = self
+                    .op_input
+                    .as_ref()
+                    .map(|i| i.read(cx).value().to_string())
+                    .unwrap_or_default();
+                if !name.trim().is_empty() {
+                    self.confirm_rename_folder(core, &old_path, name.trim(), cx)?;
+                }
+            }
+            TreeOp::ConfirmDeleteStrategies { .. } => {
+                self.delete_selection(cx)?;
+            }
+            TreeOp::ConfirmDeleteFolder { core, path, .. } => {
+                self.delete_folder(core, &path, cx)?;
+            }
+        }
+
+        self.close_op_dialog(cx);
+        Ok(true)
+    }
+
+    fn open_op_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.ensure_op_input(window, cx);
+        let view = cx.entity();
+        window.open_unique_dialog(
+            "strategies-tree-op-dialog",
+            cx,
+            move |dialog, _window, cx| {
+                let p = MoonPalette::active(cx);
+                let cancel_view = view.clone();
+                let close_view = view.clone();
+                let content_view = view.clone();
+                let footer_view = view.clone();
+
+                let title = view
+                    .read(cx)
+                    .op
+                    .as_ref()
+                    .map(op_title)
+                    .unwrap_or("Операция");
+                let ok_label = view.read(cx).op.as_ref().map(op_ok_label).unwrap_or("OK");
+                let close_button = view
+                    .read(cx)
+                    .op
+                    .as_ref()
+                    .map(op_has_close_button)
+                    .unwrap_or(true);
+
+                dialog
+                    .w(px(360.0))
+                    .close_button(close_button)
+                    .overlay(true)
+                    .overlay_closable(true)
+                    .bg(moon(p.shell_high))
+                    .border_color(moon(p.border))
+                    .rounded(px(6.0))
+                    .text_color(moon(p.text))
+                    .header(
+                        div()
+                            .w_full()
+                            .py_2()
+                            .border_b_1()
+                            .border_color(moon(p.border))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(title),
+                    )
+                    .on_cancel(move |_, _, cx| {
+                        cancel_view.update(cx, |this, cx| this.close_op_dialog(cx));
+                        true
+                    })
+                    .on_close(move |_, _, cx| {
+                        close_view.update(cx, |this, cx| this.close_op_dialog(cx));
+                    })
+                    .content(move |content, window, cx| {
+                        let body = op_dialog_body(content_view.clone(), window, cx)
+                            .unwrap_or_else(|| div().into_any_element());
+                        content.child(body)
+                    })
+                    .footer(op_dialog_footer(footer_view, p, ok_label))
+            },
+        );
+    }
+
     /// Запросить удаление стратегий выделения (с проверкой правила «все выключены»).
-    pub(super) fn request_delete_selection(&mut self, cx: &mut Context<Self>) {
-        self.menu = None;
+    pub(super) fn request_delete_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let store = self.backend.read(cx).session.store();
         let rows = self.selection_rows(store);
         if rows.is_empty() {
@@ -177,6 +501,7 @@ impl StrategiesView {
         self.op = Some(TreeOp::ConfirmDeleteStrategies {
             label: format!("{} стратеги(й)", rows.len()),
         });
+        self.open_op_dialog(window, cx);
         cx.notify();
     }
 
@@ -185,9 +510,9 @@ impl StrategiesView {
         &mut self,
         core: CoreId,
         path: Vec<String>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.menu = None;
         let store = self.backend.read(cx).session.store();
         let Some(cd) = store.core(core) else { return };
         let under = tree_ops::rows_under(&cd.strategies, &path);
@@ -196,13 +521,13 @@ impl StrategiesView {
         }
         let label = format!("папку «{}»", path.last().cloned().unwrap_or_default());
         self.op = Some(TreeOp::ConfirmDeleteFolder { core, path, label });
+        self.open_op_dialog(window, cx);
         cx.notify();
     }
 
     // ── Буфер (копировать/вставить) ──────────────────────────────────────────
 
     pub(super) fn copy_selection(&mut self, cx: &mut Context<Self>) {
-        self.menu = None;
         let store = self.backend.read(cx).session.store();
         let rows = self.selection_rows(store);
         if rows.is_empty() {
@@ -214,7 +539,6 @@ impl StrategiesView {
     }
 
     pub(super) fn copy_folder(&mut self, core: CoreId, path: Vec<String>, cx: &mut Context<Self>) {
-        self.menu = None;
         let store = self.backend.read(cx).session.store();
         let Some(cd) = store.core(core) else { return };
         self.clipboard = Some(tree_ops::copy_folder(&cd.strategies, &path));
@@ -222,7 +546,6 @@ impl StrategiesView {
     }
 
     pub(super) fn paste_into(&mut self, core: CoreId, target: String, cx: &mut Context<Self>) {
-        self.menu = None;
         let Some(clip) = self.clipboard.clone() else {
             return;
         };
@@ -242,7 +565,10 @@ impl StrategiesView {
                 .find(|(n, _)| n == tree_ops::STRATEGY_NAME_FIELD)
                 .map(|(_, v)| v.clone())
         });
-        self.backend.read(cx).session.create_strategies(core, specs);
+        if let Err(error) = self.backend.read(cx).session.create_strategies(core, specs) {
+            log::warn!("paste strategies failed: {error}");
+            return;
+        }
         // Новые/вставленные стратегии всегда выключены — снимаем «только активные», иначе их
         // не видно. Раскрываем целевое ядро, чтобы результат был на виду.
         self.filter.only_active = false;
@@ -280,10 +606,15 @@ impl StrategiesView {
                     .unwrap_or_default();
                 tree_ops::move_to(&rows, &target)
             };
-            self.backend
+            if let Err(error) = self
+                .backend
                 .read(cx)
                 .session
-                .move_strategies(target_core, moves);
+                .move_strategies(target_core, moves)
+            {
+                log::warn!("move strategies failed: {error}");
+                return;
+            }
         } else {
             let specs = {
                 let store = self.backend.read(cx).session.store();
@@ -303,10 +634,15 @@ impl StrategiesView {
                     .unwrap_or_default();
                 specs_from(tree_ops::paste_plan(&clip, &target, &taken))
             };
-            self.backend
+            if let Err(error) = self
+                .backend
                 .read(cx)
                 .session
-                .create_strategies(target_core, specs);
+                .create_strategies(target_core, specs)
+            {
+                log::warn!("copy strategies failed: {error}");
+                return;
+            }
             self.filter.only_active = false;
         }
         self.expanded_cores.insert(target_core);
@@ -334,10 +670,15 @@ impl StrategiesView {
             if moves.is_empty() {
                 return; // в себя/потомка или пустая папка
             }
-            self.backend
+            if let Err(error) = self
+                .backend
                 .read(cx)
                 .session
-                .move_strategies(target_core, moves);
+                .move_strategies(target_core, moves)
+            {
+                log::warn!("move strategy folder failed: {error}");
+                return;
+            }
         } else {
             let specs = {
                 let store = self.backend.read(cx).session.store();
@@ -351,10 +692,15 @@ impl StrategiesView {
                     .unwrap_or_default();
                 specs_from(tree_ops::paste_plan(&clip, &target, &taken))
             };
-            self.backend
+            if let Err(error) = self
+                .backend
                 .read(cx)
                 .session
-                .create_strategies(target_core, specs);
+                .create_strategies(target_core, specs)
+            {
+                log::warn!("copy strategy folder failed: {error}");
+                return;
+            }
             self.filter.only_active = false;
         }
         self.expanded_cores.insert(target_core);
@@ -384,7 +730,7 @@ impl StrategiesView {
         kind_ord: u8,
         name: String,
         cx: &mut Context<Self>,
-    ) {
+    ) -> Result<()> {
         let spec = {
             let store = self.backend.read(cx).session.store();
             let Some(kind) = store
@@ -392,7 +738,7 @@ impl StrategiesView {
                 .and_then(|cd| cd.schema.as_ref())
                 .and_then(|s| s.kinds.iter().find(|k| k.ordinal == kind_ord).cloned())
             else {
-                return;
+                return Ok(());
             };
             let ns = tree_ops::new_strategy(&kind, &name, &target);
             NewStrategySpec {
@@ -404,12 +750,13 @@ impl StrategiesView {
         self.backend
             .read(cx)
             .session
-            .create_strategies(core, vec![spec]);
+            .create_strategies(core, vec![spec])?;
         // Новая стратегия выключена — снимаем «только активные» и раскрываем ядро, чтобы её видеть.
         self.filter.only_active = false;
         self.expanded_cores.insert(core);
         // Выберем её, как только ядро пришлёт эхо.
         self.pending_select = Some((core, name));
+        Ok(())
     }
 
     fn confirm_rename_folder(
@@ -418,19 +765,22 @@ impl StrategiesView {
         old_path: &[String],
         new_name: &str,
         cx: &mut Context<Self>,
-    ) {
+    ) -> Result<()> {
         let moves = {
             let store = self.backend.read(cx).session.store();
-            let Some(cd) = store.core(core) else { return };
+            let Some(cd) = store.core(core) else {
+                return Ok(());
+            };
             tree_ops::rename_folder(&cd.strategies, old_path, new_name)
         };
-        // UI-папка (пустая) — переименовать локально.
+        self.backend.read(cx).session.move_strategies(core, moves)?;
+        // UI-папка (пустая) — переименовать локально только после успешной отправки команды.
         self.rename_ui_folder(core, old_path, new_name);
-        self.backend.read(cx).session.move_strategies(core, moves);
+        Ok(())
     }
 
     /// Удалить выделение (группировка по ядрам; правило уже проверено в request_).
-    fn delete_selection(&mut self, cx: &mut Context<Self>) {
+    fn delete_selection(&mut self, cx: &mut Context<Self>) -> Result<()> {
         let rows = {
             let store = self.backend.read(cx).session.store();
             self.selection_rows(store)
@@ -438,19 +788,26 @@ impl StrategiesView {
         {
             let b = self.backend.read(cx);
             for (core, r) in &rows {
-                b.session.delete_strategy(*core, r.id);
+                b.session.delete_strategy(*core, r.id)?;
             }
         }
         self.sel.clear();
         self.selected = None;
+        Ok(())
     }
 
-    fn delete_folder(&mut self, core: CoreId, path: &[String], cx: &mut Context<Self>) {
+    fn delete_folder(
+        &mut self,
+        core: CoreId,
+        path: &[String],
+        cx: &mut Context<Self>,
+    ) -> Result<()> {
         self.backend
             .read(cx)
             .session
-            .delete_folder(core, tree_ops::join_path(path));
+            .delete_folder(core, tree_ops::join_path(path))?;
         self.remove_ui_folder(core, path);
+        Ok(())
     }
 
     // ── UI-папки (пустые, до наполнения) ──────────────────────────────────────
@@ -504,7 +861,12 @@ impl StrategiesView {
 
     // ── Клавиатура (Ctrl+C / Ctrl+V / Delete) ────────────────────────────────
 
-    pub(super) fn handle_tree_key(&mut self, ev: &KeyDownEvent, cx: &mut Context<Self>) {
+    pub(super) fn handle_tree_key(
+        &mut self,
+        ev: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let m = &ev.keystroke.modifiers;
         let key = ev.keystroke.key.as_str();
         if m.control && key == "c" {
@@ -524,15 +886,22 @@ impl StrategiesView {
             };
             self.paste_into(core, target, cx);
         } else if key == "delete" {
-            self.request_delete_selection(cx);
+            self.request_delete_selection(window, cx);
         }
     }
 
     // ── Контекст-меню (ПКМ) ───────────────────────────────────────────────────
 
-    pub(super) fn open_menu(&mut self, menu: ContextMenu, cx: &mut Context<Self>) {
+    pub(super) fn open_menu(
+        &mut self,
+        menu: ContextMenu,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.op = None;
-        self.menu = Some(menu);
+        let pos = menu.pos;
+        let items = self.context_menu_items(&menu, cx);
+        window.open_moon_context_menu(cx, "strategies-context-menu", pos, items, 190.0);
         cx.notify();
     }
 
@@ -598,7 +967,9 @@ impl StrategiesView {
                         .size(MoonButtonSize::Micro)
                         .label("удалить")
                         .disabled(!has_sel || !all_off)
-                        .on_click(cx.listener(|this, _, _, cx| this.request_delete_selection(cx)))
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.request_delete_selection(window, cx)
+                        }))
                         .render(),
                 ),
             )
@@ -617,17 +988,17 @@ impl StrategiesView {
         let items = vec![
             MoonMenuItem::with_key("new-strat", "Новая стратегия…").on_click({
                 let view = view.clone();
-                move |_, _, app| {
+                move |_, window, app| {
                     let (core, t) = (core, t1.clone());
-                    view.update(app, |this, c| this.open_create_strategy(core, t, c));
+                    view.update(app, |this, c| this.open_create_strategy(core, t, window, c));
                 }
             }),
             MoonMenuItem::with_key("new-folder", "Новая папка…").on_click({
                 let view = view.clone();
                 let t2 = target.clone();
-                move |_, _, app| {
+                move |_, window, app| {
                     let (core, t) = (core, t2.clone());
-                    view.update(app, |this, c| this.open_create_folder(core, t, c));
+                    view.update(app, |this, c| this.open_create_folder(core, t, window, c));
                 }
             }),
         ];
@@ -642,437 +1013,127 @@ impl StrategiesView {
             .into_any_element()
     }
 
-    // ── Рендер: оверлеи модалок ──────────────────────────────────────────────
+    // ── Контекст-меню ───────────────────────────────────────────────────────
 
-    pub(super) fn op_overlay(&self, cx: &Context<Self>) -> Option<AnyElement> {
-        let op = self.op.as_ref()?;
-        let p = MoonPalette::active(cx);
-        let body = match op {
-            TreeOp::CreateStrategy { core, target, kind } => {
-                self.modal_create_strategy(*core, target, *kind, &p, cx)
-            }
-            TreeOp::CreateFolder { core, target } => {
-                self.modal_create_folder(*core, target, &p, cx)
-            }
-            TreeOp::RenameFolder { core, old_path } => {
-                self.modal_rename_folder(*core, old_path.clone(), &p, cx)
-            }
-            TreeOp::ConfirmDeleteStrategies { label, .. }
-            | TreeOp::ConfirmDeleteFolder { label, .. } => self.modal_confirm_delete(label, &p, cx),
-        };
-        Some(
-            div()
-                .absolute()
-                .inset_0()
-                .flex()
-                .items_center()
-                .justify_center()
-                .bg(rgba(0x00000073))
-                .child(body)
-                .into_any_element(),
-        )
-    }
-
-    fn modal_shell(&self, title: &str, p: &MoonPalette, cx: &Context<Self>) -> Div {
-        v_flex()
-            .w(px(360.0))
-            .bg(moon(p.shell_high))
-            .border_1()
-            .border_color(moon(p.border))
-            .rounded(design::ui_px(cx, 6.0))
-            .child(
-                div()
-                    .w_full()
-                    .px_3()
-                    .py_2()
-                    .border_b_1()
-                    .border_color(moon(p.border))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child(title.to_string()),
-            )
-    }
-
-    fn modal_create_strategy(
-        &self,
-        core: CoreId,
-        target: &str,
-        kind: Option<u8>,
-        p: &MoonPalette,
-        cx: &Context<Self>,
-    ) -> AnyElement {
-        let store = self.backend.read(cx).session.store();
-        let kinds = self.kinds_of(store, core);
-        let kind_name = kind
-            .and_then(|k| kinds.iter().find(|(o, _)| *o == k))
-            .map(|(_, n)| n.clone())
-            .unwrap_or_else(|| "выберите вид".to_string());
-        let target_label = if target.is_empty() {
-            "корень".to_string()
-        } else {
-            target.to_string()
-        };
-        let view = cx.entity();
-        let mut kind_items = Vec::with_capacity(kinds.len());
-        for (ord, name) in &kinds {
-            let view = view.clone();
-            let ord = *ord;
-            kind_items.push(
-                MoonMenuItem::with_key(format!("ck-{ord}"), name.clone())
-                    .selected(kind == Some(ord))
-                    .on_click(move |_, _, app| {
-                        view.update(app, |this, c| {
-                            if let Some(TreeOp::CreateStrategy { kind, .. }) = &mut this.op {
-                                *kind = Some(ord);
-                                c.notify();
-                            }
-                        });
-                    }),
-            );
-        }
-        self.modal_shell("Новая стратегия", p, cx)
-            .child(
-                v_flex()
-                    .w_full()
-                    .p_3()
-                    .gap_2()
-                    .child(
-                        div()
-                            .text_color(moon(p.text_muted))
-                            .child(format!("папка: {target_label}")),
-                    )
-                    .child(
-                        MoonDropdown::new("create-kind")
-                            .label(format!("{kind_name} ▾"))
-                            .trigger_variant(MoonButtonVariant::Soft)
-                            .trigger_size(MoonButtonSize::Action)
-                            .trigger_width(320.0)
-                            .menu_width(320.0)
-                            .menu_size(MoonMenuSize::Compact)
-                            .menu_max_height(240.0)
-                            .items(kind_items),
-                    )
-                    .children(
-                        self.op_input
-                            .as_ref()
-                            .map(|inp| MoonInput::new("create-name").state(inp).small()),
-                    ),
-            )
-            .child(self.modal_buttons(
-                "Создать",
-                move |this, _, _, cx| {
-                    let name = this
-                        .op_input
-                        .as_ref()
-                        .map(|i| i.read(cx).value().to_string())
-                        .unwrap_or_default();
-                    let (target, kind) = match &this.op {
-                        Some(TreeOp::CreateStrategy { target, kind, .. }) => {
-                            (target.clone(), *kind)
-                        }
-                        _ => return,
-                    };
-                    if name.trim().is_empty() {
-                        return;
-                    }
-                    if let Some(k) = kind {
-                        this.confirm_create_strategy(core, target, k, name, cx);
-                    }
-                    this.op = None;
-                    cx.notify();
-                },
-                cx,
-            ))
-            .into_any_element()
-    }
-
-    fn modal_create_folder(
-        &self,
-        core: CoreId,
-        target: &str,
-        p: &MoonPalette,
-        cx: &Context<Self>,
-    ) -> AnyElement {
-        let target_label = if target.is_empty() {
-            "корень".to_string()
-        } else {
-            target.to_string()
-        };
-        let target_owned = target.to_string();
-        self.modal_shell("Новая папка", p, cx)
-            .child(
-                v_flex()
-                    .w_full()
-                    .p_3()
-                    .gap_2()
-                    .child(
-                        div()
-                            .text_color(moon(p.text_muted))
-                            .child(format!("в: {target_label}")),
-                    )
-                    .children(
-                        self.op_input
-                            .as_ref()
-                            .map(|inp| MoonInput::new("folder-name").state(inp).small()),
-                    ),
-            )
-            .child(self.modal_buttons(
-                "Создать",
-                move |this, _, _, cx| {
-                    let name = this
-                        .op_input
-                        .as_ref()
-                        .map(|i| i.read(cx).value().to_string())
-                        .unwrap_or_default();
-                    if name.trim().is_empty() {
-                        this.op = None;
-                        cx.notify();
-                        return;
-                    }
-                    this.add_ui_folder(core, &target_owned, name.trim());
-                    this.op = None;
-                    cx.notify();
-                },
-                cx,
-            ))
-            .into_any_element()
-    }
-
-    fn modal_rename_folder(
-        &self,
-        core: CoreId,
-        old_path: Vec<String>,
-        p: &MoonPalette,
-        cx: &Context<Self>,
-    ) -> AnyElement {
-        self.modal_shell("Переименовать папку", p, cx)
-            .child(
-                v_flex().w_full().p_3().gap_2().children(
-                    self.op_input
-                        .as_ref()
-                        .map(|inp| MoonInput::new("rename-name").state(inp).small()),
-                ),
-            )
-            .child(self.modal_buttons(
-                "Переименовать",
-                move |this, _, _, cx| {
-                    let name = this
-                        .op_input
-                        .as_ref()
-                        .map(|i| i.read(cx).value().to_string())
-                        .unwrap_or_default();
-                    if !name.trim().is_empty() {
-                        this.confirm_rename_folder(core, &old_path, name.trim(), cx);
-                    }
-                    this.op = None;
-                    cx.notify();
-                },
-                cx,
-            ))
-            .into_any_element()
-    }
-
-    fn modal_confirm_delete(&self, label: &str, p: &MoonPalette, cx: &Context<Self>) -> AnyElement {
-        self.modal_shell("Удалить?", p, cx)
-            .child(
-                div()
-                    .w_full()
-                    .p_3()
-                    .text_color(moon(p.text))
-                    .child(format!("Удалить {label}? Действие необратимо.")),
-            )
-            .child(
-                h_flex()
-                    .w_full()
-                    .justify_end()
-                    .gap_2()
-                    .px_3()
-                    .pb_3()
-                    .child(
-                        MoonButton::new("confirm-no")
-                            .ghost()
-                            .size(MoonButtonSize::Micro)
-                            .label("Нет")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.op = None;
-                                cx.notify();
-                            }))
-                            .render(),
-                    )
-                    .child(
-                        MoonButton::new("confirm-yes")
-                            .danger()
-                            .size(MoonButtonSize::Micro)
-                            .label("Да")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                match this.op.take() {
-                                    Some(TreeOp::ConfirmDeleteStrategies { .. }) => {
-                                        this.delete_selection(cx)
-                                    }
-                                    Some(TreeOp::ConfirmDeleteFolder { core, path, .. }) => {
-                                        this.delete_folder(core, &path, cx)
-                                    }
-                                    _ => {}
-                                }
-                                cx.notify();
-                            }))
-                            .render(),
-                    ),
-            )
-            .into_any_element()
-    }
-
-    fn modal_buttons(
-        &self,
-        ok_label: &str,
-        on_ok: impl Fn(&mut Self, &ClickEvent, &mut Window, &mut Context<Self>) + 'static,
-        cx: &Context<Self>,
-    ) -> AnyElement {
-        h_flex()
-            .w_full()
-            .justify_end()
-            .gap_2()
-            .px_3()
-            .pb_3()
-            .child(
-                MoonButton::new("modal-cancel")
-                    .ghost()
-                    .size(MoonButtonSize::Micro)
-                    .label("Отмена")
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.op = None;
-                        cx.notify();
-                    }))
-                    .render(),
-            )
-            .child(
-                MoonButton::new("modal-ok")
-                    .primary()
-                    .size(MoonButtonSize::Micro)
-                    .label(ok_label.to_string())
-                    .on_click(cx.listener(on_ok))
-                    .render(),
-            )
-            .into_any_element()
-    }
-
-    // ── Рендер: контекст-меню ────────────────────────────────────────────────
-
-    pub(super) fn menu_overlay(&self, cx: &Context<Self>) -> Option<AnyElement> {
-        let menu = self.menu.as_ref()?;
-        let p = MoonPalette::active(cx);
+    fn context_menu_items(&self, menu: &ContextMenu, cx: &Context<Self>) -> Vec<MoonMenuItem> {
         let core = menu.core;
         let can_paste = self.clipboard.is_some();
+        let view = cx.entity();
 
-        let mut items: Vec<(SharedString, Box<dyn Fn(&mut Self, &mut Context<Self>)>)> = Vec::new();
+        let mut items: Vec<MoonMenuItem> = Vec::new();
         match &menu.target {
             MenuTarget::Folder(path) => {
                 let pp = path.clone();
-                items.push((
-                    "Переименовать…".into(),
-                    Box::new(move |this, cx| this.open_rename_folder(core, pp.clone(), cx)),
-                ));
+                items.push(
+                    MoonMenuItem::with_key("rename-folder", "Переименовать…").on_click({
+                        let view = view.clone();
+                        move |_, window, app| {
+                            window.close_context_menu(app);
+                            view.update(app, |this, cx| {
+                                this.open_rename_folder(core, pp.clone(), window, cx);
+                            });
+                        }
+                    }),
+                );
                 let pp = path.clone();
-                items.push((
-                    "Копировать".into(),
-                    Box::new(move |this, cx| this.copy_folder(core, pp.clone(), cx)),
-                ));
+                items.push(
+                    MoonMenuItem::with_key("copy-folder", "Копировать").on_click({
+                        let view = view.clone();
+                        move |_, window, app| {
+                            window.close_context_menu(app);
+                            view.update(app, |this, cx| {
+                                this.copy_folder(core, pp.clone(), cx);
+                                cx.notify();
+                            });
+                        }
+                    }),
+                );
                 if can_paste {
                     let t = tree_ops::join_path(path);
-                    items.push((
-                        "Вставить сюда".into(),
-                        Box::new(move |this, cx| this.paste_into(core, t.clone(), cx)),
-                    ));
+                    items.push(
+                        MoonMenuItem::with_key("paste-here", "Вставить сюда").on_click({
+                            let view = view.clone();
+                            move |_, window, app| {
+                                window.close_context_menu(app);
+                                view.update(app, |this, cx| {
+                                    this.paste_into(core, t.clone(), cx);
+                                    cx.notify();
+                                });
+                            }
+                        }),
+                    );
                 }
                 let t = tree_ops::join_path(path);
-                items.push((
-                    "Новая стратегия здесь…".into(),
-                    Box::new(move |this, cx| this.open_create_strategy(core, t.clone(), cx)),
-                ));
+                items.push(
+                    MoonMenuItem::with_key("new-strategy-here", "Новая стратегия здесь…").on_click(
+                        {
+                            let view = view.clone();
+                            move |_, window, app| {
+                                window.close_context_menu(app);
+                                view.update(app, |this, cx| {
+                                    this.open_create_strategy(core, t.clone(), window, cx);
+                                });
+                            }
+                        },
+                    ),
+                );
                 let t = tree_ops::join_path(path);
-                items.push((
-                    "Новая папка здесь…".into(),
-                    Box::new(move |this, cx| this.open_create_folder(core, t.clone(), cx)),
-                ));
+                items.push(
+                    MoonMenuItem::with_key("new-folder-here", "Новая папка здесь…").on_click({
+                        let view = view.clone();
+                        move |_, window, app| {
+                            window.close_context_menu(app);
+                            view.update(app, |this, cx| {
+                                this.open_create_folder(core, t.clone(), window, cx);
+                            });
+                        }
+                    }),
+                );
                 let pp = path.clone();
-                items.push((
-                    "Удалить папку…".into(),
-                    Box::new(move |this, cx| this.request_delete_folder(core, pp.clone(), cx)),
-                ));
+                items.push(
+                    MoonMenuItem::with_key("delete-folder", "Удалить папку…")
+                        .tone(MoonTone::Danger)
+                        .on_click({
+                            let view = view.clone();
+                            move |_, window, app| {
+                                window.close_context_menu(app);
+                                view.update(app, |this, cx| {
+                                    this.request_delete_folder(core, pp.clone(), window, cx);
+                                });
+                            }
+                        }),
+                );
             }
             MenuTarget::Strategy(_id) => {
-                items.push((
-                    "Копировать".into(),
-                    Box::new(move |this, cx| this.copy_selection(cx)),
-                ));
-                items.push((
-                    "Удалить…".into(),
-                    Box::new(move |this, cx| this.request_delete_selection(cx)),
-                ));
+                items.push(
+                    MoonMenuItem::with_key("copy-strategy", "Копировать").on_click({
+                        let view = view.clone();
+                        move |_, window, app| {
+                            window.close_context_menu(app);
+                            view.update(app, |this, cx| {
+                                this.copy_selection(cx);
+                                cx.notify();
+                            });
+                        }
+                    }),
+                );
+                items.push(
+                    MoonMenuItem::with_key("delete-strategy", "Удалить…")
+                        .tone(MoonTone::Danger)
+                        .on_click({
+                            let view = view.clone();
+                            move |_, window, app| {
+                                window.close_context_menu(app);
+                                view.update(app, |this, cx| {
+                                    this.request_delete_selection(window, cx);
+                                });
+                            }
+                        }),
+                );
             }
         }
 
-        let mut list = v_flex()
-            .absolute()
-            .left(menu.pos.x)
-            .top(menu.pos.y)
-            .w(px(190.0))
-            .bg(moon(p.shell_high))
-            .border_1()
-            .border_color(moon(p.border))
-            .rounded(design::ui_px(cx, 5.0))
-            .py(px(3.0));
-        for (i, (label, action)) in items.into_iter().enumerate() {
-            list = list.child(
-                div()
-                    .id(SharedString::from(format!("menu-{i}")))
-                    .w_full()
-                    .px_3()
-                    .py_1()
-                    .cursor_pointer()
-                    .text_color(moon(p.text))
-                    .hover(move |s| s.bg(moon_alpha(p.panel, 0.8)))
-                    .child(label)
-                    // mouse_down + stop_propagation: действие срабатывает на нажатии (до
-                    // закрытия меню фоном), и клик НЕ проваливается на дерево позади.
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, _e: &MouseDownEvent, _w, cx| {
-                            cx.stop_propagation();
-                            action(this, cx);
-                            this.menu = None;
-                            cx.notify();
-                        }),
-                    ),
-            );
-        }
-
-        let close = |this: &mut Self, cx: &mut Context<Self>| {
-            this.menu = None;
-            cx.notify();
-        };
-        Some(
-            div()
-                .absolute()
-                .inset_0()
-                // фон-перехватчик: клик мимо — закрыть меню; stop_propagation, чтобы клик
-                // не дошёл до дерева (иначе сворачивались бы ветки за меню).
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |this, _e: &MouseDownEvent, _w, cx| {
-                        cx.stop_propagation();
-                        close(this, cx);
-                    }),
-                )
-                .on_mouse_down(
-                    MouseButton::Right,
-                    cx.listener(move |this, _e: &MouseDownEvent, _w, cx| {
-                        cx.stop_propagation();
-                        close(this, cx);
-                    }),
-                )
-                .child(list)
-                .into_any_element(),
-        )
+        items
     }
 }
 

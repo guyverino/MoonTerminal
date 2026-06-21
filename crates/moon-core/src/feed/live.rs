@@ -11,8 +11,8 @@ use std::time::{Duration, Instant};
 use moonproto::state::{MarketHistorySizing, OrderTraceChartPoint, OrderTraceLine};
 use moonproto::{
     ClientConfig, ConnectConfig, Event, InitConfig, InitialStrategies, LifecycleEvent, MoonClient,
-    MoonEventSink, StrategyFields, StrategyKind, StrategySchema, StrategySnapshot, TradesStreamMode,
-    TransportMode,
+    MoonEventSink, StrategyFields, StrategyKind, StrategySchema, StrategySnapshot,
+    TradesStreamMode, TransportMode,
 };
 
 use super::assets::{build_assets, build_transfer_assets, to_exchange_kind};
@@ -244,18 +244,29 @@ pub fn run(
                     // 1. Синхронизация галок: правим локальный checked у изменённых и
                     //    шлём серверу дельту (CheckedSync).
                     for (id, checked) in &checks {
-                        let _ = client.strategies().set_checked(*id, *checked);
+                        if let Err(error) = client.strategies().set_checked(*id, *checked) {
+                            log::warn!(
+                                "core {} set strategy {id} checked={checked} failed: {error}",
+                                server.id
+                            );
+                        }
                     }
                     if !checks.is_empty() {
-                        let _ = client.strategies().send_checked_delta();
+                        if let Err(error) = client.strategies().send_checked_delta() {
+                            log::warn!("core {} send checked delta failed: {error}", server.id);
+                        }
                     }
                     // 2. Старт/стоп отмеченных (отдельная команда движка).
                     match start_stop {
                         Some(true) => {
-                            let _ = client.strategies().start();
+                            if let Err(error) = client.strategies().start() {
+                                log::warn!("core {} start strategies failed: {error}", server.id);
+                            }
                         }
                         Some(false) => {
-                            let _ = client.strategies().stop();
+                            if let Err(error) = client.strategies().stop() {
+                                log::warn!("core {} stop strategies failed: {error}", server.id);
+                            }
                         }
                         None => {}
                     }
@@ -281,8 +292,10 @@ pub fn run(
                             for (name, val) in changes {
                                 let existing = sc.fields.get(name).cloned();
                                 let stype = schema.and_then(|s| s.field(name)).map(|f| f.type_id);
-                                sc.fields
-                                    .insert(name.as_str(), fv_from_str(existing.as_ref(), stype, val));
+                                sc.fields.insert(
+                                    name.as_str(),
+                                    fv_from_str(existing.as_ref(), stype, val),
+                                );
                             }
                             sc.last_date = now.max(sc.last_date + 1);
                             edited += 1;
@@ -293,12 +306,16 @@ pub fn run(
                 Ok(CoreCmd::DeleteStrategy { id }) => {
                     // `TStratDelete(strategy_id=id, folder_path="")` — удалить одну стратегию.
                     // Правило «только выключенные» проверено в UI до отправки.
-                    let _ = client.strategies().delete(id, "");
+                    if let Err(error) = client.strategies().delete(id, "") {
+                        log::warn!("core {} delete strategy {id} failed: {error}", server.id);
+                    }
                     log::info!("core {} delete strategy {id}", server.id);
                 }
                 Ok(CoreCmd::DeleteFolder { path }) => {
                     // `TStratDelete(strategy_id=0, folder_path=path)` — удалить папку целиком.
-                    let _ = client.strategies().delete(0, path.as_str());
+                    if let Err(error) = client.strategies().delete(0, path.as_str()) {
+                        log::warn!("core {} delete folder {path} failed: {error}", server.id);
+                    }
                     log::info!("core {} delete folder {path}", server.id);
                 }
                 Ok(CoreCmd::CreateStrategies { specs }) => {
@@ -351,26 +368,36 @@ pub fn run(
                     to,
                 }) => {
                     // Перенос строго в пределах ЭТОГО ядра (клиент конкретного ядра).
-                    let _ = client.balances().transfer_asset(
+                    if let Err(error) = client.balances().transfer_asset(
                         &asset,
                         qty,
                         to_exchange_kind(from),
                         to_exchange_kind(to),
-                    );
+                    ) {
+                        log::warn!(
+                            "core {} transfer {qty} {asset} {from:?}->{to:?} failed: {error}",
+                            server.id
+                        );
+                    }
                     // После переноса просим свежий список — UI увидит новые остатки.
-                    let _ = client.balances().refresh_transfer_assets();
-                    log::info!(
-                        "core {} transfer {qty} {asset} {from:?}->{to:?}",
-                        server.id
-                    );
+                    if let Err(error) = client.balances().refresh_transfer_assets() {
+                        log::warn!("core {} refresh transfer assets failed: {error}", server.id);
+                    }
+                    log::info!("core {} transfer {qty} {asset} {from:?}->{to:?}", server.id);
                 }
                 Ok(CoreCmd::RefreshTransferAssets) => {
-                    let _ = client.balances().refresh_transfer_assets();
+                    if let Err(error) = client.balances().refresh_transfer_assets() {
+                        log::warn!("core {} refresh transfer assets failed: {error}", server.id);
+                    }
                 }
                 Ok(CoreCmd::ConvertDust) => {
                     // Конверсия мелких остатков в BNB (Engine API), необратимо.
-                    let _ = client.balances().convert_dust_bnb();
-                    let _ = client.balances().refresh_transfer_assets();
+                    if let Err(error) = client.balances().convert_dust_bnb() {
+                        log::warn!("core {} convert dust failed: {error}", server.id);
+                    }
+                    if let Err(error) = client.balances().refresh_transfer_assets() {
+                        log::warn!("core {} refresh transfer assets failed: {error}", server.id);
+                    }
                     log::info!("core {} convert dust", server.id);
                 }
                 Err(TryRecvError::Empty) => break,

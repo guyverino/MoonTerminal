@@ -532,14 +532,7 @@ impl RenderState {
                 if self.base_dirty || self.base_cache.needs_rebuild(gpu) {
                     let base_rtv = self.base_cache.begin_rebuild(&device, &context, gpu)?;
                     self.render_window_background_d3d(res, &device, &context, &base_rtv, gpu);
-                    self.render_chart_base_d3d(
-                        res,
-                        &device,
-                        &context,
-                        &base_rtv,
-                        gpu,
-                        &scissor_rs,
-                    );
+                    self.render_chart_base_d3d(res, &device, &context, &base_rtv, gpu, &scissor_rs);
                     self.base_dirty = false;
                 }
                 self.base_cache.blit_to(&context, &rtv, gpu);

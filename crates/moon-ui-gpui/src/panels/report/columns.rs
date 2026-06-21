@@ -37,10 +37,9 @@ pub(super) fn report_data_row(
 
 fn report_data_cell(col: &str, val: &Value, p: MoonPalette) -> MoonDataCell {
     let (text, color) = cell(col, val, p);
-    // Клиппируем по реальной ширине колонки: `MoonDataTable::render_cell` ставит
-    // `whitespace_nowrap()` БЕЗ `overflow_hidden()`, поэтому длинный текст вытекает на
-    // соседнюю ячейку (баг форка, см. docs-internal/FORK_BUGS.md). Обёртка с
-    // overflow_hidden обрезает текст по границе колонки. Выравнивание — как у колонки.
+    // Клиппируем форматированный content по реальной ширине колонки. Выравнивание — как
+    // у колонки, а сам MoonDataTable дополнительно защищает границы ячейки на уровне
+    // контейнера.
     let right = is_numeric_report_column(col);
     let color = color.unwrap_or_else(|| MoonTone::Default.color(p));
     let inner = div()

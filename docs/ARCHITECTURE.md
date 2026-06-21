@@ -44,6 +44,41 @@
 
 Push-события остаются для UI-виджетов и редких уведомлений. Chart data path — pull на frame tick.
 
+## UI Components
+
+Приложение зависит от `Moonbot-Tech/MoonUI` и использует компоненты через `moon_ui::*` /
+`moon_ui::components::*`. Прикладные панели терминала не должны заново рисовать общие UI-паттерны
+вручную, если в MoonUI уже есть подходящий компонент или близкий Longbridge-наследник.
+
+Правило адаптации:
+
+- если компонент Longbridge уже даёт нужную механику, но тема/геометрия/состояния не соответствуют
+  MoonBot design, править или оборачивать его нужно внутри MoonUI;
+- терминал после этого использует MoonUI API, а не прямой Longbridge API и не локальный ad-hoc
+  виджет в конкретной панели;
+- если в MoonUI не хватает публичного hook/API для терминального сценария, сначала добавить этот
+  hook в MoonUI, затем заменить экранный ручной код;
+- временные исключения должны быть явно помечены в коде или docs с причиной и планом удаления;
+- chart renderer не является UI-компонентом: chart host может использовать MoonUI chrome/overlays,
+  но собственный GPU render остаётся в `chartdx`.
+
+Практический пример: popup/menu/dialog механика должна идти через `moon_ui::components`
+(`WindowExt`, `Root` dialog/sheet/context-menu/notification layers, Moon menu wrappers). Если
+базовый Longbridge `ContextMenuExt` рисует в чужой теме, его надо привести к Moon-теме в MoonUI
+или использовать Moon-обёртку. В терминале нельзя рендерить открытое контекст-меню как child
+панели: открывать через `window.open_moon_context_menu(...)`, чтобы z-order, dismiss и future
+portal-поведение оставались ответственностью MoonUI Root.
+
+Root overlay layers не являются внешними render hooks для приложения. Приложение открывает dialog,
+sheet, context menu и notification через `WindowExt`/Moon wrappers; сам `Root::render` решает, где
+и в каком порядке эти слои оказываются относительно основного view. Это важно для chart
+UnderScene/z-order и для одинакового поведения на Windows/macOS/Linux.
+
+FireTest не читает исходники и не проверяет архитектуру статически. Встроенный
+`--debug-script chart-smoke` проверяет живое поведение: открытие графика, реальные bounds,
+native input, counters/CPU/GPU/RAM. Статические запреты вида "не рендерить меню как child
+панели" живут в `tests/theme_contract.rs`, а не внутри runtime-сценария.
+
 ## Окна
 
 Терминал использует собственную шапку и borderless/CSD поведение. Проверять отдельно:

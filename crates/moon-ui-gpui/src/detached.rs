@@ -249,7 +249,7 @@ pub fn spawn(
         origin: point(px(spec.x as f32), px(spec.y as f32)),
         size: size(px(spec.w as f32), px(spec.h as f32)),
     };
-    let opts = crate::windowing::detached_window_options(
+    let opts = crate::windowing::detached_panel_window_options(
         format!("{} — MoonTerminal", panel_title(&spec.panel)),
         WindowBounds::Windowed(bounds),
         None,

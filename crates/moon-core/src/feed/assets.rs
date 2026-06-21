@@ -6,7 +6,8 @@ use moonproto::state::{BalancesState, ExchangeKind, MarketsState, TransferAssets
 use moonproto::BaseCurrency;
 
 use super::{
-    AssetRow, AssetsSnapshot, GlobalBalanceRow, TransferAssetRow, TransferAssetsSnapshot, WalletKind,
+    AssetRow, AssetsSnapshot, GlobalBalanceRow, TransferAssetRow, TransferAssetsSnapshot,
+    WalletKind,
 };
 
 /// USD-стейблы — их курс к USDT считаем равным 1.

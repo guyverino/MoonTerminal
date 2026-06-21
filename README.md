@@ -123,6 +123,26 @@ Makefile сам подставляет MSVC-таргет на Windows и нат�
 
 ---
 
+## Обязательный FireTest
+
+Перед коммитом или пушем правок в UI, окна, dock, overlays, chart path или FireTest сам
+разработчик обязан прогнать связный runtime-сценарий:
+
+```powershell
+Remove-Item -ErrorAction SilentlyContinue firetest.log, render_diag.log, panic.log
+$p = Start-Process -PassThru .\target\x86_64-pc-windows-msvc\debug\moonterminal.exe -ArgumentList '--debug-script','chart-smoke'
+Wait-Process -Id $p.Id
+Get-Content -Encoding UTF8 firetest.log | Select-Object -Last 40
+```
+
+Успех — только явная строка `FIRETEST PASS` в `firetest.log`. Если процесс закрылся без
+`FIRETEST PASS`/`FIRETEST FAIL`, если появился `panic.log`, или если сценарий не дошёл до
+финального `stage=result`, это считается провалом и коммитить такую правку нельзя.
+
+Подробности и полный список stages: [docs/FIRETEST.md](docs/FIRETEST.md).
+
+---
+
 ## MoonUI
 
 GPUI runtime и UI-компоненты приходят из **`Moonbot-Tech/MoonUI`** (ветка `master`).

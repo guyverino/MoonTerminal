@@ -18,6 +18,7 @@ pub use store::{CoreId, CoreStore};
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
+use anyhow::{anyhow, Result};
 use moonproto::state::{LastPricePoint, MarkPricePoint, SeqRingReader, TradeHistoryRow};
 use moonproto::MoonClient;
 
@@ -414,6 +415,16 @@ impl SessionManager {
         log::info!("reconnect: core={id}");
     }
 
+    fn send_core_cmd(&self, core: CoreId, cmd: CoreCmd, action: &str) -> Result<()> {
+        let Some(s) = self.sessions.iter().find(|s| s.id == core) else {
+            return Err(anyhow!("ядро {core} недоступно для команды: {action}"));
+        };
+        s.handle
+            .cmd_tx
+            .send(cmd)
+            .map_err(|_| anyhow!("канал команд ядра {core} закрыт: {action}"))
+    }
+
     /// Действие со стратегиями ядра (из окна стратегий): единый путь команд через
     /// per-core канал. Сначала синхронизирует галки (`checks`), затем — старт/стоп
     /// отмеченных (`start_stop`). Пустое действие — no-op.
@@ -422,70 +433,71 @@ impl SessionManager {
         core: CoreId,
         checks: Vec<(u64, bool)>,
         start_stop: Option<bool>,
-    ) {
+    ) -> Result<()> {
         if checks.is_empty() && start_stop.is_none() {
-            return;
+            return Ok(());
         }
-        if let Some(s) = self.sessions.iter().find(|s| s.id == core) {
-            let _ = s
-                .handle
-                .cmd_tx
-                .send(CoreCmd::StrategiesAction { checks, start_stop });
-        }
+        self.send_core_cmd(
+            core,
+            CoreCmd::StrategiesAction { checks, start_stop },
+            "strategies action",
+        )
     }
 
     /// Редактирование полей стратегий ядра: на каждую стратегию свой `(id, changes)`. ВСЕ
     /// правки ядра уходят ОДНОЙ командой (полный снимок правится на стороне feed одним
     /// `sync_local_strategies`) — иначе при нескольких выбранных стратегиях одного ядра
     /// второй sync перетирал бы первый (применялось бы к одной).
-    pub fn edit_strategies(&self, core: CoreId, edits: Vec<(u64, Vec<(String, String)>)>) {
+    pub fn edit_strategies(
+        &self,
+        core: CoreId,
+        edits: Vec<(u64, Vec<(String, String)>)>,
+    ) -> Result<()> {
         if edits.is_empty() {
-            return;
+            return Ok(());
         }
-        if let Some(s) = self.sessions.iter().find(|s| s.id == core) {
-            let _ = s.handle.cmd_tx.send(CoreCmd::EditStrategyFields { edits });
-        }
+        self.send_core_cmd(
+            core,
+            CoreCmd::EditStrategyFields { edits },
+            "edit strategies",
+        )
     }
 
     /// Удалить ОДНУ стратегию ядра по `id` (необратимо). Правило «только выключенные»
     /// проверяется в UI до вызова.
-    pub fn delete_strategy(&self, core: CoreId, id: u64) {
-        if let Some(s) = self.sessions.iter().find(|s| s.id == core) {
-            let _ = s.handle.cmd_tx.send(CoreCmd::DeleteStrategy { id });
-        }
+    pub fn delete_strategy(&self, core: CoreId, id: u64) -> Result<()> {
+        self.send_core_cmd(core, CoreCmd::DeleteStrategy { id }, "delete strategy")
     }
 
     /// Удалить ПАПКУ ядра целиком по пути (необратимо). Стратегии под папкой должны быть
     /// удалены/перенесены заранее (UI это гарантирует).
-    pub fn delete_folder(&self, core: CoreId, path: String) {
+    pub fn delete_folder(&self, core: CoreId, path: String) -> Result<()> {
         if path.is_empty() {
-            return;
+            return Ok(());
         }
-        if let Some(s) = self.sessions.iter().find(|s| s.id == core) {
-            let _ = s.handle.cmd_tx.send(CoreCmd::DeleteFolder { path });
-        }
+        self.send_core_cmd(core, CoreCmd::DeleteFolder { path }, "delete folder")
     }
 
     /// Создать новые стратегии ядра (создание / вставка из буфера). feed добавит их к
     /// полному набору с новыми id и одним sync. Один набор на ядро (вызывать по разу на ядро).
-    pub fn create_strategies(&self, core: CoreId, specs: Vec<NewStrategySpec>) {
+    pub fn create_strategies(&self, core: CoreId, specs: Vec<NewStrategySpec>) -> Result<()> {
         if specs.is_empty() {
-            return;
+            return Ok(());
         }
-        if let Some(s) = self.sessions.iter().find(|s| s.id == core) {
-            let _ = s.handle.cmd_tx.send(CoreCmd::CreateStrategies { specs });
-        }
+        self.send_core_cmd(
+            core,
+            CoreCmd::CreateStrategies { specs },
+            "create strategies",
+        )
     }
 
     /// Сменить папку существующих стратегий ядра (переименование папки / перенос).
     /// `moves` — `(strategy_id, новый folder_path)`. Один набор на ядро.
-    pub fn move_strategies(&self, core: CoreId, moves: Vec<(u64, String)>) {
+    pub fn move_strategies(&self, core: CoreId, moves: Vec<(u64, String)>) -> Result<()> {
         if moves.is_empty() {
-            return;
+            return Ok(());
         }
-        if let Some(s) = self.sessions.iter().find(|s| s.id == core) {
-            let _ = s.handle.cmd_tx.send(CoreCmd::MoveStrategies { moves });
-        }
+        self.send_core_cmd(core, CoreCmd::MoveStrategies { moves }, "move strategies")
     }
 
     /// Перенос актива между кошельками ОДНОГО ядра (drag&drop в окне «Активы»).
@@ -497,32 +509,34 @@ impl SessionManager {
         qty: f64,
         from: WalletKind,
         to: WalletKind,
-    ) {
+    ) -> Result<()> {
         if from == to || asset.is_empty() || !(qty > 0.0) {
-            return;
+            return Ok(());
         }
-        if let Some(s) = self.sessions.iter().find(|s| s.id == core) {
-            let _ = s.handle.cmd_tx.send(CoreCmd::TransferAsset {
+        self.send_core_cmd(
+            core,
+            CoreCmd::TransferAsset {
                 asset,
                 qty,
                 from,
                 to,
-            });
-        }
+            },
+            "transfer asset",
+        )
     }
 
     /// Запросить свежий список transfer-активов ядра (по всем кошелькам).
-    pub fn refresh_transfer_assets(&self, core: CoreId) {
-        if let Some(s) = self.sessions.iter().find(|s| s.id == core) {
-            let _ = s.handle.cmd_tx.send(CoreCmd::RefreshTransferAssets);
-        }
+    pub fn refresh_transfer_assets(&self, core: CoreId) -> Result<()> {
+        self.send_core_cmd(
+            core,
+            CoreCmd::RefreshTransferAssets,
+            "refresh transfer assets",
+        )
     }
 
     /// Сконвертировать «пыль» ядра в BNB (необратимо). Per-core.
-    pub fn convert_dust(&self, core: CoreId) {
-        if let Some(s) = self.sessions.iter().find(|s| s.id == core) {
-            let _ = s.handle.cmd_tx.send(CoreCmd::ConvertDust);
-        }
+    pub fn convert_dust(&self, core: CoreId) -> Result<()> {
+        self.send_core_cmd(core, CoreCmd::ConvertDust, "convert dust")
     }
 
     /// Read-only доступ к аккаунтному плану (статусы/ордера/детекты/стратегии).

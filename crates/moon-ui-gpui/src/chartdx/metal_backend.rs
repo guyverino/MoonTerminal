@@ -12,7 +12,7 @@ use metal::{
 };
 use moon_chart::layers::{LineInstance, MarkerInstance, SegInstance, ZoneInstance};
 use moon_core::data::{LevelInstance, PriceLinePoint};
-use objc::msg_send;
+use objc::{msg_send, sel, sel_impl};
 use std::ffi::c_void;
 
 use super::types::{

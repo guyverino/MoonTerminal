@@ -4,6 +4,40 @@
 
 use super::*;
 
+fn hex3(rgb: [u8; 3]) -> u32 {
+    ((rgb[0] as u32) << 16) | ((rgb[1] as u32) << 8) | rgb[2] as u32
+}
+
+fn initial_palette_from_theme(theme: &ChartTheme) -> moon_ui::MoonPalette {
+    let panel = hex3(theme.panel_bg);
+    let chart_bg = hex3(theme.bg);
+    let border = hex3(theme.grid);
+    let accent = hex3(theme.cross);
+    let green = hex3(theme.book_bid);
+    let orange = hex3(theme.book_ask);
+    moon_ui::MoonPalette {
+        shell: panel,
+        shell_high: panel,
+        panel,
+        panel_high: panel,
+        chart_bg,
+        border,
+        text: accent,
+        text_soft: border,
+        text_muted: border,
+        table_head: panel,
+        table_body: panel,
+        table_selected: panel,
+        green,
+        red: orange,
+        orange,
+        amber: accent,
+        blue: accent,
+        accent,
+        yellow: accent,
+    }
+}
+
 impl ChartEngine {
     pub fn new(epoch: f64, theme: ChartTheme) -> Self {
         Self::new_kind(epoch, theme, ContainerKind::Main)
@@ -26,7 +60,7 @@ impl ChartEngine {
             firetest_text_labels: Vec::new(),
             firetest_text_runs: Vec::new(),
             firetest_force_present: false,
-            ui_palette: moon_ui::MoonPalette::TERMINAL,
+            ui_palette: initial_palette_from_theme(&theme),
             slot_origin: [0.0, 0.0],
             cursor: None,
             cursor_color: {

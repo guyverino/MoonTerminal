@@ -687,7 +687,7 @@ impl Render for ChartTabs {
         // Откреп-вкладки: вернуть закрытые в стрип (репин) + восстановить сохранённые окна
         // (charts.json) на первом render — пустыми, ждут детект.
         self.drain_chart_repin(cx);
-        self.restore_detached(window.window_handle(), cx);
+        self.restore_detached(cx);
         // Бейджи = непрочитанные С МОМЕНТА УХОДА: на АКТИВНОЙ вкладке seen догоняет pane_count
         // (бейджа нет — ты смотришь). Ушёл → seen заморожен → новые монеты растят бейдж только
         // этой вкладки (а не всех открытых). Прибраться от закрытых вкладок: чистим seen.
@@ -772,14 +772,13 @@ impl Render for ChartTabs {
             .on_click({
                 let tab_keys = tab_keys.clone();
                 let view = view.clone();
-                move |ix, event, window, app| {
+                move |ix, event, _window, app| {
                     let Some(tab_id) = tab_keys.get(ix).cloned() else {
                         return;
                     };
-                    let owner = window.window_handle();
                     view.update(app, |this, cx| {
                         if !matches!(tab_id, Tab::Main) && event.click_count() >= 2 {
-                            this.detach(tab_id, Some(owner), cx);
+                            this.detach(tab_id, cx);
                         } else if matches!(tab_id, Tab::Main)
                             || this
                                 .add

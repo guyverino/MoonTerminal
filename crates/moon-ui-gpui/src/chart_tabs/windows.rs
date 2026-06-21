@@ -40,12 +40,7 @@ impl ChartTabs {
     }
 
     /// Отцепить AddToChart-вкладку в отдельное ОС-окно (убрать из стрипа).
-    pub(super) fn detach(
-        &mut self,
-        tab: Tab,
-        owner: Option<AnyWindowHandle>,
-        cx: &mut Context<Self>,
-    ) {
+    pub(super) fn detach(&mut self, tab: Tab, cx: &mut Context<Self>) {
         let Tab::Add(n, bucket) = tab.clone() else {
             return;
         };
@@ -75,7 +70,7 @@ impl ChartTabs {
             "[detach] n={n} bucket={bucket:?} → detached=Some({},{},{},{})",
             geom.x, geom.y, geom.w, geom.h
         ));
-        self.open_chart_window(n, panel, bucket, geom, false, owner, cx);
+        self.open_chart_window(n, panel, bucket, geom, false, cx);
         cx.notify();
     }
 
@@ -91,7 +86,6 @@ impl ChartTabs {
         bucket: ChartBucket,
         geom: chart_persist::WinGeom,
         restored: bool,
-        owner: Option<AnyWindowHandle>,
         cx: &mut Context<Self>,
     ) {
         panel.update(cx, |p, pcx| p.set_scene_visible(false, pcx));
@@ -106,7 +100,7 @@ impl ChartTabs {
             .into_iter()
             .find(|d| d.bounds().contains(&origin))
             .map(|d| d.id());
-        let opts = crate::windowing::detached_window_options(
+        let opts = crate::windowing::detached_chart_window_options(
             format!(
                 "MoonTerminal — {}",
                 chart_pane_label(&self.backend, &self.group, n, &bucket, cx)
@@ -116,7 +110,6 @@ impl ChartTabs {
                 size: size(px(geom.w as f32), px(geom.h as f32)),
             }),
             display_id,
-            owner,
         );
         let backend = self.backend.clone();
         let group = self.group.clone();
@@ -261,7 +254,7 @@ impl ChartTabs {
     /// Восстановить отложенные откреп-окна (charts.json). Открывать ОС-окна В render НЕЛЬЗЯ
     /// (рушит element-арену gpui: «ArenaRef after Arena was cleared»). Откладываем через
     /// `cx.defer` — закрытие выполнится ПОСЛЕ цикла рендера, когда открытие окон безопасно.
-    pub(super) fn restore_detached(&mut self, owner: AnyWindowHandle, cx: &mut Context<Self>) {
+    pub(super) fn restore_detached(&mut self, cx: &mut Context<Self>) {
         if self.restore_pending.is_empty() {
             return;
         }
@@ -270,11 +263,8 @@ impl ChartTabs {
         cx.defer(move |app| {
             this.update(app, |this, cx| {
                 let (epoch, theme) = (this.epoch, this.theme.clone());
-                // Восстановленный откреп-чарт — owned-окно СВОЕЙ группы (как при runtime-detach).
-                // Owner = окно ЭТОГО ChartTabs (= групп-окно), берём его handle в render. НЕ через
-                // group_windows: на старте оно может быть ещё не вставлено к моменту defer →
-                // owner=None → Independent → отдельная кнопка в таскбаре.
-                let owner = Some(owner);
+                // Откреп-чарты всегда independent: owned-связь поднимает Main при клике
+                // по графику на мультимониторе. Taskbar скрывается policy + Windows fallback.
                 for (n, bucket, geom, scale) in pending {
                     let backend = this.backend.clone();
                     let panel = cx.new(|_| {
@@ -283,7 +273,7 @@ impl ChartTabs {
                     if scale.is_some() {
                         panel.update(cx, |p, pcx| p.set_scale(scale, pcx));
                     }
-                    this.open_chart_window(n, panel, bucket, geom, true, owner, cx);
+                    this.open_chart_window(n, panel, bucket, geom, true, cx);
                 }
                 cx.notify();
             });

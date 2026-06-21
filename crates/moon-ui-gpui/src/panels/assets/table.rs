@@ -2,6 +2,7 @@
 //! (баланс USDT), таблица позиций/балансов и нижний список ядер (свободно/итого).
 
 use super::*;
+use moon_ui::components::{WindowExt as _, notification::Notification};
 
 impl AssetsView {
     /// Верхняя панель управления: счётчик, галка «показать всё», итоги (Σ стоимость / Σ PnL).
@@ -139,10 +140,15 @@ impl AssetsView {
                     money(free),
                     money(total)
                 )))
-                .on_click(cx.listener(move |this, _, _, cx| {
+                .on_click(cx.listener(move |this, _, window, cx| {
                     if this.selected_core != Some(cid) {
                         this.selected_core = Some(cid);
-                        this.backend.read(cx).session.refresh_transfer_assets(cid);
+                        if let Err(error) =
+                            this.backend.read(cx).session.refresh_transfer_assets(cid)
+                        {
+                            log::warn!("assets refresh failed for core {cid}: {error}");
+                            window.push_notification(Notification::error(error.to_string()), cx);
+                        }
                         cx.notify();
                     }
                 }));

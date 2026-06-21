@@ -315,7 +315,7 @@ impl ChartView {
         } else {
             Self::phase_clean_default_px_per_ms(area_w, 60.0)
         } * (DEFAULT_WINDOW_MS / MIN_WINDOW_MS))
-        .max(lo);
+            .max(lo);
         self.px_per_ms = next.clamp(lo, hi);
         self.x_default_scale = (self.px_per_ms - self.phase_default_px_per_ms).abs() <= 1e-9;
         if was_follow {

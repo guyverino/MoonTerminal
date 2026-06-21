@@ -416,7 +416,7 @@ impl StrategiesView {
                     }))
                     .on_mouse_down(
                         MouseButton::Right,
-                        cx.listener(move |this, e: &MouseDownEvent, _, cx| {
+                        cx.listener(move |this, e: &MouseDownEvent, window, cx| {
                             cx.stop_propagation();
                             this.open_menu(
                                 super::tree_ui::ContextMenu {
@@ -424,6 +424,7 @@ impl StrategiesView {
                                     target: super::tree_ui::MenuTarget::Folder(menu_path.clone()),
                                     pos: e.position,
                                 },
+                                window,
                                 cx,
                             );
                         }),
@@ -545,7 +546,7 @@ impl StrategiesView {
             }))
             .on_mouse_down(
                 MouseButton::Right,
-                cx.listener(move |this, e: &MouseDownEvent, _, cx| {
+                cx.listener(move |this, e: &MouseDownEvent, window, cx| {
                     cx.stop_propagation();
                     // ПКМ по невыбранной — выбрать только её (как в проводнике).
                     if !this.sel.contains(&key) {
@@ -559,6 +560,7 @@ impl StrategiesView {
                             target: super::tree_ui::MenuTarget::Strategy(key.1),
                             pos: e.position,
                         },
+                        window,
                         cx,
                     );
                 }),

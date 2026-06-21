@@ -106,25 +106,6 @@ pub(crate) fn trading_window_options(
     )
 }
 
-/// Самостоятельное окно-инструмент (напр. «Стратегии»): ОБЫЧНОЕ окно, видимое в
-/// таскбаре и НЕ owned — не сворачивается/не активируется вместе с родителем (в отличие
-/// от `tool_window_options`, чей owner связывает окно с главным). `min_size` — мин. размер.
-pub(crate) fn standalone_window_options(
-    title: impl Into<SharedString>,
-    window_bounds: WindowBounds,
-    min_size: Option<Size<Pixels>>,
-) -> WindowOptions {
-    app_window_options(
-        title,
-        window_bounds,
-        None,
-        min_size,
-        APP_ID.to_string(),
-        None,
-        true,
-    )
-}
-
 pub(crate) fn tool_window_options(
     title: impl Into<SharedString>,
     window_bounds: WindowBounds,
@@ -134,16 +115,30 @@ pub(crate) fn tool_window_options(
     owned_window_options(title, window_bounds, None, min_size, owner, true)
 }
 
-pub(crate) fn detached_window_options(
+/// Открепленная non-chart панель (`Orders`, `Assets`, `Log`, `Report`).
+///
+/// Это owned/tool окно, когда есть владелец: оно не получает отдельную taskbar-кнопку и
+/// живёт вместе с окном группы. При restore owner может отсутствовать; тогда окно
+/// становится independent, что лучше, чем потерять восстановленную панель.
+pub(crate) fn detached_panel_window_options(
     title: impl Into<SharedString>,
     window_bounds: WindowBounds,
     display_id: Option<DisplayId>,
-    _owner: Option<AnyWindowHandle>,
+    owner: Option<AnyWindowHandle>,
 ) -> WindowOptions {
-    // Откреп-чарты — НЕЗАВИСИМЫЕ окна (НЕ owned). owned образует с Main группу активации ОС:
-    // клик по окну чарта поднимал и Main (особенно заметно на мультимониторе — Main выскакивал
-    // на другом экране). Из таскбара прячем ЯВНО (`Hidden`) — раньше скрытие шло побочкой owned.
-    // `_owner` больше не используется (оставлен в сигнатуре, чтобы не трогать места вызова).
+    owned_window_options(title, window_bounds, display_id, None, owner, true)
+}
+
+/// Открепленное chart-окно.
+///
+/// Chart windows намеренно independent: Win32/AppKit/X11 owned/transient связь поднимает
+/// главное окно группы при клике по графику, что ломает мультимониторный сценарий. В taskbar
+/// отдельную кнопку не показываем через явную policy и Windows fallback после создания окна.
+pub(crate) fn detached_chart_window_options(
+    title: impl Into<SharedString>,
+    window_bounds: WindowBounds,
+    display_id: Option<DisplayId>,
+) -> WindowOptions {
     let mut options = app_window_options(
         title,
         window_bounds,
@@ -303,10 +298,9 @@ pub(crate) fn set_group_window_icon(window: &Window, icon_id: u32) {
 pub(crate) fn set_group_window_icon(_: &Window, _: u32) {}
 
 /// Скрыть окно из таскбара/Alt-Tab (Windows) через `WS_EX_TOOLWINDOW` — БЕЗ owner-связи.
-/// Нужно для откреп-чартов: они независимы (owned цеплялся за активацию Main, см.
-/// `detached_window_options`), а движок MoonUI `taskbar_visibility::Hidden` пока не реализует
-/// (`show_for` не подключён в бэкенде — скрытие шло только как побочка owner). Идемпотентно:
-/// меняем ex-style (с hide/show — требование WinAPI для смены кнопки таскбара) лишь однажды.
+/// Нужно для independent chart windows: одной `taskbar_visibility::Hidden` недостаточно
+/// для всех Win32/taskbar путей, поэтому после создания окна принудительно переводим его
+/// в tool-window style. Идемпотентно: реальная смена стиля происходит только при отличии.
 #[cfg(target_os = "windows")]
 pub(crate) fn hide_window_from_taskbar(window: &Window) {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};

@@ -474,8 +474,7 @@ impl SettingsView {
 
     /// Заголовок колонки с тултипом (порт egui `head_tip`). Подпись помечена подчёркиванием
     /// + чуть ярче цветом — сигнал «наведи, есть подсказка». `pad`/`grow` — как в `col_head`.
-    /// Тултип — штатный `MoonTooltipView` движка (перенос длинного текста — баг движка,
-    /// см. docs-internal/FORK_BUGS.md; чинится в MoonUI, не в терминале).
+    /// Тултип — штатный `MoonTooltipView` движка; длинный текст переносится внутри max width.
     fn col_head_tip(
         id: &'static str,
         label: &str,

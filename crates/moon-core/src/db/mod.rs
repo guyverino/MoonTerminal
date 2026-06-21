@@ -402,7 +402,12 @@ pub fn load_visible(conn: &Connection) -> Option<Vec<String>> {
             |r| r.get(0),
         )
         .ok()?;
-    Some(csv.split(',').filter(|s| !s.is_empty()).map(str::to_string).collect())
+    Some(
+        csv.split(',')
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect(),
+    )
 }
 
 /// Сохранить набор видимых колонок отчёта (имена через запятую).

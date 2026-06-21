@@ -77,8 +77,6 @@ pub struct StrategiesView {
     field_memos: HashMap<String, Entity<MoonTextAreaState>>,
     /// Поле, для которого открыт контекстный helper/autocomplete.
     focused_field: Option<String>,
-    /// Открытое окошко просмотра длинного значения поля: (имя поля, значение).
-    popup: Option<(String, String)>,
     /// Раскрытые ядра в дереве.
     expanded_cores: HashSet<CoreId>,
     /// Раскрытые папки в дереве: (ядро, путь).
@@ -91,13 +89,11 @@ pub struct StrategiesView {
     ui_folders: HashSet<(CoreId, String)>,
     /// Активная модалка операции над деревом (создать/переименовать/подтвердить).
     op: Option<tree_ui::TreeOp>,
-    /// Ввод модалки создания/переименования — ПЕРЕСОЗДаётся на каждое открытие (свежий
-    /// entity = свежий layout; обходит панику среза MoonInput при смене значения, FORK_BUGS).
+    /// Ввод модалки создания/переименования — пересоздаётся на каждое открытие, чтобы
+    /// модалка всегда стартовала с актуальным начальным значением.
     op_input: Option<Entity<MoonInputState>>,
     /// Начальное значение для `op_input` при следующем создании (render строит инпут).
     op_input_init: String,
-    /// Открытое ПКМ-контекст-меню (цель + позиция курсора).
-    menu: Option<tree_ui::ContextMenu>,
     /// Ожидаем появления стратегии (эхо ядра после create/paste): (ядро, имя) — как
     /// придёт, выбираем её в дереве. Очищается после выбора.
     pending_select: Option<(CoreId, String)>,
@@ -182,7 +178,6 @@ impl StrategiesView {
             field_inputs: HashMap::new(),
             field_memos: HashMap::new(),
             focused_field: None,
-            popup: None,
             expanded_cores: HashSet::new(),
             expanded_folders: HashSet::new(),
             rules: Rules::load(),
@@ -191,7 +186,6 @@ impl StrategiesView {
             op: None,
             op_input: None,
             op_input_init: String::new(),
-            menu: None,
             pending_select: None,
             last_sig: initial_sig,
             // По умолчанию неактивные параметры скрыты (галка включена).
@@ -282,7 +276,10 @@ impl StrategiesView {
         }
         let b = self.backend.read(cx);
         for (core, checks, st) in actions {
-            b.session.apply_strategies(core, checks, Some(st));
+            if let Err(error) = b.session.apply_strategies(core, checks, Some(st)) {
+                log::warn!("apply strategies failed: {error}");
+                return;
+            }
         }
         self.staged.clear();
         cx.notify();
@@ -325,7 +322,10 @@ impl StrategiesView {
         let b = self.backend.read(cx);
         for (core, strat_edits) in per_core {
             let edits: Vec<(u64, Vec<(String, String)>)> = strat_edits.into_iter().collect();
-            b.session.edit_strategies(core, edits);
+            if let Err(error) = b.session.edit_strategies(core, edits) {
+                log::warn!("edit strategies failed: {error}");
+                return;
+            }
         }
         self.clear_field_draft();
         cx.notify();
@@ -361,17 +361,11 @@ impl StrategiesView {
                 return state.clone();
             }
             // Кэш мог устареть: значение в сторе изменилось (эхо сервера / правка в другом
-            // выборе), а `value` уже актуально (учитывает черновик). Синхронизируем ТИХО
-            // (`sync_value` не эмитит Change → не зациклится и не наделает ложных правок),
-            // иначе поле показывает залипшее старое значение (мульти-выбор: 62 вместо 60).
-            // НО: при УКОРОЧЕНИИ текста MoonInput паникует (input/element.rs срез по
-            // устаревшему layout, см. FORK_BUGS) — тогда пересоздаём entity (свежий layout).
-            if value.len() >= cur.len() {
-                let state = state.clone();
-                state.update(cx, |s, cx| s.sync_value(value.clone(), cx));
-                return state;
-            }
-            self.field_inputs.remove(&id);
+            // выборе), а `value` уже актуально (учитывает черновик). Синхронизируем тихо:
+            // `sync_value` не эмитит Change, поэтому не зацикливает staged edits.
+            let state = state.clone();
+            state.update(cx, |s, cx| s.sync_value(value.clone(), cx));
+            return state;
         }
         let state = cx.new(|cx| MoonInputState::new(window, cx).default_value(value));
         cx.subscribe(&state, move |this, state, ev: &MoonInputEvent, cx| {
@@ -399,14 +393,10 @@ impl StrategiesView {
             if cur == value {
                 return state.clone();
             }
-            // См. field_input_state: тихо синхронизируем; при укорочении — пересоздаём
-            // (обход паники среза по устаревшему layout, FORK_BUGS).
-            if value.len() >= cur.len() {
-                let state = state.clone();
-                state.update(cx, |s, cx| s.sync_value(value.clone(), cx));
-                return state;
-            }
-            self.field_memos.remove(&id);
+            // См. field_input_state: тихо синхронизируем с актуальным значением.
+            let state = state.clone();
+            state.update(cx, |s, cx| s.sync_value(value.clone(), cx));
+            return state;
         }
         let state = cx.new(|cx| MoonTextAreaState::new(window, cx).default_value(value));
         cx.subscribe(&state, move |this, state, ev: &MoonTextAreaEvent, cx| {
@@ -655,21 +645,9 @@ impl Render for StrategiesView {
             )
         };
         let params = self.params_panel(params_model, window, cx);
-        let overlay = self.popup_overlay(cx);
-        // Свежий ввод модалки на каждое открытие (FORK_BUGS: пересоздание = свежий layout).
-        if self.op.is_some() && self.op_input.is_none() {
-            let init = self.op_input_init.clone();
-            self.op_input = Some(cx.new(|cx| {
-                MoonInputState::new(window, cx)
-                    .default_value(init)
-                    .placeholder("имя")
-            }));
-        } else if self.op.is_none() && self.op_input.is_some() {
+        if self.op.is_none() && self.op_input.is_some() {
             self.op_input = None;
         }
-        let op_overlay = self.op_overlay(cx);
-        let menu_overlay = self.menu_overlay(cx);
-
         // Сохранить порядок текущего кадра (store-borrow держит cx, не self).
         self.flat_order = built;
 
@@ -688,8 +666,8 @@ impl Render for StrategiesView {
             .text_size(design::text_px(cx, 11.0))
             .line_height(design::line_px(cx, 14.0))
             .track_focus(&self.focus)
-            .on_key_down(cx.listener(|this, ev: &KeyDownEvent, _w, cx| {
-                this.handle_tree_key(ev, cx);
+            .on_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| {
+                this.handle_tree_key(ev, window, cx);
             }))
             .child(strategies_header(p, cx))
             .child(
@@ -701,15 +679,6 @@ impl Render for StrategiesView {
                     .child(sections)
                     .child(params),
             );
-        if let Some(overlay) = overlay {
-            root = root.child(overlay);
-        }
-        if let Some(op_overlay) = op_overlay {
-            root = root.child(op_overlay);
-        }
-        if let Some(menu_overlay) = menu_overlay {
-            root = root.child(menu_overlay);
-        }
         root = root.child(
             MoonWindowFrame::tool("strategies-window-frame-hit", chrome_width)
                 .header_height(STRATEGIES_HEADER_H)
@@ -751,8 +720,8 @@ fn strategies_header(p: MoonPalette, cx: &App) -> impl IntoElement {
         })
 }
 
-/// Открыть окно «Стратегии» (отдельное ОС-окно). Дедуп окон — в `Backend`.
-pub fn open(backend: Entity<Backend>, _owner: Option<AnyWindowHandle>, cx: &mut App) {
+/// Открыть окно «Стратегии» (tool/secondary окно). Дедуп окон — в `Backend`.
+pub fn open(backend: Entity<Backend>, owner: Option<AnyWindowHandle>, cx: &mut App) {
     // Уже открыто → сфокусировать.
     if let Some(handle) = backend.read(cx).strategies_window {
         if handle
@@ -762,8 +731,8 @@ pub fn open(backend: Entity<Backend>, _owner: Option<AnyWindowHandle>, cx: &mut 
             return;
         }
     }
-    // Самостоятельное окно (НЕ owned): не сворачивается вместе с главным окном группы.
-    // Геометрию восстанавливаем из layout (её сохраняет StrategiesView по observe_window_bounds).
+    // Tool-окно: визуально и поведенчески это часть терминала, а не отдельное приложение
+    // в taskbar. Геометрию восстанавливаем из layout (её сохраняет StrategiesView).
     let saved = backend.read(cx).layout.strategies_window;
     let bounds = saved.map_or(
         Bounds {
@@ -784,10 +753,11 @@ pub fn open(backend: Entity<Backend>, _owner: Option<AnyWindowHandle>, cx: &mut 
             .find(|d| d.bounds().contains(&origin))
             .map(|d| d.id())
     });
-    let mut opts = crate::windowing::standalone_window_options(
+    let mut opts = crate::windowing::tool_window_options(
         "MoonTerminal — Стратегии",
         WindowBounds::Windowed(bounds),
         Some(size(px(920.0), px(560.0))),
+        owner,
     );
     opts.display_id = display_id;
     let b = backend.clone();

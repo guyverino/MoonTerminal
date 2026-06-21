@@ -176,7 +176,9 @@ impl AssetsView {
             .map(|(id, _)| *id);
         if let Some(core) = first {
             this.selected_core = Some(core);
-            this.backend.read(cx).session.refresh_transfer_assets(core);
+            if let Err(error) = this.backend.read(cx).session.refresh_transfer_assets(core) {
+                log::warn!("assets initial refresh failed for core {core}: {error}");
+            }
         }
         this
     }
@@ -392,10 +394,6 @@ impl Render for AssetsView {
                     .hit_overlay(),
             );
         }
-        // Модальный диалог количества переноса — поверх всего.
-        if let Some(pt) = self.pending_transfer.clone() {
-            root = root.child(self.transfer_dialog(&pt, cx));
-        }
         root
     }
 }
@@ -431,8 +429,9 @@ fn assets_header(p: MoonPalette, cx: &App) -> impl IntoElement {
         })
 }
 
-/// Открыть глобальное окно «Активы» (singleton, все ядра). Дедуп — в `Backend.assets_window`.
-pub fn open(backend: Entity<Backend>, _owner: Option<AnyWindowHandle>, cx: &mut App) {
+/// Открыть глобальное окно «Активы» (tool/secondary singleton, все ядра).
+/// Дедуп — в `Backend.assets_window`.
+pub fn open(backend: Entity<Backend>, owner: Option<AnyWindowHandle>, cx: &mut App) {
     // Уже открыто → сфокусировать.
     if let Some(handle) = backend.read(cx).assets_window {
         if handle
@@ -460,10 +459,11 @@ pub fn open(backend: Entity<Backend>, _owner: Option<AnyWindowHandle>, cx: &mut 
             .find(|d| d.bounds().contains(&origin))
             .map(|d| d.id())
     });
-    let mut opts = crate::windowing::standalone_window_options(
+    let mut opts = crate::windowing::tool_window_options(
         "MoonTerminal — Активы",
         WindowBounds::Windowed(bounds),
         Some(size(px(900.0), px(560.0))),
+        owner,
     );
     opts.display_id = display_id;
     let b = backend.clone();

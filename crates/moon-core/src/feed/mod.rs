@@ -102,27 +102,19 @@ pub enum CoreCmd {
     },
     /// Удалить ОДНУ стратегию ядра по `id` (`TStratDelete` с `folder_path=""`). Необратимо.
     /// Enforcement правила `checked` (только выключенные) — на стороне UI до отправки.
-    DeleteStrategy {
-        id: u64,
-    },
+    DeleteStrategy { id: u64 },
     /// Удалить ПАПКУ целиком по пути (`TStratDelete` с `strategy_id=0`). Сервер сносит пустую
     /// папку; стратегии под ней должны быть удалены/перенесены заранее (UI это гарантирует).
-    DeleteFolder {
-        path: String,
-    },
+    DeleteFolder { path: String },
     /// Создать новые стратегии (создание / вставка из буфера, в т.ч. межъядерная). На стороне
     /// feed: к ПОЛНОМУ набору добавляем по `StrategySnapshot::new` (новый id = max+1 ЦЕЛЕВОГО
     /// ядра, поля из строк по схеме, `last_date=now`), один `sync_local_strategies`. Один набор
     /// на ядро.
-    CreateStrategies {
-        specs: Vec<NewStrategySpec>,
-    },
+    CreateStrategies { specs: Vec<NewStrategySpec> },
     /// Сменить папку существующих стратегий (переименование папки / перенос). `moves` —
     /// `(strategy_id, новый folder_path)`. feed правит `path` у указанных в полном наборе,
     /// бампает `last_date`, шлёт один `sync_local_strategies`.
-    MoveStrategies {
-        moves: Vec<(u64, String)>,
-    },
+    MoveStrategies { moves: Vec<(u64, String)> },
     /// Перенос актива между кошельками ОДНОГО ядра (drag&drop в дереве «Активы»).
     /// `from`/`to` — кошельки (Spot/Futures/Quarterly); `qty` в базовой монете.
     TransferAsset {
