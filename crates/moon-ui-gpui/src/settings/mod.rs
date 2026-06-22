@@ -21,9 +21,10 @@ use std::hash::{Hash, Hasher};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use moon_ui::{
-    IndexPath, MoonBackgroundPolicy, MoonButton, MoonButtonSize, MoonButtonVariant,
-    MoonColorPicker, MoonColorPickerState, MoonPalette, MoonSelectEvent, MoonSelectItem,
-    MoonSelectState, MoonSlider, MoonSliderState, MoonWindowFrame, Root, h_flex, rgba_from, v_flex,
+    IndexPath, MoonBackgroundPolicy, MoonButton, MoonButtonSize, MoonButtonVariant, MoonCheckbox,
+    MoonColorPicker, MoonColorPickerEvent, MoonColorPickerState, MoonPalette, MoonSelectEvent,
+    MoonSelectItem, MoonSelectState, MoonSlider, MoonSliderEvent, MoonSliderState, MoonWindowFrame,
+    Root, h_flex, rgba_from, v_flex,
 };
 use rust_i18n::t;
 
@@ -149,6 +150,69 @@ pub(super) fn color_row(
         )
 }
 
+/// Общий color-picker draft-настроек: init = переданное значение, на `Change` — пишет в живой
+/// `Backend.preview` через `apply` (он же делает проверку «изменилось ли» и возвращает результат) и
+/// нотифаит бэкенд. `apply` — замыкание (может захватывать индекс сервера и т.п.). Общий для вкладок
+/// Интерфейс/Линии/Подключения (тонкие обёртки делегируют сюда).
+pub(super) fn draft_color(
+    window: &mut Window,
+    cx: &mut Context<SettingsView>,
+    init: [u8; 3],
+    apply: impl Fn(&mut AppConfig, [u8; 3]) -> bool + 'static,
+) -> Entity<MoonColorPickerState> {
+    let st = cx.new(|cx| {
+        MoonColorPickerState::new(window, cx).default_value(rgb(design::rgb_to_u32(init)).into())
+    });
+    cx.subscribe(&st, move |this, _emitter, ev: &MoonColorPickerEvent, cx| {
+        let MoonColorPickerEvent::Change(h) = ev;
+        let c = hsla_u8(*h);
+        this.backend.update(cx, |b, bcx| {
+            if let Some(p) = b.preview.as_mut() {
+                if apply(p, c) {
+                    bcx.notify();
+                }
+            }
+        });
+    })
+    .detach();
+    st
+}
+
+/// Общий слайдер f32 draft-настроек: init = переданное значение, на `Change` — пишет в живой
+/// `Backend.preview` через `apply` (проверка изменения + сам сеттер; `&mut Context<Backend>` нужен
+/// тем полям, что переустанавливают тему). Нотифаит бэкенд, если `apply` вернул true.
+pub(super) fn draft_slider(
+    cx: &mut Context<SettingsView>,
+    min: f32,
+    max: f32,
+    step: f32,
+    init: f32,
+    apply: impl Fn(&mut AppConfig, f32, &mut Context<Backend>) -> bool + 'static,
+) -> Entity<MoonSliderState> {
+    let st = cx.new(|_| {
+        MoonSliderState::new()
+            .min(min)
+            .max(max)
+            .step(step)
+            .default_value(init)
+    });
+    cx.subscribe(&st, move |this, _emitter, ev: &MoonSliderEvent, cx| {
+        let MoonSliderEvent::Change(f) = ev else {
+            return;
+        };
+        let f = f.end();
+        this.backend.update(cx, |b, bcx| {
+            if let Some(p) = b.preview.as_mut() {
+                if apply(p, f, bcx) {
+                    bcx.notify();
+                }
+            }
+        });
+    })
+    .detach();
+    st
+}
+
 /// Режимы источника данных (вкладка «Подключения») — стабильный i18n-ключ + режим;
 /// подпись локализуется на use-сайте (`conn.market_dedup`/`conn.market_percore`).
 const MODE_LABELS: [(&str, MarketDataMode); 2] = [
@@ -180,6 +244,37 @@ pub struct SettingsView {
 }
 
 impl SettingsView {
+    /// Общий чекбокс draft-настроек: init = переданное значение, на `Change` — пишет в живой
+    /// `Backend.preview` через `apply` (проверка изменения + сеттер) и нотифаит бэкенд+view, если
+    /// что-то поменялось. Возвращает базовый `MoonCheckbox` — вызывающий навешивает `.label()`/
+    /// `.size()`. Общий для вкладок Линии/Подключения/Общие.
+    pub(super) fn draft_checkbox(
+        &self,
+        cx: &Context<Self>,
+        id: impl Into<SharedString>,
+        init: bool,
+        apply: impl Fn(&mut AppConfig, bool) -> bool + 'static,
+    ) -> MoonCheckbox {
+        MoonCheckbox::new(id.into())
+            .checked(init)
+            .on_change(cx.listener(move |this, ch: &bool, _w, cx| {
+                let v = *ch;
+                let changed = this.backend.update(cx, |b, bcx| {
+                    let mut changed = false;
+                    if let Some(p) = b.preview.as_mut() {
+                        if apply(p, v) {
+                            bcx.notify();
+                            changed = true;
+                        }
+                    }
+                    changed
+                });
+                if changed {
+                    cx.notify();
+                }
+            }))
+    }
+
     fn new(backend: Entity<Backend>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let iface = interface::build(&backend, window, cx);
         let lines = lines::build(&backend, window, cx);

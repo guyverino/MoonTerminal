@@ -4,8 +4,8 @@
 
 use gpui::*;
 use moon_ui::{
-    MoonButton, MoonButtonSize, MoonCheckbox, MoonCheckboxSize, MoonMenuSize, MoonPalette,
-    MoonSelect, StyledExt, h_flex, rgba_from, v_flex,
+    MoonButton, MoonButtonSize, MoonCheckboxSize, MoonMenuSize, MoonPalette, MoonSelect, StyledExt,
+    h_flex, rgba_from, v_flex,
 };
 use rust_i18n::t;
 
@@ -67,27 +67,16 @@ impl SettingsView {
             .child(super::separator(p, cx))
             // Отдельная чарт-вкладка на каждое ядро.
             .child(
-                MoonCheckbox::new("split")
-                    .label(t!("general.charts_split_by_core").to_string())
-                    .checked(split)
-                    .size(MoonCheckboxSize::Normal)
-                    .on_change(cx.listener(|this, ch: &bool, _w, cx| {
-                        let v = *ch;
-                        let changed = this.backend.update(cx, |b, bcx| {
-                            let mut changed = false;
-                            if let Some(p) = b.preview.as_mut() {
-                                if p.charts_split_by_core != v {
-                                    p.charts_split_by_core = v;
-                                    bcx.notify();
-                                    changed = true;
-                                }
-                            }
-                            changed
-                        });
-                        if changed {
-                            cx.notify();
-                        }
-                    })),
+                self.draft_checkbox(cx, "split", split, |p, v| {
+                    if p.charts_split_by_core != v {
+                        p.charts_split_by_core = v;
+                        true
+                    } else {
+                        false
+                    }
+                })
+                .label(t!("general.charts_split_by_core").to_string())
+                .size(MoonCheckboxSize::Normal),
             )
             .child(hint(&t!("general.charts_split_by_core_hint")))
             .child(super::separator(p, cx))
@@ -95,27 +84,16 @@ impl SettingsView {
             // в полоске вкладок / шапке выносного окна (см. chart_tabs::layout_popup).
             // Логи в файлы + срок хранения.
             .child(
-                MoonCheckbox::new("logf")
-                    .label(t!("general.log_to_file").to_string())
-                    .checked(logf)
-                    .size(MoonCheckboxSize::Normal)
-                    .on_change(cx.listener(|this, ch: &bool, _w, cx| {
-                        let v = *ch;
-                        let changed = this.backend.update(cx, |b, bcx| {
-                            let mut changed = false;
-                            if let Some(p) = b.preview.as_mut() {
-                                if p.log_to_file != v {
-                                    p.log_to_file = v;
-                                    bcx.notify();
-                                    changed = true;
-                                }
-                            }
-                            changed
-                        });
-                        if changed {
-                            cx.notify();
-                        }
-                    })),
+                self.draft_checkbox(cx, "logf", logf, |p, v| {
+                    if p.log_to_file != v {
+                        p.log_to_file = v;
+                        true
+                    } else {
+                        false
+                    }
+                })
+                .label(t!("general.log_to_file").to_string())
+                .size(MoonCheckboxSize::Normal),
             )
             .child(hint(&t!("general.log_to_file_hint")))
             // Срок хранения активен только при включённой записи лога (порт

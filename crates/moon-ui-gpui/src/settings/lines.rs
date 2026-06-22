@@ -5,12 +5,12 @@
 
 use gpui::*;
 use moon_ui::{
-    MoonAccordion, MoonCheckbox, MoonCheckboxSize, MoonColorPicker, MoonColorPickerEvent,
-    MoonColorPickerState, MoonPalette, MoonSliderEvent, MoonSliderState, StyledExt, h_flex, v_flex,
+    MoonAccordion, MoonCheckboxSize, MoonColorPicker, MoonColorPickerState, MoonPalette,
+    MoonSliderState, StyledExt, h_flex, v_flex,
 };
 
-use super::{SettingsView, hsla_u8, separator, slider_row};
-use crate::{Backend, design};
+use super::{SettingsView, separator, slider_row};
+use crate::Backend;
 use moon_core::config::OrdersStyle;
 
 /// Чекбокс ордер-стиля: (id, подпись, геттер, сеттер) — для тела блока линии.
@@ -39,23 +39,14 @@ fn ord_color(
     set: fn(&mut OrdersStyle, [u8; 3]),
 ) -> Entity<MoonColorPickerState> {
     let cur = get(&backend.read(cx).config.orders);
-    let st = cx.new(|cx| {
-        MoonColorPickerState::new(window, cx).default_value(rgb(design::rgb_to_u32(cur)).into())
-    });
-    cx.subscribe(&st, move |this, _e, ev: &MoonColorPickerEvent, cx| {
-        let MoonColorPickerEvent::Change(h) = ev;
-        let c = hsla_u8(*h);
-        this.backend.update(cx, |b, cx| {
-            if let Some(p) = b.preview.as_mut() {
-                if get(&p.orders) != c {
-                    set(&mut p.orders, c);
-                    cx.notify();
-                }
-            }
-        });
+    super::draft_color(window, cx, cur, move |p, c| {
+        if get(&p.orders) != c {
+            set(&mut p.orders, c);
+            true
+        } else {
+            false
+        }
     })
-    .detach();
-    st
 }
 
 /// Слайдер f32 поля OrdersStyle (пишет в draft.orders).
@@ -69,29 +60,14 @@ fn ord_slider(
     step: f32,
 ) -> Entity<MoonSliderState> {
     let cur = get(&backend.read(cx).config.orders);
-    let st = cx.new(|_| {
-        MoonSliderState::new()
-            .min(min)
-            .max(max)
-            .step(step)
-            .default_value(cur)
-    });
-    cx.subscribe(&st, move |this, _e, ev: &MoonSliderEvent, cx| {
-        let MoonSliderEvent::Change(f) = ev else {
-            return;
-        };
-        let f = f.end();
-        this.backend.update(cx, |b, cx| {
-            if let Some(p) = b.preview.as_mut() {
-                if get(&p.orders) != f {
-                    set(&mut p.orders, f);
-                    cx.notify();
-                }
-            }
-        });
+    super::draft_slider(cx, min, max, step, cur, move |p, f, _bcx| {
+        if get(&p.orders) != f {
+            set(&mut p.orders, f);
+            true
+        } else {
+            false
+        }
     })
-    .detach();
-    st
 }
 
 /// Строит [`LineEd`] для поля `$line` OrdersStyle (fn-ptr аксессоры).
@@ -231,27 +207,16 @@ impl SettingsView {
             let b = self.backend.read(cx);
             get(&b.preview.as_ref().unwrap_or(&b.config).orders)
         };
-        MoonCheckbox::new(id)
-            .label(label)
-            .checked(cur)
-            .size(MoonCheckboxSize::Compact)
-            .on_change(cx.listener(move |this, ch: &bool, _w, cx| {
-                let v = *ch;
-                let changed = this.backend.update(cx, |b, bcx| {
-                    let mut changed = false;
-                    if let Some(p) = b.preview.as_mut() {
-                        if get(&p.orders) != v {
-                            set(&mut p.orders, v);
-                            bcx.notify();
-                            changed = true;
-                        }
-                    }
-                    changed
-                });
-                if changed {
-                    cx.notify();
-                }
-            }))
+        self.draft_checkbox(cx, id, cur, move |p, v| {
+            if get(&p.orders) != v {
+                set(&mut p.orders, v);
+                true
+            } else {
+                false
+            }
+        })
+        .label(label)
+        .size(MoonCheckboxSize::Compact)
     }
 
     /// Сворачиваемый блок на компоненте MoonUI `MoonAccordion` (один item на ключ): заголовок

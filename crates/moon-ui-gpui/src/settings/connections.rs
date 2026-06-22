@@ -9,13 +9,13 @@ use std::sync::Arc;
 use gpui::*;
 use moon_ui::{
     MoonButton, MoonButtonSize, MoonButtonVariant, MoonCheckbox, MoonCheckboxSize, MoonColorPicker,
-    MoonColorPickerEvent, MoonColorPickerState, MoonDropdown, MoonInput, MoonInputEvent,
+    MoonColorPickerState, MoonDropdown, MoonInput, MoonInputEvent,
     MoonInputState, MoonMenuItem, MoonMenuSize, MoonPalette, MoonSelect, MoonTooltipView,
     StyledExt, h_flex, v_flex,
 };
 use rust_i18n::t;
 
-use super::{SettingsView, hsla_u8};
+use super::SettingsView;
 use crate::{Backend, design};
 use moon_core::config::{AppConfig, FeedFlags, GroupConfig, Secret, ServerConfig};
 use moon_core::feed::ConnStatus;
@@ -106,25 +106,15 @@ fn conn_color(
     i: usize,
     init: [u8; 3],
 ) -> Entity<MoonColorPickerState> {
-    let st = cx.new(|cx| {
-        MoonColorPickerState::new(window, cx).default_value(rgb(design::rgb_to_u32(init)).into())
-    });
-    cx.subscribe(&st, move |this, _e, ev: &MoonColorPickerEvent, cx| {
-        let MoonColorPickerEvent::Change(h) = ev;
-        let c = hsla_u8(*h);
-        this.backend.update(cx, |b, bcx| {
-            if let Some(p) = b.preview.as_mut() {
-                if let Some(s) = p.servers.get_mut(i) {
-                    if s.color != c {
-                        s.color = c;
-                        bcx.notify();
-                    }
-                }
+    super::draft_color(window, cx, init, move |p, c| {
+        if let Some(s) = p.servers.get_mut(i) {
+            if s.color != c {
+                s.color = c;
+                return true;
             }
-        });
+        }
+        false
     })
-    .detach();
-    st
 }
 
 /// Построить per-server editor-стейты из draft-серверов. Зовётся в `SettingsView::new`
@@ -240,28 +230,17 @@ impl SettingsView {
                 .map(get)
                 .unwrap_or(false)
         };
-        let mut checkbox = MoonCheckbox::new(SharedString::from(format!("{suffix}-{i}")))
-            .checked(cur)
-            .size(MoonCheckboxSize::Compact)
-            .on_change(cx.listener(move |this, ch: &bool, _w, cx| {
-                let v = *ch;
-                let changed = this.backend.update(cx, |b, bcx| {
-                    let mut changed = false;
-                    if let Some(p) = b.preview.as_mut() {
-                        if let Some(s) = p.servers.get_mut(i) {
-                            if get(s) != v {
-                                set(s, v);
-                                bcx.notify();
-                                changed = true;
-                            }
-                        }
+        let mut checkbox = self
+            .draft_checkbox(cx, format!("{suffix}-{i}"), cur, move |p, v| {
+                if let Some(s) = p.servers.get_mut(i) {
+                    if get(s) != v {
+                        set(s, v);
+                        return true;
                     }
-                    changed
-                });
-                if changed {
-                    cx.notify();
                 }
-            }));
+                false
+            })
+            .size(MoonCheckboxSize::Compact);
         if !label.is_empty() {
             checkbox = checkbox.label(label);
         }

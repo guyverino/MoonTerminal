@@ -238,37 +238,19 @@ pub(super) fn assets_table(
     let table_rows = rows.clone();
     let p = MoonPalette::active(cx);
 
-    div()
-        .id(SharedString::from(format!("{id}-host")))
-        .relative()
-        .flex_1()
-        .w_full()
-        .min_h(px(0.0))
-        .overflow_hidden()
-        .bg(rgb(p.table_body))
-        .child(
-            MoonDataTable::new(id, row_count, move |ix, _window, _app| {
-                assets_row(&table_rows[ix], p)
-            })
-            .columns(assets_columns())
-            .header_height(design::TABLE_HEAD_H)
-            .row_height(design::TABLE_ROW_H),
-        )
-        .when(empty, |this| {
-            this.child(
-                div()
-                    .absolute()
-                    .left(px(10.0))
-                    .top(px(design::TABLE_HEAD_H))
-                    .h(px(design::TABLE_ROW_H))
-                    .flex()
-                    .items_center()
-                    .font_family(design::mono())
-                    .text_size(design::t_body(cx))
-                    .text_color(rgb(p.text_muted))
-                    .child(t!("assets.empty").to_string()),
-            )
+    crate::panels::common::data_table_host(
+        SharedString::from(format!("{id}-host")),
+        empty,
+        t!("assets.empty").to_string(),
+        p,
+        cx,
+        MoonDataTable::new(id, row_count, move |ix, _window, _app| {
+            assets_row(&table_rows[ix], p)
         })
+        .columns(assets_columns())
+        .header_height(design::TABLE_HEAD_H)
+        .row_height(design::TABLE_ROW_H),
+    )
 }
 
 fn assets_row(e: &AssetEntry, _p: MoonPalette) -> MoonDataRow {

@@ -2,15 +2,55 @@
 //! (повторялся в Orders/Assets) и числовой форматтер `num`. Каждая панель живёт в
 //! своей папке (`orders/`, `assets/`, `report/`, `log/`); сюда вынесено лишь ОБЩЕЕ.
 
+use gpui::prelude::FluentBuilder;
 use gpui::*;
-use moon_ui::{DockArea, MoonButton, MoonButtonSize};
+use moon_ui::{DockArea, MoonButton, MoonButtonSize, MoonPalette};
 
 use crate::Backend;
+use crate::design;
 use crate::detached::DetachedSpec;
 
 /// Адаптивный числовой формат (кол-во/цена) — общий для таблиц Orders/Assets.
 pub(crate) fn num(v: f64) -> String {
     moon_core::util::fmt::adaptive(v)
+}
+
+/// Хост таблицы данных док-панели (общий для Orders/Assets): контейнер на всю высоту с фоном
+/// `table_body`, сама `MoonDataTable` (строит вызывающий — у каждой панели свои колонки/строки) и
+/// оверлей-заглушка «пусто» при `empty` (как egui-плейсхолдер, поверх шапки). `empty_msg` —
+/// готовая локализованная строка.
+pub(crate) fn data_table_host(
+    host_id: impl Into<SharedString>,
+    empty: bool,
+    empty_msg: String,
+    p: MoonPalette,
+    cx: &App,
+    table: impl IntoElement,
+) -> impl IntoElement {
+    div()
+        .id(host_id.into())
+        .relative()
+        .flex_1()
+        .w_full()
+        .min_h(px(0.0))
+        .overflow_hidden()
+        .bg(rgb(p.table_body))
+        .child(table)
+        .when(empty, |this| {
+            this.child(
+                div()
+                    .absolute()
+                    .left(px(10.0))
+                    .top(px(design::TABLE_HEAD_H))
+                    .h(px(design::TABLE_ROW_H))
+                    .flex()
+                    .items_center()
+                    .font_family(design::mono())
+                    .text_size(design::t_body(cx))
+                    .text_color(rgb(p.text_muted))
+                    .child(empty_msg),
+            )
+        })
 }
 
 /// Гейт перерисовки док-панели по сигнатуре данных. Повторялся в Orders/Assets:

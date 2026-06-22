@@ -3,14 +3,11 @@
 //! draft (живое превью), «Сохранить» пишет theme.toml. Состояние редактора — [`Iface`].
 
 use gpui::*;
-use moon_ui::{
-    MoonColorPickerEvent, MoonColorPickerState, MoonPalette, MoonSliderEvent, MoonSliderState,
-    v_flex,
-};
+use moon_ui::{MoonColorPickerState, MoonPalette, MoonSliderState, v_flex};
 use rust_i18n::t;
 
-use super::{SettingsView, color_row, hsla_u8, section, separator, slider_row};
-use crate::{Backend, design};
+use super::{SettingsView, color_row, section, separator, slider_row};
+use crate::Backend;
 use moon_core::config::{AppConfig, ChartTheme};
 
 /// Состояние редактора темы: по entity на каждое поле.
@@ -32,7 +29,7 @@ pub(super) struct Iface {
     closed_bg: Entity<MoonColorPickerState>,
 }
 
-/// Слайдер f32, привязанный к общему AppConfig, а не к теме чарта.
+/// Слайдер f32, привязанный к общему AppConfig, а не к теме чарта (переустанавливает тему).
 fn app_num_field(
     backend: &Entity<Backend>,
     cx: &mut Context<SettingsView>,
@@ -46,30 +43,15 @@ fn app_num_field(
         let b = backend.read(cx);
         get(b.preview.as_ref().unwrap_or(&b.config))
     };
-    let st = cx.new(|_| {
-        MoonSliderState::new()
-            .min(min)
-            .max(max)
-            .step(step)
-            .default_value(cur)
-    });
-    cx.subscribe(&st, move |this, _emitter, ev: &MoonSliderEvent, cx| {
-        let MoonSliderEvent::Change(f) = ev else {
-            return;
-        };
-        let f = f.end();
-        this.backend.update(cx, |b, cx| {
-            if let Some(p) = b.preview.as_mut() {
-                if get(p) != f {
-                    set(p, f);
-                    crate::install_moon_theme_for_config(p, cx);
-                    cx.notify();
-                }
-            }
-        });
+    super::draft_slider(cx, min, max, step, cur, move |p, f, bcx| {
+        if get(p) != f {
+            set(p, f);
+            crate::install_moon_theme_for_config(p, bcx);
+            true
+        } else {
+            false
+        }
     })
-    .detach();
-    st
 }
 
 /// Color-picker, привязанный к полю темы: init из текущего config, на изменение —
@@ -82,23 +64,14 @@ fn color_field(
     set: fn(&mut ChartTheme, [u8; 3]),
 ) -> Entity<MoonColorPickerState> {
     let cur = get(&backend.read(cx).config.theme);
-    let st = cx.new(|cx| {
-        MoonColorPickerState::new(window, cx).default_value(rgb(design::rgb_to_u32(cur)).into())
-    });
-    cx.subscribe(&st, move |this, _emitter, ev: &MoonColorPickerEvent, cx| {
-        let MoonColorPickerEvent::Change(h) = ev;
-        let c = hsla_u8(*h);
-        this.backend.update(cx, |b, cx| {
-            if let Some(p) = b.preview.as_mut() {
-                if get(&p.theme) != c {
-                    set(&mut p.theme, c);
-                    cx.notify();
-                }
-            }
-        });
+    super::draft_color(window, cx, cur, move |p, c| {
+        if get(&p.theme) != c {
+            set(&mut p.theme, c);
+            true
+        } else {
+            false
+        }
     })
-    .detach();
-    st
 }
 
 /// Слайдер f32, привязанный к полю темы (живое применение).
@@ -113,29 +86,14 @@ fn num_field(
     step: f32,
 ) -> Entity<MoonSliderState> {
     let cur = get(&backend.read(cx).config.theme);
-    let st = cx.new(|_| {
-        MoonSliderState::new()
-            .min(min)
-            .max(max)
-            .step(step)
-            .default_value(cur)
-    });
-    cx.subscribe(&st, move |this, _emitter, ev: &MoonSliderEvent, cx| {
-        let MoonSliderEvent::Change(f) = ev else {
-            return;
-        };
-        let f = f.end();
-        this.backend.update(cx, |b, cx| {
-            if let Some(p) = b.preview.as_mut() {
-                if get(&p.theme) != f {
-                    set(&mut p.theme, f);
-                    cx.notify();
-                }
-            }
-        });
+    super::draft_slider(cx, min, max, step, cur, move |p, f, _bcx| {
+        if get(&p.theme) != f {
+            set(&mut p.theme, f);
+            true
+        } else {
+            false
+        }
     })
-    .detach();
-    st
 }
 
 /// Собрать редактор темы из текущего draft (зовётся из `SettingsView::new`).
