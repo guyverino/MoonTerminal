@@ -23,6 +23,8 @@ use crate::design;
 pub(super) type ApplyFn = Rc<dyn Fn(StackLayoutMode, Option<u16>, Option<u16>, &mut App)>;
 /// Уведомить владельца, что окно попапа закрылось (сбросить handle, перерисовать кнопку ⚙).
 pub(super) type ClosedFn = Rc<dyn Fn(&mut App)>;
+/// Вкл/выкл стакан для вкладки (per-окно).
+pub(super) type OrderbookFn = Rc<dyn Fn(bool, &mut App)>;
 
 /// Размер окна-поповера (логич. px), посчитанный ДЕТЕРМИНИРОВАННО из метрик и масштаба слайдера
 /// «Шрифт» (`design::ui_px`). Контент заполняет окно (`size_full`).
@@ -42,9 +44,10 @@ pub(super) fn content_size(cx: &App) -> Size<Pixels> {
     let title_h = cap.max(f32::from(design::ui_px(cx, 22.0)));
     let seg_h = f32::from(design::ui_px(cx, 30.0)); // сегмент-контрол Fit/Scroll
     let line_h = f32::from(design::ui_px(cx, 30.0)); // строка «Высота … [поле] px»
+    let cb_h = f32::from(design::ui_px(cx, 22.0)); // чекбокс «Стакан»
     let border = 2.0;
-    // title(с иконкой) + seg + height_line + hint(2 строки), с гэпами между + паддинг + рамка.
-    let h = border + 2.0 * pad + title_h + gap + seg_h + gap + line_h + gap + 2.0 * cap + 6.0;
+    // title(с иконкой) + seg + height_line + hint(2 строки) + чекбокс, с гэпами + паддинг + рамка.
+    let h = border + 2.0 * pad + title_h + gap + seg_h + gap + line_h + gap + 2.0 * cap + gap + cb_h + 6.0;
     // 2×110 сегмент + внутр. отступы/гэпы + паддинг + рамка.
     let w = 2.0 * 110.0 + 20.0 + 2.0 * pad + border;
     size(px(w), px(h))
@@ -69,9 +72,11 @@ pub(super) fn open(
     mode: StackLayoutMode,
     height_fit: Option<u16>,
     height_scroll: Option<u16>,
+    orderbook_enabled: bool,
     apply: ApplyFn,
     apply_all: ApplyFn,
     apply_all_label: SharedString,
+    on_toggle_orderbook: OrderbookFn,
     closed: ClosedFn,
     cx: &mut App,
 ) -> Option<WindowHandle<Root>> {
@@ -87,10 +92,12 @@ pub(super) fn open(
                 mode,
                 height_fit,
                 height_scroll,
+                orderbook_enabled,
                 place_phys,
                 apply,
                 apply_all,
                 apply_all_label,
+                on_toggle_orderbook,
                 closed,
                 window,
                 cx,
@@ -117,6 +124,9 @@ pub(super) struct LayoutPopupWindow {
     apply_all: ApplyFn,
     /// Подпись кнопки «применить ко всем» (зависит от области).
     apply_all_label: SharedString,
+    /// Состояние чекбокса «Стакан» + колбэк применения к вкладке.
+    orderbook_enabled: bool,
+    on_toggle_orderbook: OrderbookFn,
     closed: ClosedFn,
     /// Физ. screen-rect для корректирующего `SetWindowPos` на первом рендере (open_window кладёт
     /// мимо на смещённых мониторах). Применяется один раз → сбрасывается в None.
@@ -138,10 +148,12 @@ impl LayoutPopupWindow {
         mode: StackLayoutMode,
         height_fit: Option<u16>,
         height_scroll: Option<u16>,
+        orderbook_enabled: bool,
         place_phys: crate::windowing::PopupPhysRect,
         apply: ApplyFn,
         apply_all: ApplyFn,
         apply_all_label: SharedString,
+        on_toggle_orderbook: OrderbookFn,
         closed: ClosedFn,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -191,6 +203,8 @@ impl LayoutPopupWindow {
             apply,
             apply_all,
             apply_all_label,
+            orderbook_enabled,
+            on_toggle_orderbook,
             closed,
             place_phys,
             was_active: false,
@@ -253,11 +267,13 @@ impl Render for LayoutPopupWindow {
         let p = MoonPalette::active(cx);
         let entity = cx.entity();
         let entity_all = cx.entity();
+        let entity_ob = cx.entity();
         let body = render_layout_popup(
             "chart-layout",
             self.mode,
             &self.fit_input,
             &self.scroll_input,
+            self.orderbook_enabled,
             p,
             cx,
             move |mode, app| {
@@ -270,6 +286,14 @@ impl Render for LayoutPopupWindow {
             self.apply_all_label.to_string(),
             move |app| {
                 entity_all.update(app, |this, cx| this.apply_all_now(cx));
+            },
+            move |checked, app| {
+                entity_ob.update(app, |this, cx| {
+                    this.orderbook_enabled = checked;
+                    let app: &mut App = cx;
+                    (this.on_toggle_orderbook)(checked, app);
+                    cx.notify();
+                });
             },
         );
         // size_full-обёртка с hover: уход курсора с окна (после первого входа) закрывает попап.

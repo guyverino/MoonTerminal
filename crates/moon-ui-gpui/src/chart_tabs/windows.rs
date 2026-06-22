@@ -197,6 +197,7 @@ impl ChartTabs {
                     layout_mode: None,
                     layout_height_fit: None,
                     layout_height_scroll: None,
+                    orderbook_enabled: None,
                 };
                 f(&mut s);
                 b.chart_specs.push(s);
@@ -363,15 +364,24 @@ impl DetachedChartHost {
             });
         })
         .detach();
-        // Восстановить сохранённую раскладку вкладки из charts.json в панель.
+        // Восстановить сохранённую раскладку + флаг стакана вкладки из charts.json в панель.
         let (group2, num2, bucket2) = (group.clone(), num, bucket.clone());
         let saved = backend.read(cx).chart_specs.iter().find_map(|s| {
-            (s.group == group2 && s.num == num2 && s.bucket() == bucket2)
-                .then(|| (s.layout_mode, s.layout_height_fit, s.layout_height_scroll))
+            (s.group == group2 && s.num == num2 && s.bucket() == bucket2).then(|| {
+                (
+                    s.layout_mode,
+                    s.layout_height_fit,
+                    s.layout_height_scroll,
+                    s.orderbook_enabled,
+                )
+            })
         });
-        if let Some((m, hf, hs)) = saved {
+        if let Some((m, hf, hs, ob)) = saved {
             if m.is_some() || hf.is_some() || hs.is_some() {
                 panel.update(cx, |p, pcx| p.set_layout(m, hf, hs, pcx));
+            }
+            if ob.is_some() {
+                panel.update(cx, |p, pcx| p.set_orderbook_enabled(ob, pcx));
             }
         }
         Self {
@@ -445,6 +455,12 @@ impl DetachedChartHost {
         let closed: super::layout_popup_window::ClosedFn = Rc::new(move |app| {
             owner2.update(app, |o, oc| o.on_layout_popup_closed(oc));
         });
+        let orderbook_enabled = self.panel.read(cx).orderbook_enabled().unwrap_or(true);
+        let owner_ob = cx.entity();
+        let on_toggle_orderbook: super::layout_popup_window::OrderbookFn =
+            Rc::new(move |enabled, app| {
+                owner_ob.update(app, |o, oc| o.apply_orderbook(enabled, oc));
+            });
         self.layout_popup = super::layout_popup_window::open(
             origin,
             win_size,
@@ -454,9 +470,11 @@ impl DetachedChartHost {
             mode,
             hf,
             hs,
+            orderbook_enabled,
             apply,
             apply_all,
             t!("chart.layout.apply_all_charts").to_string().into(),
+            on_toggle_orderbook,
             closed,
             cx,
         );
@@ -506,9 +524,42 @@ impl DetachedChartHost {
                     layout_mode: mode,
                     layout_height_fit: height_fit,
                     layout_height_scroll: height_scroll,
+                    orderbook_enabled: None,
                 });
             }
             bk.chart_specs_dirty = true;
+        });
+        cx.notify();
+    }
+
+    /// Вкл/выкл стакан этой вкладки + persist + пересбор набора рынков, которым нужен стакан.
+    fn apply_orderbook(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        self.panel
+            .update(cx, |p, c| p.set_orderbook_enabled(Some(enabled), c));
+        let (group, num, bucket) = (self.group.clone(), self.num, self.bucket.clone());
+        self.backend.update(cx, |bk, _| {
+            if let Some(s) = bk
+                .chart_specs
+                .iter_mut()
+                .find(|s| s.group == group && s.num == num && s.bucket() == bucket)
+            {
+                s.orderbook_enabled = Some(enabled);
+            } else {
+                bk.chart_specs.push(chart_persist::ChartTabSpec {
+                    group,
+                    num,
+                    core: None,
+                    bucket: Some(bucket),
+                    scale: None,
+                    detached: None,
+                    layout_mode: None,
+                    layout_height_fit: None,
+                    layout_height_scroll: None,
+                    orderbook_enabled: Some(enabled),
+                });
+            }
+            bk.chart_specs_dirty = true;
+            bk.rebuild_orderbook_wanted();
         });
         cx.notify();
     }

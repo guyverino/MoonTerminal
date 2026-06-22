@@ -6,7 +6,8 @@ use gpui::*;
 use moon_ui::MoonVirtualListScrollHandle;
 
 use super::stack::{
-    ChartStackEntry, render_chart_stack, resolve_layout, retain_nonempty_panels, set_panels_scale,
+    ChartStackEntry, render_chart_stack, resolve_layout, retain_nonempty_panels,
+    set_panels_orderbook_enabled, set_panels_scale,
 };
 use crate::Backend;
 use crate::chart_persist::StackLayoutMode;
@@ -33,6 +34,8 @@ pub(crate) struct MainChartStack {
     layout_height_fit: Option<u16>,
     /// Высота слота для Scroll. None = дефолт.
     layout_height_scroll: Option<u16>,
+    /// Показывать ли стакан на графиках вкладки (per-окно). None = дефолт (вкл).
+    orderbook_enabled: Option<bool>,
     scroll: MoonVirtualListScrollHandle,
 }
 
@@ -57,6 +60,7 @@ impl MainChartStack {
             layout_mode: None,
             layout_height_fit: None,
             layout_height_scroll: None,
+            orderbook_enabled: None,
             scroll: MoonVirtualListScrollHandle::new(),
         };
         if let Some((core, market)) = focus_open {
@@ -87,6 +91,9 @@ impl MainChartStack {
         .detach();
         if self.scale.is_some() {
             panel.update(cx, |panel, pcx| panel.set_scale(self.scale, pcx));
+        }
+        if let Some(en) = self.orderbook_enabled {
+            panel.update(cx, |panel, pcx| panel.set_orderbook_enabled(en, pcx));
         }
         panel
     }
@@ -181,6 +188,20 @@ impl MainChartStack {
         self.layout_mode = mode;
         self.layout_height_fit = height_fit;
         self.layout_height_scroll = height_scroll;
+        cx.notify();
+    }
+
+    pub(crate) fn orderbook_enabled(&self) -> Option<bool> {
+        self.orderbook_enabled
+    }
+
+    /// Вкл/выкл стакан для всех графиков стека (per-окно).
+    pub(crate) fn set_orderbook_enabled(&mut self, enabled: Option<bool>, cx: &mut Context<Self>) {
+        if self.orderbook_enabled == enabled {
+            return;
+        }
+        self.orderbook_enabled = enabled;
+        set_panels_orderbook_enabled(&self.charts, enabled.unwrap_or(true), cx);
         cx.notify();
     }
 

@@ -84,6 +84,9 @@ pub enum CoreCmd {
     SetMarket {
         provider: bool,
         markets: Vec<String>,
+        /// Подмножество `markets`, которым нужен стакан (есть ≥1 окно с включённым стаканом).
+        /// Подписку стакана держим только на них; остальные `markets` — без стакана.
+        orderbook_markets: Vec<String>,
     },
     /// Действие со стратегиями ядра. Сначала синхронизирует галки (`set_checked`
     /// по каждой паре + `send_checked_delta`), затем, если задано, шлёт «старт

@@ -21,6 +21,7 @@ impl ChartDataState {
             h: 576,
             origin: (0.0, 0.0),
             scene_visible: false,
+            orderbook_enabled: true,
             market_source: None,
             last_frame_tick_ms: 0.0,
             present_rate_candidate_hz: 0.0,
@@ -429,7 +430,10 @@ impl ChartDataState {
             let glass_cap = rect.w * 0.5;
             let glass_base = moon_chart::GLASS_ZONE_PX.min(glass_cap);
             let chart_w_base = rect.w - price_axis_w - glass_base;
-            let glass_w = if chart_w_base < glass_base * 2.0 {
+            // Стакан выключен (per-окно) → зона стакана = 0, график занимает всю ширину.
+            let glass_w = if !self.orderbook_enabled {
+                0.0
+            } else if chart_w_base < glass_base * 2.0 {
                 (moon_chart::GLASS_ZONE_PX * 0.8).min(glass_cap)
             } else {
                 glass_base
@@ -702,49 +706,11 @@ impl ChartDataState {
                 pr.gpu_prepare_dirty = true;
                 pixels_changed = true;
             }
-            source.with_market_view(pane.core, &pane.market, |data| {
-                if let Some(d) = data {
-                    let half = pane.view.render_range.max(1e-9) * 0.5;
-                    let (lo, hi) = (
-                        pane.view.render_center - half,
-                        pane.view.render_center + half,
-                    );
-                    let mut diag_levels_len = None;
-                    if pr.last_book_rev != d.book_rev
-                        || pr.last_book_lo != lo
-                        || pr.last_book_hi != hi
-                    {
-                        let mut levels = Vec::new();
-                        d.book.build_instances(lo, hi, &mut levels);
-                        diag_levels_len = Some(levels.len());
-                        pr.layers.set_orderbook(levels);
-                        pr.last_book_rev = d.book_rev;
-                        pr.last_book_lo = lo;
-                        pr.last_book_hi = hi;
-                        pr.gpu_prepare_dirty = true;
-                        pixels_changed = true;
-                    }
-                    if chart_market_diag_enabled()
-                        && chart_market_diag_due(format!(
-                            "book:{}:{}:{}",
-                            pane.core, pane.market, idx
-                        ))
-                    {
-                        chart_market_diag(format!(
-                            "pane={} core={} market={} book_rev={} book_len={} levels={:?} \
-                             y=[{lo:.8},{hi:.8}] center={:.8} range={:.8} book_bounds={:?}",
-                            idx,
-                            pane.core,
-                            pane.market,
-                            d.book_rev,
-                            d.book.len(),
-                            diag_levels_len,
-                            pane.view.render_center,
-                            pane.view.render_range,
-                            pr.orderbook_view.bounds
-                        ));
-                    }
-                } else if pr.last_book_rev != u64::MAX {
+            // Флаг стакана в pane (для гейта угловой подписи в render_state/text).
+            pr.orderbook_enabled = self.orderbook_enabled;
+            // Стакан выключен (per-окно) → уровни не строим и не грузим (а если были — чистим).
+            if !self.orderbook_enabled {
+                if pr.last_book_rev != u64::MAX {
                     pr.layers.set_orderbook(Vec::new());
                     pr.last_book_rev = u64::MAX;
                     pr.last_book_lo = f32::NAN;
@@ -752,7 +718,59 @@ impl ChartDataState {
                     pr.gpu_prepare_dirty = true;
                     pixels_changed = true;
                 }
-            });
+            } else {
+                source.with_market_view(pane.core, &pane.market, |data| {
+                    if let Some(d) = data {
+                        let half = pane.view.render_range.max(1e-9) * 0.5;
+                        let (lo, hi) = (
+                            pane.view.render_center - half,
+                            pane.view.render_center + half,
+                        );
+                        let mut diag_levels_len = None;
+                        if pr.last_book_rev != d.book_rev
+                            || pr.last_book_lo != lo
+                            || pr.last_book_hi != hi
+                        {
+                            let mut levels = Vec::new();
+                            d.book.build_instances(lo, hi, &mut levels);
+                            diag_levels_len = Some(levels.len());
+                            pr.layers.set_orderbook(levels);
+                            pr.last_book_rev = d.book_rev;
+                            pr.last_book_lo = lo;
+                            pr.last_book_hi = hi;
+                            pr.gpu_prepare_dirty = true;
+                            pixels_changed = true;
+                        }
+                        if chart_market_diag_enabled()
+                            && chart_market_diag_due(format!(
+                                "book:{}:{}:{}",
+                                pane.core, pane.market, idx
+                            ))
+                        {
+                            chart_market_diag(format!(
+                                "pane={} core={} market={} book_rev={} book_len={} levels={:?} \
+                                 y=[{lo:.8},{hi:.8}] center={:.8} range={:.8} book_bounds={:?}",
+                                idx,
+                                pane.core,
+                                pane.market,
+                                d.book_rev,
+                                d.book.len(),
+                                diag_levels_len,
+                                pane.view.render_center,
+                                pane.view.render_range,
+                                pr.orderbook_view.bounds
+                            ));
+                        }
+                    } else if pr.last_book_rev != u64::MAX {
+                        pr.layers.set_orderbook(Vec::new());
+                        pr.last_book_rev = u64::MAX;
+                        pr.last_book_lo = f32::NAN;
+                        pr.last_book_hi = f32::NAN;
+                        pr.gpu_prepare_dirty = true;
+                        pixels_changed = true;
+                    }
+                });
+            }
             let edge_rel = view_time0 + (chart_area.w + glass_w) / pane.view.px_per_ms.max(1e-6);
             if pr.view.pad != edge_rel {
                 pr.view.pad = edge_rel;

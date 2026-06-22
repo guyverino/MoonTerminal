@@ -235,6 +235,8 @@ pub fn run(
     // wanted — рынки, которые активно обслуживаем (подписки + snapshot source).
     let mut is_provider = false;
     let mut wanted: Vec<String> = Vec::new();
+    // Рынки, на стакан которых подписаны (подмножество wanted; вкл стакан хотя бы в одном окне).
+    let mut wanted_orderbook: Vec<String> = Vec::new();
     let mut identity_sent = false;
     let mut last_orders = Instant::now();
     let mut last_strats = Instant::now();
@@ -263,7 +265,11 @@ pub fn run(
         // Закрытие канала = координатор ушёл → отключаемся.
         loop {
             match cmd_rx.try_recv() {
-                Ok(CoreCmd::SetMarket { provider, markets }) => {
+                Ok(CoreCmd::SetMarket {
+                    provider,
+                    markets,
+                    orderbook_markets,
+                }) => {
                     // Переход провайдерства: вкл → ретейним все трейды биржи; выкл →
                     // снимаем подписку. Курсоры чтения market history живут у потребителя.
                     if provider != is_provider {
@@ -280,14 +286,23 @@ pub fn run(
                     }
                     // Не провайдер не обслуживает рынки (стакан/чтение) вообще.
                     let markets = if provider { markets } else { Vec::new() };
-                    // Диф обслуживаемых рынков: новым подписываем стакан, убранным — отписываем.
-                    for m in &markets {
-                        if !wanted.iter().any(|w| w == m) {
+                    // Стакан подписываем ТОЛЬКО для рынков, которым он нужен (orderbook_markets ⊆
+                    // markets). Рынок без стакана читается (трейды/история), но стакан не качаем.
+                    let orderbook_markets = if provider {
+                        orderbook_markets
+                    } else {
+                        Vec::new()
+                    };
+                    let diag_on = || {
+                        std::env::var_os("MOON_MARKET_DIAG").is_some()
+                            || std::env::var_os("MOON_RENDER_DIAG").is_some()
+                    };
+                    // Диф подписки стакана: новым из orderbook_markets — subscribe, ушедшим — unsubscribe.
+                    for m in &orderbook_markets {
+                        if !wanted_orderbook.iter().any(|w| w == m) {
                             match client.streams().subscribe_orderbook(m.clone()) {
                                 Ok(()) => {
-                                    if std::env::var_os("MOON_MARKET_DIAG").is_some()
-                                        || std::env::var_os("MOON_RENDER_DIAG").is_some()
-                                    {
+                                    if diag_on() {
                                         log::info!(
                                             "[market_diag] core {} subscribe_orderbook({m})",
                                             server.id
@@ -301,13 +316,11 @@ pub fn run(
                             }
                         }
                     }
-                    for m in &wanted {
-                        if !markets.iter().any(|x| x == m) {
+                    for m in &wanted_orderbook {
+                        if !orderbook_markets.iter().any(|x| x == m) {
                             match client.streams().unsubscribe_orderbook(m.clone()) {
                                 Ok(()) => {
-                                    if std::env::var_os("MOON_MARKET_DIAG").is_some()
-                                        || std::env::var_os("MOON_RENDER_DIAG").is_some()
-                                    {
+                                    if diag_on() {
                                         log::info!(
                                             "[market_diag] core {} unsubscribe_orderbook({m})",
                                             server.id
@@ -322,6 +335,7 @@ pub fn run(
                         }
                     }
                     wanted = markets;
+                    wanted_orderbook = orderbook_markets;
                     force_market_sample = true;
                 }
                 Ok(CoreCmd::StrategiesAction { checks, start_stop }) => {

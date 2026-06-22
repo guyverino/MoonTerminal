@@ -129,9 +129,10 @@ impl ChartTabs {
         // Из charts.json: масштаб Main (num=0) и список откреп-вкладок этой группы на
         // восстановление (создадим пустыми на первом render → ждут детект).
         #[allow(clippy::type_complexity)]
-        let (main_scale, main_layout, restore_pending): (
+        let (main_scale, main_layout, main_orderbook, restore_pending): (
             Option<f32>,
             (Option<StackLayoutMode>, Option<u16>, Option<u16>),
+            Option<bool>,
             Vec<_>,
         ) = {
             let specs = &backend.read(cx).chart_specs;
@@ -140,12 +141,13 @@ impl ChartTabs {
             let main_layout = main_spec.map_or((None, None, None), |s| {
                 (s.layout_mode, s.layout_height_fit, s.layout_height_scroll)
             });
+            let main_orderbook = main_spec.and_then(|s| s.orderbook_enabled);
             let pending = specs
                 .iter()
                 .filter(|s| s.group == group && s.num >= 1 && s.detached.is_some())
                 .map(|s| (s.num, s.bucket(), s.detached.unwrap(), s.scale))
                 .collect();
-            (main_scale, main_layout, pending)
+            (main_scale, main_layout, main_orderbook, pending)
         };
         if main_scale.is_some() {
             main.update(cx, |p, pcx| p.set_scale(main_scale, pcx));
@@ -154,6 +156,9 @@ impl ChartTabs {
             main.update(cx, |p, pcx| {
                 p.set_layout(main_layout.0, main_layout.1, main_layout.2, pcx)
             });
+        }
+        if main_orderbook.is_some() {
+            main.update(cx, |p, pcx| p.set_orderbook_enabled(main_orderbook, pcx));
         }
         cx.observe(&backend, |this, backend, cx| {
             // Запросы «применить ко всем» из выносных окон — до early-return по sig (они sig не меняют).
@@ -339,6 +344,11 @@ impl ChartTabs {
         let closed: layout_popup_window::ClosedFn = Rc::new(move |app| {
             owner2.update(app, |o, oc| o.on_layout_popup_closed(oc));
         });
+        let orderbook_enabled = self.active_orderbook_enabled(cx);
+        let owner_ob = cx.entity();
+        let on_toggle_orderbook: layout_popup_window::OrderbookFn = Rc::new(move |enabled, app| {
+            owner_ob.update(app, |o, oc| o.apply_orderbook(enabled, oc));
+        });
         self.layout_popup = layout_popup_window::open(
             origin,
             win_size,
@@ -348,9 +358,11 @@ impl ChartTabs {
             mode,
             hf,
             hs,
+            orderbook_enabled,
             apply,
             apply_all,
             apply_all_label.into(),
+            on_toggle_orderbook,
             closed,
             cx,
         );
@@ -412,6 +424,41 @@ impl ChartTabs {
                 .find(|(num, bk, _)| num == n && bk == b)
                 .and_then(|(_, _, p)| p.read(cx).layout_height_scroll()),
         }
+    }
+
+    /// Стакан включён на активной вкладке (None → дефолт вкл).
+    fn active_orderbook_enabled(&self, cx: &App) -> bool {
+        let v = match &self.active {
+            Tab::Main => self.main.read(cx).orderbook_enabled(),
+            Tab::Add(n, b) => self
+                .add
+                .iter()
+                .find(|(num, bk, _)| num == n && bk == b)
+                .and_then(|(_, _, p)| p.read(cx).orderbook_enabled()),
+        };
+        v.unwrap_or(true)
+    }
+
+    /// Вкл/выкл стакан на АКТИВНОЙ вкладке + persist.
+    fn apply_orderbook(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        match self.active.clone() {
+            Tab::Main => self
+                .main
+                .update(cx, |s, c| s.set_orderbook_enabled(Some(enabled), c)),
+            Tab::Add(n, b) => {
+                if let Some((_, _, p)) = self.add.iter().find(|(num, bk, _)| *num == n && *bk == b) {
+                    p.update(cx, |s, c| s.set_orderbook_enabled(Some(enabled), c));
+                }
+            }
+        }
+        let (num, bucket) = self.active_stack_key();
+        self.upsert_spec(cx, num, &bucket, move |s| {
+            s.orderbook_enabled = Some(enabled);
+        });
+        // Stage 2: пересобрать набор рынков, которым нужен стакан (мог измениться спрос).
+        self.backend
+            .update(cx, |b, _| b.rebuild_orderbook_wanted());
+        cx.notify();
     }
 
     /// Применить раскладку (режим + раздельные высоты Fit/Scroll) к АКТИВНОЙ вкладке и
@@ -593,7 +640,7 @@ impl ChartTabs {
                     AddChartStack::new(backend.clone(), n, bucket.clone(), epoch, theme.clone())
                 });
                 // Восстановить сохранённый масштаб и раскладку этой вкладки (charts.json).
-                let (saved_scale, saved_layout) = {
+                let (saved_scale, saved_layout, saved_orderbook) = {
                     let specs = &self.backend.read(cx).chart_specs;
                     let spec = specs
                         .iter()
@@ -603,6 +650,7 @@ impl ChartTabs {
                         spec.map_or((None, None, None), |s| {
                             (s.layout_mode, s.layout_height_fit, s.layout_height_scroll)
                         }),
+                        spec.and_then(|s| s.orderbook_enabled),
                     )
                 };
                 if saved_scale.is_some() {
@@ -612,6 +660,9 @@ impl ChartTabs {
                     panel.update(cx, |p, pcx| {
                         p.set_layout(saved_layout.0, saved_layout.1, saved_layout.2, pcx)
                     });
+                }
+                if saved_orderbook.is_some() {
+                    panel.update(cx, |p, pcx| p.set_orderbook_enabled(saved_orderbook, pcx));
                 }
                 panel.update(cx, |p, pcx| p.add_coin(core, &market, ttl, pcx));
                 self.add.push((n, bucket.clone(), panel));

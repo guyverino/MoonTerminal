@@ -59,6 +59,11 @@ pub struct ChartTabSpec {
     /// Высота слота (px) для режима Scroll. None → дефолт.
     #[serde(default)]
     pub layout_height_scroll: Option<u16>,
+    /// Показывать ли стакан на графиках этой вкладки. None → дефолт (вкл). Выкл = стакан не
+    /// рисуется, подпись не выводится и (Stage 2) рынок не подписывается на стакан, если его не
+    /// хочет ни одно другое окно.
+    #[serde(default)]
+    pub orderbook_enabled: Option<bool>,
 }
 
 impl ChartTabSpec {

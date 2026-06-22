@@ -223,7 +223,7 @@ impl RenderState {
         let mut readout_metrics_changed = false;
 
         for idx in 0..self.panes.len() {
-            let (active, pane_bounds, view, epoch_ms, core_name, market) = {
+            let (active, pane_bounds, view, epoch_ms, core_name, market, orderbook_enabled) = {
                 let pr = &self.panes[idx];
                 (
                     pr.active,
@@ -232,6 +232,7 @@ impl RenderState {
                     pr.epoch_ms,
                     pr.core_name.clone(),
                     pr.market.clone(),
+                    pr.orderbook_enabled,
                 )
             };
             if !active {
@@ -261,7 +262,9 @@ impl RenderState {
             // рядом с угловым ✕ закрытия (panels/chart.rs) — дешёвый retained-текст (тот же
             // gpu_canvas, что и оси). Якорим правым краем чуть левее ✕, чтобы не перекрывать.
             // Контраст над стаканом даёт тёмная плашка-подложка (render_state по `caption_w`).
-            {
+            // Угловую подпись рисуем только при включённом стакане (выключен → без подписи,
+            // подложку убираем обнулением caption_w).
+            if orderbook_enabled {
                 let cap_x = pane_right - CAPTION_PAD_X;
                 let cap_y = pane_top + CAPTION_PAD_Y;
                 let mut cap_w = 0.0_f32;
@@ -278,6 +281,9 @@ impl RenderState {
                     self.panes[idx].caption_w = cap_w;
                     readout_metrics_changed = true;
                 }
+            } else if self.panes[idx].caption_w != 0.0 {
+                self.panes[idx].caption_w = 0.0;
+                readout_metrics_changed = true;
             }
 
             let price_to_px = view.price_to_px / sf;

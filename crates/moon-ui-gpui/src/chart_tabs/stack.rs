@@ -55,6 +55,18 @@ pub(super) fn set_panels_scale<S: 'static>(
     }
 }
 
+/// Применить вкл/выкл стакана ко всем панелям стека.
+pub(super) fn set_panels_orderbook_enabled<S: 'static>(
+    entries: &[ChartStackEntry],
+    enabled: bool,
+    cx: &mut Context<S>,
+) {
+    for e in entries {
+        e.panel
+            .update(cx, |p, pcx| p.set_orderbook_enabled(enabled, pcx));
+    }
+}
+
 /// Убрать из стека панели без графиков. Возвращает true, если состав изменился.
 pub(super) fn retain_nonempty_panels(entries: &mut Vec<ChartStackEntry>, cx: &App) -> bool {
     let before = entries.len();

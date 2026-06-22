@@ -112,3 +112,7 @@ chart.layout.apply_all_charts:
   ru: "Применить ко всем чартам"
   en: "Apply to all charts"
   es: "Aplicar a todos los gráficos"
+chart.layout.orderbook:
+  ru: "Стакан"
+  en: "Order book"
+  es: "Libro de órdenes"

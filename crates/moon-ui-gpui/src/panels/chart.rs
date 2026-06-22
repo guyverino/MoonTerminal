@@ -81,11 +81,17 @@ pub struct ChartPanel {
     /// Масштаб цены ЭТОЙ вкладки (None = Авто). Теперь ПО-ВКЛАДОЧНЫЙ (не глобальный): правится
     /// своим регулятором (тулбар активной вкладки / шапка выносного окна), применяется в render.
     scale: Option<f32>,
+    /// Показывать ли стакан на графиках этой панели (per-окно, из настроек вкладки). Применяется
+    /// в render (`set_orderbook_enabled` движка). Дефолт — вкл.
+    orderbook_enabled: bool,
     /// Номер AddToChart-вкладки (None = Main).
     num: Option<u32>,
     /// Рынки, владельцем которых является именно эта chart panel. Backend держит refcount
     /// по всем панелям и строит `desired` из него.
     registered_markets: HashSet<(CoreId, String)>,
+    /// Рынки, по которым эта панель держит orderbook-ref в backend (= registered_markets, когда
+    /// стакан включён; пусто, когда выключен). Backend по ним строит `desired_orderbook`.
+    registered_orderbook: HashSet<(CoreId, String)>,
     /// Поколение backend registry, в котором были взяты `registered_markets`.
     /// Structural rebuild сбрасывает registry целиком и bump-ит epoch; старые панели после
     /// этого не должны release-ить refs свежих панелей.
@@ -144,12 +150,16 @@ impl ChartPanel {
         let market_ref_epoch = backend.read(cx).chart_market_refs_epoch;
         let mut market = None;
         let mut registered_markets = HashSet::new();
+        let mut registered_orderbook = HashSet::new();
         if let Some((core, m)) = focus_open {
             chart.open(core, &m);
             market = Some(m.clone());
             registered_markets.insert((core, m.clone()));
+            // Стакан по умолчанию вкл → сразу держим и его ref (Stage 2 подписка).
+            registered_orderbook.insert((core, m.clone()));
             backend.update(cx, |b, _| {
                 b.retain_chart_market(core, &m);
+                b.retain_chart_orderbook(core, &m);
             });
         }
         let settings_sig = {
@@ -202,8 +212,10 @@ impl ChartPanel {
             input: input::ChartInput::default(),
             market,
             scale: None,
+            orderbook_enabled: true,
             num: None,
             registered_markets,
+            registered_orderbook: HashSet::new(),
             market_ref_epoch,
             data_sig: 0,
             settings_sig,
@@ -281,8 +293,10 @@ impl ChartPanel {
             input: input::ChartInput::default(),
             market: None,
             scale: None,
+            orderbook_enabled: true,
             num: Some(num),
             registered_markets: HashSet::new(),
+            registered_orderbook: HashSet::new(),
             market_ref_epoch,
             data_sig: 0,
             settings_sig,
@@ -336,6 +350,17 @@ impl ChartPanel {
         if self.scale != pct {
             self.scale = pct;
             self.view_dirty = true;
+            cx.notify();
+        }
+    }
+
+    /// Вкл/выкл стакан (per-окно). Применяется в render через `set_orderbook_enabled` движка;
+    /// плюс синхронизирует orderbook-ref backend (Stage 2: подписка по спросу).
+    pub fn set_orderbook_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        if self.orderbook_enabled != enabled {
+            self.orderbook_enabled = enabled;
+            self.view_dirty = true;
+            self.sync_orderbook_refs(cx);
             cx.notify();
         }
     }
@@ -398,6 +423,7 @@ impl ChartPanel {
                 b.retain_chart_market(core, market);
             });
         }
+        self.sync_orderbook_refs(cx);
     }
 
     fn release_market_ref(&mut self, core: CoreId, market: &str, cx: &mut App) {
@@ -407,6 +433,7 @@ impl ChartPanel {
                 b.release_chart_market(core, market);
             });
         }
+        self.sync_orderbook_refs(cx);
     }
 
     fn release_market_refs_except(&mut self, keep: Option<(CoreId, &str)>, cx: &mut App) {
@@ -422,6 +449,7 @@ impl ChartPanel {
                 });
             }
         }
+        self.sync_orderbook_refs(cx);
     }
 
     fn release_all_market_refs(&mut self, cx: &mut App) {
@@ -432,13 +460,44 @@ impl ChartPanel {
                 b.release_chart_market(core, &market);
             });
         }
+        self.sync_orderbook_refs(cx);
     }
 
     fn sync_market_ref_epoch(&mut self, cx: &mut App) {
         let epoch = self.backend.read(cx).chart_market_refs_epoch;
         if self.market_ref_epoch != epoch {
             self.registered_markets.clear();
+            self.registered_orderbook.clear();
             self.market_ref_epoch = epoch;
+        }
+    }
+
+    /// Привести orderbook-ref backend к состоянию «рынки этой панели, если стакан включён».
+    /// Зовётся после любых изменений рынков и при переключении стакана. Без borrow самого view.
+    fn sync_orderbook_refs(&mut self, cx: &mut App) {
+        let want: HashSet<(CoreId, String)> = if self.orderbook_enabled {
+            self.registered_markets.clone()
+        } else {
+            HashSet::new()
+        };
+        let to_release: Vec<(CoreId, String)> = self
+            .registered_orderbook
+            .difference(&want)
+            .cloned()
+            .collect();
+        for (core, market) in to_release {
+            self.registered_orderbook.remove(&(core, market.clone()));
+            self.backend
+                .update(cx, |b, _| b.release_chart_orderbook(core, &market));
+        }
+        let to_add: Vec<(CoreId, String)> = want
+            .difference(&self.registered_orderbook)
+            .cloned()
+            .collect();
+        for (core, market) in to_add {
+            self.registered_orderbook.insert((core, market.clone()));
+            self.backend
+                .update(cx, |b, _| b.retain_chart_orderbook(core, &market));
         }
     }
 
@@ -700,6 +759,7 @@ impl Render for ChartPanel {
         let settings_changed = self.chart.set_theme(theme)
             | self.chart.set_orders(orders_style)
             | self.chart.set_scale(self.scale)
+            | self.chart.set_orderbook_enabled(self.orderbook_enabled)
             | self.chart.set_follow(follow, now_unix_ms());
         if settings_changed {
             self.view_dirty = true;

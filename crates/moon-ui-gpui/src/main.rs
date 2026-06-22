@@ -116,6 +116,12 @@ struct Backend {
     desired: Vec<(CoreId, String)>,
     chart_market_refs: HashMap<(CoreId, String), usize>,
     chart_market_refs_epoch: u64,
+    /// Рынки, которым нужен стакан = есть ≥1 видимая панель с включённым стаканом. Параллельный
+    /// refcount к `chart_market_refs`, но считает только панели с orderbook on. `desired_orderbook`
+    /// — derived список; идёт в `set_open` отдельным набором (Stage 2: не подписываться, если никто
+    /// не хочет стакан).
+    chart_orderbook_refs: HashMap<(CoreId, String), usize>,
+    desired_orderbook: Vec<(CoreId, String)>,
     desired_open_dirty: bool,
     last_open_sync: Instant,
     /// Main fullscreen chart target by group. Panels such as Orders use this for
@@ -302,9 +308,44 @@ impl Backend {
         self.rebuild_desired_markets();
     }
 
+    fn retain_chart_orderbook(&mut self, core: CoreId, market: &str) {
+        let key = (core, market.to_string());
+        *self.chart_orderbook_refs.entry(key).or_insert(0) += 1;
+        self.rebuild_orderbook_wanted();
+    }
+
+    fn release_chart_orderbook(&mut self, core: CoreId, market: &str) {
+        let key = (core, market.to_string());
+        let mut remove = false;
+        if let Some(count) = self.chart_orderbook_refs.get_mut(&key) {
+            *count = count.saturating_sub(1);
+            remove = *count == 0;
+        }
+        if remove {
+            self.chart_orderbook_refs.remove(&key);
+        }
+        self.rebuild_orderbook_wanted();
+    }
+
+    /// Пересобрать `desired_orderbook` (рынки с ≥1 включённым стаканом). Меняется → dirty (re-send).
+    fn rebuild_orderbook_wanted(&mut self) {
+        let mut want: Vec<(CoreId, String)> = self
+            .chart_orderbook_refs
+            .iter()
+            .filter_map(|((core, market), count)| (*count > 0).then(|| (*core, market.clone())))
+            .collect();
+        want.sort_unstable_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+        if self.desired_orderbook != want {
+            self.desired_orderbook = want;
+            self.desired_open_dirty = true;
+        }
+    }
+
     fn reset_chart_market_refs(&mut self) {
         self.chart_market_refs.clear();
+        self.chart_orderbook_refs.clear();
         self.desired.clear();
+        self.desired_orderbook.clear();
         self.chart_market_refs_epoch = self.chart_market_refs_epoch.wrapping_add(1);
         self.desired_open_dirty = true;
     }
@@ -331,7 +372,7 @@ impl Backend {
         if self.desired_open_dirty || due {
             self.desired_open_dirty = false;
             self.last_open_sync = now;
-            self.session.set_open(&self.desired);
+            self.session.set_open(&self.desired, &self.desired_orderbook);
         }
     }
 
@@ -520,6 +561,8 @@ fn main() -> anyhow::Result<()> {
             desired: Vec::new(),
             chart_market_refs: HashMap::new(),
             chart_market_refs_epoch: 0,
+            chart_orderbook_refs: HashMap::new(),
+            desired_orderbook: Vec::new(),
             desired_open_dirty: true,
             last_open_sync: Instant::now() - Duration::from_secs(10),
             main_chart_targets: HashMap::new(),

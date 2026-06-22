@@ -70,8 +70,9 @@ pub struct SessionManager {
     wanted: HashMap<CoreId, HashSet<String>>,
     /// (провайдер, рынок) → дедлайн снятия после закрытия последнего чарта (linger).
     pending_drop: HashMap<(CoreId, String), Instant>,
-    /// Последняя посланная ядру роль — чтобы не слать дубликаты команд.
-    last_cmd: HashMap<CoreId, (bool, Vec<String>)>,
+    /// Последняя посланная ядру роль `(provider, markets, orderbook_markets)` — чтобы не слать
+    /// дубликаты команд. `orderbook_markets` — подмножество `markets`, которым нужен стакан.
+    last_cmd: HashMap<CoreId, (bool, Vec<String>, Vec<String>)>,
 }
 
 #[derive(Clone, Debug, Default)]

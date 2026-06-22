@@ -264,6 +264,17 @@ impl ChartEngine {
         true
     }
 
+    /// Вкл/выкл стакан для всех панелей этого движка (per-окно). Возвращает `true` при изменении.
+    pub fn set_orderbook_enabled(&mut self, enabled: bool) -> bool {
+        let mut data = self.data.borrow_mut();
+        if data.orderbook_enabled == enabled {
+            return false;
+        }
+        data.orderbook_enabled = enabled;
+        data.mark_view_dirty();
+        true
+    }
+
     /// Глобальный live-follow из тулбара (Live/Пауза) для единственной панели этого
     /// `ChartEngine`. Реагирует только на смену самого глобального флага (явный клик).
     /// Пан/rejoin отдельной панели живут в её `view.follow`; сюда уже сведённое значение

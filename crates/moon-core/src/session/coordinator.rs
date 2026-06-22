@@ -30,7 +30,11 @@ impl SessionManager {
     /// Вызывается по dirty-флагу `desired` и страховочно по редкому wall-clock fallback,
     /// но не на каждый present/render кадр. Перевыбирает провайдеров, считает
     /// обслуживаемые рынки на провайдера и шлёт ядрам рыночную роль только при изменении.
-    pub fn set_open(&mut self, desired: &[(CoreId, String)]) {
+    pub fn set_open(
+        &mut self,
+        desired: &[(CoreId, String)],
+        desired_orderbook: &[(CoreId, String)],
+    ) {
         let now = Instant::now();
         self.reconcile_providers();
 
@@ -41,6 +45,14 @@ impl SessionManager {
         for (core, market) in desired {
             if let Some(&p) = self.core_provider.get(core) {
                 desired_pm.entry(p).or_default().insert(market.clone());
+            }
+        }
+        // Рынки, которым нужен стакан, агрегированные на провайдера (OR по всем окнам). Подписку
+        // стакана держим только на них (без linger — стакан можно дёргать быстро).
+        let mut orderbook_pm: HashMap<CoreId, HashSet<String>> = HashMap::new();
+        for (core, market) in desired_orderbook {
+            if let Some(&p) = self.core_provider.get(core) {
+                orderbook_pm.entry(p).or_default().insert(market.clone());
             }
         }
 
@@ -89,7 +101,7 @@ impl SessionManager {
         // 3. Рассылаем ядрам роль. Провайдер (значение в core_provider) → (true, его
         //    рынки); остальные → (false, []). Шлём только при изменении роли.
         let provider_cores: HashSet<CoreId> = self.core_provider.values().copied().collect();
-        let mut cmds: Vec<(CoreId, bool, Vec<String>)> = Vec::new();
+        let mut cmds: Vec<(CoreId, bool, Vec<String>, Vec<String>)> = Vec::new();
         for sess in &self.sessions {
             let id = sess.id;
             let is_prov = provider_cores.contains(&id);
@@ -102,20 +114,37 @@ impl SessionManager {
                 Vec::new()
             };
             markets.sort(); // стабильный порядок для сравнения с last_cmd
-            if self.last_cmd.get(&id) != Some(&(is_prov, markets.clone())) {
-                self.last_cmd.insert(id, (is_prov, markets.clone()));
-                cmds.push((id, is_prov, markets));
+            // Стакан: подмножество markets, которым нужен стакан (без linger — снимаем сразу).
+            let mut orderbook_markets: Vec<String> = if is_prov {
+                let obk = orderbook_pm.get(&id);
+                markets
+                    .iter()
+                    .filter(|m| obk.is_some_and(|s| s.contains(*m)))
+                    .cloned()
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            orderbook_markets.sort();
+            if self.last_cmd.get(&id)
+                != Some(&(is_prov, markets.clone(), orderbook_markets.clone()))
+            {
+                self.last_cmd
+                    .insert(id, (is_prov, markets.clone(), orderbook_markets.clone()));
+                cmds.push((id, is_prov, markets, orderbook_markets));
             }
         }
-        for (id, provider, markets) in cmds {
+        for (id, provider, markets, orderbook_markets) in cmds {
             if let Some(s) = self.sessions.iter().find(|s| s.id == id) {
                 market_diag(format!(
-                    "set_open send core={id} provider={provider} markets={markets:?}"
+                    "set_open send core={id} provider={provider} markets={markets:?} \
+                     orderbook={orderbook_markets:?}"
                 ));
-                let _ = s
-                    .handle
-                    .cmd_tx
-                    .send(CoreCmd::SetMarket { provider, markets });
+                let _ = s.handle.cmd_tx.send(CoreCmd::SetMarket {
+                    provider,
+                    markets,
+                    orderbook_markets,
+                });
             }
         }
     }

@@ -7,8 +7,8 @@
 
 use gpui::*;
 use moon_ui::{
-    MoonAccent, MoonButton, MoonButtonSize, MoonButtonVariant, MoonInput, MoonInputState,
-    MoonPalette, MoonSegmentItem, MoonSegmentedControl, h_flex, v_flex,
+    MoonAccent, MoonButton, MoonButtonSize, MoonButtonVariant, MoonCheckbox, MoonCheckboxSize,
+    MoonInput, MoonInputState, MoonPalette, MoonSegmentItem, MoonSegmentedControl, h_flex, v_flex,
 };
 use rust_i18n::t;
 
@@ -33,20 +33,23 @@ fn mode_label(m: StackLayoutMode) -> &'static str {
 /// `height_fit_input`/`height_scroll_input` — раздельные поля (подписку на Blur/Enter держит
 /// вызывающий). `on_pick_mode` вызывается при выборе режима. Позиционируется вызывающим.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn render_layout_popup<F, G>(
+pub(super) fn render_layout_popup<F, G, H>(
     id: &str,
     current: StackLayoutMode,
     height_fit_input: &Entity<MoonInputState>,
     height_scroll_input: &Entity<MoonInputState>,
+    orderbook_enabled: bool,
     p: MoonPalette,
     cx: &App,
     on_pick_mode: F,
     apply_all_label: String,
     on_apply_all: G,
+    on_toggle_orderbook: H,
 ) -> AnyElement
 where
     F: Fn(StackLayoutMode, &mut App) + 'static,
     G: Fn(&mut App) + 'static,
+    H: Fn(bool, &mut App) + 'static,
 {
     let sel = POPUP_MODES.iter().position(|m| *m == current).unwrap_or(0);
     let items: Vec<MoonSegmentItem> = POPUP_MODES
@@ -102,6 +105,13 @@ where
             .child(line.to_string())
     }));
 
+    // Чекбокс «Стакан» — вкл/выкл orderbook на графиках вкладки.
+    let orderbook_cb = MoonCheckbox::new(SharedString::from(format!("{id}-orderbook")))
+        .label(t!("chart.layout.orderbook").to_string())
+        .checked(orderbook_enabled)
+        .size(MoonCheckboxSize::Compact)
+        .on_change(move |ch: &bool, _w, app| on_toggle_orderbook(*ch, app));
+
     // Иконка «применить ко всем» — справа в строке заголовка, только символ + всплывающая подсказка
     // (текст области: ко всем окнам / только чартам).
     let apply_all_btn = MoonButton::new(SharedString::from(format!("{id}-apply-all")))
@@ -141,6 +151,7 @@ where
         .child(seg)
         .child(height_line)
         .child(hint_block)
+        .child(orderbook_cb)
         .into_any_element()
 }
 
