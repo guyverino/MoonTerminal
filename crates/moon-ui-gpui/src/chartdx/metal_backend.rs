@@ -534,8 +534,8 @@ impl MetalLayers {
             self.draw_cached_base(device, encoder, view, orderbook_view, gpu);
         } else {
             self.draw_base_layers(encoder);
+            self.draw_cached_combo(device, encoder, view);
         }
-        self.draw_cached_combo(device, encoder, view);
         encoder.set_scissor_rect(bounds_scissor(pane_bounds, gpu.width(), gpu.height()));
         self.draw_cursor_layer(encoder, cursor_params, readout_rects);
         Ok(())
@@ -639,39 +639,42 @@ impl MetalLayers {
         gpu: &RawGpuAccess,
         pixel_format: MTLPixelFormat,
         view: &ChartViewGpu,
-    ) {
+    ) -> bool {
         if self.cross_count == 0 && self.last_line.len() <= 1 && self.mark_line.len() <= 1 {
-            return;
+            return false;
         }
         let bw = view.bounds[2];
         let bh = view.bounds[3];
         if bw <= 0.0 || bh <= 0.0 {
-            return;
+            return false;
         }
         let margin_px = (bw * 0.2).max(128.0);
         let tex_w = (bw + margin_px).round().max(1.0) as u32;
         let tex_h = bh.round().max(1.0) as u32;
         self.ensure_combo_texture(device, pixel_format, tex_w, tex_h, gpu.device_generation());
 
-        let tex = self.combo_texture.as_mut().unwrap();
-        if tex.last_time_to_px != view.time_to_px
-            || tex.last_price_to_px != view.price_to_px
-            || tex.last_view_price0 != view.view_price0
-            || tex.last_marker_half != view.marker_half
-        {
-            tex.valid = false;
-        }
+        let (need_full, bake_t0, combo_texture) = {
+            let tex = self.combo_texture.as_mut().unwrap();
+            if tex.last_time_to_px != view.time_to_px
+                || tex.last_price_to_px != view.price_to_px
+                || tex.last_view_price0 != view.view_price0
+                || tex.last_marker_half != view.marker_half
+            {
+                tex.valid = false;
+            }
 
-        let u_left_px = (view.view_time0 - tex.bake_t0) * view.time_to_px;
-        let need_full = !tex.valid || u_left_px < 0.0 || u_left_px > margin_px;
-        if !need_full && self.combo_dirty_ranges.is_empty() {
-            return;
-        }
-        let bake_t0 = if need_full {
-            texel_aligned_time0(view.view_time0, view.time_to_px)
-        } else {
-            tex.bake_t0
+            let u_left_px = (view.view_time0 - tex.bake_t0) * view.time_to_px;
+            let need_full = !tex.valid || u_left_px < 0.0 || u_left_px > margin_px;
+            let bake_t0 = if need_full {
+                texel_aligned_time0(view.view_time0, view.time_to_px)
+            } else {
+                tex.bake_t0
+            };
+            (need_full, bake_t0, tex.texture.to_owned())
         };
+        if !need_full && self.combo_dirty_ranges.is_empty() {
+            return false;
+        }
         let bake_view = ChartViewGpu {
             bounds: [0.0, 0.0, tex_w as f32, tex_h as f32],
             resolution: [tex_w as f32, tex_h as f32],
@@ -689,7 +692,7 @@ impl MetalLayers {
 
         let pass = metal::RenderPassDescriptor::new();
         let color = pass.color_attachments().object_at(0).unwrap();
-        color.set_texture(Some(tex.texture.as_ref()));
+        color.set_texture(Some(combo_texture.as_ref()));
         color.set_load_action(if need_full {
             MTLLoadAction::Clear
         } else {
@@ -729,6 +732,7 @@ impl MetalLayers {
             self.combo_texture.as_mut().unwrap().last_baked_head = self.cross_head;
         }
         encoder.end_encoding();
+        true
     }
 
     fn draw_combo_layers(
@@ -883,7 +887,9 @@ impl MetalLayers {
             cursor_params,
             book_style,
         );
-        if rebuild_base || self.base_cache.needs_rebuild(gpu, Some(pixel_format)) {
+        let combo_changed =
+            self.prepare_combo_cache(device, command_buffer, gpu, pixel_format, view);
+        if rebuild_base || combo_changed || self.base_cache.needs_rebuild(gpu, Some(pixel_format)) {
             self.rebuild_base_cache(
                 device,
                 command_buffer,
@@ -893,7 +899,6 @@ impl MetalLayers {
                 orderbook_view,
             )?;
         }
-        self.prepare_combo_cache(device, command_buffer, gpu, pixel_format, view);
         Ok(())
     }
 
@@ -924,6 +929,7 @@ impl MetalLayers {
             gpu.height(),
         ));
         self.draw_base_layers(encoder);
+        self.draw_cached_combo(device, encoder, view);
         encoder.end_encoding();
         self.base_cache.valid = true;
         crate::diag::bump(&crate::diag::CHART_BASE_BAKE);

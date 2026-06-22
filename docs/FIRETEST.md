@@ -43,7 +43,7 @@ retained buffer + culling, а не бессмысленную заливку GPU
 - static text stress поверх графика не должен ломать mouse/input hot path и GPU frame budget;
 - Shell/Orders/Chart GPUI render не должны улетать в сотни render/s;
 - cursor-only mousemove не должен увеличивать частоту дорогих chart base draw/bake (`bg_draw`, `grid_draw`, `base_bake`, `combo_bake`, `orderbook_bake`) сверх baseline;
-- `combo_draw_delta` остаётся строгим Windows/DX сигналом: там он означает rebuild base-cache. На Metal/wgpu `combo_draw` считает draw calls внутри native pass/live range update, поэтому кроссплатформенный красный критерий — `combo_bake_delta`, CPU/render/notify и GPU frame budget.
+- `combo_draw_delta` остаётся строгим кроссплатформенным сигналом: cursor-only mousemove не должен добавлять дорогой combo draw сверх baseline. Если Metal/wgpu падают здесь, это не повод ослаблять FireTest, а сигнал довести retained/base-cache parity до уровня DX.
 - CPU процесса не должен заметно расти от одной возни мышью;
 - RAM не должна расти;
 - на Windows дополнительно пишется process GPU `%` через PDH `GPU Engine`;

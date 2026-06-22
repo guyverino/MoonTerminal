@@ -10,6 +10,7 @@ const READOUT_PAD_X: f32 = 5.0;
 const READOUT_PAD_Y: f32 = 2.5;
 const READOUT_INSET: f32 = 2.0;
 
+#[cfg(windows)]
 fn bounds_clip(bounds: [f32; 4], res: [f32; 2]) -> [f32; 4] {
     let l = bounds[0].floor().clamp(0.0, res[0].max(1.0));
     let t = bounds[1].floor().clamp(0.0, res[1].max(1.0));

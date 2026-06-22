@@ -130,6 +130,7 @@ pub(crate) struct Config {
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ChartProbe {
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
     hwnd: Option<isize>,
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     screen_left: f32,
@@ -139,6 +140,7 @@ pub(crate) struct ChartProbe {
     top: f32,
     width: f32,
     height: f32,
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
     scale_factor: f32,
 }
 
@@ -1361,14 +1363,7 @@ fn chart_mouse_min_hz(present_hz: f64) -> f64 {
 }
 
 fn check_combo_draw_delta(fail: &mut Vec<String>, combo_draw_delta: f64) {
-    #[cfg(windows)]
-    {
-        check_max(fail, "combo_draw_delta", combo_draw_delta, 12.0);
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = (fail, combo_draw_delta);
-    }
+    check_max(fail, "combo_draw_delta", combo_draw_delta, 12.0);
 }
 
 fn check_min(fail: &mut Vec<String>, label: &str, got: f64, min: f64) {

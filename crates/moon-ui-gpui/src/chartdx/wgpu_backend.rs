@@ -646,8 +646,8 @@ impl WgpuLayers {
             self.draw_cached_base(device, queue, pass, view, orderbook_view, gpu);
         } else {
             self.draw_base_layers(pass);
+            self.draw_cached_combo(device, queue, pass, view);
         }
-        self.draw_cached_combo(device, queue, pass, view);
         let sc = bounds_scissor(pane_bounds, gpu.width(), gpu.height());
         pass.set_scissor_rect(sc.0, sc.1, sc.2, sc.3);
         self.draw_cursor_layer(pass, cursor_params, readout_rects);
@@ -764,14 +764,14 @@ impl WgpuLayers {
         gpu: &RawGpuAccess,
         format: wgpu::TextureFormat,
         view: &ChartViewGpu,
-    ) {
+    ) -> bool {
         if self.cross_count == 0 && self.last_line.len() <= 1 && self.mark_line.len() <= 1 {
-            return;
+            return false;
         }
         let bw = view.bounds[2];
         let bh = view.bounds[3];
         if bw <= 0.0 || bh <= 0.0 {
-            return;
+            return false;
         }
         let margin_px = (bw * 0.2).max(128.0);
         let tex_w = (bw + margin_px).round().max(1.0) as u32;
@@ -798,7 +798,7 @@ impl WgpuLayers {
             (need_full, bake_t0, tex.view.clone())
         };
         if !need_full && self.combo_dirty_ranges.is_empty() {
-            return;
+            return false;
         }
         let bake_view = ChartViewGpu {
             bounds: [0.0, 0.0, tex_w as f32, tex_h as f32],
@@ -867,6 +867,7 @@ impl WgpuLayers {
             crate::diag::bump(&crate::diag::CHART_COMBO_BAKE);
         }
         tex.last_baked_head = self.cross_head;
+        true
     }
 
     fn draw_combo_layers(
@@ -1047,16 +1048,17 @@ impl WgpuLayers {
             book_style,
         );
         self.prepare_bind_groups(device);
-        if rebuild_base || self.base_cache.needs_rebuild(gpu) {
-            self.rebuild_base_cache(device, encoder, gpu, format, view, orderbook_view)?;
+        let combo_changed = self.prepare_combo_cache(device, queue, encoder, gpu, format, view);
+        if rebuild_base || combo_changed || self.base_cache.needs_rebuild(gpu) {
+            self.rebuild_base_cache(device, queue, encoder, gpu, format, view, orderbook_view)?;
         }
-        self.prepare_combo_cache(device, queue, encoder, gpu, format, view);
         Ok(())
     }
 
     fn rebuild_base_cache(
         &mut self,
         device: &wgpu::Device,
+        queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         gpu: &RawGpuAccess,
         format: wgpu::TextureFormat,
@@ -1082,6 +1084,7 @@ impl WgpuLayers {
             });
             pass.set_scissor_rect(sc.0, sc.1, sc.2, sc.3);
             self.draw_base_layers(&mut pass);
+            self.draw_cached_combo(device, queue, &mut pass, view);
         }
         self.base_cache.valid = true;
         crate::diag::bump(&crate::diag::CHART_BASE_BAKE);
