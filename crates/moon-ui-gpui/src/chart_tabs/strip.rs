@@ -184,6 +184,9 @@ impl Render for ChartTabs {
                 .top(px(CHART_TAB_STRIP_H + 4.0))
                 .w(size.width)
                 .h(size.height)
+                .on_mouse_down(MouseButton::Left, |_, _window, app| {
+                    app.stop_propagation();
+                })
                 .on_hover(move |hovered, _window, app| {
                     hover_entity.update(app, |this, cx| {
                         if *hovered {
@@ -223,6 +226,17 @@ impl Render for ChartTabs {
                     },
                 ))
         });
+        let layout_dismiss = self.layout_popup_open.then(|| {
+            let entity = cx.entity();
+            div()
+                .id("chart-layout-popup-dismiss")
+                .absolute()
+                .inset_0()
+                .on_mouse_down(MouseButton::Left, move |_, _window, app| {
+                    entity.update(app, |this, cx| this.close_layout_popup(true, cx));
+                    app.stop_propagation();
+                })
+        });
 
         v_flex()
             .size_full()
@@ -244,6 +258,7 @@ impl Render for ChartTabs {
                     .min_h(px(0.0))
                     .child(self.active_element()),
             )
+            .children(layout_dismiss)
             .children(layout_popup)
     }
 }

@@ -53,14 +53,7 @@ impl ChartTabs {
         else {
             return;
         };
-        let (_, _, panel) = self.add.remove(pos);
-        if self.active == tab {
-            self.active = Tab::Main;
-            self.sync_seen_for_active(cx);
-            self.sync_active_scale(cx);
-            self.sync_inactive_chart_visibility(cx);
-            self.persist_scales(cx);
-        }
+        let (_, _, panel) = self.add[pos].clone();
         // Геометрия: сохранённая (если уже откреплялась) или дефолт-каскад.
         let geom = self
             .spec_geom(cx, n, &bucket)
@@ -70,13 +63,25 @@ impl ChartTabs {
                 w: 900,
                 h: 620,
             });
+        if !self.open_chart_window(n, panel.clone(), bucket.clone(), geom, false, cx) {
+            return;
+        }
+        let (_, _, panel) = self.add.remove(pos);
+        panel.update(cx, |p, pcx| p.set_scene_visible(false, pcx));
+        self.detached.push((n, bucket.clone(), panel));
+        if self.active == tab {
+            self.active = Tab::Main;
+            self.sync_seen_for_active(cx);
+            self.sync_active_scale(cx);
+            self.sync_inactive_chart_visibility(cx);
+            self.persist_scales(cx);
+        }
         // Пометить вкладку откреплённой в charts.json (восстановится окном на след. запуске).
         self.upsert_spec(cx, n, &bucket, |s| s.detached = Some(geom));
         moon_core::detect_diag::line(&format!(
             "[detach] n={n} bucket={bucket:?} → detached=Some({},{},{},{})",
             geom.x, geom.y, geom.w, geom.h
         ));
-        self.open_chart_window(n, panel, bucket, geom, false, cx);
         cx.notify();
     }
 
@@ -93,9 +98,7 @@ impl ChartTabs {
         geom: chart_persist::WinGeom,
         restored: bool,
         cx: &mut Context<Self>,
-    ) {
-        panel.update(cx, |p, pcx| p.set_scene_visible(false, pcx));
-        self.detached.push((n, bucket.clone(), panel.clone()));
+    ) -> bool {
         // КРИТИЧНО для мультимонитора: без display_id окно создаётся на PRIMARY, и если
         // сохранённые bounds вне primary — gpui откатывается на default_bounds() (центр + дефолт-
         // размер). Поэтому ищем монитор, СОДЕРЖАЩИЙ сохранённую точку, и передаём его display_id —
@@ -128,6 +131,7 @@ impl ChartTabs {
         // Для восстановленного окна — сохранённый логический размер, чтобы скорректировать
         // DPICHANGED-сжатие на первом render (см. DetachedChartHost.restore_size).
         let restore_size = restored.then(|| size(px(geom.w as f32), px(geom.h as f32)));
+        let host_bucket = bucket.clone();
         let opened = cx.open_window(opts, move |window, cx| {
             crate::windowing::configure_chart_clear_color(window, cx);
             let host = cx.new(|cx| {
@@ -136,7 +140,7 @@ impl ChartTabs {
                     backend,
                     group,
                     n,
-                    bucket,
+                    host_bucket,
                     restored,
                     restore_size,
                     window,
@@ -150,6 +154,15 @@ impl ChartTabs {
             self.backend.update(cx, |b, _| {
                 b.detached_chart_windows.push((group, handle));
             });
+            true
+        } else {
+            log::warn!(
+                "failed to open detached chart window for group={} n={} bucket={:?}",
+                self.group,
+                n,
+                bucket
+            );
+            false
         }
     }
 
@@ -290,7 +303,10 @@ impl ChartTabs {
                     if scale.is_some() {
                         panel.update(cx, |p, pcx| p.set_scale(scale, pcx));
                     }
-                    this.open_chart_window(n, panel, bucket, geom, true, cx);
+                    if this.open_chart_window(n, panel.clone(), bucket.clone(), geom, true, cx) {
+                        panel.update(cx, |p, pcx| p.set_scene_visible(false, pcx));
+                        this.detached.push((n, bucket, panel));
+                    }
                 }
                 cx.notify();
             });
@@ -676,6 +692,9 @@ impl Render for DetachedChartHost {
                 .top(px(38.0))
                 .w(size.width)
                 .h(size.height)
+                .on_mouse_down(MouseButton::Left, |_, _window, app| {
+                    app.stop_propagation();
+                })
                 .on_hover(move |hovered, _window, app| {
                     hover_entity.update(app, |this, cx| {
                         if *hovered {
@@ -718,6 +737,17 @@ impl Render for DetachedChartHost {
                         ob_entity.update(app, |this, cx| this.apply_orderbook(checked, cx));
                     },
                 ))
+        });
+        let layout_dismiss = self.layout_popup_open.then(|| {
+            let entity = cx.entity();
+            div()
+                .id("detached-chart-layout-popup-dismiss")
+                .absolute()
+                .inset_0()
+                .on_mouse_down(MouseButton::Left, move |_, _window, app| {
+                    entity.update(app, |this, cx| this.close_layout_popup(true, cx));
+                    app.stop_propagation();
+                })
         });
         // Шапка — ТОЛЬКО у выносных окон вкладок (в основном доке её нет): масштаб слева,
         // «закрыть все графики» справа.
@@ -794,6 +824,7 @@ impl Render for DetachedChartHost {
                     // тёмный clear окна (правка форка MoonUI), белого нет.
                     .child(self.panel.clone()),
             )
+            .children(layout_dismiss)
             .children(layout_popup)
     }
 }

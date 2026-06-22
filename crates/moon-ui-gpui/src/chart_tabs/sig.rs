@@ -18,16 +18,6 @@ pub(super) fn chart_tabs_sig(b: &Backend, group: &str) -> u64 {
     sig = sig
         .wrapping_mul(31)
         .wrapping_add(u64::from(b.config.charts_split_by_core));
-    // Раскладка стека (скролл/сжатие/высота) — перерисовать активный стек при смене настройки.
-    sig = sig
-        .wrapping_mul(31)
-        .wrapping_add(u64::from(b.config.charts_stack_scroll));
-    sig = sig
-        .wrapping_mul(31)
-        .wrapping_add(u64::from(b.config.charts_stack_compress));
-    sig = sig
-        .wrapping_mul(31)
-        .wrapping_add(u64::from(b.config.chart_stack_height));
     if b.price_scale_group.as_deref() == Some(group) {
         sig = sig.wrapping_mul(31).wrapping_add(b.price_scale_rev);
     }

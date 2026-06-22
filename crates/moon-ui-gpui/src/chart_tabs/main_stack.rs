@@ -1,5 +1,5 @@
 //! Main-вкладка чартов: один рынок = один отдельный `ChartPanel`/`gpu_canvas`, активный —
-//! fullscreen, ПКМ по области графика разворачивает весь stack. Вынесено из `chart_tabs` как
+//! fullscreen, ПКМ по области панели графика разворачивает весь stack. Вынесено из `chart_tabs` как
 //! самостоятельная вью-модель; общий рендер стека — в [`super::stack`].
 
 use gpui::*;
@@ -16,8 +16,8 @@ use moon_core::config::ChartTheme;
 use moon_core::session::CoreId;
 
 /// Main-вкладка: один рынок = один отдельный `ChartPanel`/`gpu_canvas`.
-/// Обычный клик по рынку в таблицах открывает/фокусирует его fullscreen. ПКМ по ОБЛАСТИ
-/// ГРАФИКА (не по стакану) текущего графика переключает fullscreen ↔ весь stack, не возвращая
+/// Обычный клик по рынку в таблицах открывает/фокусирует его fullscreen. ПКМ по области
+/// текущей панели, включая стакан/glass, переключает fullscreen ↔ весь stack, не возвращая
 /// несколько рынков внутрь одного `ChartEngine`.
 pub(crate) struct MainChartStack {
     backend: Entity<Backend>,
@@ -305,10 +305,12 @@ impl MainChartStack {
             .on_mouse_up(
                 MouseButton::Right,
                 move |event: &MouseUpEvent, _window, app| {
-                    // Возврат из фулскрина — ПКМ по ОБЛАСТИ ГРАФИКА (не по стакану) и только
-                    // коротким кликом (не зум-перетаскиванием цены).
+                    // Возврат из фулскрина — короткий ПКМ по области панели, включая стакан.
+                    // RMB-drag цены остаётся зумом/scale-жестом и не переключает stack.
                     let panel = panel_for_event.read(app);
-                    if panel.window_pos_in_chart_plot(event.position) && !panel.rmb_was_moved() {
+                    if panel.window_pos_allows_main_stack_toggle(event.position)
+                        && !panel.rmb_was_moved()
+                    {
                         entity.update(app, |this, cx| this.toggle_from_chart(ix, cx));
                         app.stop_propagation();
                     }

@@ -619,9 +619,10 @@ impl ChartPanel {
         })
     }
 
-    /// Позиция в ОБЛАСТИ ГРАФИКА панели (в пределах панели, но НЕ в зоне стакана). Для
-    /// возврата из фулскрина по ПКМ: срабатывает по чарту, а не по стакану.
-    pub(crate) fn window_pos_in_chart_plot(&self, pos: Point<Pixels>) -> bool {
+    /// Позиция внутри любой pane-области панели, включая glass/orderbook-зону.
+    /// Main stack использует это для ПКМ fullscreen ↔ stack: зона стакана не является
+    /// отдельным UI-исключением, пока такая настройка явно не вынесена в UI.
+    pub(crate) fn window_pos_allows_main_stack_toggle(&self, pos: Point<Pixels>) -> bool {
         let Some(((x, y), within)) = self.chart_local(pos) else {
             return false;
         };
@@ -633,13 +634,7 @@ impl ChartPanel {
         } else {
             self.input.pane_rects.clone()
         };
-        rects.iter().any(|(_, r)| {
-            if x < r.x || x > r.x + r.w || y < r.y || y > r.y + r.h {
-                return false;
-            }
-            let glass_w = moon_chart::GLASS_ZONE_PX.min(r.w * 0.5);
-            x < r.x + r.w - glass_w
-        })
+        local_pos_in_any_pane_rect(x, y, &rects)
     }
 
     /// Был ли последний ПКМ зум-перетаскиванием цены (а не коротким кликом).
@@ -704,6 +699,12 @@ impl ChartPanel {
         log::info!("debug history fill: force reupload core={core} market={market}");
         true
     }
+}
+
+fn local_pos_in_any_pane_rect(x: f32, y: f32, rects: &[(usize, moon_chart::view::Rect)]) -> bool {
+    rects
+        .iter()
+        .any(|(_, r)| x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h)
 }
 
 impl EventEmitter<PanelEvent> for ChartPanel {}

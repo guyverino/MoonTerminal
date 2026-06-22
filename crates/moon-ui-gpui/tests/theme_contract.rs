@@ -111,6 +111,21 @@ fn chart_background_policy_keeps_gpu_canvas_under_scene() {
 }
 
 #[test]
+fn main_chart_stack_rmb_toggle_uses_full_chart_area_not_plot_only() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let main_stack = fs::read_to_string(root.join("chart_tabs").join("main_stack.rs")).unwrap();
+
+    assert!(
+        main_stack.contains("window_pos_allows_main_stack_toggle(event.position)"),
+        "Main stack RMB fullscreen/stack toggle must use the full chart panel hit-test, including orderbook glass"
+    );
+    assert!(
+        !main_stack.contains("window_pos_in_chart_plot(event.position)"),
+        "Main stack RMB fullscreen/stack toggle must not regress to plot-only hit-test"
+    );
+}
+
+#[test]
 fn terminal_windowing_separates_detached_panel_and_chart_contracts() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let windowing = fs::read_to_string(root.join("windowing.rs")).unwrap();
