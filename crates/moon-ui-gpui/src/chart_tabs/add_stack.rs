@@ -1,0 +1,232 @@
+//! AddToChart-вкладка: визуально один список графиков, архитектурно — отдельный `ChartPanel`
+//! на каждый график. Вынесено из `chart_tabs` как самостоятельная вью-модель; общий рендер
+//! стека — в [`super::stack`]. Используется и полоской вкладок, и выносными окнами ([`super::windows`]).
+
+use gpui::*;
+use moon_ui::MoonVirtualListScrollHandle;
+
+use super::stack::{
+    ChartStackEntry, render_chart_stack, resolve_layout, retain_nonempty_panels, set_panels_scale,
+};
+use crate::Backend;
+use crate::chart_persist::StackLayoutMode;
+use crate::panels::ChartPanel;
+use moon_core::config::{ChartBucket, ChartTheme};
+use moon_core::session::CoreId;
+
+/// AddToChart-вкладка: визуально это один список графиков, но архитектурно каждый график —
+/// отдельный `ChartPanel`/`gpu_canvas`/dirty entity. Не возвращаемся к ебанине
+/// `ChartPanel -> Container.panes`, где mousemove одного графика перерисовывал overlay всех.
+pub(crate) struct AddChartStack {
+    backend: Entity<Backend>,
+    num: u32,
+    bucket: ChartBucket,
+    epoch: f64,
+    theme: ChartTheme,
+    charts: Vec<ChartStackEntry>,
+    scale: Option<f32>,
+    /// Per-tab режим раскладки (Fit/Scroll; None = дефолт Fit).
+    layout_mode: Option<StackLayoutMode>,
+    /// Высота слота для Fit: 0 = растяжение, ≥20 = compress. None = дефолт.
+    layout_height_fit: Option<u16>,
+    /// Высота слота для Scroll. None = дефолт.
+    layout_height_scroll: Option<u16>,
+    /// Скролл-хэндл вертикального MoonVirtualList (scroll-режим стека).
+    scroll: MoonVirtualListScrollHandle,
+}
+
+impl AddChartStack {
+    pub(super) fn new(
+        backend: Entity<Backend>,
+        num: u32,
+        bucket: ChartBucket,
+        epoch: f64,
+        theme: ChartTheme,
+    ) -> Self {
+        Self {
+            backend,
+            num,
+            bucket,
+            epoch,
+            theme,
+            charts: Vec::new(),
+            scale: None,
+            layout_mode: None,
+            layout_height_fit: None,
+            layout_height_scroll: None,
+            scroll: MoonVirtualListScrollHandle::new(),
+        }
+    }
+
+    pub(super) fn add_coin(&mut self, core: CoreId, market: &str, ttl_ms: f64, cx: &mut Context<Self>) {
+        if let Some(entry) = self
+            .charts
+            .iter()
+            .find(|entry| entry.core == core && entry.market == market)
+        {
+            entry
+                .panel
+                .update(cx, |panel, pcx| panel.add_coin(core, market, ttl_ms, pcx));
+            return;
+        }
+
+        let backend = self.backend.clone();
+        let num = self.num;
+        let bucket = self.bucket.clone();
+        let epoch = self.epoch;
+        let theme = self.theme.clone();
+        let scale = self.scale;
+        let panel = cx.new(|cx| ChartPanel::new_addto(backend, num, bucket, epoch, theme, cx));
+        cx.observe(&panel, |this, _, cx| {
+            if this.prune_empty(cx) {
+                cx.notify();
+            }
+        })
+        .detach();
+        if scale.is_some() {
+            panel.update(cx, |panel, pcx| panel.set_scale(scale, pcx));
+        }
+        panel.update(cx, |panel, pcx| panel.add_coin(core, market, ttl_ms, pcx));
+        self.charts.push(ChartStackEntry {
+            core,
+            market: market.to_string(),
+            panel,
+        });
+        cx.notify();
+    }
+
+    fn prune_empty(&mut self, cx: &App) -> bool {
+        retain_nonempty_panels(&mut self.charts, cx)
+    }
+
+    pub(crate) fn pane_count(&self, cx: &App) -> usize {
+        self.charts
+            .iter()
+            .filter(|entry| entry.panel.read(cx).pane_count() > 0)
+            .count()
+    }
+
+    pub(crate) fn scale(&self) -> Option<f32> {
+        self.scale
+    }
+
+    pub(crate) fn set_scale(&mut self, pct: Option<f32>, cx: &mut Context<Self>) {
+        if self.scale == pct {
+            return;
+        }
+        self.scale = pct;
+        set_panels_scale(&self.charts, pct, cx);
+        cx.notify();
+    }
+
+    pub(crate) fn layout_mode(&self) -> Option<StackLayoutMode> {
+        self.layout_mode
+    }
+
+    pub(crate) fn layout_height_fit(&self) -> Option<u16> {
+        self.layout_height_fit
+    }
+
+    pub(crate) fn layout_height_scroll(&self) -> Option<u16> {
+        self.layout_height_scroll
+    }
+
+    /// Применить per-tab раскладку (режим + раздельные высоты Fit/Scroll) к этому стеку.
+    pub(crate) fn set_layout(
+        &mut self,
+        mode: Option<StackLayoutMode>,
+        height_fit: Option<u16>,
+        height_scroll: Option<u16>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.layout_mode == mode
+            && self.layout_height_fit == height_fit
+            && self.layout_height_scroll == height_scroll
+        {
+            return;
+        }
+        self.layout_mode = mode;
+        self.layout_height_fit = height_fit;
+        self.layout_height_scroll = height_scroll;
+        cx.notify();
+    }
+
+    pub(super) fn set_scene_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
+        for entry in &self.charts {
+            entry
+                .panel
+                .update(cx, |panel, _| panel.set_scene_visible(visible));
+        }
+    }
+
+    pub(crate) fn close_all_panes(&mut self, cx: &mut Context<Self>) {
+        for entry in &self.charts {
+            entry
+                .panel
+                .update(cx, |panel, pcx| panel.close_all_panes(pcx));
+        }
+        self.charts.clear();
+        cx.notify();
+    }
+}
+
+impl Render for AddChartStack {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = moon_ui::MoonPalette::active(cx);
+        if self.charts.is_empty() {
+            // Непрозрачный фон: в выносном окне Root=NoFill и own-pass нет → без фона
+            // сквозь логотип просвечивает белая подложка окна.
+            return div()
+                .size_full()
+                .bg(rgb(palette.chart_bg))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(crate::design::logo_glow_sized(220.0))
+                .into_any_element();
+        }
+
+        // Stack: per-tab раскладка (FIT/SCROLL/COMPRESS + высота), иначе глобальный дефолт.
+        // ВАЖНО: чарт-слоты ПРОЗРАЧНЫЕ. own-pass (combo/стакан) — слой GpuCanvasLayer::UnderScene
+        // (под сценой); любой непрозрачный `.bg()` над слотом его перекрывает. Разделитель — рамка.
+        let (scroll, compress, cfg_h) =
+            resolve_layout(self.layout_mode, self.layout_height_fit, self.layout_height_scroll);
+        let count = self.charts.len();
+        let border = rgb(palette.border);
+        let base_id = format!("add-chart-stack-{}", self.num);
+        let entity = cx.entity();
+        render_chart_stack(
+            &base_id,
+            self,
+            entity,
+            count,
+            scroll,
+            compress,
+            cfg_h,
+            &self.scroll,
+            border,
+            |s, ix| s.charts.get(ix).map(|e| e.panel.clone()),
+            |s, ix, panel, height, flex, border, _ent| {
+                let id = match s.charts.get(ix) {
+                    Some(e) => format!("add-chart-stack-tile-{}-{}-{}", s.num, e.core, e.market),
+                    None => format!("add-chart-stack-tile-{}-{ix}", s.num),
+                };
+                let mut tile = div()
+                    .id(SharedString::from(id))
+                    .w_full()
+                    .relative()
+                    .overflow_hidden()
+                    .border_1()
+                    .border_color(border);
+                if let Some(h) = height {
+                    tile = tile.h(px(h)).min_h(px(0.0));
+                }
+                if flex {
+                    tile = tile.flex_1().min_h(px(0.0));
+                }
+                tile.child(div().size_full().relative().overflow_hidden().child(panel))
+                    .into_any_element()
+            },
+        )
+    }
+}
