@@ -102,11 +102,12 @@ where
             .child(line.to_string())
     }));
 
-    // Кнопка «применить ко всем» (подпись задаёт вызывающий по области действия: ко всем окнам /
-    // только чартам). Действие — `on_apply_all`.
+    // Иконка «применить ко всем» — справа в строке заголовка, только символ + всплывающая подсказка
+    // (текст области: ко всем окнам / только чартам).
     let apply_all_btn = MoonButton::new(SharedString::from(format!("{id}-apply-all")))
-        .label(apply_all_label)
-        .size(MoonButtonSize::Action)
+        .label("⧉")
+        .tooltip(apply_all_label)
+        .size(MoonButtonSize::Micro)
         .variant(MoonButtonVariant::Ghost)
         .on_click(move |_, _w, app| on_apply_all(app))
         .render();
@@ -124,15 +125,22 @@ where
         .border_1()
         .border_color(rgb(p.border))
         .child(
-            div()
-                .text_size(design::t_caption(cx))
-                .text_color(rgb(p.text_muted))
-                .child(t!("chart.layout.title").to_string()),
+            // Заголовок слева + иконка «ко всем» прижата к правому краю окна.
+            h_flex()
+                .w_full()
+                .items_center()
+                .child(
+                    div()
+                        .text_size(design::t_caption(cx))
+                        .text_color(rgb(p.text_muted))
+                        .child(t!("chart.layout.title").to_string()),
+                )
+                .child(div().flex_1())
+                .child(apply_all_btn),
         )
         .child(seg)
         .child(height_line)
         .child(hint_block)
-        .child(apply_all_btn)
         .into_any_element()
 }
 

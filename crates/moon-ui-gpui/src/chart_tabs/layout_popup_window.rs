@@ -38,12 +38,13 @@ pub(super) fn content_size(cx: &App) -> Size<Pixels> {
     let pad = f32::from(design::ui_px(cx, 8.0));
     let gap = f32::from(design::ui_px(cx, 8.0));
     let cap = f32::from(design::t_caption(cx)) + 6.0; // строка заголовка/примечания
+    // Заголовок содержит иконку Micro (⧉) справа — строка чуть выше кегля.
+    let title_h = cap.max(f32::from(design::ui_px(cx, 22.0)));
     let seg_h = f32::from(design::ui_px(cx, 30.0)); // сегмент-контрол Fit/Scroll
     let line_h = f32::from(design::ui_px(cx, 30.0)); // строка «Высота … [поле] px»
-    let btn_h = f32::from(design::ui_px(cx, 30.0)); // кнопка «применить ко всем»
     let border = 2.0;
-    // title + seg + height_line + hint(2 строки) + кнопка, с гэпами между + паддинг + рамка.
-    let h = border + 2.0 * pad + cap + gap + seg_h + gap + line_h + gap + 2.0 * cap + gap + btn_h + 6.0;
+    // title(с иконкой) + seg + height_line + hint(2 строки), с гэпами между + паддинг + рамка.
+    let h = border + 2.0 * pad + title_h + gap + seg_h + gap + line_h + gap + 2.0 * cap + 6.0;
     // 2×110 сегмент + внутр. отступы/гэпы + паддинг + рамка.
     let w = 2.0 * 110.0 + 20.0 + 2.0 * pad + border;
     size(px(w), px(h))
