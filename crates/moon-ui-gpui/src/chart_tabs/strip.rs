@@ -6,10 +6,13 @@ use std::rc::Rc;
 
 use gpui::*;
 use moon_ui::{
-    MoonButton, MoonButtonSize, MoonButtonVariant, MoonRect, MoonTabItem, MoonTabStrip, v_flex,
+    MoonButton, MoonButtonSize, MoonButtonVariant, MoonPalette, MoonRect, MoonTabItem,
+    MoonTabStrip, v_flex,
 };
+use rust_i18n::t;
 
-use super::{CHART_TAB_STRIP_H, ChartTabs, Tab};
+use super::{CHART_TAB_STRIP_H, ChartTabs, Tab, layout_popup};
+use crate::chart_persist::StackLayoutMode;
 
 impl Render for ChartTabs {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -138,40 +141,88 @@ impl Render for ChartTabs {
             )
         });
 
-        // Кнопка настроек раскладки активной вкладки (⚙). canvas-проба снимает её оконный rect в
-        // `settings_btn_rect` — по нему попап привязывается правым краём к правому краю кнопки.
-        let popup_open = self.layout_popup.is_some();
+        // Кнопка настроек раскладки активной вкладки (⚙). Попап — обычный in-scene overlay:
+        // chart text рисуется under-scene и не пробивает UI-слои.
+        let popup_open = self.layout_popup_open;
         let settings_btn = {
             let entity = cx.entity();
-            let rect_cell = self.settings_btn_rect.clone();
+            div().absolute().right(px(6.0)).top(px(4.0)).child(
+                MoonButton::new("chart-layout-settings")
+                    .label("⚙")
+                    .size(MoonButtonSize::Micro)
+                    .variant(if popup_open {
+                        MoonButtonVariant::Blue
+                    } else {
+                        MoonButtonVariant::Ghost
+                    })
+                    .selected(popup_open)
+                    .on_click(move |_, window, app| {
+                        entity.update(app, |this, cx| this.toggle_layout_popup(window, cx));
+                    })
+                    .render(),
+            )
+        };
+        let layout_popup = self.layout_popup_open.then(|| {
+            let p = MoonPalette::active(cx);
+            let mode = self.active_layout_mode(cx).unwrap_or(StackLayoutMode::Fit);
+            let orderbook_enabled = self.active_orderbook_enabled(cx);
+            let include_main = matches!(self.active, Tab::Main);
+            let apply_all_label = if include_main {
+                t!("chart.layout.apply_all_windows").to_string()
+            } else {
+                t!("chart.layout.apply_all_charts").to_string()
+            };
+            let pick_entity = cx.entity();
+            let all_entity = cx.entity();
+            let ob_entity = cx.entity();
+            let hover_entity = cx.entity();
+            let size = layout_popup::content_size(cx);
             div()
+                .id("chart-layout-popup-scene")
                 .absolute()
                 .right(px(6.0))
-                .top(px(4.0))
-                .child(
-                    MoonButton::new("chart-layout-settings")
-                        .label("⚙")
-                        .size(MoonButtonSize::Micro)
-                        .variant(if popup_open {
-                            MoonButtonVariant::Blue
-                        } else {
-                            MoonButtonVariant::Ghost
-                        })
-                        .selected(popup_open)
-                        .on_click(move |_, window, app| {
-                            entity.update(app, |this, cx| this.toggle_layout_popup(window, cx));
-                        })
-                        .render(),
-                )
-                .child(
-                    canvas(
-                        move |bounds, _, _| bounds,
-                        move |bounds, _, _w, _cx| rect_cell.set(Some(bounds)),
-                    )
-                    .absolute()
-                    .size_full(),
-                )
-        };
+                .top(px(CHART_TAB_STRIP_H + 4.0))
+                .w(size.width)
+                .h(size.height)
+                .on_hover(move |hovered, _window, app| {
+                    hover_entity.update(app, |this, cx| {
+                        if *hovered {
+                            this.layout_popup_hovered = true;
+                        } else if this.layout_popup_hovered {
+                            this.close_layout_popup(true, cx);
+                        }
+                    });
+                })
+                .child(layout_popup::render_layout_popup(
+                    "chart-layout",
+                    mode,
+                    &self.layout_fit_input,
+                    &self.layout_scroll_input,
+                    orderbook_enabled,
+                    p,
+                    cx,
+                    move |mode, app| {
+                        pick_entity.update(app, |this, cx| {
+                            let hf = this.read_layout_height(StackLayoutMode::Fit, cx);
+                            let hs = this.read_layout_height(StackLayoutMode::Scroll, cx);
+                            this.apply_layout(Some(mode), hf, hs, cx);
+                        });
+                    },
+                    apply_all_label,
+                    move |app| {
+                        all_entity.update(app, |this, cx| {
+                            let hf = this.read_layout_height(StackLayoutMode::Fit, cx);
+                            let hs = this.read_layout_height(StackLayoutMode::Scroll, cx);
+                            let mode =
+                                Some(this.active_layout_mode(cx).unwrap_or(StackLayoutMode::Fit));
+                            this.apply_layout_to_all(include_main, mode, hf, hs, cx);
+                        });
+                    },
+                    move |checked, app| {
+                        ob_entity.update(app, |this, cx| this.apply_orderbook(checked, cx));
+                    },
+                ))
+        });
 
         v_flex()
             .size_full()
@@ -193,5 +244,6 @@ impl Render for ChartTabs {
                     .min_h(px(0.0))
                     .child(self.active_element()),
             )
+            .children(layout_popup)
     }
 }

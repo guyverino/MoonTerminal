@@ -236,7 +236,11 @@ impl RenderState {
             if pr.caption_w > 0.0 {
                 let lines = (!pr.core_name.is_empty()) as u32 + (!pr.market.is_empty()) as u32;
                 if lines > 0 {
-                    let right_edge = if pr.orderbook_enabled { pane_right } else { plot_right };
+                    let right_edge = if pr.orderbook_enabled {
+                        pane_right
+                    } else {
+                        plot_right
+                    };
                     let cap_x = right_edge - super::text::CAPTION_PAD_X;
                     let cap_y = plot_top + super::text::CAPTION_PAD_Y;
                     let (pad_l, pad_r, pad_y) = (5.0_f32, 3.0_f32, 2.0_f32);

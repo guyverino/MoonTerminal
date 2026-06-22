@@ -9,9 +9,8 @@ use std::sync::Arc;
 use gpui::*;
 use moon_ui::{
     MoonButton, MoonButtonSize, MoonButtonVariant, MoonCheckbox, MoonCheckboxSize, MoonColorPicker,
-    MoonColorPickerState, MoonDropdown, MoonInput, MoonInputEvent,
-    MoonInputState, MoonMenuItem, MoonMenuSize, MoonPalette, MoonSelect, MoonTooltipView,
-    StyledExt, h_flex, v_flex,
+    MoonColorPickerState, MoonDropdown, MoonInput, MoonInputEvent, MoonInputState, MoonMenuItem,
+    MoonMenuSize, MoonPalette, MoonSelect, MoonTooltipView, StyledExt, h_flex, v_flex,
 };
 use rust_i18n::t;
 

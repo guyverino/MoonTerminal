@@ -38,7 +38,9 @@ pub(super) fn resolve_layout(
             }
         }
         StackLayoutMode::Scroll => {
-            let hs = height_scroll.unwrap_or(DEFAULT_SCROLL_HEIGHT).clamp(20, 4000);
+            let hs = height_scroll
+                .unwrap_or(DEFAULT_SCROLL_HEIGHT)
+                .clamp(20, 4000);
             (true, false, hs as f32)
         }
     }

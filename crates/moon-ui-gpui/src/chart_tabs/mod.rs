@@ -9,18 +9,13 @@
 
 mod add_stack;
 mod layout_popup;
-mod layout_popup_window;
 mod main_stack;
 mod sig;
 mod stack;
 mod strip;
 mod windows;
 
-use std::cell::Cell;
 use std::collections::HashMap;
-use std::rc::Rc;
-
-use rust_i18n::t;
 
 pub(crate) use add_stack::AddChartStack;
 pub(crate) use main_stack::MainChartStack;
@@ -29,7 +24,9 @@ use sig::{chart_tabs_sig, core_belongs_to_group};
 use crate::chart_persist::StackLayoutMode;
 
 use gpui::*;
-use moon_ui::{MoonBackgroundPolicy, Panel, PanelEvent, PanelState, Root};
+use moon_ui::{
+    MoonBackgroundPolicy, MoonInputEvent, MoonInputState, Panel, PanelEvent, PanelState,
+};
 
 use crate::Backend;
 use crate::chart_persist;
@@ -82,20 +79,16 @@ pub struct ChartTabs {
     /// и restore detached окон должны жить вне `render()`.
     window_handle: AnyWindowHandle,
     focus: FocusHandle,
-    /// Окно-поповер настроек раскладки активной вкладки (кнопка ⚙). Отдельное безрамочное ОС-окно
-    /// (см. [`layout_popup_window`]) — иначе оси own-pass просвечивают сквозь in-scene попап.
-    /// Some = открыто; закрытие по потере фокуса само сбросит в None (`on_layout_popup_closed`).
-    layout_popup: Option<WindowHandle<Root>>,
-    /// Оконный (логич. px) rect кнопки ⚙ — снимается canvas-пробой в paint, читается при открытии
-    /// попапа, чтобы привязать правый край окна к правому краю кнопки. `Cell` — писать из paint
-    /// без borrow самого view.
-    settings_btn_rect: Rc<Cell<Option<Bounds<Pixels>>>>,
-    /// Время (unix ms) последнего авто-закрытия попапа по потере фокуса. Клик по ⚙ при открытом
-    /// окне сперва уводит фокус (окно закрывается, handle чистится), и тогда тот же клик открыл бы
-    /// его заново → флаг. Если с момента закрытия прошло <~250мс, повторное открытие гасим.
-    layout_popup_closed_ms: f64,
+    /// In-scene попап настроек раскладки активной вкладки (кнопка ⚙). Popup должен жить
+    /// в обычной GPUI scene: chart text находится ниже scene, поэтому отдельное ОС-окно не нужно.
+    layout_popup_open: bool,
+    /// Был ли курсор внутри popup-а. Уход после первого входа закрывает popup и коммитит ввод.
+    layout_popup_hovered: bool,
+    /// Поле высоты режима Fit.
+    layout_fit_input: Entity<MoonInputState>,
+    /// Поле высоты режима Scroll.
+    layout_scroll_input: Entity<MoonInputState>,
 }
-
 
 impl ChartTabs {
     pub fn new(
@@ -182,6 +175,30 @@ impl ChartTabs {
             cx.notify();
         })
         .detach();
+        let layout_fit_input = cx.new(|cx| MoonInputState::new(window, cx));
+        let layout_scroll_input = cx.new(|cx| MoonInputState::new(window, cx));
+        cx.subscribe(
+            &layout_fit_input,
+            |this, _input, ev: &MoonInputEvent, cx| {
+                if this.layout_popup_open
+                    && matches!(ev, MoonInputEvent::Blur | MoonInputEvent::PressEnter { .. })
+                {
+                    this.commit_layout_popup(cx);
+                }
+            },
+        )
+        .detach();
+        cx.subscribe(
+            &layout_scroll_input,
+            |this, _input, ev: &MoonInputEvent, cx| {
+                if this.layout_popup_open
+                    && matches!(ev, MoonInputEvent::Blur | MoonInputEvent::PressEnter { .. })
+                {
+                    this.commit_layout_popup(cx);
+                }
+            },
+        )
+        .detach();
         let mut this = Self {
             backend,
             group,
@@ -198,9 +215,10 @@ impl ChartTabs {
             restore_pending,
             window_handle: window.window_handle(),
             focus: cx.focus_handle(),
-            layout_popup: None,
-            settings_btn_rect: Rc::new(Cell::new(None)),
-            layout_popup_closed_ms: 0.0,
+            layout_popup_open: false,
+            layout_popup_hovered: false,
+            layout_fit_input,
+            layout_scroll_input,
         };
         this.restore_detached(cx);
         this.sync_active_scale(cx);
@@ -288,98 +306,70 @@ impl ChartTabs {
         }
     }
 
-    /// Открыть/закрыть попап настроек раскладки. При открытии заполняет оба поля высоты
-    /// (Fit/Scroll) текущими значениями активной вкладки (нужен `window` для `set_value`).
-    /// Открыть/закрыть окно-поповер настроек раскладки активной вкладки. Открытие — отдельным
-    /// безрамочным ОС-окном у кнопки ⚙ (см. [`layout_popup_window`]); повторный клик закрывает.
+    /// Открыть/закрыть in-scene popup настроек раскладки активной вкладки.
     fn toggle_layout_popup(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(handle) = self.layout_popup.take() {
-            let _ = handle.update(cx, |_, w, _| w.remove_window());
-            cx.notify();
-            return;
-        }
-        // Клик по ⚙ только что закрыл окно по blur → не открывать заново (см. поле).
-        if moon_chart::paint::now_unix_ms() - self.layout_popup_closed_ms < 250.0 {
-            return;
-        }
-        let mode = self.active_layout_mode(cx).unwrap_or(StackLayoutMode::Fit);
-        let hf = self.active_layout_height_fit(cx);
-        let hs = self.active_layout_height_scroll(cx);
-        let win_size = layout_popup_window::content_size(cx);
-        let btn = self
-            .settings_btn_rect
-            .get()
-            .unwrap_or(Bounds {
-                origin: point(window.viewport_size().width - px(40.0), px(4.0)),
-                size: size(px(22.0), px(22.0)),
-            });
-        // Правый край попапа = правый край кнопки ⚙, вплотную под ней (~2px).
-        let (origin, display_id, place_phys) = crate::windowing::popup_placement(
-            window,
-            cx,
-            win_size,
-            btn,
-            crate::windowing::PopupGrowX::Left,
-            2.0,
-        );
-        let clear = layout_popup_window::clear_color(cx);
-        // Из попапа Main — «ко всем окнам» (incl. Main); из чарт-вкладки — «ко всем чартам».
-        let include_main = matches!(self.active, Tab::Main);
-        let apply_all_label = if include_main {
-            t!("chart.layout.apply_all_windows").to_string()
+        if self.layout_popup_open {
+            self.close_layout_popup(true, cx);
         } else {
-            t!("chart.layout.apply_all_charts").to_string()
-        };
-        let owner = cx.entity();
-        let apply: layout_popup_window::ApplyFn = Rc::new(move |m, hf, hs, app| {
-            owner.update(app, |o, oc| o.apply_layout(Some(m), hf, hs, oc));
-        });
-        let owner_all = cx.entity();
-        let apply_all: layout_popup_window::ApplyFn = Rc::new(move |m, hf, hs, app| {
-            owner_all.update(app, |o, oc| {
-                o.apply_layout_to_all(include_main, Some(m), hf, hs, oc)
-            });
-        });
-        let owner2 = cx.entity();
-        let closed: layout_popup_window::ClosedFn = Rc::new(move |app| {
-            owner2.update(app, |o, oc| o.on_layout_popup_closed(oc));
-        });
-        let orderbook_enabled = self.active_orderbook_enabled(cx);
-        let owner_ob = cx.entity();
-        let on_toggle_orderbook: layout_popup_window::OrderbookFn = Rc::new(move |enabled, app| {
-            owner_ob.update(app, |o, oc| o.apply_orderbook(enabled, oc));
-        });
-        self.layout_popup = layout_popup_window::open(
-            origin,
-            win_size,
-            display_id,
-            place_phys,
-            clear,
-            mode,
-            hf,
-            hs,
-            orderbook_enabled,
-            apply,
-            apply_all,
-            apply_all_label.into(),
-            on_toggle_orderbook,
-            closed,
-            cx,
-        );
-        // Сразу после открытия (синхронно, до первого present) доставляем окно на верное место по
-        // абсолютным screen-px — иначе виден прыжок (open кладёт его багнутым SetWindowPlacement).
-        if let (Some(h), Some(phys)) = (self.layout_popup, place_phys) {
-            let _ = h.update(cx, |_, w, _| crate::windowing::move_window_to_physical(w, phys));
+            self.seed_layout_popup_inputs(window, cx);
+            self.layout_popup_open = true;
+            self.layout_popup_hovered = false;
+            cx.notify();
         }
-        cx.notify();
     }
 
-    /// Окно-поповер закрылось (по потере фокуса) — забыть handle, перерисовать кнопку ⚙.
-    fn on_layout_popup_closed(&mut self, cx: &mut Context<Self>) {
-        self.layout_popup_closed_ms = moon_chart::paint::now_unix_ms();
-        if self.layout_popup.take().is_some() {
-            cx.notify();
+    fn seed_layout_popup_inputs(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let fit = self
+            .active_layout_height_fit(cx)
+            .map(|v| v.to_string())
+            .unwrap_or_default();
+        let scroll = self
+            .active_layout_height_scroll(cx)
+            .map(|v| v.to_string())
+            .unwrap_or_default();
+        self.layout_fit_input
+            .update(cx, |input, c| input.set_value(fit, window, c));
+        self.layout_scroll_input
+            .update(cx, |input, c| input.set_value(scroll, window, c));
+    }
+
+    fn read_layout_height(&self, mode: StackLayoutMode, cx: &App) -> Option<u16> {
+        let (input, fallback) = match mode {
+            StackLayoutMode::Fit => (&self.layout_fit_input, self.active_layout_height_fit(cx)),
+            StackLayoutMode::Scroll => (
+                &self.layout_scroll_input,
+                self.active_layout_height_scroll(cx),
+            ),
+        };
+        let value = input.read(cx).value().to_string();
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            return None;
         }
+        trimmed
+            .parse::<u16>()
+            .ok()
+            .map(|raw| layout_popup::clamp_height(mode, raw))
+            .or(fallback)
+    }
+
+    fn commit_layout_popup(&mut self, cx: &mut Context<Self>) {
+        let hf = self.read_layout_height(StackLayoutMode::Fit, cx);
+        let hs = self.read_layout_height(StackLayoutMode::Scroll, cx);
+        let mode = Some(self.active_layout_mode(cx).unwrap_or(StackLayoutMode::Fit));
+        self.apply_layout(mode, hf, hs, cx);
+    }
+
+    fn close_layout_popup(&mut self, commit: bool, cx: &mut Context<Self>) {
+        if !self.layout_popup_open {
+            return;
+        }
+        if commit {
+            self.commit_layout_popup(cx);
+        }
+        self.layout_popup_open = false;
+        self.layout_popup_hovered = false;
+        cx.notify();
     }
 
     /// Ключ персиста активной вкладки: Main → (0, Shared); AddToChart → (num, bucket).
@@ -446,7 +436,8 @@ impl ChartTabs {
                 .main
                 .update(cx, |s, c| s.set_orderbook_enabled(Some(enabled), c)),
             Tab::Add(n, b) => {
-                if let Some((_, _, p)) = self.add.iter().find(|(num, bk, _)| *num == n && *bk == b) {
+                if let Some((_, _, p)) = self.add.iter().find(|(num, bk, _)| *num == n && *bk == b)
+                {
                     p.update(cx, |s, c| s.set_orderbook_enabled(Some(enabled), c));
                 }
             }
@@ -456,8 +447,7 @@ impl ChartTabs {
             s.orderbook_enabled = Some(enabled);
         });
         // Stage 2: пересобрать набор рынков, которым нужен стакан (мог измениться спрос).
-        self.backend
-            .update(cx, |b, _| b.rebuild_orderbook_wanted());
+        self.backend.update(cx, |b, _| b.rebuild_orderbook_wanted());
         cx.notify();
     }
 
@@ -475,7 +465,8 @@ impl ChartTabs {
                 .main
                 .update(cx, |s, c| s.set_layout(mode, height_fit, height_scroll, c)),
             Tab::Add(n, b) => {
-                if let Some((_, _, p)) = self.add.iter().find(|(num, bk, _)| *num == n && *bk == b) {
+                if let Some((_, _, p)) = self.add.iter().find(|(num, bk, _)| *num == n && *bk == b)
+                {
                     p.update(cx, |s, c| s.set_layout(mode, height_fit, height_scroll, c));
                 }
             }
@@ -531,10 +522,8 @@ impl ChartTabs {
     fn drain_apply_all(&mut self, cx: &mut Context<Self>) {
         let group = self.group.clone();
         let reqs: Vec<crate::ChartApplyAll> = self.backend.update(cx, |b, _| {
-            let (mine, rest): (Vec<_>, Vec<_>) = b
-                .chart_apply_all
-                .drain(..)
-                .partition(|r| r.group == group);
+            let (mine, rest): (Vec<_>, Vec<_>) =
+                b.chart_apply_all.drain(..).partition(|r| r.group == group);
             b.chart_apply_all = rest;
             mine
         });
@@ -656,7 +645,8 @@ impl ChartTabs {
                 if saved_scale.is_some() {
                     panel.update(cx, |p, pcx| p.set_scale(saved_scale, pcx));
                 }
-                if saved_layout.0.is_some() || saved_layout.1.is_some() || saved_layout.2.is_some() {
+                if saved_layout.0.is_some() || saved_layout.1.is_some() || saved_layout.2.is_some()
+                {
                     panel.update(cx, |p, pcx| {
                         p.set_layout(saved_layout.0, saved_layout.1, saved_layout.2, pcx)
                     });

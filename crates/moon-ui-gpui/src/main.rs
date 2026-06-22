@@ -372,7 +372,8 @@ impl Backend {
         if self.desired_open_dirty || due {
             self.desired_open_dirty = false;
             self.last_open_sync = now;
-            self.session.set_open(&self.desired, &self.desired_orderbook);
+            self.session
+                .set_open(&self.desired, &self.desired_orderbook);
         }
     }
 

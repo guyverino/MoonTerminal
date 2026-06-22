@@ -264,7 +264,11 @@ impl RenderState {
             // стаканом), нет стакана → у края плота (в области графика). Тот же выбор повторён в
             // render_state для плашки — держать синхронно.
             {
-                let right_edge = if orderbook_enabled { pane_right } else { plot_right };
+                let right_edge = if orderbook_enabled {
+                    pane_right
+                } else {
+                    plot_right
+                };
                 let cap_x = right_edge - CAPTION_PAD_X;
                 let cap_y = plot_top + CAPTION_PAD_Y;
                 let mut cap_w = 0.0_f32;

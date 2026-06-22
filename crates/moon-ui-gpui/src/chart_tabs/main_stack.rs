@@ -353,8 +353,11 @@ impl Render for MainChartStack {
         }
 
         // Stack: per-tab раскладка (FIT/SCROLL/COMPRESS + высота), иначе глобальный дефолт.
-        let (scroll, compress, cfg_h) =
-            resolve_layout(self.layout_mode, self.layout_height_fit, self.layout_height_scroll);
+        let (scroll, compress, cfg_h) = resolve_layout(
+            self.layout_mode,
+            self.layout_height_fit,
+            self.layout_height_scroll,
+        );
         let count = self.charts.len();
         let border = rgb(palette.border);
         let base_id = format!("main-chart-stack-{}", self.group);

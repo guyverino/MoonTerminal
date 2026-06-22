@@ -1085,7 +1085,7 @@ impl Render for ChartPanel {
             // own-pass: геометрию слота движок берёт синхронно из `GpuFrameInfo.bounds` в
             // `frame()` (см. data_state::apply_slot_geometry) — поэтому уже первый present рисует
             // в реальном слоте, без «распахивания» дефолтного размера и без лага при рефлоу.
-            .child(self.chart.canvas().text_over().absolute().size_full())
+            .child(self.chart.canvas().text_under().absolute().size_full())
             .when(show_empty_logo, |this| {
                 // Непрозрачный фон поверх own-pass: пустой слот = логотип на фоне чарта, без
                 // просвечивания старого графика (own-pass рисуется ПОД сценой GPUI).

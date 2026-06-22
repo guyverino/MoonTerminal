@@ -1,6 +1,6 @@
-//! Попап настроек раскладки чарт-вкладки: режим (Fit/Scroll) + высота ТОЛЬКО активного режима.
-//! Per-tab. Рендер общий для полоски вкладок главного окна и шапки выносного окна; обработчики
-//! (применение к нужному стеку + persist) задаёт вызывающий.
+//! In-scene попап настроек раскладки чарт-вкладки: режим (Fit/Scroll) + высота ТОЛЬКО
+//! активного режима. Per-tab. Рендер общий для полоски вкладок главного окна и шапки
+//! выносного окна; обработчики (применение к нужному стеку + persist) задаёт вызывающий.
 //!
 //! Семантика: Fit=0 → растяжение (делят окно); Fit≥20 → COMPRESS (фикс. высота без скролла);
 //! Scroll → фикс. высота слота + скролл. Допустимый диапазон высоты — [MIN_H, MAX_H].
@@ -16,11 +16,39 @@ use crate::chart_persist::StackLayoutMode;
 use crate::design;
 
 /// Порядок режимов в сегмент-контроле попапа (два положения).
-pub(super) const POPUP_MODES: [StackLayoutMode; 2] = [StackLayoutMode::Fit, StackLayoutMode::Scroll];
+pub(super) const POPUP_MODES: [StackLayoutMode; 2] =
+    [StackLayoutMode::Fit, StackLayoutMode::Scroll];
 
 /// Границы высоты слота (px). Меньше MIN (кроме 0 у Fit = растяжение) и больше MAX вводить нельзя.
 pub(super) const MIN_H: u16 = 20;
 pub(super) const MAX_H: u16 = 4000;
+
+/// Размер сценового попапа (логич. px), посчитанный из тех же метрик, что и содержимое.
+/// Вызывающий ставит контейнер в absolute layer и задаёт этот размер.
+pub(super) fn content_size(cx: &App) -> Size<Pixels> {
+    let pad = f32::from(design::ui_px(cx, 8.0));
+    let gap = f32::from(design::ui_px(cx, 8.0));
+    let cap = f32::from(design::t_caption(cx)) + 6.0;
+    let title_h = cap.max(f32::from(design::ui_px(cx, 22.0)));
+    let seg_h = f32::from(design::ui_px(cx, 30.0));
+    let line_h = f32::from(design::ui_px(cx, 30.0));
+    let cb_h = f32::from(design::ui_px(cx, 22.0));
+    let border = 2.0;
+    let h = border
+        + 2.0 * pad
+        + title_h
+        + gap
+        + seg_h
+        + gap
+        + line_h
+        + gap
+        + 2.0 * cap
+        + gap
+        + cb_h
+        + 6.0;
+    let w = 2.0 * 110.0 + 20.0 + 2.0 * pad + border;
+    size(px(w), px(h))
+}
 
 fn mode_label(m: StackLayoutMode) -> &'static str {
     match m {
@@ -92,9 +120,11 @@ where
         .items_center()
         .child(div().text_color(rgb(p.text)).child(label))
         .child(
-            div()
-                .w(px(64.0))
-                .child(MoonInput::new(SharedString::from(format!("{id}-input"))).state(input).small()),
+            div().w(px(64.0)).child(
+                MoonInput::new(SharedString::from(format!("{id}-input")))
+                    .state(input)
+                    .small(),
+            ),
         )
         .child(div().text_color(rgb(p.text_muted)).child("px"));
     // Примечание под полем (многострочное по '\n').
@@ -122,16 +152,14 @@ where
         .on_click(move |_, _w, app| on_apply_all(app))
         .render();
 
-    // Контент заполняет всё окно-поповер (его размер считается детерминированно в
-    // layout_popup_window::content_size). Рамка = border_1 (один кант поверх чарта); БЕЗ
-    // rounded/shadow/фикс-ширины — окно прямоугольное, контент = всё окно.
+    // Контент заполняет сценовый popup-контейнер. Фон непрозрачный: если поверх него виден
+    // chart text, это настоящий z-order баг, а не дизайнерская прозрачность.
     v_flex()
         .id(SharedString::from(format!("{id}-popup")))
         .size_full()
-        // Фон с alpha ~0.8 (0xCC) — окно-поповер полупрозрачное (см. popup_window_options).
         .p(design::ui_px(cx, 8.0))
         .gap(design::ui_px(cx, 8.0))
-        .bg(rgba((p.panel_high << 8) | 0xCC))
+        .bg(rgb(p.panel_high))
         .border_1()
         .border_color(rgb(p.border))
         .child(

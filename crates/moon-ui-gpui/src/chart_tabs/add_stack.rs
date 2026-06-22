@@ -62,7 +62,13 @@ impl AddChartStack {
         }
     }
 
-    pub(super) fn add_coin(&mut self, core: CoreId, market: &str, ttl_ms: f64, cx: &mut Context<Self>) {
+    pub(super) fn add_coin(
+        &mut self,
+        core: CoreId,
+        market: &str,
+        ttl_ms: f64,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(entry) = self
             .charts
             .iter()
@@ -210,8 +216,11 @@ impl Render for AddChartStack {
         // Stack: per-tab раскладка (FIT/SCROLL/COMPRESS + высота), иначе глобальный дефолт.
         // ВАЖНО: чарт-слоты ПРОЗРАЧНЫЕ. own-pass (combo/стакан) — слой GpuCanvasLayer::UnderScene
         // (под сценой); любой непрозрачный `.bg()` над слотом его перекрывает. Разделитель — рамка.
-        let (scroll, compress, cfg_h) =
-            resolve_layout(self.layout_mode, self.layout_height_fit, self.layout_height_scroll);
+        let (scroll, compress, cfg_h) = resolve_layout(
+            self.layout_mode,
+            self.layout_height_fit,
+            self.layout_height_scroll,
+        );
         let count = self.charts.len();
         let border = rgb(palette.border);
         let base_id = format!("add-chart-stack-{}", self.num);
