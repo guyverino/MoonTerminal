@@ -87,6 +87,16 @@ pub(crate) fn install_moon_theme_for_config(cfg: &AppConfig, cx: &mut App) {
     MoonTheme::install_config(moon_theme_config_for(cfg), cx);
 }
 
+/// Запрос «применить раскладку ко всем вкладкам/окнам группы» (из выносного окна чарта).
+pub(crate) struct ChartApplyAll {
+    pub group: String,
+    /// Включать ли Main-вкладку. true — из попапа Main (ко всем окнам); false — из чартов.
+    pub include_main: bool,
+    pub mode: Option<chart_persist::StackLayoutMode>,
+    pub height_fit: Option<u16>,
+    pub height_scroll: Option<u16>,
+}
+
 /// Общий backend: живёт в одном `Entity`, дренится таймером, будит окна по notify.
 struct Backend {
     session: SessionManager,
@@ -201,6 +211,10 @@ struct Backend {
     /// Запросы «вернуть чарт-вкладку в стрип» (закрыли окно откреп-вкладки) —
     /// (группа, номер, bucket). Дренит `ChartTabs` своей группы: панель detached→add.
     chart_repin_request: Vec<(String, u32, moon_core::config::ChartBucket)>,
+    /// Запросы «применить раскладку ко всем» из выносного окна чарта (там нет доступа к стекам
+    /// группы) — дренит `ChartTabs` своей группы. `include_main=false` для запросов с чартов
+    /// (Main не трогаем). Из самого `ChartTabs` применяется напрямую, без очереди.
+    chart_apply_all: Vec<ChartApplyAll>,
     /// Откреплённые в ОС-окна чарт-вкладки, по группе (группа → handle окна). Закрытие
     /// окна группы закрывает принадлежащие ей откреп-чарты; при закрытии самого откреп-окна
     /// чистится по window_id. (Отдельно от `detached` — то про dock-панели, это про чарты.)
@@ -551,6 +565,7 @@ fn main() -> anyhow::Result<()> {
             detached_dirty: false,
             repin_request: Vec::new(),
             chart_repin_request: Vec::new(),
+            chart_apply_all: Vec::new(),
             detached_chart_windows: Vec::new(),
             #[cfg(any(debug_assertions, moon_profile_debug, feature = "debug-tools"))]
             debug_window: None,

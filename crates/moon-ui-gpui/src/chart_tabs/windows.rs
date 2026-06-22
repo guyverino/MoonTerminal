@@ -325,8 +325,7 @@ struct DetachedChartHost {
     /// (см. [`super::layout_popup_window`]). Some = открыто; закрытие по потере фокуса само
     /// сбросит в None.
     layout_popup: Option<WindowHandle<Root>>,
-    /// Оконный (логич. px) rect кнопки ⚙ — снимается canvas-пробой в paint, читается при открытии
-    /// попапа для позиционирования. `Cell` — писать из paint без borrow самого view.
+    /// Оконный (логич. px) rect кнопки ⚙ — для привязки правого края попапа к правому краю кнопки.
     settings_btn_rect: Rc<Cell<Option<Bounds<Pixels>>>>,
     /// Время (unix ms) последнего авто-закрытия попапа по blur — гасит повторное открытие тем же
     /// кликом по ⚙ (см. ChartTabs).
@@ -409,51 +408,63 @@ impl DetachedChartHost {
         }
         let (mode, hf, hs) = self.panel_layout(cx);
         let mode = mode.unwrap_or(StackLayoutMode::Fit);
-        let origin = self.popup_origin(window, cx);
-        let display_id = cx
-            .displays()
-            .into_iter()
-            .find(|d| d.bounds().contains(&origin))
-            .map(|d| d.id());
+        let win_size = super::layout_popup_window::content_size(cx);
+        let btn = self.settings_btn_rect.get().unwrap_or(Bounds {
+            origin: point(window.viewport_size().width - px(60.0), px(8.0)),
+            size: size(px(22.0), px(22.0)),
+        });
+        // Правый край попапа = правый край кнопки ⚙, вплотную под ней (~2px).
+        let (origin, display_id, place_phys) = crate::windowing::popup_placement(
+            window,
+            cx,
+            win_size,
+            btn,
+            crate::windowing::PopupGrowX::Left,
+            2.0,
+        );
         let clear = super::layout_popup_window::clear_color(cx);
         let owner = cx.entity();
         let apply: super::layout_popup_window::ApplyFn = Rc::new(move |m, hf, hs, app| {
             owner.update(app, |o, oc| o.apply_layout(Some(m), hf, hs, oc));
+        });
+        // «Ко всем чартам» (Main не трогаем). Выносное окно не владеет стеками группы → шлём запрос
+        // через Backend, его дренит ChartTabs нужной группы (drain_apply_all).
+        let (g, b) = (self.group.clone(), self.backend.clone());
+        let apply_all: super::layout_popup_window::ApplyFn = Rc::new(move |m, hf, hs, app| {
+            b.update(app, |bk, _| {
+                bk.chart_apply_all.push(crate::ChartApplyAll {
+                    group: g.clone(),
+                    include_main: false,
+                    mode: Some(m),
+                    height_fit: hf,
+                    height_scroll: hs,
+                });
+            });
         });
         let owner2 = cx.entity();
         let closed: super::layout_popup_window::ClosedFn = Rc::new(move |app| {
             owner2.update(app, |o, oc| o.on_layout_popup_closed(oc));
         });
         self.layout_popup = super::layout_popup_window::open(
-            origin, display_id, clear, mode, hf, hs, apply, closed, cx,
+            origin,
+            win_size,
+            display_id,
+            place_phys,
+            clear,
+            mode,
+            hf,
+            hs,
+            apply,
+            apply_all,
+            t!("chart.layout.apply_all_charts").to_string().into(),
+            closed,
+            cx,
         );
-        cx.notify();
-    }
-
-    /// Экранная точка левого-верха окна-поповера: под кнопкой ⚙ в шапке, с клампом к дисплею.
-    fn popup_origin(&self, window: &Window, cx: &App) -> Point<Pixels> {
-        let win = window.window_bounds().get_bounds();
-        let btn = self.settings_btn_rect.get().unwrap_or(Bounds {
-            origin: point(win.size.width - px(80.0), px(6.0)),
-            size: size(px(28.0), px(22.0)),
-        });
-        let mut x =
-            win.origin.x + btn.origin.x + btn.size.width - px(super::layout_popup_window::POPUP_W);
-        let mut y = win.origin.y + btn.origin.y + btn.size.height + px(2.0);
-        if let Some(d) = cx
-            .displays()
-            .into_iter()
-            .find(|d| d.bounds().contains(&(win.origin + btn.origin)))
-        {
-            let db = d.bounds();
-            x = x
-                .max(db.origin.x)
-                .min(db.origin.x + db.size.width - px(super::layout_popup_window::POPUP_W));
-            y = y
-                .max(db.origin.y)
-                .min(db.origin.y + db.size.height - px(super::layout_popup_window::POPUP_H));
+        // Сразу после открытия (до первого present) доставляем окно на верное место по screen-px.
+        if let (Some(h), Some(phys)) = (self.layout_popup, place_phys) {
+            let _ = h.update(cx, |_, w, _| crate::windowing::move_window_to_physical(w, phys));
         }
-        point(x, y)
+        cx.notify();
     }
 
     /// Окно-поповер закрылось (потеря фокуса) — забыть handle, перерисовать кнопку ⚙.
@@ -596,8 +607,6 @@ impl Render for DetachedChartHost {
                     .child({
                         let entity = cx.entity();
                         let rect_cell = self.settings_btn_rect.clone();
-                        // Кнопка ⚙ + canvas-проба (снимает её оконный rect для позиционирования
-                        // окна-поповера). relative-обёртка нужна, чтобы проба легла поверх кнопки.
                         div()
                             .relative()
                             .child(

@@ -7,8 +7,8 @@
 
 use gpui::*;
 use moon_ui::{
-    MoonAccent, MoonInput, MoonInputState, MoonPalette, MoonSegmentItem, MoonSegmentedControl,
-    h_flex, v_flex,
+    MoonAccent, MoonButton, MoonButtonSize, MoonButtonVariant, MoonInput, MoonInputState,
+    MoonPalette, MoonSegmentItem, MoonSegmentedControl, h_flex, v_flex,
 };
 use rust_i18n::t;
 
@@ -33,7 +33,7 @@ fn mode_label(m: StackLayoutMode) -> &'static str {
 /// `height_fit_input`/`height_scroll_input` — раздельные поля (подписку на Blur/Enter держит
 /// вызывающий). `on_pick_mode` вызывается при выборе режима. Позиционируется вызывающим.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn render_layout_popup<F>(
+pub(super) fn render_layout_popup<F, G>(
     id: &str,
     current: StackLayoutMode,
     height_fit_input: &Entity<MoonInputState>,
@@ -41,9 +41,12 @@ pub(super) fn render_layout_popup<F>(
     p: MoonPalette,
     cx: &App,
     on_pick_mode: F,
+    apply_all_label: String,
+    on_apply_all: G,
 ) -> AnyElement
 where
     F: Fn(StackLayoutMode, &mut App) + 'static,
+    G: Fn(&mut App) + 'static,
 {
     let sel = POPUP_MODES.iter().position(|m| *m == current).unwrap_or(0);
     let items: Vec<MoonSegmentItem> = POPUP_MODES
@@ -99,14 +102,25 @@ where
             .child(line.to_string())
     }));
 
-    // Контент заполняет всё окно-поповер (рамка = край самого ОС-окна, border_1 даёт видимый кант
-    // поверх чарта). БЕЗ rounded/shadow/фикс-ширины — иначе была бы «рамка в рамке» внутри окна.
+    // Кнопка «применить ко всем» (подпись задаёт вызывающий по области действия: ко всем окнам /
+    // только чартам). Действие — `on_apply_all`.
+    let apply_all_btn = MoonButton::new(SharedString::from(format!("{id}-apply-all")))
+        .label(apply_all_label)
+        .size(MoonButtonSize::Action)
+        .variant(MoonButtonVariant::Ghost)
+        .on_click(move |_, _w, app| on_apply_all(app))
+        .render();
+
+    // Контент заполняет всё окно-поповер (его размер считается детерминированно в
+    // layout_popup_window::content_size). Рамка = border_1 (один кант поверх чарта); БЕЗ
+    // rounded/shadow/фикс-ширины — окно прямоугольное, контент = всё окно.
     v_flex()
         .id(SharedString::from(format!("{id}-popup")))
         .size_full()
+        // Фон с alpha ~0.8 (0xCC) — окно-поповер полупрозрачное (см. popup_window_options).
         .p(design::ui_px(cx, 8.0))
         .gap(design::ui_px(cx, 8.0))
-        .bg(rgb(p.panel_high))
+        .bg(rgba((p.panel_high << 8) | 0xCC))
         .border_1()
         .border_color(rgb(p.border))
         .child(
@@ -118,6 +132,7 @@ where
         .child(seg)
         .child(height_line)
         .child(hint_block)
+        .child(apply_all_btn)
         .into_any_element()
 }
 

@@ -104,3 +104,11 @@ chart.layout.tip:
   ru: "Настройки раскладки этой вкладки"
   en: "This tab's layout settings"
   es: "Ajustes de disposición de esta pestaña"
+chart.layout.apply_all_windows:
+  ru: "Применить ко всем окнам"
+  en: "Apply to all windows"
+  es: "Aplicar a todas las ventanas"
+chart.layout.apply_all_charts:
+  ru: "Применить ко всем чартам"
+  en: "Apply to all charts"
+  es: "Aplicar a todos los gráficos"

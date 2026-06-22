@@ -16,6 +16,8 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use rust_i18n::t;
+
 use stack::{
     ChartStackEntry, render_chart_stack, resolve_layout, retain_nonempty_panels, set_panels_scale,
 };
@@ -84,8 +86,9 @@ pub struct ChartTabs {
     /// (см. [`layout_popup_window`]) — иначе оси own-pass просвечивают сквозь in-scene попап.
     /// Some = открыто; закрытие по потере фокуса само сбросит в None (`on_layout_popup_closed`).
     layout_popup: Option<WindowHandle<Root>>,
-    /// Оконный (логич. px) прямоугольник кнопки ⚙ — снимается canvas-пробой в paint, читается при
-    /// открытии попапа для позиционирования. `Cell`, чтобы писать из paint без borrow самого view.
+    /// Оконный (логич. px) rect кнопки ⚙ — снимается canvas-пробой в paint, читается при открытии
+    /// попапа, чтобы привязать правый край окна к правому краю кнопки. `Cell` — писать из paint
+    /// без borrow самого view.
     settings_btn_rect: Rc<Cell<Option<Bounds<Pixels>>>>,
     /// Время (unix ms) последнего авто-закрытия попапа по потере фокуса. Клик по ⚙ при открытом
     /// окне сперва уводит фокус (окно закрывается, handle чистится), и тогда тот же клик открыл бы
@@ -713,6 +716,8 @@ impl ChartTabs {
             });
         }
         cx.observe(&backend, |this, backend, cx| {
+            // Запросы «применить ко всем» из выносных окон — до early-return по sig (они sig не меняют).
+            this.drain_apply_all(cx);
             let sig = chart_tabs_sig(backend.read(cx), &this.group);
             if sig == this.last_sig {
                 return;
@@ -855,49 +860,66 @@ impl ChartTabs {
         let mode = self.active_layout_mode(cx).unwrap_or(StackLayoutMode::Fit);
         let hf = self.active_layout_height_fit(cx);
         let hs = self.active_layout_height_scroll(cx);
-        let origin = self.popup_origin(window, cx);
-        let display_id = cx
-            .displays()
-            .into_iter()
-            .find(|d| d.bounds().contains(&origin))
-            .map(|d| d.id());
+        let win_size = layout_popup_window::content_size(cx);
+        let btn = self
+            .settings_btn_rect
+            .get()
+            .unwrap_or(Bounds {
+                origin: point(window.viewport_size().width - px(40.0), px(4.0)),
+                size: size(px(22.0), px(22.0)),
+            });
+        // Правый край попапа = правый край кнопки ⚙, вплотную под ней (~2px).
+        let (origin, display_id, place_phys) = crate::windowing::popup_placement(
+            window,
+            cx,
+            win_size,
+            btn,
+            crate::windowing::PopupGrowX::Left,
+            2.0,
+        );
         let clear = layout_popup_window::clear_color(cx);
+        // Из попапа Main — «ко всем окнам» (incl. Main); из чарт-вкладки — «ко всем чартам».
+        let include_main = matches!(self.active, Tab::Main);
+        let apply_all_label = if include_main {
+            t!("chart.layout.apply_all_windows").to_string()
+        } else {
+            t!("chart.layout.apply_all_charts").to_string()
+        };
         let owner = cx.entity();
         let apply: layout_popup_window::ApplyFn = Rc::new(move |m, hf, hs, app| {
             owner.update(app, |o, oc| o.apply_layout(Some(m), hf, hs, oc));
+        });
+        let owner_all = cx.entity();
+        let apply_all: layout_popup_window::ApplyFn = Rc::new(move |m, hf, hs, app| {
+            owner_all.update(app, |o, oc| {
+                o.apply_layout_to_all(include_main, Some(m), hf, hs, oc)
+            });
         });
         let owner2 = cx.entity();
         let closed: layout_popup_window::ClosedFn = Rc::new(move |app| {
             owner2.update(app, |o, oc| o.on_layout_popup_closed(oc));
         });
-        self.layout_popup =
-            layout_popup_window::open(origin, display_id, clear, mode, hf, hs, apply, closed, cx);
-        cx.notify();
-    }
-
-    /// Экранная точка левого-верха окна-поповера: под кнопкой ⚙ (правый край попапа ≈ правый край
-    /// кнопки), с клампом к дисплею. Локальный rect кнопки берём из `settings_btn_rect` (canvas-проба).
-    fn popup_origin(&self, window: &Window, cx: &App) -> Point<Pixels> {
-        let win = window.window_bounds().get_bounds();
-        let btn = self.settings_btn_rect.get().unwrap_or(Bounds {
-            origin: point(win.size.width - px(40.0), px(4.0)),
-            size: size(px(34.0), px(22.0)),
-        });
-        let mut x = win.origin.x + btn.origin.x + btn.size.width - px(layout_popup_window::POPUP_W);
-        let mut y = win.origin.y + btn.origin.y + btn.size.height + px(2.0);
-        if let Some(d) = cx.displays().into_iter().find(|d| {
-            d.bounds().contains(&point(x, y))
-                || d.bounds().contains(&(win.origin + btn.origin))
-        }) {
-            let db = d.bounds();
-            x = x
-                .max(db.origin.x)
-                .min(db.origin.x + db.size.width - px(layout_popup_window::POPUP_W));
-            y = y
-                .max(db.origin.y)
-                .min(db.origin.y + db.size.height - px(layout_popup_window::POPUP_H));
+        self.layout_popup = layout_popup_window::open(
+            origin,
+            win_size,
+            display_id,
+            place_phys,
+            clear,
+            mode,
+            hf,
+            hs,
+            apply,
+            apply_all,
+            apply_all_label.into(),
+            closed,
+            cx,
+        );
+        // Сразу после открытия (синхронно, до первого present) доставляем окно на верное место по
+        // абсолютным screen-px — иначе виден прыжок (open кладёт его багнутым SetWindowPlacement).
+        if let (Some(h), Some(phys)) = (self.layout_popup, place_phys) {
+            let _ = h.update(cx, |_, w, _| crate::windowing::move_window_to_physical(w, phys));
         }
-        point(x, y)
+        cx.notify();
     }
 
     /// Окно-поповер закрылось (по потере фокуса) — забыть handle, перерисовать кнопку ⚙.
@@ -978,6 +1000,60 @@ impl ChartTabs {
             s.layout_height_scroll = height_scroll;
         });
         cx.notify();
+    }
+
+    /// Применить раскладку ко ВСЕМ стекам группы. `include_main`: трогать ли Main (true — из попапа
+    /// Main → ко всем окнам; false — из чартов → Main не трогаем). Персист каждой вкладки.
+    fn apply_layout_to_all(
+        &mut self,
+        include_main: bool,
+        mode: Option<StackLayoutMode>,
+        height_fit: Option<u16>,
+        height_scroll: Option<u16>,
+        cx: &mut Context<Self>,
+    ) {
+        if include_main {
+            self.main
+                .update(cx, |s, c| s.set_layout(mode, height_fit, height_scroll, c));
+            self.upsert_spec(cx, 0, &ChartBucket::Shared, |s| {
+                s.layout_mode = mode;
+                s.layout_height_fit = height_fit;
+                s.layout_height_scroll = height_scroll;
+            });
+        }
+        // «Чарты» = add-вкладки в стрипе + откреплённые в окна (их стеки держим в self.detached).
+        let targets: Vec<(u32, ChartBucket, Entity<AddChartStack>)> = self
+            .add
+            .iter()
+            .chain(self.detached.iter())
+            .map(|(n, b, p)| (*n, b.clone(), p.clone()))
+            .collect();
+        for (num, bucket, panel) in targets {
+            panel.update(cx, |s, c| s.set_layout(mode, height_fit, height_scroll, c));
+            self.upsert_spec(cx, num, &bucket, |s| {
+                s.layout_mode = mode;
+                s.layout_height_fit = height_fit;
+                s.layout_height_scroll = height_scroll;
+            });
+        }
+        cx.notify();
+    }
+
+    /// Дренаж запросов «применить ко всем» из выносных окон чартов ЭТОЙ группы (у них нет доступа
+    /// к стекам группы, поэтому шлют через Backend).
+    fn drain_apply_all(&mut self, cx: &mut Context<Self>) {
+        let group = self.group.clone();
+        let reqs: Vec<crate::ChartApplyAll> = self.backend.update(cx, |b, _| {
+            let (mine, rest): (Vec<_>, Vec<_>) = b
+                .chart_apply_all
+                .drain(..)
+                .partition(|r| r.group == group);
+            b.chart_apply_all = rest;
+            mine
+        });
+        for r in reqs {
+            self.apply_layout_to_all(r.include_main, r.mode, r.height_fit, r.height_scroll, cx);
+        }
     }
 
     /// Ингест AddToChart-детектов (add_to_chart>0) → создать/наполнить вкладку.
@@ -1437,9 +1513,8 @@ impl Render for ChartTabs {
             )
         });
 
-        // Кнопка настроек раскладки активной вкладки (⚙) — справа в полосе вкладок. canvas-проба
-        // (size_full поверх кнопки) снимает её оконный rect в `settings_btn_rect` для позиционирования
-        // окна-поповера. Открыт ли попап — по наличию handle.
+        // Кнопка настроек раскладки активной вкладки (⚙). canvas-проба снимает её оконный rect в
+        // `settings_btn_rect` — по нему попап привязывается правым краём к правому краю кнопки.
         let popup_open = self.layout_popup.is_some();
         let settings_btn = {
             let entity = cx.entity();

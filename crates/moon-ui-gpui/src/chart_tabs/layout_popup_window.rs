@@ -17,46 +17,83 @@ use moon_ui::{MoonBackgroundPolicy, MoonInputEvent, MoonInputState, MoonPalette,
 
 use super::layout_popup::{self, render_layout_popup};
 use crate::chart_persist::StackLayoutMode;
+use crate::design;
 
 /// Применить раскладку (режим + раздельные высоты Fit/Scroll) к владельцу вкладки.
 pub(super) type ApplyFn = Rc<dyn Fn(StackLayoutMode, Option<u16>, Option<u16>, &mut App)>;
 /// Уведомить владельца, что окно попапа закрылось (сбросить handle, перерисовать кнопку ⚙).
 pub(super) type ClosedFn = Rc<dyn Fn(&mut App)>;
 
-/// Логический размер окошка (безрамочное). Контент заполняет окно целиком (без «рамки в рамке»);
-/// высота с запасом под примечание. При сильном увеличении шрифта контент может не влезть.
-pub(super) const POPUP_W: f32 = 300.0;
-pub(super) const POPUP_H: f32 = 154.0;
-
-/// Цвет фона (clear) окна-поповера под активную тему = панельный `panel_high`. Лишние поля окна
-/// за контентом заливаются им, чтобы окно выглядело сплошной плашкой попапа.
-pub(super) fn clear_color(cx: &App) -> Rgba {
-    let hex = MoonPalette::active(cx).panel_high;
-    rgba((hex << 8) | 0xFF)
+/// Размер окна-поповера (логич. px), посчитанный ДЕТЕРМИНИРОВАННО из метрик и масштаба слайдера
+/// «Шрифт» (`design::ui_px`). Контент заполняет окно (`size_full`).
+///
+/// Почему не «авто по содержимому через `window.resize` каждый кадр»: на НЕ-первичном мониторе с
+/// другим DPI каждый resize в этом форке gpui повторно триггерит `WM_DPICHANGED`-перемасштаб →
+/// размер компаундится → окно безостановочно растёт (тот же баг, из-за которого существует
+/// `DetachedChartHost.restore_size`). Поэтому размер считаем заранее и больше не трогаем.
+///
+/// Высоту берём под БОЛЬШИЙ режим (Fit — 2 строки примечания), чтобы Scroll (1 строка) лишь оставил
+/// незаметный отступ снизу (фон тот же), а не обрезался. Ширину диктует сегмент-контрол (2×110).
+pub(super) fn content_size(cx: &App) -> Size<Pixels> {
+    let pad = f32::from(design::ui_px(cx, 8.0));
+    let gap = f32::from(design::ui_px(cx, 8.0));
+    let cap = f32::from(design::t_caption(cx)) + 6.0; // строка заголовка/примечания
+    let seg_h = f32::from(design::ui_px(cx, 30.0)); // сегмент-контрол Fit/Scroll
+    let line_h = f32::from(design::ui_px(cx, 30.0)); // строка «Высота … [поле] px»
+    let btn_h = f32::from(design::ui_px(cx, 30.0)); // кнопка «применить ко всем»
+    let border = 2.0;
+    // title + seg + height_line + hint(2 строки) + кнопка, с гэпами между + паддинг + рамка.
+    let h = border + 2.0 * pad + cap + gap + seg_h + gap + line_h + gap + 2.0 * cap + gap + btn_h + 6.0;
+    // 2×110 сегмент + внутр. отступы/гэпы + паддинг + рамка.
+    let w = 2.0 * 110.0 + 20.0 + 2.0 * pad + border;
+    size(px(w), px(h))
 }
 
-/// Открыть окно-поповер на экранной точке `origin`. Возвращает handle (None при отказе ОС).
+/// Clear-цвет окна-поповера — ПРОЗРАЧНЫЙ: окно полупрозрачное (`WindowBackgroundAppearance::
+/// Transparent`), сам фон (panel_high с alpha) даёт контент (`render_layout_popup`), а не закрытые
+/// им пиксели остаются прозрачными. `cx` не нужен, оставлен для единообразия сигнатуры.
+pub(super) fn clear_color(_cx: &App) -> Rgba {
+    rgba(0x00000000)
+}
+
+/// Открыть окно-поповер на экранной точке `origin` размером `win_size`. Handle или None (отказ ОС).
+#[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_arguments)]
 pub(super) fn open(
     origin: Point<Pixels>,
+    win_size: Size<Pixels>,
     display_id: Option<DisplayId>,
+    place_phys: crate::windowing::PopupPhysRect,
     clear_color: Rgba,
     mode: StackLayoutMode,
     height_fit: Option<u16>,
     height_scroll: Option<u16>,
     apply: ApplyFn,
+    apply_all: ApplyFn,
+    apply_all_label: SharedString,
     closed: ClosedFn,
     cx: &mut App,
 ) -> Option<WindowHandle<Root>> {
     let bounds = Bounds {
         origin,
-        size: size(px(POPUP_W), px(POPUP_H)),
+        size: win_size,
     };
     let mut opts = crate::windowing::popup_window_options(WindowBounds::Windowed(bounds), display_id);
     opts.window_clear_color = Some(clear_color);
     cx.open_window(opts, move |window, cx| {
         let view = cx.new(|cx| {
-            LayoutPopupWindow::new(mode, height_fit, height_scroll, apply, closed, window, cx)
+            LayoutPopupWindow::new(
+                mode,
+                height_fit,
+                height_scroll,
+                place_phys,
+                apply,
+                apply_all,
+                apply_all_label,
+                closed,
+                window,
+                cx,
+            )
         });
         cx.new(|cx| Root::new(view, window, cx).background_policy(MoonBackgroundPolicy::NoFill))
     })
@@ -75,7 +112,14 @@ pub(super) struct LayoutPopupWindow {
     init_fit: Option<u16>,
     init_scroll: Option<u16>,
     apply: ApplyFn,
+    /// Применить текущую раскладку КО ВСЕМ (область задаёт владелец: ко всем окнам / только чартам).
+    apply_all: ApplyFn,
+    /// Подпись кнопки «применить ко всем» (зависит от области).
+    apply_all_label: SharedString,
     closed: ClosedFn,
+    /// Физ. screen-rect для корректирующего `SetWindowPos` на первом рендере (open_window кладёт
+    /// мимо на смещённых мониторах). Применяется один раз → сбрасывается в None.
+    place_phys: crate::windowing::PopupPhysRect,
     /// Окно уже было активным хотя бы раз — иначе первый (немедленный) тик наблюдателя активации
     /// закрыл бы попап до того, как ОС успела дать ему фокус.
     was_active: bool,
@@ -88,11 +132,15 @@ pub(super) struct LayoutPopupWindow {
 }
 
 impl LayoutPopupWindow {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         mode: StackLayoutMode,
         height_fit: Option<u16>,
         height_scroll: Option<u16>,
+        place_phys: crate::windowing::PopupPhysRect,
         apply: ApplyFn,
+        apply_all: ApplyFn,
+        apply_all_label: SharedString,
         closed: ClosedFn,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -140,7 +188,10 @@ impl LayoutPopupWindow {
             init_fit: height_fit,
             init_scroll: height_scroll,
             apply,
+            apply_all,
+            apply_all_label,
             closed,
+            place_phys,
             was_active: false,
             was_hovered: false,
             closing: false,
@@ -169,6 +220,14 @@ impl LayoutPopupWindow {
         (self.apply)(self.mode, hf, hs, app);
     }
 
+    /// Применить текущее состояние КО ВСЕМ (область задаёт колбэк владельца).
+    fn apply_all_now(&mut self, cx: &mut Context<Self>) {
+        let hf = self.read_height(StackLayoutMode::Fit, cx);
+        let hs = self.read_height(StackLayoutMode::Scroll, cx);
+        let app: &mut App = cx;
+        (self.apply_all)(self.mode, hf, hs, app);
+    }
+
     fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.closing {
             return;
@@ -183,9 +242,16 @@ impl LayoutPopupWindow {
 }
 
 impl Render for LayoutPopupWindow {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Корректирующая постановка по абсолютным screen-px (один раз): open_window на смещённых
+        // мониторах кладёт окно мимо. Делаем в render (а не в new) — после того как open завершил
+        // своё размещение, чтобы перебить его.
+        if let Some(rect) = self.place_phys.take() {
+            crate::windowing::move_window_to_physical(window, rect);
+        }
         let p = MoonPalette::active(cx);
         let entity = cx.entity();
+        let entity_all = cx.entity();
         let body = render_layout_popup(
             "chart-layout",
             self.mode,
@@ -200,9 +266,14 @@ impl Render for LayoutPopupWindow {
                     cx.notify();
                 });
             },
+            self.apply_all_label.to_string(),
+            move |app| {
+                entity_all.update(app, |this, cx| this.apply_all_now(cx));
+            },
         );
         // size_full-обёртка с hover: уход курсора с окна (после первого входа) закрывает попап.
-        // Это В ДОПОЛНЕНИЕ к закрытию по потере фокуса (клик в другое окно).
+        // Это В ДОПОЛНЕНИЕ к закрытию по потере фокуса (клик в другое окно). Контент (body)
+        // заполняет окно; размер окна задан заранее (content_size), resize не делаем.
         div()
             .id("chart-layout-popup-root")
             .size_full()
