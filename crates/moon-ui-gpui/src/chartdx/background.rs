@@ -8,8 +8,8 @@ use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_SAMPLE_DESC};
 
 use super::gpu::{
-    create_alpha_blend, create_dynamic_cb, create_point_sampler, d3d_device_ptr, full_viewport,
-    make_ps, make_vs, update_dynamic,
+    create_alpha_blend, create_dynamic_cb, create_point_sampler, full_viewport, make_ps, make_vs,
+    update_dynamic,
 };
 pub use super::types::BackgroundParams;
 
@@ -31,7 +31,7 @@ struct BackgroundPipe {
 
 pub struct BackgroundLayer {
     pipe: Option<BackgroundPipe>,
-    device_ptr: *mut c_void,
+    device_generation: u64,
     png: &'static [u8],
 }
 
@@ -39,7 +39,7 @@ impl BackgroundLayer {
     pub fn new(png: &'static [u8]) -> Self {
         Self {
             pipe: None,
-            device_ptr: std::ptr::null_mut(),
+            device_generation: 0,
             png,
         }
     }
@@ -55,10 +55,10 @@ impl BackgroundLayer {
         if params.dst[2] <= 0.0 || params.dst[3] <= 0.0 {
             return;
         }
-        let device_ptr = d3d_device_ptr(gpu);
-        if self.device_ptr != device_ptr {
+        let generation = gpu.device_generation();
+        if self.device_generation != generation {
             self.pipe = None;
-            self.device_ptr = device_ptr;
+            self.device_generation = generation;
         }
         if self.pipe.is_none() {
             self.pipe = Some(Self::create_pipe(device, self.png));

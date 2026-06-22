@@ -22,7 +22,11 @@ pub(super) fn place_order(
     size: f64,
     strategy_id: Option<u64>,
 ) {
-    let side = if short { OrderSide::Short } else { OrderSide::Long };
+    let side = if short {
+        OrderSide::Short
+    } else {
+        OrderSide::Long
+    };
     let mut params = NewOrderParams::new(market.clone(), side, price, size);
     if let Some(id) = strategy_id {
         params = params.with_strategy_id(id);

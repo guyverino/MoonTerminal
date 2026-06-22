@@ -4,11 +4,15 @@
 //! Поток: event-driven. `MoonEventSink` будит backend thread после реального события;
 //! market data остаётся в immutable read-model snapshot, сюда идёт только лёгкий сигнал.
 
+use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use moonproto::state::{MarketHistorySizing, OrderTraceChartPoint, OrderTraceLine};
+use moonproto::state::{
+    MarketHistorySizing, MarketsEvent, OrderBookEvent, OrderTraceChartPoint, OrderTraceLine,
+    TradesEvent,
+};
 use moonproto::{
     ClientConfig, ConnectConfig, Event, InitConfig, InitialStrategies, LifecycleEvent, MoonClient,
     MoonEventSink, StrategyFields, StrategyKind, StrategySchema, StrategySnapshot,
@@ -16,13 +20,13 @@ use moonproto::{
 };
 
 use super::assets::{build_assets, build_transfer_assets, to_exchange_kind};
-use super::report::{delphi_to_unix, send_close_report, OrderIndex, OrderMeta};
+use super::report::{send_close_report, OrderIndex, OrderMeta};
 use super::strategies::{
     alert_params, build_schema_model, fmt_field, fv_from_str, strat_kind_name,
 };
 use super::{
-    ConnStatus, CoreCmd, CoreLogLine, DetectRow, ExchangeId, FeedMsg, FeedTx, OrderRow, OrderTrace,
-    OrderTracePoint, SharedMoonClient, StrategyRow,
+    ConnStatus, CoreCmd, CoreLogLine, DetectRow, ExchangeId, FeedMsg, FeedTx, MarketDirty,
+    MarketDirtyFlags, OrderRow, OrderTrace, OrderTracePoint, SharedMoonClient, StrategyRow,
 };
 use crate::config::ServerConfig;
 use crate::db::ReportTx;
@@ -58,6 +62,86 @@ fn trace_point(p: OrderTraceChartPoint) -> Option<OrderTracePoint> {
         time_ms,
         price: p.price,
     })
+}
+
+fn moon_time_to_unix_seconds(time: moonproto::MoonTime) -> Option<i64> {
+    let millis = time.unix_millis();
+    (millis > 0).then_some(millis.div_euclid(1000))
+}
+
+fn moon_time_to_unix_millis_f64(time: moonproto::MoonTime) -> f64 {
+    let millis = time.unix_millis();
+    if millis > 0 {
+        millis as f64
+    } else {
+        0.0
+    }
+}
+
+fn push_dirty(
+    dirty: &mut HashMap<String, MarketDirtyFlags>,
+    market: impl Into<String>,
+    flags: MarketDirtyFlags,
+) {
+    dirty
+        .entry(market.into())
+        .and_modify(|existing| *existing = existing.union(flags))
+        .or_insert(flags);
+}
+
+fn push_wanted_dirty(
+    dirty: &mut HashMap<String, MarketDirtyFlags>,
+    wanted: &[String],
+    flags: MarketDirtyFlags,
+) {
+    for market in wanted {
+        push_dirty(dirty, market.clone(), flags);
+    }
+}
+
+fn market_dirty_from_events(
+    events: &[Event],
+    wanted: &[String],
+    force_sample: bool,
+) -> Vec<MarketDirty> {
+    let mut dirty = HashMap::<String, MarketDirtyFlags>::new();
+    if force_sample {
+        push_wanted_dirty(&mut dirty, wanted, MarketDirtyFlags::ALL);
+    }
+
+    for event in events {
+        match event {
+            Event::OrderBook(OrderBookEvent::Apply {
+                market_name: Some(market),
+                ..
+            }) => {
+                push_dirty(&mut dirty, market.to_string(), MarketDirtyFlags::ORDERBOOK);
+            }
+            Event::Trade(TradesEvent::Applied { .. }) => {
+                // MoonProto keeps TradesEvent intentionally small and does not
+                // expose market names here. The terminal still narrows the wake
+                // to provider-wanted markets instead of waking all charts on
+                // every domain event.
+                push_wanted_dirty(&mut dirty, wanted, MarketDirtyFlags::HISTORY);
+            }
+            Event::Markets(MarketsEvent::PricesUpdated { .. }) => {
+                push_wanted_dirty(&mut dirty, wanted, MarketDirtyFlags::HISTORY);
+            }
+            Event::Markets(
+                MarketsEvent::MarketsListReplaced { .. }
+                | MarketsEvent::NewMarketsAdded { .. }
+                | MarketsEvent::IndexesUpdated { .. },
+            ) => {
+                push_wanted_dirty(&mut dirty, wanted, MarketDirtyFlags::MARKET_META);
+            }
+            _ => {}
+        }
+    }
+
+    dirty
+        .into_iter()
+        .map(|(market, flags)| MarketDirty::new(market, flags))
+        .collect()
 }
 
 fn order_trace(line: &OrderTraceLine) -> Option<OrderTrace> {
@@ -436,7 +520,7 @@ pub fn run(
         if !identity_sent {
             if let Some(info) = client.server_info() {
                 if let Some(code) = info.exchange_code {
-                    let _ = tx.send(FeedMsg::Identity(ExchangeId(code.to_byte())));
+                    let _ = tx.send(FeedMsg::Identity(ExchangeId(code.stable_id())));
                     // Базовая валюта аккаунта — для дефолтов размера ордера в UI (BTC vs USDT).
                     let base = info.base_currency_name.unwrap_or_default();
                     if !base.is_empty() {
@@ -505,6 +589,11 @@ pub fn run(
         events.clear();
         event_queue.drain_events_into(&mut events);
         let had_domain_event = !events.is_empty();
+        let dirty_markets = if is_provider && !wanted.is_empty() {
+            market_dirty_from_events(&events, &wanted, force_market_sample)
+        } else {
+            Vec::new()
+        };
         let want_log = server.feed.log;
         // detect-diag: один раз за процесс — состояние серверных флагов фида. Если
         // `feed.detects=false`, ветка `Event::Detect` ниже вообще не работает → корень
@@ -626,9 +715,9 @@ pub fn run(
                                 exorderid: (o.buy_order.int_id != 0)
                                     .then(|| o.buy_order.int_id.to_string()),
                                 emulator: o.emulator_mode,
-                                buydate: delphi_to_unix(o.buy_order.open_time),
-                                sellsetdate: delphi_to_unix(o.sell_order.create_time),
-                                closedate: delphi_to_unix(o.sell_order.close_time),
+                                buydate: moon_time_to_unix_seconds(o.buy_order.open_time()),
+                                sellsetdate: moon_time_to_unix_seconds(o.sell_order.create_time()),
+                                closedate: moon_time_to_unix_seconds(o.sell_order.close_time()),
                             },
                         );
                         if o.db_id != 0 {
@@ -740,9 +829,7 @@ pub fn run(
                     // (нога входа: buy для long, sell для short).
                     let filled = fill_pct > 0.0;
                     // Время создания входной (buy) ноги — начало линии ордера, unix мс.
-                    let create_time_ms = delphi_to_unix(o.buy_order.create_time)
-                        .map(|s| s as f64 * 1000.0)
-                        .unwrap_or(0.0);
+                    let create_time_ms = moon_time_to_unix_millis_f64(o.buy_order.create_time());
                     order_rows.push(OrderRow {
                         market: o.market_name.clone(),
                         is_short: o.is_short,
@@ -888,8 +975,8 @@ pub fn run(
 
         // Рыночные данные НЕ переливаем здесь. Feed только сигналит, что у provider
         // появился свежий read-model snapshot; видимый chart сам подтянет нужные рынки.
-        if (force_market_sample || had_domain_event) && is_provider && !wanted.is_empty() {
-            if tx.send(FeedMsg::MarketDataChanged).is_err() {
+        if !dirty_markets.is_empty() {
+            if tx.send(FeedMsg::MarketDataChanged(dirty_markets)).is_err() {
                 let _ = client.disconnect();
                 return Ok(());
             }

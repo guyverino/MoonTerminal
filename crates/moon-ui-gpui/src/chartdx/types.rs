@@ -1,8 +1,12 @@
 //! Backend-neutral GPU structs shared by DX11, Metal, and wgpu chart passes.
 //! Плюс мелкие билдеры/хелперы, превращающие данные фида в эти GPU-инстансы.
 
+use bytemuck::Zeroable;
 use moon_core::data::PriceLinePoint;
 use moon_core::feed::{PricePoint, Side, Tick};
+
+/// Единая дефолтная прозрачность volume для всех native backend-ов.
+pub const DEFAULT_VOLUME_ALPHA: f32 = 0.34;
 
 /// sRGB [u8;3] → [f32;4] (alpha 1) для cbuffer-цветов (шейдер переводит в linear).
 pub fn rgb4(c: [u8; 3]) -> [f32; 4] {
@@ -49,6 +53,75 @@ pub struct ChartCross {
     pub price: f32,
     pub side: u32,
     pub qty: f32,
+}
+
+#[allow(dead_code)]
+pub fn ordered_cross_ring(
+    buf: &[ChartCross],
+    head: usize,
+    count: usize,
+    capacity: usize,
+) -> Vec<ChartCross> {
+    let capacity = capacity.max(1);
+    let count = count.min(capacity).min(buf.len());
+    if count == 0 {
+        return Vec::new();
+    }
+    let start = if count == capacity {
+        head % capacity
+    } else {
+        0
+    };
+    let mut out = Vec::with_capacity(count);
+    for i in 0..count {
+        let idx = (start + i) % capacity;
+        if let Some(cross) = buf.get(idx) {
+            out.push(*cross);
+        }
+    }
+    out
+}
+
+#[allow(dead_code)]
+pub fn reset_cross_ring(
+    buf: &mut Vec<ChartCross>,
+    head: &mut usize,
+    count: &mut usize,
+    capacity: usize,
+    data: &[ChartCross],
+) {
+    let capacity = capacity.max(1);
+    let start = data.len().saturating_sub(capacity);
+    buf.clear();
+    buf.extend_from_slice(&data[start..]);
+    *count = buf.len();
+    *head = *count % capacity;
+}
+
+#[allow(dead_code)]
+pub fn append_cross_ring(
+    buf: &mut Vec<ChartCross>,
+    head: &mut usize,
+    count: &mut usize,
+    capacity: usize,
+    data: &[ChartCross],
+) {
+    let capacity = capacity.max(1);
+    if data.is_empty() {
+        return;
+    }
+    if data.len() >= capacity {
+        reset_cross_ring(buf, head, count, capacity, data);
+        return;
+    }
+    if buf.len() < capacity {
+        buf.resize(capacity, ChartCross::zeroed());
+    }
+    for cross in data {
+        buf[*head] = *cross;
+        *head = (*head + 1) % capacity;
+        *count = (*count + 1).min(capacity);
+    }
 }
 
 /// Chart transform uniform. Keep field order in sync with HLSL/MSL/WGSL.

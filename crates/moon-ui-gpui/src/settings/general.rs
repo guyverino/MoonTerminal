@@ -159,7 +159,15 @@ impl SettingsView {
                 h_flex()
                     .gap(design::ui_px(cx, 8.0))
                     .items_center()
-                    .child(div().text_color(if scroll { rgba_from(p.text, 1.0) } else { muted }).child(t!("general.chart_height").to_string()))
+                    .child(
+                        div()
+                            .text_color(if scroll {
+                                rgba_from(p.text, 1.0)
+                            } else {
+                                muted
+                            })
+                            .child(t!("general.chart_height").to_string()),
+                    )
                     .child(
                         MoonButton::new("stack-h-")
                             .ghost()
@@ -167,14 +175,20 @@ impl SettingsView {
                             .width(24.0)
                             .label("-")
                             .disabled(!scroll)
-                            .on_click(cx.listener(|this, _, _, cx| this.adjust_stack_height(-20, cx)))
+                            .on_click(
+                                cx.listener(|this, _, _, cx| this.adjust_stack_height(-20, cx)),
+                            )
                             .render(),
                     )
                     .child(
                         div()
                             .w(px(64.0))
                             .text_center()
-                            .text_color(if scroll { rgba_from(p.text, 1.0) } else { muted })
+                            .text_color(if scroll {
+                                rgba_from(p.text, 1.0)
+                            } else {
+                                muted
+                            })
                             .child(format!("{stack_h} px")),
                     )
                     .child(
@@ -184,7 +198,9 @@ impl SettingsView {
                             .width(24.0)
                             .label("+")
                             .disabled(!scroll)
-                            .on_click(cx.listener(|this, _, _, cx| this.adjust_stack_height(20, cx)))
+                            .on_click(
+                                cx.listener(|this, _, _, cx| this.adjust_stack_height(20, cx)),
+                            )
                             .render(),
                     ),
             )
@@ -234,7 +250,11 @@ impl SettingsView {
                 h_flex()
                     .gap(design::ui_px(cx, 8.0))
                     .items_center()
-                    .child(div().text_color(if logf { rgba_from(p.text, 1.0) } else { muted }).child(t!("general.log_retention").to_string()))
+                    .child(
+                        div()
+                            .text_color(if logf { rgba_from(p.text, 1.0) } else { muted })
+                            .child(t!("general.log_retention").to_string()),
+                    )
                     .child(
                         MoonButton::new("ret-")
                             .ghost()

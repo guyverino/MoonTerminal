@@ -54,18 +54,29 @@ pub fn detach_button(
         .size(MoonButtonSize::Action)
         .label("⧉")
         .on_click(move |_, window, app| {
-            // Убрать себя из дока.
+            let spec = DetachedSpec::new(group.clone(), name.to_string());
+            if let Err(err) =
+                crate::detached::spawn(app, &backend, &spec, Some(window.window_handle()))
+            {
+                log::warn!("detach panel failed group={} panel={name}: {err:#}", group);
+                return;
+            }
+            // Убрать себя из дока только после успешного открытия окна.
             if let Some(dock) = dock.as_ref().and_then(|d| d.upgrade()) {
                 dock.update(app, |area, cx| {
                     area.remove_panel_by_name(name, window, cx);
                 });
             }
-            // Открыть окно открепления + записать спеку.
-            let spec = DetachedSpec::new(group.clone(), name.to_string());
-            crate::detached::spawn(app, &backend, &spec, Some(window.window_handle()));
+            // Записать спеку после успешного открытия + удаления из дока.
             backend.update(app, |b, _| {
-                b.detached.push(spec);
-                b.detached_dirty = true;
+                if !b
+                    .detached
+                    .iter()
+                    .any(|s| s.group == spec.group && s.panel == spec.panel)
+                {
+                    b.detached.push(spec);
+                    b.detached_dirty = true;
+                }
             });
         })
         .render()

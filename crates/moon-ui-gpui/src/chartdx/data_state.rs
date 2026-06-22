@@ -26,6 +26,7 @@ impl ChartDataState {
             present_rate_candidate_hz: 0.0,
             present_rate_candidate_hits: 0,
             last_ppp: 1.0,
+            slot_bounds: None,
             last_order_sig: u64::MAX,
             last_prepared_market_sig: u64::MAX,
             last_source_market_sig: u64::MAX,
@@ -44,9 +45,9 @@ impl ChartDataState {
 
     pub(super) fn order_signature(&self, session: &SessionManager) -> u64 {
         let mut sig = 0u64;
-        for p in &self.container.borrow().panes {
-            if let Some(core_st) = session.store().core(p.core) {
-                sig = sig.wrapping_mul(31).wrapping_add(core_st.orders_rev);
+        if let Some((core, _market)) = self.container.borrow().target_ref(0) {
+            if let Some(core_st) = session.store().core(core) {
+                sig = sig.wrapping_add(core_st.orders_rev);
             }
         }
         sig
@@ -68,11 +69,10 @@ impl ChartDataState {
 
     pub(super) fn market_signature(&self, source: &MarketDataSource) -> u64 {
         let mut sig = 0u64;
-        for p in &self.container.borrow().panes {
-            source.with_market_view(p.core, &p.market, |data| {
+        if let Some((core, market)) = self.container.borrow().target_ref(0) {
+            source.with_market_view(core, &market, |data| {
                 if let Some(v) = data {
                     sig = sig
-                        .wrapping_mul(31)
                         .wrapping_add(v.ticks_rev)
                         .wrapping_add(v.price_lines_rev)
                         .wrapping_add(v.book_rev);
@@ -84,65 +84,38 @@ impl ChartDataState {
 
     pub(super) fn source_market_signature(&self, source: &MarketDataSource) -> u64 {
         let container = self.container.borrow();
-        if container.panes.is_empty() {
+        let Some((core, market)) = container.target_ref(0) else {
             return 0;
-        }
-
-        let mut sig = 0xcbf29ce484222325;
-        let mut push_pane = |idx: usize| {
-            let Some(pane) = container.panes.get(idx) else {
-                return;
-            };
-            sig = mix_sig(sig, pane.core);
-            sig = mix_sig(sig, str_sig(&pane.market));
-            if let Some((provider, revision)) = source.snapshot_revision(pane.core) {
-                sig = mix_sig(sig, provider);
-                sig = mix_sig(sig, revision);
-            } else {
-                let store_revision = source.with_market_view(pane.core, &pane.market, |data| {
-                    data.map(|v| {
-                        v.ticks_rev
-                            .wrapping_mul(31)
-                            .wrapping_add(v.price_lines_rev)
-                            .wrapping_mul(31)
-                            .wrapping_add(v.book_rev)
-                    })
-                    .unwrap_or(0)
-                });
-                sig = mix_sig(sig, store_revision);
-            }
         };
 
-        match container.mode {
-            Mode::Fullscreen(idx) => push_pane(idx.min(container.panes.len() - 1)),
-            Mode::Tiled => {
-                for idx in 0..container.panes.len() {
-                    push_pane(idx);
-                }
-            }
+        let mut sig = 0xcbf29ce484222325;
+        sig = mix_sig(sig, core);
+        sig = mix_sig(sig, str_sig(&market));
+        if let Some((provider, revision)) = source.market_revision(core, &market) {
+            sig = mix_sig(sig, provider);
+            sig = mix_sig(sig, revision);
+        } else {
+            let store_revision = source.with_market_view(core, &market, |data| {
+                data.map(|v| {
+                    v.ticks_rev
+                        .wrapping_mul(31)
+                        .wrapping_add(v.price_lines_rev)
+                        .wrapping_mul(31)
+                        .wrapping_add(v.book_rev)
+                })
+                .unwrap_or(0)
+            });
+            sig = mix_sig(sig, store_revision);
         }
         sig
     }
 
     pub(super) fn refresh_visible_markets(&self, source: &MarketDataSource) -> bool {
         let container = self.container.borrow();
-        if container.panes.is_empty() {
+        let Some((core, market)) = container.target_ref(0) else {
             return false;
-        }
-        match container.mode {
-            Mode::Fullscreen(idx) => {
-                let Some(pane) = container.panes.get(idx.min(container.panes.len() - 1)) else {
-                    return false;
-                };
-                source.refresh_market(pane.core, &pane.market)
-            }
-            Mode::Tiled => source.refresh_markets(
-                container
-                    .panes
-                    .iter()
-                    .map(|pane| (pane.core, pane.market.as_str())),
-            ),
-        }
+        };
+        source.refresh_market(core, market)
     }
 
     pub(super) fn mark_view_dirty(&mut self) {
@@ -170,6 +143,7 @@ impl ChartDataState {
             self.mark_view_dirty();
         }
         self.last_ppp = sf;
+        self.slot_bounds = Some(info.bounds);
         let mut st = self.render.borrow_mut();
         st.set_slot_origin(ox, oy); // self-guard: dirty/present только при смене
         st.set_pixel_scale(sf);
@@ -198,7 +172,7 @@ impl ChartDataState {
         if self.observe_present_rate(now_ms) {
             if let Some(source) = self.market_source.clone() {
                 crate::diag::bump(&crate::diag::CHART_PREPARE);
-                self.sync_from_market_source(&source);
+                self.sync_from_market_source(&source, None);
             } else {
                 self.view_dirty = true;
             }
@@ -253,19 +227,19 @@ impl ChartDataState {
         if !self.view_dirty && source_sig == self.last_source_market_sig {
             return false;
         }
-        if self.container.borrow().panes.is_empty() {
+        if self.container.borrow().target_ref(0).is_none() {
             self.last_source_market_sig = source_sig;
             return false;
         }
         let source_changed = source_sig != self.last_source_market_sig;
-        let pulled = self.refresh_visible_markets(&source);
+        let pulled = source_changed && self.refresh_visible_markets(&source);
         let sig = self.market_signature(&source);
         if !self.view_dirty && !source_changed && !pulled && sig == self.last_prepared_market_sig {
             self.last_source_market_sig = source_sig;
             return false;
         }
-        self.sync_from_market_source(&source);
-        self.last_source_market_sig = self.source_market_signature(&source);
+        self.sync_from_market_source(&source, Some(sig));
+        self.last_source_market_sig = source_sig;
         true
     }
 
@@ -288,13 +262,16 @@ impl ChartDataState {
         // Смена числа панелей (в т.ч. удаление последней монеты → пусто) обязана пометить
         // base_dirty: иначе base-кэш продолжит блитить СТАРЫЙ чарт сквозь пустой слот (логотип
         // прозрачный). Зеркалит проверку в sync_from_market_source.
-        if st.panes.len() != container.panes.len() {
+        if st.panes.len() != container.pane_count() {
             pixels_changed = true;
         }
-        st.panes.resize_with(container.panes.len(), PaneRender::new);
+        st.panes
+            .resize_with(container.pane_count(), PaneRender::new);
 
         for (idx, _) in &layout {
-            let pane = &mut container.panes[*idx];
+            let Some(pane) = container.pane_mut(*idx) else {
+                continue;
+            };
             let pr = &mut st.panes[*idx];
             if pr.core != Some(pane.core) || pr.market != pane.market {
                 *pr = PaneRender::new();
@@ -375,7 +352,11 @@ impl ChartDataState {
         pixels_changed
     }
 
-    pub(super) fn sync_from_market_source(&mut self, source: &MarketDataSource) {
+    pub(super) fn sync_from_market_source(
+        &mut self,
+        source: &MarketDataSource,
+        prepared_sig: Option<u64>,
+    ) {
         let area = Rect {
             x: 0.0,
             y: 0.0,
@@ -397,15 +378,18 @@ impl ChartDataState {
             }
         }
         let was_active: Vec<bool> = st.panes.iter().map(|pane| pane.active).collect();
-        if st.panes.len() != container.panes.len() {
+        if st.panes.len() != container.pane_count() {
             pixels_changed = true;
         }
-        st.panes.resize_with(container.panes.len(), PaneRender::new);
+        st.panes
+            .resize_with(container.pane_count(), PaneRender::new);
         for pr in &mut st.panes {
             pr.active = false;
         }
         for (idx, rect) in &layout {
-            let pane = &mut container.panes[*idx];
+            let Some(pane) = container.pane_mut(*idx) else {
+                continue;
+            };
             let pr = &mut st.panes[*idx];
             if !was_active.get(*idx).copied().unwrap_or(false) {
                 pixels_changed = true;
@@ -478,6 +462,7 @@ impl ChartDataState {
                 || pr.resident_left_rel.is_nan()
                 || history_from < pr.resident_left_rel
                 || (!pane.view.follow && scan_price);
+            let history_read_started = force_history_reset.then(std::time::Instant::now);
             let mut history = source.read_chart_history_into(
                 pane.core,
                 &pane.market,
@@ -489,12 +474,19 @@ impl ChartDataState {
                 &mut pr.history_cursor,
                 &mut pr.history_buffers,
             );
+            if let Some(started) = history_read_started {
+                crate::diag::bump_by(
+                    &crate::diag::CHART_HISTORY_RESET_MS,
+                    started.elapsed().as_millis().max(1) as u64,
+                );
+            }
             let capacity_changed = history.as_ref().is_some_and(|h| {
                 (h.combo_capacity > 0 && h.combo_capacity != pr.combo_cross_capacity)
                     || (h.price_line_capacity > 0
                         && h.price_line_capacity != pr.combo_price_line_capacity)
             });
             if capacity_changed && history.as_ref().is_some_and(|h| !h.combo_reset) {
+                let history_read_started = std::time::Instant::now();
                 history = source.read_chart_history_into(
                     pane.core,
                     &pane.market,
@@ -505,6 +497,10 @@ impl ChartDataState {
                     scan_price,
                     &mut pr.history_cursor,
                     &mut pr.history_buffers,
+                );
+                crate::diag::bump_by(
+                    &crate::diag::CHART_HISTORY_RESET_MS,
+                    history_read_started.elapsed().as_millis().max(1) as u64,
                 );
             }
             let last_price = if let Some(history) = history {
@@ -520,13 +516,27 @@ impl ChartDataState {
                         .set_combo_capacity(history.combo_capacity, history.price_line_capacity);
                 }
                 if history.combo_reset {
+                    crate::diag::bump_by(
+                        &crate::diag::CHART_HISTORY_RESET_ROWS,
+                        (pr.history_buffers.ticks.len()
+                            + pr.history_buffers.last_points.len()
+                            + pr.history_buffers.mark_points.len()) as u64,
+                    );
                     fill_cross_upload(
                         &pr.history_buffers.ticks,
                         pane.view.epoch_ms,
                         &mut pr.cross_upload,
                     );
+                    crate::diag::bump_by(
+                        &crate::diag::CHART_COMBO_UPLOAD_LEN,
+                        pr.cross_upload.len() as u64,
+                    );
                     pr.layers.reset_combo(std::mem::take(&mut pr.cross_upload));
-                    pr.resident_left_rel = history.combo_left_rel_ms.unwrap_or(history_from);
+                    // A full range read covers the requested left edge even when the first
+                    // real trade is newer than that edge. Using the first tick as the resident
+                    // left boundary makes a fresh live chart reset every frame while the
+                    // 60s window extends into empty pre-connect history.
+                    pr.resident_left_rel = history_from;
                     pr.gpu_prepare_dirty = true;
                     pixels_changed = true;
                 } else if !pr.history_buffers.ticks.is_empty() {
@@ -534,6 +544,10 @@ impl ChartDataState {
                         &pr.history_buffers.ticks,
                         pane.view.epoch_ms,
                         &mut pr.cross_upload,
+                    );
+                    crate::diag::bump_by(
+                        &crate::diag::CHART_COMBO_UPLOAD_LEN,
+                        pr.cross_upload.len() as u64,
                     );
                     pr.layers.append_combo(&pr.cross_upload);
                     pr.gpu_prepare_dirty = true;
@@ -550,12 +564,18 @@ impl ChartDataState {
                         pane.view.epoch_ms,
                         &mut pr.mark_line_upload,
                     );
+                    crate::diag::bump_by(
+                        &crate::diag::CHART_PRICE_LINE_UPLOAD_LEN,
+                        (pr.last_line_upload.len() + pr.mark_line_upload.len()) as u64,
+                    );
                     pr.layers
                         .set_price_lines(&pr.last_line_upload, &pr.mark_line_upload);
                     pr.gpu_prepare_dirty = true;
                     pixels_changed = true;
                 }
-                if chart_market_diag_due(format!("combo:{}:{}:{}", pane.core, pane.market, idx)) {
+                if chart_market_diag_enabled()
+                    && chart_market_diag_due(format!("combo:{}:{}:{}", pane.core, pane.market, idx))
+                {
                     chart_market_diag(format!(
                         "pane={} core={} market={} provider={} rev={} reset={} ticks={} \
                          price_lines={} clipped={} caught_up={} scan_price={} \
@@ -704,7 +724,11 @@ impl ChartDataState {
                         pr.gpu_prepare_dirty = true;
                         pixels_changed = true;
                     }
-                    if chart_market_diag_due(format!("book:{}:{}:{}", pane.core, pane.market, idx))
+                    if chart_market_diag_enabled()
+                        && chart_market_diag_due(format!(
+                            "book:{}:{}:{}",
+                            pane.core, pane.market, idx
+                        ))
                     {
                         chart_market_diag(format!(
                             "pane={} core={} market={} book_rev={} book_len={} levels={:?} \
@@ -759,7 +783,8 @@ impl ChartDataState {
         }
         drop(container);
         drop(st);
-        self.last_prepared_market_sig = self.market_signature(source);
+        self.last_prepared_market_sig =
+            prepared_sig.unwrap_or_else(|| self.market_signature(source));
         self.view_dirty = false;
     }
 }

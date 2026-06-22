@@ -14,7 +14,7 @@ use std::sync::{Arc, RwLock};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::data::OrderBookModel;
-use crate::feed::{OrderBook, PriceLineKind, PricePoint, Tick};
+use crate::feed::{OrderBook, Tick};
 use crate::session::CoreId;
 
 pub use source::{ChartHistoryBuffers, ChartHistoryCursor, ChartHistoryRead, MarketDataSource};
@@ -98,14 +98,6 @@ impl MarketView {
         self.ticks_rev = self.ticks_rev.wrapping_add(1);
     }
 
-    fn push_price_line(&mut self, kind: PriceLineKind, points: &[PricePoint]) {
-        if points.is_empty() {
-            return;
-        }
-        let _ = kind;
-        self.price_lines_rev = self.price_lines_rev.wrapping_add(1);
-    }
-
     fn set_book(&mut self, book: &OrderBook) {
         self.book.update(book);
         self.book_rev = self.book_rev.wrapping_add(1);
@@ -168,23 +160,6 @@ impl MarketStore {
             .and_then(|m| m.get_mut(market))
         {
             v.push_ticks(ticks);
-        }
-    }
-
-    /// Retained price-line points from provider.
-    pub fn apply_price_line(
-        &mut self,
-        provider: CoreId,
-        market: &str,
-        kind: PriceLineKind,
-        points: &[PricePoint],
-    ) {
-        if let Some(v) = self
-            .by_provider
-            .get_mut(&provider)
-            .and_then(|m| m.get_mut(market))
-        {
-            v.push_price_line(kind, points);
         }
     }
 

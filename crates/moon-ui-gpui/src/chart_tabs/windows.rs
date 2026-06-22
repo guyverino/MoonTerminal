@@ -1,7 +1,7 @@
 //! Откреп-вкладки чартов: жизненный цикл их ОС-окон (создание/восстановление/репин,
 //! персист геометрии и масштаба) и хост-вид окна `DetachedChartHost`. Вынесено из
 //! `chart_tabs` как отдельная подсистема выносных окон — сама полоска вкладок про неё
-//! знает лишь через несколько `pub(super)`-методов, дёргаемых из render.
+//! знает лишь через несколько `pub(super)`-методов, дёргаемых из event/observe путей.
 
 use gpui::prelude::FluentBuilder;
 use gpui::*;
@@ -54,6 +54,10 @@ impl ChartTabs {
         let (_, _, panel) = self.add.remove(pos);
         if self.active == tab {
             self.active = Tab::Main;
+            self.sync_seen_for_active(cx);
+            self.sync_active_scale(cx);
+            self.sync_inactive_chart_visibility(cx);
+            self.persist_scales(cx);
         }
         // Геометрия: сохранённая (если уже откреплялась) или дефолт-каскад.
         let geom = self
@@ -195,7 +199,7 @@ impl ChartTabs {
     }
 
     /// Дренаж репина откреп-вкладок: хост закрыли (пользователь) → панель detached→add, спека
-    /// → НЕ откреплена. Зовётся из render. (На выходе приложения запрос не обработается → спека
+    /// → НЕ откреплена. Зовётся из backend observe. (На выходе приложения запрос не обработается → спека
     /// остаётся откреплённой → окно восстановится на след. запуске — как у detached.rs.)
     pub(super) fn drain_chart_repin(&mut self, cx: &mut Context<Self>) {
         // На выходе из приложения НЕ репиним: закрытие откреп-окон при quit не должно сбрасывать
@@ -259,8 +263,8 @@ impl ChartTabs {
     }
 
     /// Восстановить отложенные откреп-окна (charts.json). Открывать ОС-окна В render НЕЛЬЗЯ
-    /// (рушит element-арену gpui: «ArenaRef after Arena was cleared»). Откладываем через
-    /// `cx.defer` — закрытие выполнится ПОСЛЕ цикла рендера, когда открытие окон безопасно.
+    /// (рушит element-арену gpui: «ArenaRef after Arena was cleared»). Вызов идёт из
+    /// конструктора ChartTabs, а фактическое открытие откладываем через `cx.defer`.
     pub(super) fn restore_detached(&mut self, cx: &mut Context<Self>) {
         if self.restore_pending.is_empty() {
             return;

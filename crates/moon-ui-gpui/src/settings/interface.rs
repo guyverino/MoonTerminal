@@ -243,25 +243,32 @@ impl SettingsView {
             .child(section(&t!("iface.sec_cross"), p, cx))
             .child(color_row(&t!("iface.cross"), &i.cross, p, cx))
             .child(slider_row(&t!("iface.cross_alpha"), &i.cross_alpha, cx))
-            .child(slider_row(&t!("iface.cross_thickness"), &i.cross_thickness, cx))
+            .child(slider_row(
+                &t!("iface.cross_thickness"),
+                &i.cross_thickness,
+                cx,
+            ))
             .child(slider_row(&t!("iface.halo_radius"), &i.halo_radius, cx))
-            .child(slider_row(&t!("iface.halo_intensity"), &i.halo_intensity, cx))
+            .child(slider_row(
+                &t!("iface.halo_intensity"),
+                &i.halo_intensity,
+                cx,
+            ))
             .child(separator(p, cx))
             // Стакан
             .child(section(&t!("iface.sec_book"), p, cx))
             .child(color_row(&t!("iface.book_bg"), &i.book_bg, p, cx))
             .child(color_row(&t!("iface.book_bid"), &i.book_bid, p, cx))
             .child(color_row(&t!("iface.book_ask"), &i.book_ask, p, cx))
-            .child(slider_row(&t!("iface.book_level_alpha"), &i.book_level_alpha, cx))
+            .child(slider_row(
+                &t!("iface.book_level_alpha"),
+                &i.book_level_alpha,
+                cx,
+            ))
             .child(separator(p, cx))
             // Панели
             .child(section(&t!("iface.sec_panels"), p, cx))
-            .child(color_row(
-                &t!("iface.panel_bg"),
-                &i.panel_bg,
-                p,
-                cx,
-            ))
+            .child(color_row(&t!("iface.panel_bg"), &i.panel_bg, p, cx))
             .child(separator(p, cx))
             // Закрытый график
             .child(section(&t!("iface.sec_closed"), p, cx))

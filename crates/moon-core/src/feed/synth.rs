@@ -7,7 +7,8 @@ use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
 use super::{
-    ConnStatus, CoreCmd, DetectRow, ExchangeId, FeedMsg, FeedTx, Level, OrderBook, Side, Tick,
+    ConnStatus, CoreCmd, DetectRow, ExchangeId, FeedMsg, FeedTx, Level, MarketDirty,
+    MarketDirtyFlags, OrderBook, Side, Tick,
 };
 use crate::config::ServerConfig;
 use crate::market::SharedMarketStore;
@@ -126,15 +127,14 @@ pub fn run(
                         .write()
                         .expect("synthetic market store poisoned")
                         .apply_ticks(server.id, m, &[tick]);
-                } else if tx
-                    .send(FeedMsg::Ticks {
-                        market: m.clone(),
-                        ticks: vec![tick],
-                    })
-                    .is_err()
-                {
-                    return Ok(());
                 }
+            }
+            let dirty: Vec<MarketDirty> = markets
+                .iter()
+                .map(|m| MarketDirty::new(m.clone(), MarketDirtyFlags::HISTORY))
+                .collect();
+            if tx.send(FeedMsg::MarketDataChanged(dirty)).is_err() {
+                return Ok(());
             }
         }
         if last_book.elapsed() >= book_dt {
@@ -159,15 +159,14 @@ pub fn run(
                         .write()
                         .expect("synthetic market store poisoned")
                         .apply_book(server.id, m, &OrderBook { bids, asks });
-                } else if tx
-                    .send(FeedMsg::OrderBook {
-                        market: m.clone(),
-                        book: OrderBook { bids, asks },
-                    })
-                    .is_err()
-                {
-                    return Ok(());
                 }
+            }
+            let dirty: Vec<MarketDirty> = markets
+                .iter()
+                .map(|m| MarketDirty::new(m.clone(), MarketDirtyFlags::ORDERBOOK))
+                .collect();
+            if tx.send(FeedMsg::MarketDataChanged(dirty)).is_err() {
+                return Ok(());
             }
         }
         std::thread::sleep(Duration::from_millis(2));

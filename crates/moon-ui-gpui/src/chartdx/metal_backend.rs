@@ -2,6 +2,7 @@
 //! command encoder via the custom GPU pass hook.
 
 use block::ConcreteBlock;
+use bytemuck::Zeroable;
 use foreign_types::ForeignTypeRef;
 use gpui::RawGpuAccess;
 use metal::{
@@ -16,13 +17,31 @@ use objc::{msg_send, sel, sel_impl};
 use std::ffi::c_void;
 
 use super::types::{
-    BackgroundParams, BookStyle, ChartCross, ChartViewGpu, CursorParams, GridParams, HLineGpu,
-    MarkerGpu, ReadoutRect, SegGpu, ZoneGpu,
+    BackgroundParams, BookStyle, ChartCross, ChartViewGpu, CursorParams, DEFAULT_VOLUME_ALPHA,
+    GridParams, HLineGpu, MarkerGpu, ReadoutRect, SegGpu, ZoneGpu, append_cross_ring,
+    ordered_cross_ring, reset_cross_ring,
 };
 
 const SHADER: &str = include_str!("shaders/chart_native.metal");
 const BACKGROUND_PNG: &[u8] = include_bytes!("../../../../assets/img/3Dlogo_s01.png");
 const MIN_COMBO_CAPACITY: usize = 1;
+
+#[inline]
+fn texel_aligned_time0(time0: f32, time_to_px: f32) -> f32 {
+    if !(time_to_px > 1e-9) {
+        return time0;
+    }
+    (time0 * time_to_px).floor() / time_to_px
+}
+
+fn append_ranges(start: usize, len: usize, capacity: usize) -> [(usize, usize); 2] {
+    if len == 0 || capacity == 0 {
+        return [(0, 0), (0, 0)];
+    }
+    let first = len.min(capacity - start.min(capacity - 1));
+    let second = len.saturating_sub(first);
+    [(start, first), (0, second)]
+}
 
 fn hl_of(h: &LineInstance) -> HLineGpu {
     HLineGpu {
@@ -85,6 +104,40 @@ impl BufferSlot {
         }
     }
 
+    fn write_range<T: bytemuck::Pod>(
+        &mut self,
+        device: &DeviceRef,
+        label: &str,
+        start: usize,
+        data: &[T],
+        total_len: usize,
+    ) -> bool {
+        let elem = std::mem::size_of::<T>();
+        let need = (total_len.max(1) * elem).max(4) as u64;
+        let recreated = self.buffer.as_ref().is_none() || self.size < need;
+        if recreated {
+            let buffer = device.new_buffer(
+                need.next_power_of_two(),
+                MTLResourceOptions::StorageModeShared
+                    | MTLResourceOptions::CPUCacheModeWriteCombined,
+            );
+            buffer.set_label(label);
+            self.buffer = Some(buffer);
+            self.size = need.next_power_of_two();
+        }
+        let bytes = bytemuck::cast_slice(data);
+        if !bytes.is_empty() {
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    bytes.as_ptr(),
+                    (self.buffer.as_ref().unwrap().contents() as *mut u8).add(start * elem),
+                    bytes.len(),
+                );
+            }
+        }
+        recreated
+    }
+
     fn buffer(&self) -> &metal::BufferRef {
         self.buffer.as_ref().unwrap().as_ref()
     }
@@ -92,6 +145,7 @@ impl BufferSlot {
 
 struct Pipelines {
     background: RenderPipelineState,
+    blit: RenderPipelineState,
     grid: RenderPipelineState,
     cursor: RenderPipelineState,
     readout_rect: RenderPipelineState,
@@ -106,6 +160,7 @@ struct Pipelines {
     seg: RenderPipelineState,
     marker: RenderPipelineState,
     sampler: metal::SamplerState,
+    point_sampler: metal::SamplerState,
 }
 
 struct BackgroundTexture {
@@ -118,6 +173,22 @@ struct BaseTexture {
     h: u32,
     generation: u64,
     pixel_format: MTLPixelFormat,
+}
+
+struct ComboTexture {
+    texture: metal::Texture,
+    blit_uniform: BufferSlot,
+    w: u32,
+    h: u32,
+    generation: u64,
+    pixel_format: MTLPixelFormat,
+    bake_t0: f32,
+    last_baked_head: usize,
+    last_time_to_px: f32,
+    last_price_to_px: f32,
+    last_view_price0: f32,
+    last_marker_half: f32,
+    valid: bool,
 }
 
 #[derive(Default)]
@@ -217,7 +288,11 @@ pub struct MetalLayers {
     pipelines: Option<Pipelines>,
     background_texture: Option<BackgroundTexture>,
     base_cache: BaseCache,
+    combo_texture: Option<ComboTexture>,
+    combo_dirty_ranges: Vec<(usize, usize)>,
     crosses: Vec<ChartCross>,
+    cross_head: usize,
+    cross_count: usize,
     last_line: Vec<PriceLinePoint>,
     mark_line: Vec<PriceLinePoint>,
     combo_capacity: usize,
@@ -258,7 +333,11 @@ impl MetalLayers {
             pipelines: None,
             background_texture: None,
             base_cache: BaseCache::default(),
+            combo_texture: None,
+            combo_dirty_ranges: Vec::new(),
             crosses: Vec::new(),
+            cross_head: 0,
+            cross_count: 0,
             last_line: Vec::new(),
             mark_line: Vec::new(),
             combo_capacity: MIN_COMBO_CAPACITY,
@@ -299,52 +378,101 @@ impl MetalLayers {
         {
             return;
         }
+        let ordered = ordered_cross_ring(
+            &self.crosses,
+            self.cross_head,
+            self.cross_count,
+            self.combo_capacity,
+        );
         self.combo_capacity = combo_capacity;
         self.price_line_capacity = price_line_capacity;
-        if self.crosses.len() > self.combo_capacity {
-            let drop = self.crosses.len() - self.combo_capacity;
-            self.crosses.drain(0..drop);
+        reset_cross_ring(
+            &mut self.crosses,
+            &mut self.cross_head,
+            &mut self.cross_count,
+            self.combo_capacity,
+            &ordered,
+        );
+        if self.crosses.len() < self.combo_capacity {
+            self.crosses
+                .resize(self.combo_capacity, ChartCross::zeroed());
         }
         if self.last_line.len() > self.price_line_capacity {
-            let drop = self.last_line.len() - self.price_line_capacity;
-            self.last_line.drain(0..drop);
+            self.last_line = tail_vec(&self.last_line, self.price_line_capacity);
         }
         if self.mark_line.len() > self.price_line_capacity {
-            let drop = self.mark_line.len() - self.price_line_capacity;
-            self.mark_line.drain(0..drop);
+            self.mark_line = tail_vec(&self.mark_line, self.price_line_capacity);
         }
         self.recalc_volume_scale();
         self.combo_buffers_dirty = true;
         self.price_line_buffers_dirty = true;
-        self.base_cache.valid = false;
+        self.combo_texture = None;
+        self.combo_dirty_ranges.clear();
     }
 
     pub fn reset_combo(&mut self, data: Vec<ChartCross>) {
-        self.crosses = cap_tail(data, self.combo_capacity);
+        reset_cross_ring(
+            &mut self.crosses,
+            &mut self.cross_head,
+            &mut self.cross_count,
+            self.combo_capacity,
+            &data,
+        );
+        if self.crosses.len() < self.combo_capacity {
+            self.crosses
+                .resize(self.combo_capacity, ChartCross::zeroed());
+        }
         self.recalc_volume_scale();
         self.combo_buffers_dirty = true;
-        self.base_cache.valid = false;
+        if let Some(tex) = self.combo_texture.as_mut() {
+            tex.valid = false;
+        }
+        self.combo_dirty_ranges.clear();
     }
 
     pub fn append_combo(&mut self, data: &[ChartCross]) {
         if data.is_empty() {
             return;
         }
-        self.crosses.extend_from_slice(data);
-        if self.crosses.len() > self.combo_capacity {
-            let drop = self.crosses.len() - self.combo_capacity;
-            self.crosses.drain(0..drop);
+        let before_scale = (self.volume_buy_max, self.volume_sell_max);
+        let old_head = self.cross_head;
+        let full_reset = data.len() >= self.combo_capacity;
+        append_cross_ring(
+            &mut self.crosses,
+            &mut self.cross_head,
+            &mut self.cross_count,
+            self.combo_capacity,
+            data,
+        );
+        if self.crosses.len() < self.combo_capacity {
+            self.crosses
+                .resize(self.combo_capacity, ChartCross::zeroed());
         }
-        self.recalc_volume_scale();
+        self.update_volume_scale(data);
         self.combo_buffers_dirty = true;
-        self.base_cache.valid = false;
+        if full_reset || before_scale != (self.volume_buy_max, self.volume_sell_max) {
+            if let Some(tex) = self.combo_texture.as_mut() {
+                tex.valid = false;
+            }
+            self.combo_dirty_ranges.clear();
+        } else {
+            let appended = data.len().min(self.combo_capacity);
+            for (start, count) in append_ranges(old_head, appended, self.combo_capacity) {
+                if count > 0 {
+                    self.combo_dirty_ranges.push((start, count));
+                }
+            }
+        }
     }
 
     pub fn set_price_lines(&mut self, last: &[PriceLinePoint], mark: &[PriceLinePoint]) {
-        self.last_line = cap_tail(last.to_vec(), self.price_line_capacity);
-        self.mark_line = cap_tail(mark.to_vec(), self.price_line_capacity);
+        self.last_line = tail_vec(last, self.price_line_capacity);
+        self.mark_line = tail_vec(mark, self.price_line_capacity);
         self.price_line_buffers_dirty = true;
-        self.base_cache.valid = false;
+        if let Some(tex) = self.combo_texture.as_mut() {
+            tex.valid = false;
+        }
+        self.combo_dirty_ranges.clear();
     }
 
     pub fn set_orderbook(&mut self, levels: Vec<LevelInstance>) {
@@ -407,6 +535,7 @@ impl MetalLayers {
         } else {
             self.draw_base_layers(encoder);
         }
+        self.draw_cached_combo(device, encoder, view);
         encoder.set_scissor_rect(bounds_scissor(pane_bounds, gpu.width(), gpu.height()));
         self.draw_cursor_layer(encoder, cursor_params, readout_rects);
         Ok(())
@@ -425,38 +554,6 @@ impl MetalLayers {
         crate::diag::bump(&crate::diag::CHART_GRID_DRAW);
         set_uniform(encoder, 0, self.grid_uniform.buffer());
         draw(encoder, &pipelines.grid, 6, 1);
-
-        set_uniform(encoder, 0, self.view_uniform.buffer());
-        set_storage(encoder, 1, self.cross_buffer.buffer());
-        if !self.crosses.is_empty() {
-            crate::diag::bump(&crate::diag::CHART_COMBO_DRAW);
-            draw(encoder, &pipelines.volume, 6, self.crosses.len() as u64);
-        }
-        if self.last_line.len() > 1 {
-            crate::diag::bump(&crate::diag::CHART_COMBO_DRAW);
-            set_storage(encoder, 1, self.last_line_buffer.buffer());
-            draw(
-                encoder,
-                &pipelines.price_last,
-                6,
-                (self.last_line.len() - 1) as u64,
-            );
-        }
-        if self.mark_line.len() > 1 {
-            crate::diag::bump(&crate::diag::CHART_COMBO_DRAW);
-            set_storage(encoder, 1, self.mark_line_buffer.buffer());
-            draw(
-                encoder,
-                &pipelines.price_mark,
-                6,
-                (self.mark_line.len() - 1) as u64,
-            );
-        }
-        if !self.crosses.is_empty() {
-            crate::diag::bump(&crate::diag::CHART_COMBO_DRAW);
-            set_storage(encoder, 1, self.cross_buffer.buffer());
-            draw(encoder, &pipelines.crosses, 6, self.crosses.len() as u64);
-        }
 
         crate::diag::bump(&crate::diag::CHART_BOOK_DRAW);
         set_uniform(encoder, 0, self.book_view_uniform.buffer());
@@ -489,6 +586,227 @@ impl MetalLayers {
             set_storage(encoder, 1, self.marker_buffer.buffer());
             draw(encoder, &pipelines.marker, 6, self.markers.len() as u64);
         }
+    }
+
+    fn ensure_combo_texture(
+        &mut self,
+        device: &DeviceRef,
+        pixel_format: MTLPixelFormat,
+        tex_w: u32,
+        tex_h: u32,
+        generation: u64,
+    ) {
+        let recreate = self.combo_texture.as_ref().is_none_or(|tex| {
+            tex.w != tex_w
+                || tex.h != tex_h
+                || tex.generation != generation
+                || tex.pixel_format != pixel_format
+        });
+        if recreate {
+            let desc = TextureDescriptor::new();
+            desc.set_texture_type(metal::MTLTextureType::D2);
+            desc.set_pixel_format(pixel_format);
+            desc.set_width(tex_w as u64);
+            desc.set_height(tex_h as u64);
+            desc.set_depth(1);
+            desc.set_mipmap_level_count(1);
+            desc.set_array_length(1);
+            desc.set_usage(MTLTextureUsage::RenderTarget | MTLTextureUsage::ShaderRead);
+            desc.set_storage_mode(metal::MTLStorageMode::Private);
+            let texture = device.new_texture(&desc);
+            self.combo_texture = Some(ComboTexture {
+                texture,
+                blit_uniform: BufferSlot::default(),
+                w: tex_w,
+                h: tex_h,
+                generation,
+                pixel_format,
+                bake_t0: 0.0,
+                last_baked_head: usize::MAX,
+                last_time_to_px: 0.0,
+                last_price_to_px: 0.0,
+                last_view_price0: 0.0,
+                last_marker_half: 0.0,
+                valid: false,
+            });
+        }
+    }
+
+    fn prepare_combo_cache(
+        &mut self,
+        device: &DeviceRef,
+        command_buffer: &CommandBufferRef,
+        gpu: &RawGpuAccess,
+        pixel_format: MTLPixelFormat,
+        view: &ChartViewGpu,
+    ) {
+        if self.cross_count == 0 && self.last_line.len() <= 1 && self.mark_line.len() <= 1 {
+            return;
+        }
+        let bw = view.bounds[2];
+        let bh = view.bounds[3];
+        if bw <= 0.0 || bh <= 0.0 {
+            return;
+        }
+        let margin_px = (bw * 0.2).max(128.0);
+        let tex_w = (bw + margin_px).round().max(1.0) as u32;
+        let tex_h = bh.round().max(1.0) as u32;
+        self.ensure_combo_texture(device, pixel_format, tex_w, tex_h, gpu.device_generation());
+
+        let tex = self.combo_texture.as_mut().unwrap();
+        if tex.last_time_to_px != view.time_to_px
+            || tex.last_price_to_px != view.price_to_px
+            || tex.last_view_price0 != view.view_price0
+            || tex.last_marker_half != view.marker_half
+        {
+            tex.valid = false;
+        }
+
+        let u_left_px = (view.view_time0 - tex.bake_t0) * view.time_to_px;
+        let need_full = !tex.valid || u_left_px < 0.0 || u_left_px > margin_px;
+        if !need_full && self.combo_dirty_ranges.is_empty() {
+            return;
+        }
+        let bake_t0 = if need_full {
+            texel_aligned_time0(view.view_time0, view.time_to_px)
+        } else {
+            tex.bake_t0
+        };
+        let bake_view = ChartViewGpu {
+            bounds: [0.0, 0.0, tex_w as f32, tex_h as f32],
+            resolution: [tex_w as f32, tex_h as f32],
+            time_to_px: view.time_to_px,
+            view_time0: bake_t0,
+            price_to_px: view.price_to_px,
+            view_price0: view.view_price0,
+            marker_half: view.marker_half,
+            pad: 0.0,
+            volume_buy_inv: 1.0 / self.volume_buy_max.max(1e-6),
+            volume_sell_inv: 1.0 / self.volume_sell_max.max(1e-6),
+            volume_alpha: DEFAULT_VOLUME_ALPHA,
+            _pad2: 0.0,
+        };
+
+        let pass = metal::RenderPassDescriptor::new();
+        let color = pass.color_attachments().object_at(0).unwrap();
+        color.set_texture(Some(tex.texture.as_ref()));
+        color.set_load_action(if need_full {
+            MTLLoadAction::Clear
+        } else {
+            MTLLoadAction::Load
+        });
+        color.set_store_action(MTLStoreAction::Store);
+        color.set_clear_color(metal::MTLClearColor::new(0.0, 0.0, 0.0, 0.0));
+        let encoder = command_buffer.new_render_command_encoder(pass);
+        encoder.set_scissor_rect(MTLScissorRect {
+            x: 0,
+            y: 0,
+            width: tex_w as u64,
+            height: tex_h as u64,
+        });
+        if need_full {
+            self.draw_combo_layers(device, encoder, bake_view, self.cross_count, true);
+            let tex = self.combo_texture.as_mut().unwrap();
+            tex.bake_t0 = bake_t0;
+            tex.last_baked_head = self.cross_head;
+            tex.last_time_to_px = view.time_to_px;
+            tex.last_price_to_px = view.price_to_px;
+            tex.last_view_price0 = view.view_price0;
+            tex.last_marker_half = view.marker_half;
+            tex.valid = true;
+            self.combo_dirty_ranges.clear();
+            crate::diag::bump(&crate::diag::CHART_COMBO_BAKE);
+        } else {
+            let ranges = std::mem::take(&mut self.combo_dirty_ranges);
+            for (start, count) in ranges {
+                if count == 0 {
+                    continue;
+                }
+                let mut range_view = bake_view;
+                range_view.pad = start as f32;
+                self.draw_combo_layers(device, encoder, range_view, count, false);
+            }
+            self.combo_texture.as_mut().unwrap().last_baked_head = self.cross_head;
+        }
+        encoder.end_encoding();
+    }
+
+    fn draw_combo_layers(
+        &mut self,
+        device: &DeviceRef,
+        encoder: &RenderCommandEncoderRef,
+        view: ChartViewGpu,
+        count: usize,
+        include_price_lines: bool,
+    ) {
+        let pipelines = self.pipelines.as_ref().unwrap();
+        self.view_uniform
+            .write(device, "moon_chart_combo_view_uniform", &[view]);
+        set_uniform(encoder, 0, self.view_uniform.buffer());
+        set_storage(encoder, 1, self.cross_buffer.buffer());
+        if count > 0 {
+            crate::diag::bump(&crate::diag::CHART_COMBO_DRAW);
+            draw(encoder, &pipelines.volume, 6, count as u64);
+        }
+        if include_price_lines && self.last_line.len() > 1 {
+            crate::diag::bump(&crate::diag::CHART_COMBO_DRAW);
+            set_storage(encoder, 1, self.last_line_buffer.buffer());
+            draw(
+                encoder,
+                &pipelines.price_last,
+                6,
+                (self.last_line.len() - 1) as u64,
+            );
+        }
+        if include_price_lines && self.mark_line.len() > 1 {
+            crate::diag::bump(&crate::diag::CHART_COMBO_DRAW);
+            set_storage(encoder, 1, self.mark_line_buffer.buffer());
+            draw(
+                encoder,
+                &pipelines.price_mark,
+                6,
+                (self.mark_line.len() - 1) as u64,
+            );
+        }
+        if count > 0 {
+            crate::diag::bump(&crate::diag::CHART_COMBO_DRAW);
+            set_storage(encoder, 1, self.cross_buffer.buffer());
+            draw(encoder, &pipelines.crosses, 6, count as u64);
+        }
+    }
+
+    fn draw_cached_combo(
+        &mut self,
+        device: &DeviceRef,
+        encoder: &RenderCommandEncoderRef,
+        view: &ChartViewGpu,
+    ) {
+        let Some(tex) = self.combo_texture.as_mut() else {
+            return;
+        };
+        if !tex.valid || view.bounds[2] <= 0.0 {
+            return;
+        }
+        let u_left_px = ((view.view_time0 - tex.bake_t0) * view.time_to_px)
+            .round()
+            .clamp(0.0, (tex.w as f32 - view.bounds[2]).max(0.0));
+        let params = BackgroundParams {
+            dst: view.bounds,
+            resolution: view.resolution,
+            uv_off: [u_left_px / tex.w as f32, 0.0],
+            uv_scale: [view.bounds[2] / tex.w as f32, 1.0],
+            opacity: 1.0,
+            _pad: 0.0,
+            bg: [0.0, 0.0, 0.0, 0.0],
+        };
+        tex.blit_uniform
+            .write(device, "moon_chart_combo_blit_uniform", &[params]);
+        let pipelines = self.pipelines.as_ref().unwrap();
+        crate::diag::bump(&crate::diag::CHART_BASE_BLIT);
+        set_uniform(encoder, 0, tex.blit_uniform.buffer());
+        encoder.set_fragment_texture(0, Some(tex.texture.as_ref()));
+        encoder.set_fragment_sampler_state(0, Some(pipelines.point_sampler.as_ref()));
+        draw(encoder, &pipelines.blit, 6, 1);
     }
 
     fn draw_cursor_layer(
@@ -575,6 +893,7 @@ impl MetalLayers {
                 orderbook_view,
             )?;
         }
+        self.prepare_combo_cache(device, command_buffer, gpu, pixel_format, view);
         Ok(())
     }
 
@@ -624,7 +943,7 @@ impl MetalLayers {
         let mut view = *view;
         view.volume_buy_inv = 1.0 / self.volume_buy_max.max(1e-6);
         view.volume_sell_inv = 1.0 / self.volume_sell_max.max(1e-6);
-        view.volume_alpha = 0.34;
+        view.volume_alpha = DEFAULT_VOLUME_ALPHA;
         self.bg_uniform
             .write(device, "moon_chart_bg_uniform", &[*background_params]);
         self.grid_uniform
@@ -640,8 +959,30 @@ impl MetalLayers {
         self.book_style_uniform
             .write(device, "moon_chart_book_style_uniform", &[*book_style]);
         if self.combo_buffers_dirty || self.cross_buffer.buffer.is_none() {
-            self.cross_buffer
-                .write(device, "moon_chart_crosses", &self.crosses);
+            let can_partial =
+                !self.combo_dirty_ranges.is_empty() && self.cross_buffer.buffer.is_some();
+            if can_partial {
+                let mut recreated = false;
+                for (start, count) in &self.combo_dirty_ranges {
+                    let end = start.saturating_add(*count).min(self.crosses.len());
+                    if *start < end {
+                        recreated |= self.cross_buffer.write_range(
+                            device,
+                            "moon_chart_crosses",
+                            *start,
+                            &self.crosses[*start..end],
+                            self.crosses.len(),
+                        );
+                    }
+                }
+                if recreated {
+                    self.cross_buffer
+                        .write(device, "moon_chart_crosses", &self.crosses);
+                }
+            } else {
+                self.cross_buffer
+                    .write(device, "moon_chart_crosses", &self.crosses);
+            }
             self.combo_buffers_dirty = false;
         }
         if self.price_line_buffers_dirty
@@ -689,7 +1030,7 @@ impl MetalLayers {
         let mut view = *view;
         view.volume_buy_inv = 1.0 / self.volume_buy_max.max(1e-6);
         view.volume_sell_inv = 1.0 / self.volume_sell_max.max(1e-6);
-        view.volume_alpha = 0.34;
+        view.volume_alpha = DEFAULT_VOLUME_ALPHA;
         self.bg_uniform
             .write(device, "moon_chart_bg_uniform", &[*background_params]);
         self.grid_uniform
@@ -707,7 +1048,17 @@ impl MetalLayers {
     fn recalc_volume_scale(&mut self) {
         self.volume_buy_max = 1e-6;
         self.volume_sell_max = 1e-6;
-        for c in &self.crosses {
+        for c in self.crosses.iter().take(self.cross_count) {
+            if c.side == 0 {
+                self.volume_buy_max = self.volume_buy_max.max(c.qty);
+            } else {
+                self.volume_sell_max = self.volume_sell_max.max(c.qty);
+            }
+        }
+    }
+
+    fn update_volume_scale(&mut self, data: &[ChartCross]) {
+        for c in data {
             if c.side == 0 {
                 self.volume_buy_max = self.volume_buy_max.max(c.qty);
             } else {
@@ -844,6 +1195,10 @@ fn create_pipelines(device: &DeviceRef, pixel_format: MTLPixelFormat) -> Pipelin
     sampler_desc.set_min_filter(MTLSamplerMinMagFilter::Linear);
     sampler_desc.set_mag_filter(MTLSamplerMinMagFilter::Linear);
     let sampler = device.new_sampler(&sampler_desc);
+    let point_sampler_desc = SamplerDescriptor::new();
+    point_sampler_desc.set_min_filter(MTLSamplerMinMagFilter::Nearest);
+    point_sampler_desc.set_mag_filter(MTLSamplerMinMagFilter::Nearest);
+    let point_sampler = device.new_sampler(&point_sampler_desc);
     Pipelines {
         background: pipeline(
             device,
@@ -851,6 +1206,13 @@ fn create_pipelines(device: &DeviceRef, pixel_format: MTLPixelFormat) -> Pipelin
             pixel_format,
             "background_vertex",
             "background_fragment",
+        ),
+        blit: pipeline(
+            device,
+            &library,
+            pixel_format,
+            "background_vertex",
+            "blit_fragment",
         ),
         grid: pipeline(
             device,
@@ -938,6 +1300,7 @@ fn create_pipelines(device: &DeviceRef, pixel_format: MTLPixelFormat) -> Pipelin
             "marker_fragment",
         ),
         sampler,
+        point_sampler,
     }
 }
 
@@ -1026,11 +1389,9 @@ fn create_background_texture(device: &DeviceRef) -> BackgroundTexture {
     BackgroundTexture { texture }
 }
 
-fn cap_tail<T>(mut data: Vec<T>, cap: usize) -> Vec<T> {
-    if data.len() > cap {
-        data.drain(0..data.len() - cap);
-    }
-    data
+fn tail_vec<T: Clone>(data: &[T], cap: usize) -> Vec<T> {
+    let start = data.len().saturating_sub(cap);
+    data[start..].to_vec()
 }
 
 fn sanitize_capacity(capacity: usize) -> usize {

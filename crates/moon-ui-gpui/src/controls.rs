@@ -172,6 +172,7 @@ fn scale_label(scale: Option<f32>) -> &'static str {
 
 pub(crate) fn scale_dropdown(
     scale: Option<f32>,
+    group: &str,
     backend: Entity<Backend>,
     p: MoonPalette,
 ) -> impl IntoElement {
@@ -179,6 +180,7 @@ pub(crate) fn scale_dropdown(
     let mut items = Vec::with_capacity(SCALES.len());
     for (label, pct) in SCALES {
         let backend = backend.clone();
+        let group = group.to_string();
         items.push(
             MoonMenuItem::with_key(format!("scale-{label}"), label)
                 .selected(scale == pct)
@@ -188,6 +190,7 @@ pub(crate) fn scale_dropdown(
                         // Масштаб ПО-ВКЛАДОЧНЫЙ: тулбар лишь запрашивает (++rev) — ChartTabs
                         // применит к АКТИВНОЙ панели. price_scale тут = желаемое значение.
                         b.price_scale = pct;
+                        b.price_scale_group = Some(group.clone());
                         b.price_scale_rev = b.price_scale_rev.wrapping_add(1);
                         bcx.notify();
                     });
@@ -361,7 +364,7 @@ pub fn toolbar(
         .child(strip_label("sell", p, cx))
         .child(sell_strip())
         .child(divider(p))
-        .child(scale_dropdown(scale, backend.clone(), p));
+        .child(scale_dropdown(scale, group, backend.clone(), p));
 
     let backend = backend.clone();
     row.child(

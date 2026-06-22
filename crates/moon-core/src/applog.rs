@@ -372,9 +372,11 @@ fn parse_file_line(date: &str, l: &str) -> LogLine {
 /// буфер вкладки «Лог».
 pub fn command(line: &str) {
     let ts = ts();
-    if let Some(m) = handle() {
-        if let Ok(mut f) = m.lock() {
-            let _ = writeln!(f, "[{ts}] {line}");
+    if file_logging_enabled() {
+        if let Some(m) = handle() {
+            if let Ok(mut f) = m.lock() {
+                let _ = writeln!(f, "[{ts}] {line}");
+            }
         }
     }
     push(LogLine {

@@ -4,11 +4,10 @@ use super::*;
 use rust_i18n::t;
 
 pub(super) fn orders_table(
-    entries: Vec<OrderEntry>,
+    rows: Rc<Vec<OrderEntry>>,
     cx: &Context<OrdersPanel>,
 ) -> impl IntoElement {
-    let empty = entries.is_empty();
-    let rows = Rc::new(entries);
+    let empty = rows.is_empty();
     let row_count = rows.len();
     let view = cx.entity();
     let table_rows = rows.clone();

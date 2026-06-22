@@ -26,15 +26,6 @@ pub(super) struct OrderMeta {
     pub closedate: Option<i64>,
 }
 
-/// Delphi `TDateTime` (дней с 1899-12-30) → unix-секунды. 0/пусто → None.
-pub(super) fn delphi_to_unix(d: f64) -> Option<i64> {
-    if d > 1.0 {
-        Some(((d - 25569.0) * 86400.0).round() as i64)
-    } else {
-        None
-    }
-}
-
 /// Индекс полных данных ордеров. Копим по СТАБИЛЬНОМУ uid (есть с открытия), а
 /// db_id у открытого ордера почти всегда 0 — он присваивается лишь перед
 /// закрытием, когда строка пишется в Orders DB ядра. Поэтому держим ещё карту

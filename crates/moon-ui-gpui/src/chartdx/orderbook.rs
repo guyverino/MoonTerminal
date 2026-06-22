@@ -5,8 +5,6 @@
 //! смене уровней/Y-трансформа, НЕ каждый кадр: на статике и mouse-move стакан = дешёвый
 //! блит готовой текстуры, а не повторная отрисовка сотен баров инстансами 240 раз/с.
 
-use std::ffi::c_void;
-
 use gpui::RawGpuAccess;
 use moon_chart::paint::now_unix_ms;
 use moon_core::data::LevelInstance;
@@ -16,8 +14,8 @@ use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SA
 
 use super::gpu::{
     BlitParams, ChartViewGpu, create_alpha_blend, create_dynamic_cb, create_point_sampler,
-    create_srv, create_structured, d3d_device_ptr, full_viewport, make_ps, make_vs,
-    set_scissor_rect, update_dynamic,
+    create_srv, create_structured, full_viewport, make_ps, make_vs, set_scissor_rect,
+    update_dynamic,
 };
 pub use super::types::BookStyle;
 
@@ -67,7 +65,7 @@ pub struct OrderBookLayer {
     tex: Option<BookTex>,
     count: u32,
     pending: Option<Vec<LevelInstance>>,
-    device_ptr: *mut c_void,
+    device_generation: u64,
 }
 
 impl OrderBookLayer {
@@ -77,7 +75,7 @@ impl OrderBookLayer {
             tex: None,
             count: 0,
             pending: None,
-            device_ptr: std::ptr::null_mut(),
+            device_generation: 0,
         }
     }
 
@@ -102,12 +100,12 @@ impl OrderBookLayer {
             return;
         }
         // device-lost: пересоздать pipe и текстуру; count=0 (prepare зальёт уровни заново).
-        let device_ptr = d3d_device_ptr(gpu);
-        if self.device_ptr != device_ptr {
+        let generation = gpu.device_generation();
+        if self.device_generation != generation {
             self.pipe = None;
             self.tex = None;
             self.count = 0;
-            self.device_ptr = device_ptr;
+            self.device_generation = generation;
         }
         if self.pipe.is_none() {
             self.pipe = Some(Self::create_pipe(device, INITIAL_LEVEL_BUFFER_CAPACITY));

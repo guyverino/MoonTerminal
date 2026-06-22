@@ -13,7 +13,7 @@ Remove-Item -ErrorAction SilentlyContinue firetest.log, render_diag.log
 .\target\x86_64-pc-windows-msvc\debug\moonterminal.exe --debug-script chart-smoke
 ```
 
-`chart-smoke` — один связный поведенческий прогон. Он ждёт старт приложения, открывает BTC-график, находит реальные bounds графика, прогревает high-present baseline без курсора, а потом 5 секунд двигает системную мышь по графику частым native mousemove storm. После этого включает static text stress на графике и повторяет mouse storm. Только после горячего chart path FireTest проверяет runtime-контракт ошибок доставки команд в core, открывает tool-окна Settings/Strategies/Assets и проверяет их dedup, проверяет Root-owned overlay слой на реальном окне, затем переключает язык интерфейса живым apply-путём (`rust_i18n::set_locale` + `refresh_windows`) и проверяет его долёт без пересоздания tool-окон, после чего проверяет прохождение масштаба `50% → 20% → Auto` до активного chart state. На Windows storm делается через реальный `SetCursorPos` в client-area окна, на macOS — через CoreGraphics mouse move events. В обоих случаях это настоящий оконный input path, а не прямой вызов chart API.
+`chart-smoke` — один связный поведенческий прогон. Он ждёт старт приложения, открывает BTC-график, находит реальные bounds графика, даёт live-графику короткую settle-фазу, прогревает high-present baseline без курсора, а потом 5 секунд двигает системную мышь по графику частым native mousemove storm. После этого включает static text stress на графике и повторяет mouse storm. Только после горячего chart path FireTest проверяет runtime-контракт ошибок доставки команд в core, открывает tool-окна Settings/Strategies/Assets и проверяет их dedup, проверяет Root-owned overlay слой на реальном окне, затем переключает язык интерфейса живым apply-путём (`rust_i18n::set_locale` + `refresh_windows`) и проверяет его долёт без пересоздания tool-окон, после чего проверяет прохождение масштаба `50% → 20% → Auto` до активного chart state. На Windows storm делается через реальный `SetCursorPos` в client-area окна, на macOS — через CoreGraphics mouse move events. В обоих случаях это настоящий оконный input path, а не прямой вызов chart API.
 
 На macOS тестовой машине может понадобиться выдать терминалу/приложению право Accessibility или Input Monitoring: это политика macOS для программной отправки событий мыши.
 
@@ -22,7 +22,14 @@ Remove-Item -ErrorAction SilentlyContinue firetest.log, render_diag.log
 - `MOON_FIRETEST_MARKET` — рынок, по умолчанию `BTCUSDT`.
 - `MOON_FIRETEST_MOUSE_HZ` — целевая частота mousemove storm, по умолчанию `5000`.
 - `MOON_FIRETEST_STORM_MS` — длительность storm, по умолчанию `5000`.
-Static text stress входит в стандартный `chart-smoke`: FireTest сам включает 1000 text labels после первого mouse storm. Новые проверки добавляются как stages в этот же прогон, а не отдельными `--debug-script`.
+- `MOON_FIRETEST_TEXT_LABELS` — число retained text labels в static text stress, по умолчанию `10000`.
+Static text stress входит в стандартный `chart-smoke`: FireTest сам включает
+`10000` retained text labels после первого mouse storm. Это не означает
+“нарисовать все строки поверх одного viewport-а”: слой bake-ит весь набор,
+а present-кадры draw-ят только видимый label-range. Так тест проверяет именно
+retained buffer + culling, а не бессмысленную заливку GPU тысячами нечитаемых
+надписей. Новые проверки добавляются как stages в этот же прогон, а не отдельными
+`--debug-script`.
 
 ## Что тест обязан ловить
 
@@ -35,12 +42,13 @@ Static text stress входит в стандартный `chart-smoke`: FireTes
 - cursor-only mousemove не должен делать `cx.notify()` для chart input/canvas;
 - static text stress поверх графика не должен ломать mouse/input hot path и GPU frame budget;
 - Shell/Orders/Chart GPUI render не должны улетать в сотни render/s;
-- cursor-only mousemove не должен увеличивать частоту дорогих chart base draw/bake (`bg_draw`, `grid_draw`, `combo_draw`, `base_bake`, `combo_bake`, `orderbook_bake`) сверх baseline;
+- cursor-only mousemove не должен увеличивать частоту дорогих chart base draw/bake (`bg_draw`, `grid_draw`, `base_bake`, `combo_bake`, `orderbook_bake`) сверх baseline;
+- `combo_draw_delta` остаётся строгим Windows/DX сигналом: там он означает rebuild base-cache. На Metal/wgpu `combo_draw` считает draw calls внутри native pass/live range update, поэтому кроссплатформенный красный критерий — `combo_bake_delta`, CPU/render/notify и GPU frame budget.
 - CPU процесса не должен заметно расти от одной возни мышью;
 - RAM не должна расти;
 - на Windows дополнительно пишется process GPU `%` через PDH `GPU Engine`;
 - на macOS системный process GPU `%` не подделывается: вместо него FireTest получает реальное Metal `GPUStartTime/GPUEndTime` completed command buffer и проверяет `gpu_frame_ms`;
-- Linux mouse storm пока не закрыт: X11 можно сделать через XTest, Wayland требует synthetic/platform test hook или uinput/compositor-specific runner.
+- Linux mouse storm на X11 идёт через XTest (`DISPLAY`/`XAUTHORITY` реального тестового сеанса). Wayland без XWayland/XTest остаётся отдельной задачей: там нужен synthetic/platform test hook, `uinput` или compositor-specific runner.
 
 ## Почему есть high-present baseline
 
@@ -54,6 +62,7 @@ Static text stress входит в стандартный `chart-smoke`: FireTes
 [firetest] stage=start
 [firetest] stage=open_chart
 [firetest] stage=wait_chart_probe
+[firetest] stage=settle_live_chart
 [firetest] stage=baseline
 [firetest] stage=mouse_storm
 [firetest] stage=static_text_gap

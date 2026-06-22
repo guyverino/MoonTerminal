@@ -3,7 +3,7 @@
 
 use moon_chart::view::{ChartView, Rect};
 
-use super::types::ChartViewGpu;
+use super::types::{ChartViewGpu, DEFAULT_VOLUME_ALPHA};
 
 /// Собирает GPU-юнформ для текущего вида и чарт-области (физ. px). Поля заполняются ПО ИМЕНАМ
 /// (порядок в `ChartViewGpu` отличается от `moon_chart` ChartUniform — нельзя memcpy).
@@ -21,7 +21,7 @@ pub fn view_gpu(view: &ChartView, area: Rect, resolution: [f32; 2]) -> ChartView
         pad: 0.0,
         volume_buy_inv: 0.0,
         volume_sell_inv: 0.0,
-        volume_alpha: 0.32,
+        volume_alpha: DEFAULT_VOLUME_ALPHA,
         _pad2: 0.0,
     }
 }

@@ -505,7 +505,9 @@ impl StrategiesView {
         // Источник DnD: тащим весь мультивыбор этого ядра (если строка в выборе) или одну.
         let drag_ids = self.drag_ids_for(core, r.id);
         let drag_label: SharedString = if drag_ids.len() > 1 {
-            t!("strat.count_strategies", n = drag_ids.len()).to_string().into()
+            t!("strat.count_strategies", n = drag_ids.len())
+                .to_string()
+                .into()
         } else {
             r.name.clone().into()
         };
@@ -548,6 +550,7 @@ impl StrategiesView {
                 window.focus(&this.focus, cx);
                 let m = e.modifiers();
                 if this.apply_click(key, &order_c, m.shift, m.secondary()) {
+                    this.clamp_selected_section(cx);
                     cx.notify();
                 }
             }))
@@ -560,6 +563,7 @@ impl StrategiesView {
                         this.sel.clear();
                         this.sel.insert(key);
                         this.selected = Some(key);
+                        this.clamp_selected_section(cx);
                     }
                     this.open_menu(
                         super::tree_ui::ContextMenu {

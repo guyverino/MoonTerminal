@@ -110,8 +110,16 @@ impl OrdersPanel {
             )
             .item(MoonMenuItem::separator());
         for (variant, label, id) in [
-            (PrimarySort::SellFirst, t!("orders.sort.sell").to_string(), "m-sell"),
-            (PrimarySort::BuyFirst, t!("orders.sort.buy").to_string(), "m-buy"),
+            (
+                PrimarySort::SellFirst,
+                t!("orders.sort.sell").to_string(),
+                "m-sell",
+            ),
+            (
+                PrimarySort::BuyFirst,
+                t!("orders.sort.buy").to_string(),
+                "m-buy",
+            ),
             (
                 PrimarySort::Creation,
                 t!("orders.sort.creation").to_string(),

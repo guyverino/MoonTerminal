@@ -238,7 +238,7 @@ pub fn spawn(
     backend: &Entity<Backend>,
     spec: &DetachedSpec,
     owner: Option<AnyWindowHandle>,
-) {
+) -> anyhow::Result<WindowHandle<Root>> {
     let owner = owner.or_else(|| {
         backend
             .read(app)
@@ -300,5 +300,4 @@ pub fn spawn(
         });
         cx.new(|cx| Root::new(dw, window, cx).background_policy(MoonBackgroundPolicy::Opaque))
     })
-    .ok();
 }

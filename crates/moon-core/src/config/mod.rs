@@ -310,11 +310,11 @@ impl AppConfig {
             &self.groups,
             Language::default(),
             MarketDataMode::default(),
-            true, // нейтрализуем: тумблер чартов не влияет на структуру (без ребилда)
+            true,  // нейтрализуем: тумблер чартов не влияет на структуру (без ребилда)
             false, // charts_stack_scroll — чисто визуальный, не структурный
             false, // charts_stack_compress — чисто визуальный
             schema::default_chart_stack_height(), // высота стека — не структурная
-            true, // лог-настройки тоже не структурные (без реконнекта/ребилда)
+            true,  // лог-настройки тоже не структурные (без реконнекта/ребилда)
             14,
             schema::default_ui_font_delta(),
             schema::default_ui_scale(),

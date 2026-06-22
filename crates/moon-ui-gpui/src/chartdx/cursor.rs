@@ -1,14 +1,11 @@
 //! Native cursor/crosshair overlay for the Windows DX11 chart backend.
 
-use std::ffi::c_void;
-
 use gpui::RawGpuAccess;
 use windows::Win32::Graphics::Direct3D::D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
 use windows::Win32::Graphics::Direct3D11::*;
 
 use super::gpu::{
-    create_alpha_blend, create_dynamic_cb, d3d_device_ptr, full_viewport, make_ps, make_vs,
-    update_dynamic,
+    create_alpha_blend, create_dynamic_cb, full_viewport, make_ps, make_vs, update_dynamic,
 };
 pub use super::types::CursorParams;
 
@@ -23,14 +20,14 @@ struct CursorPipe {
 
 pub struct CursorLayer {
     pipe: Option<CursorPipe>,
-    device_ptr: *mut c_void,
+    device_generation: u64,
 }
 
 impl CursorLayer {
     pub fn new() -> Self {
         Self {
             pipe: None,
-            device_ptr: std::ptr::null_mut(),
+            device_generation: 0,
         }
     }
 
@@ -45,10 +42,10 @@ impl CursorLayer {
         if params.bounds[2] <= 0.0 || params.bounds[3] <= 0.0 || params.enabled <= 0.0 {
             return;
         }
-        let device_ptr = d3d_device_ptr(gpu);
-        if self.device_ptr != device_ptr {
+        let generation = gpu.device_generation();
+        if self.device_generation != generation {
             self.pipe = None;
-            self.device_ptr = device_ptr;
+            self.device_generation = generation;
         }
         if self.pipe.is_none() {
             self.pipe = Some(Self::create_pipe(device));

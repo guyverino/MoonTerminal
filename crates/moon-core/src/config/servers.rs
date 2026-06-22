@@ -135,7 +135,8 @@ impl ServerConfig {
     /// дефолт по базовой монете ядра `base` ("BTC"/"USDT"/…). `base` UI берёт из
     /// `SessionManager::core_base`.
     pub fn order_sizes_or_default(&self, base: &str) -> [f64; 6] {
-        self.order_sizes.unwrap_or_else(|| default_order_sizes(base))
+        self.order_sizes
+            .unwrap_or_else(|| default_order_sizes(base))
     }
 }
 

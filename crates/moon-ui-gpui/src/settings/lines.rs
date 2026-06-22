@@ -4,10 +4,9 @@
 //! Состояние редактора — [`Lines`]; раскрытость блоков живёт в `SettingsView.open_lines`.
 
 use gpui::*;
-use moon_ui::components::accordion::Accordion;
 use moon_ui::{
-    MoonCheckbox, MoonCheckboxSize, MoonColorPicker, MoonColorPickerEvent, MoonColorPickerState,
-    MoonPalette, MoonSliderEvent, MoonSliderState, StyledExt, h_flex, v_flex,
+    MoonAccordion, MoonCheckbox, MoonCheckboxSize, MoonColorPicker, MoonColorPickerEvent,
+    MoonColorPickerState, MoonPalette, MoonSliderEvent, MoonSliderState, StyledExt, h_flex, v_flex,
 };
 
 use super::{SettingsView, hsla_u8, separator, slider_row};
@@ -255,7 +254,7 @@ impl SettingsView {
             }))
     }
 
-    /// Сворачиваемый блок на компоненте MoonUI `Accordion` (один item на ключ): заголовок
+    /// Сворачиваемый блок на компоненте MoonUI `MoonAccordion` (один item на ключ): заголовок
     /// с шевроном + тело. Раскрытость хранится во `SettingsView.open_lines[key]`; клик по
     /// заголовку переключает её через `on_toggle_click` (для single-item: открыт ⇔ ix `[0]`).
     fn collapse_section(
@@ -268,7 +267,7 @@ impl SettingsView {
         let open = self.open_lines.contains(key);
         let title: SharedString = title.to_string().into();
         let entity = cx.entity();
-        Accordion::new(SharedString::from(format!("lines-acc-{key}")))
+        MoonAccordion::new(SharedString::from(format!("lines-acc-{key}")))
             .item(move |item| item.title(title).open(open).child(body))
             .on_toggle_click(move |open_ixs, _window, cx| {
                 let now_open = !open_ixs.is_empty();

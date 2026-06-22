@@ -17,7 +17,7 @@ use rust_i18n::t;
 
 use super::{SettingsView, hsla_u8};
 use crate::{Backend, design};
-use moon_core::config::{FeedFlags, GroupConfig, Secret, ServerConfig};
+use moon_core::config::{AppConfig, FeedFlags, GroupConfig, Secret, ServerConfig};
 use moon_core::feed::ConnStatus;
 use moon_core::session::CoreId;
 
@@ -46,6 +46,26 @@ const FEED_FLAGS: [(&str, fn(&FeedFlags) -> bool, fn(&mut FeedFlags, bool)); 8] 
     ("conn.tip.arb", |f| f.arb, |f, v| f.arb = v),
 ];
 
+pub(super) fn sync_groups_from_servers(cfg: &mut AppConfig) -> bool {
+    let mut names: Vec<String> = cfg.servers.iter().map(|s| s.group.clone()).collect();
+    names.sort();
+    names.dedup();
+
+    let mut changed = false;
+    cfg.groups.retain(|g| {
+        let keep = names.contains(&g.name);
+        changed |= !keep;
+        keep
+    });
+    for name in names {
+        if !cfg.groups.iter().any(|g| g.name == name) {
+            cfg.groups.push(GroupConfig::new(name));
+            changed = true;
+        }
+    }
+    changed
+}
+
 /// TextInput, привязанный к полю сервера `servers[i]` (пишет в draft).
 fn conn_input(
     window: &mut Window,
@@ -54,6 +74,7 @@ fn conn_input(
     init: String,
     get: fn(&ServerConfig) -> String,
     set: fn(&mut ServerConfig, String),
+    sync_groups: bool,
 ) -> Entity<MoonInputState> {
     let st = cx.new(|cx| MoonInputState::new(window, cx).default_value(init));
     cx.subscribe(&st, move |this, emitter, ev: &MoonInputEvent, cx| {
@@ -64,6 +85,9 @@ fn conn_input(
                     if let Some(s) = p.servers.get_mut(i) {
                         if get(s) != val {
                             set(s, val);
+                            if sync_groups {
+                                sync_groups_from_servers(p);
+                            }
                             bcx.notify();
                         }
                     }
@@ -125,6 +149,7 @@ pub(super) fn build_conn(
                 s.name.clone(),
                 |s| s.name.clone(),
                 |s, v| s.name = v,
+                false,
             ),
             // Ключ — поле пароля (порт egui `.password(true)`): символы скрыты, рядом
             // переключатель видимости (mask_toggle), чтобы при необходимости показать.
@@ -136,6 +161,7 @@ pub(super) fn build_conn(
                     s.key.expose().to_string(),
                     |s| s.key.expose().to_string(),
                     |s, v| s.key = Secret::new(v),
+                    false,
                 );
                 st.update(cx, |st, c| st.set_masked(true, window, c));
                 st
@@ -147,6 +173,7 @@ pub(super) fn build_conn(
                 s.group.clone(),
                 |s| s.group.clone(),
                 |s, v| s.group = v,
+                true,
             ),
             bundle: conn_input(
                 window,
@@ -155,6 +182,7 @@ pub(super) fn build_conn(
                 s.chart_bundle.clone(),
                 |s| s.chart_bundle.clone(),
                 |s, v| s.chart_bundle = v,
+                false,
             ),
             color: conn_color(window, cx, i, s.color),
         })
@@ -261,6 +289,7 @@ impl SettingsView {
                     chart_bundle: String::new(),
                     order_sizes: None,
                 });
+                sync_groups_from_servers(p);
                 bcx.notify();
             }
         });
@@ -275,6 +304,7 @@ impl SettingsView {
             if let Some(p) = b.preview.as_mut() {
                 if i < p.servers.len() {
                     p.servers.remove(i);
+                    sync_groups_from_servers(p);
                     bcx.notify();
                 }
             }
@@ -349,7 +379,8 @@ impl SettingsView {
             div()
                 .id(SharedString::from(format!("rec-tip-{i}")))
                 .tooltip(|_window, cx| {
-                    cx.new(|_| MoonTooltipView::new(t!("conn.reconnect").to_string())).into()
+                    cx.new(|_| MoonTooltipView::new(t!("conn.reconnect").to_string()))
+                        .into()
                 })
                 .child(
                     MoonButton::new(SharedString::from(format!("rec-{i}")))
@@ -531,21 +562,6 @@ impl SettingsView {
         let p = MoonPalette::active(cx);
         // Живой статус ядер для точек.
         let status = self.backend.read(cx).session.status_map();
-        // Синхронизировать группы draft с именами групп серверов (создать недостающие,
-        // убрать сироты) — порт egui groups_panel.
-        self.backend.update(cx, |b, _| {
-            if let Some(p) = b.preview.as_mut() {
-                let mut names: Vec<String> = p.servers.iter().map(|s| s.group.clone()).collect();
-                names.sort();
-                names.dedup();
-                p.groups.retain(|g| names.contains(&g.name));
-                for n in &names {
-                    if !p.groups.iter().any(|g| &g.name == n) {
-                        p.groups.push(GroupConfig::new(n.clone()));
-                    }
-                }
-            }
-        });
         // Снимки серверов (id, active, группа) и групп (name, active, icon).
         let (servers, mut groups) = {
             let b = self.backend.read(cx);
@@ -573,7 +589,7 @@ impl SettingsView {
                 .or_insert_with(|| self.icons.texture(*icon));
         }
         let pick_ids: Vec<u32> = if picking.is_some() {
-            (0..self.icons.count).collect()
+            self.icons.ids.clone()
         } else {
             Vec::new()
         };
@@ -591,13 +607,65 @@ impl SettingsView {
             .gap_1()
             .items_center()
             .pl(px(20.0))
-            .child(Self::col_head_tip("h-act", &t!("conn.col.act"), 28.0, false, 0.0, t!("conn.tip.act").to_string().into(), p, cx))
-            .child(Self::col_head_tip("h-win", &t!("conn.col.win"), 34.0, false, 0.0, t!("conn.tip.win").to_string().into(), p, cx))
-            .child(Self::col_head(&t!("conn.col.name"), 150.0, true, 8.0, p, cx))
+            .child(Self::col_head_tip(
+                "h-act",
+                &t!("conn.col.act"),
+                28.0,
+                false,
+                0.0,
+                t!("conn.tip.act").to_string().into(),
+                p,
+                cx,
+            ))
+            .child(Self::col_head_tip(
+                "h-win",
+                &t!("conn.col.win"),
+                34.0,
+                false,
+                0.0,
+                t!("conn.tip.win").to_string().into(),
+                p,
+                cx,
+            ))
+            .child(Self::col_head(
+                &t!("conn.col.name"),
+                150.0,
+                true,
+                8.0,
+                p,
+                cx,
+            ))
             .child(Self::col_head(&t!("conn.col.key"), 200.0, true, 8.0, p, cx))
-            .child(Self::col_head_tip("h-group", &t!("conn.col.group"), 110.0, false, 8.0, t!("conn.tip.group").to_string().into(), p, cx))
-            .child(Self::col_head_tip("h-bundle", &t!("conn.col.bundle"), 96.0, false, 8.0, t!("conn.tip.bundle").to_string().into(), p, cx))
-            .child(Self::col_head_tip("h-data", &t!("conn.col.data"), 52.0, false, 0.0, t!("conn.tip.flags").to_string().into(), p, cx))
+            .child(Self::col_head_tip(
+                "h-group",
+                &t!("conn.col.group"),
+                110.0,
+                false,
+                8.0,
+                t!("conn.tip.group").to_string().into(),
+                p,
+                cx,
+            ))
+            .child(Self::col_head_tip(
+                "h-bundle",
+                &t!("conn.col.bundle"),
+                96.0,
+                false,
+                8.0,
+                t!("conn.tip.bundle").to_string().into(),
+                p,
+                cx,
+            ))
+            .child(Self::col_head_tip(
+                "h-data",
+                &t!("conn.col.data"),
+                52.0,
+                false,
+                0.0,
+                t!("conn.tip.flags").to_string().into(),
+                p,
+                cx,
+            ))
             // Хвостовые плейсхолдеры под колонки строки (цвет/удалить/реконнект/статус) —
             // ОБЯЗАТЕЛЬНЫ: без них растяжимые колонки шапки получили бы лишнее место и съехали.
             .child(Self::cell(110.0, false))
@@ -690,10 +758,8 @@ impl SettingsView {
                         div()
                             .id(SharedString::from(format!("eye-tip-{name}")))
                             .tooltip(|_window, cx| {
-                                cx.new(|_| {
-                                    MoonTooltipView::new(t!("conn.show_group").to_string())
-                                })
-                                .into()
+                                cx.new(|_| MoonTooltipView::new(t!("conn.show_group").to_string()))
+                                    .into()
                             })
                             .child(
                                 MoonButton::new(SharedString::from(format!("eye-{name}")))

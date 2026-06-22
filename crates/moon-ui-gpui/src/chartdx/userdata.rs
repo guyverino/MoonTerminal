@@ -5,8 +5,6 @@
 //! (логические time_rel/price), мы конвертим в 16-байт-выровненные GPU-структы и рисуем
 //! own-pass тем же chart-трансформом (view = chart_area, линии тянутся в зону стакана).
 
-use std::ffi::c_void;
-
 use gpui::RawGpuAccess;
 use moon_chart::layers::{LineInstance, MarkerInstance, SegInstance, ZoneInstance};
 use windows::Win32::Graphics::Direct3D::D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
@@ -14,7 +12,7 @@ use windows::Win32::Graphics::Direct3D11::*;
 
 use super::gpu::{
     ChartViewGpu, create_alpha_blend, create_dynamic_cb, create_srv, create_structured,
-    d3d_device_ptr, full_viewport, make_ps, make_vs, update_dynamic,
+    full_viewport, make_ps, make_vs, update_dynamic,
 };
 use super::types::{HLineGpu, MarkerGpu, SegGpu, ZoneGpu};
 
@@ -91,7 +89,7 @@ pub struct UserDataLayer {
     seg_count: u32,
     mk_count: u32,
     pending: Option<Pending>,
-    device_ptr: *mut c_void,
+    device_generation: u64,
 }
 
 impl UserDataLayer {
@@ -103,7 +101,7 @@ impl UserDataLayer {
             seg_count: 0,
             mk_count: 0,
             pending: None,
-            device_ptr: std::ptr::null_mut(),
+            device_generation: 0,
         }
     }
 
@@ -132,14 +130,14 @@ impl UserDataLayer {
     ) {
         // device-lost: пересоздать pipe; счётчики 0 — буферы пересоздаются пустыми (prepare зальёт
         // ордера заново этим же кадром через set()/pending, инвариант: новый device = 0 валидных).
-        let device_ptr = d3d_device_ptr(gpu);
-        if self.device_ptr != device_ptr {
+        let generation = gpu.device_generation();
+        if self.device_generation != generation {
             self.pipe = None;
             self.zone_count = 0;
             self.hl_count = 0;
             self.seg_count = 0;
             self.mk_count = 0;
-            self.device_ptr = device_ptr;
+            self.device_generation = generation;
         }
         if self.pipe.is_none() {
             self.pipe = Some(Self::create_pipe(

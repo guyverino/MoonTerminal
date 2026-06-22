@@ -20,12 +20,12 @@ use std::hash::{Hash, Hasher};
 
 use gpui::prelude::FluentBuilder;
 use gpui::*;
-use rust_i18n::t;
 use moon_ui::{
     IndexPath, MoonBackgroundPolicy, MoonButton, MoonButtonSize, MoonButtonVariant,
     MoonColorPicker, MoonColorPickerState, MoonPalette, MoonSelectEvent, MoonSelectItem,
     MoonSelectState, MoonSlider, MoonSliderState, MoonWindowFrame, Root, h_flex, rgba_from, v_flex,
 };
+use rust_i18n::t;
 
 use crate::icons::IconSet;
 use crate::{Backend, design};
@@ -377,7 +377,7 @@ impl SettingsView {
                 );
                 s.set_market_mode(b.config.market_mode);
                 b.session = s;
-                b.desired.clear();
+                b.reset_chart_market_refs();
             });
             self.rebuild_group_windows(cx);
         } else if mode_changed {
@@ -657,7 +657,11 @@ pub fn open(backend: Entity<Backend>, owner: Option<AnyWindowHandle>, cx: &mut A
     if backend.read(cx).preview.is_some() {
         return;
     }
-    backend.update(cx, |b, _| b.preview = Some(b.config.clone()));
+    backend.update(cx, |b, _| {
+        let mut preview = b.config.clone();
+        connections::sync_groups_from_servers(&mut preview);
+        b.preview = Some(preview);
+    });
     // Геометрию восстанавливаем из layout (её сохраняет SettingsView), как у Стратегий/Активов.
     let saved = backend.read(cx).layout.settings_window;
     let bounds = saved.map_or(

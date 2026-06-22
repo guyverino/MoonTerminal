@@ -30,7 +30,7 @@ pub struct CoreData {
     /// Ретейн-стор линий ордеров для чарта (история + закрытые, всю сессию).
     pub order_lines: OrderLineStore,
     /// Последние детекты ядра (кольцо, обрезается до MAX_DETECTS).
-    pub detects: Vec<DetectRow>,
+    pub detects: VecDeque<DetectRow>,
     /// Стратегии ядра (последний снимок; для окна стратегий).
     pub strategies: Vec<StrategyRow>,
     /// Схема стратегий ядра (секции/поля по видам). None пока не пришла.
@@ -57,7 +57,7 @@ impl CoreData {
             status: ConnStatus::Connecting,
             orders: Vec::new(),
             order_lines: OrderLineStore::default(),
-            detects: Vec::new(),
+            detects: VecDeque::new(),
             strategies: Vec::new(),
             schema: None,
             assets: AssetsSnapshot::default(),
@@ -79,8 +79,8 @@ impl CoreData {
         self.log.iter().skip(start).cloned().collect()
     }
 
-    /// Применяет только АККАУНТНЫЕ сообщения. Identity/Ticks/OrderBook координатор
-    /// маршрутизирует мимо CoreData (в core_key / MarketStore), сюда не доходят.
+    /// Применяет только аккаунтные сообщения. Identity/CoreBase/MarketDataChanged
+    /// маршрутизируются координатором мимо CoreData.
     pub fn apply(&mut self, msg: FeedMsg) {
         match msg {
             FeedMsg::Status(s) => self.status = s,
@@ -106,11 +106,13 @@ impl CoreData {
                         detects.len(),
                         self.detects_rev.wrapping_add(1)
                     ));
-                    self.detects.extend(detects);
-                    // Кольцо: держим только последние MAX_DETECTS.
+                    for det in detects {
+                        self.detects.push_back(det);
+                    }
                     if self.detects.len() > MAX_DETECTS {
-                        let drop = self.detects.len() - MAX_DETECTS;
-                        self.detects.drain(0..drop);
+                        while self.detects.len() > MAX_DETECTS {
+                            self.detects.pop_front();
+                        }
                     }
                     self.detects_rev = self.detects_rev.wrapping_add(1);
                 }
@@ -143,13 +145,8 @@ impl CoreData {
                     self.log_rev = self.log_rev.wrapping_add(1);
                 }
             }
-            // Рыночные/идентификационные сообщения сюда не маршрутизируются.
-            FeedMsg::Identity(_)
-            | FeedMsg::CoreBase { .. }
-            | FeedMsg::Ticks { .. }
-            | FeedMsg::PriceLine { .. }
-            | FeedMsg::OrderBook { .. }
-            | FeedMsg::MarketDataChanged => {}
+            // Идентификационные/рыночные wake-сообщения сюда не маршрутизируются.
+            FeedMsg::Identity(_) | FeedMsg::CoreBase { .. } | FeedMsg::MarketDataChanged(_) => {}
         }
     }
 }

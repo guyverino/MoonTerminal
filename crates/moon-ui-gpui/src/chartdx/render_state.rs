@@ -191,7 +191,10 @@ impl RenderState {
             pr.cursor_params = params;
             #[cfg(not(windows))]
             if changed {
-                pr.gpu_prepare_dirty = true;
+                // Cursor uniforms/readout rects are uploaded from the draw callback on
+                // Metal/wgpu. Treating cursor motion as prepare-dirty turns mouse-only
+                // frames into full chart prepares and defeats the retained cursor path.
+                self.needs_present = true;
             }
         }
         self.sync_readout_params();
@@ -532,17 +535,14 @@ impl RenderState {
         match gpu.backend() {
             #[cfg(windows)]
             GpuBackend::D3d11 => {
-                let RawGpuAccess::D3d11(d3d) = gpu else {
-                    anyhow::bail!("chart dx11 draw received non-D3D11 raw gpu access");
-                };
                 let Some((device, context, rtv)) = gpu::borrow_d3d(gpu) else {
                     anyhow::bail!("chart dx11 draw received empty D3D11 raw gpu handles");
                 };
 
-                let d3d_device_ptr = d3d.device.as_ptr();
-                if self.scissor_dev != d3d_device_ptr {
+                let generation = gpu.device_generation();
+                if self.scissor_rs.is_none() || self.scissor_generation != generation {
                     self.scissor_rs = Some(gpu::create_scissor_rasterizer(&device));
-                    self.scissor_dev = d3d_device_ptr;
+                    self.scissor_generation = generation;
                 }
                 let res = [width as f32, height as f32];
                 let scissor_rs = self.scissor_rs.clone().unwrap();

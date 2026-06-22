@@ -1,4 +1,4 @@
-//! Контейнер панелей чарта — ЛОГИКА (open/auto/prune/layout/режим), без GPU. Порт смыслов
+//! Контейнер одной панели чарта — ЛОГИКА (open/auto/prune/layout), без GPU. Порт смыслов
 //! `moon_chart::container`, но панель хранит только `ChartView` (математика вида), а не
 //! wgpu-движок: рисуем своим own-pass (`super::combo`/…). GPU-состояние слоёв живёт отдельно
 //! в `RenderState` (см. `mod.rs`), синхронизируется с этими панелями по индексу.
@@ -6,8 +6,9 @@
 use moon_chart::view::{ChartView, Rect};
 use moon_core::session::CoreId;
 
-// Режимы/виды/источник панели — переиспользуем типы движка (контракт UX тот же).
-pub use moon_chart::container::{ContainerKind, Mode, PaneSource};
+// Виды/источник панели — переиспользуем общие типы, но НЕ режимы раскладки:
+// в терминале один `ChartEngine` владеет максимум одним рынком.
+pub use moon_chart::container::{ContainerKind, PaneSource};
 
 /// Применить масштаб цены к виду: None = Авто, Some(доля) = процент от цены.
 fn apply_scale(view: &mut ChartView, pct: Option<f32>) {
@@ -34,8 +35,7 @@ pub struct Container {
     /// Идентичность вкладки (Main / Chart{num}); используется при persist раскладки (позже).
     #[allow(dead_code)]
     pub kind: ContainerKind,
-    pub panes: Vec<Pane>,
-    pub mode: Mode,
+    pane: Option<Pane>,
     /// Текущий масштаб цены контейнера (None=Авто): новые панели создаются сразу с ним.
     scale: Option<f32>,
 }
@@ -44,8 +44,7 @@ impl Container {
     pub fn new(kind: ContainerKind) -> Self {
         Self {
             kind,
-            panes: Vec::new(),
-            mode: Mode::Fullscreen(0),
+            pane: None,
             scale: None,
         }
     }
@@ -56,44 +55,96 @@ impl Container {
         view
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.panes.is_empty()
+    fn find(&self, core: CoreId, market: &str) -> Option<usize> {
+        self.pane
+            .as_ref()
+            .is_some_and(|p| p.core == core && p.market == market)
+            .then_some(0)
     }
 
-    fn find(&self, core: CoreId, market: &str) -> Option<usize> {
-        self.panes
-            .iter()
-            .position(|p| p.core == core && p.market == market)
+    pub fn view_mut(&mut self, idx: usize) -> Option<&mut ChartView> {
+        if idx == 0 {
+            self.pane.as_mut().map(|p| &mut p.view)
+        } else {
+            None
+        }
+    }
+
+    pub fn target(&self, idx: usize) -> Option<(CoreId, String)> {
+        if idx == 0 {
+            self.pane.as_ref().map(|p| (p.core, p.market.clone()))
+        } else {
+            None
+        }
+    }
+
+    pub fn target_ref(&self, idx: usize) -> Option<(CoreId, &str)> {
+        if idx == 0 {
+            self.pane.as_ref().map(|p| (p.core, p.market.as_str()))
+        } else {
+            None
+        }
+    }
+
+    pub fn pane(&self, idx: usize) -> Option<&Pane> {
+        if idx == 0 { self.pane.as_ref() } else { None }
+    }
+
+    pub fn pane_mut(&mut self, idx: usize) -> Option<&mut Pane> {
+        if idx == 0 { self.pane.as_mut() } else { None }
+    }
+
+    pub fn panes(&self) -> &[Pane] {
+        match &self.pane {
+            Some(pane) => std::slice::from_ref(pane),
+            None => &[],
+        }
+    }
+
+    pub fn panes_mut(&mut self) -> &mut [Pane] {
+        match &mut self.pane {
+            Some(pane) => std::slice::from_mut(pane),
+            None => &mut [],
+        }
+    }
+
+    pub fn pane_count(&self) -> usize {
+        usize::from(self.pane.is_some())
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.pane.is_none()
     }
 
     /// Задать масштаб цены контейнера: применить ко ВСЕМ панелям и запомнить для будущих.
     pub fn set_scale(&mut self, pct: Option<f32>) {
         self.scale = pct;
-        for p in &mut self.panes {
+        for p in self.panes_mut() {
             apply_scale(&mut p.view, pct);
         }
     }
 
-    /// Ручное открытие монеты: найти/добавить панель и показать фулскрином.
+    /// Ручное открытие монеты. Инвариант терминала: один `ChartEngine` = один рынок.
+    /// Стек нескольких графиков живёт снаружи как список отдельных `ChartPanel`.
     pub fn open_manual(&mut self, core: CoreId, market: &str, epoch_ms: f64) {
-        let idx = match self.find(core, market) {
-            Some(i) => i,
-            None => {
-                let view = self.new_view(epoch_ms);
-                self.panes.push(Pane {
-                    core,
-                    market: market.to_string(),
-                    source: PaneSource::Manual,
-                    view,
-                    pinned: false,
-                });
-                self.panes.len() - 1
+        if self.find(core, market).is_some() {
+            if let Some(p) = self.pane.as_mut() {
+                p.source = PaneSource::Manual;
             }
-        };
-        self.mode = Mode::Fullscreen(idx);
+            return;
+        }
+        let view = self.new_view(epoch_ms);
+        self.pane = Some(Pane {
+            core,
+            market: market.to_string(),
+            source: PaneSource::Manual,
+            view,
+            pinned: false,
+        });
     }
 
-    /// AddToChart-детект: найти/добавить панель монеты, продлить TTL, режим тайл.
+    /// AddToChart-детект для одного графика: продлить TTL или заменить рынок в этом
+    /// `ChartPanel`. Несколько графиков держит внешний `AddChartStack`, не внутренний tiled canvas.
     pub fn push_auto(
         &mut self,
         core: CoreId,
@@ -103,15 +154,17 @@ impl Container {
         epoch_ms: f64,
     ) {
         match self.find(core, market) {
-            Some(i) => {
-                self.panes[i].source = PaneSource::AddToChart {
-                    born_ms: now_ms,
-                    ttl_ms,
-                };
+            Some(_) => {
+                if let Some(p) = self.pane.as_mut() {
+                    p.source = PaneSource::AddToChart {
+                        born_ms: now_ms,
+                        ttl_ms,
+                    };
+                }
             }
             None => {
                 let view = self.new_view(epoch_ms);
-                self.panes.push(Pane {
+                self.pane = Some(Pane {
                     core,
                     market: market.to_string(),
                     source: PaneSource::AddToChart {
@@ -123,32 +176,30 @@ impl Container {
                 });
             }
         }
-        self.mode = Mode::Tiled;
     }
 
-    /// Удалить истёкшие AddToChart-панели. True — если что-то удалили (→ пере-рендер).
-    pub fn prune_ttl(&mut self, now_ms: f64) -> bool {
-        let before = self.panes.len();
-        self.panes.retain(|p| match p.source {
-            // П.2: приколотая панель не закрывается по TTL.
-            PaneSource::AddToChart { born_ms, ttl_ms } => p.pinned || now_ms - born_ms < ttl_ms,
-            PaneSource::Manual => true,
+    /// Удалить истёкшие AddToChart-панели. Возвращает удалённые рынки для owner/refcount.
+    pub fn prune_ttl(&mut self, now_ms: f64) -> Vec<(CoreId, String)> {
+        let remove = self.pane.as_ref().is_some_and(|p| match p.source {
+            PaneSource::AddToChart { born_ms, ttl_ms } => !p.pinned && now_ms - born_ms >= ttl_ms,
+            PaneSource::Manual => false,
         });
-        let removed = self.panes.len() != before;
-        if removed {
-            self.clamp_focus();
+        if remove {
+            if let Some(p) = self.pane.take() {
+                return vec![(p.core, p.market)];
+            }
         }
-        removed
+        Vec::new()
     }
 
     pub fn has_ttl_panes(&self) -> bool {
-        self.panes
+        self.panes()
             .iter()
             .any(|p| matches!(p.source, PaneSource::AddToChart { .. }) && !p.pinned)
     }
 
     pub fn next_ttl_deadline_ms(&self) -> Option<f64> {
-        self.panes
+        self.panes()
             .iter()
             .filter_map(|p| match p.source {
                 // Приколотые панели дедлайна не имеют (П.2).
@@ -160,18 +211,17 @@ impl Container {
 
     /// Можно ли приколоть панель idx (только AddToChart с TTL; Manual/Main — нет смысла). П.2
     pub fn is_pinnable(&self, idx: usize) -> bool {
-        self.panes
-            .get(idx)
+        self.pane(idx)
             .is_some_and(|p| matches!(p.source, PaneSource::AddToChart { .. }))
     }
 
     pub fn is_pinned(&self, idx: usize) -> bool {
-        self.panes.get(idx).is_some_and(|p| p.pinned)
+        self.pane(idx).is_some_and(|p| p.pinned)
     }
 
     /// Переключить пин панели idx. Возвращает новое состояние (или None — индекс вне диапазона).
     pub fn toggle_pin(&mut self, idx: usize) -> Option<bool> {
-        let p = self.panes.get_mut(idx)?;
+        let p = self.pane_mut(idx)?;
         p.pinned = !p.pinned;
         Some(p.pinned)
     }
@@ -179,18 +229,17 @@ impl Container {
     /// Удалить панель (закрытие крестиком в UI). Возвращает её (core, market) — для решения
     /// об отписке от стакана. None — индекс вне диапазона.
     pub fn remove_pane(&mut self, idx: usize) -> Option<(CoreId, String)> {
-        if idx >= self.panes.len() {
+        if idx != 0 {
             return None;
         }
-        let p = self.panes.remove(idx);
-        self.clamp_focus();
+        let p = self.pane.take()?;
         Some((p.core, p.market))
     }
 
     /// Использует ли ещё какая-то панель этот (core, market) — чтобы не отписаться от стакана,
     /// который нужен другой панели этого же чарта.
     pub fn uses_market(&self, core: CoreId, market: &str) -> bool {
-        self.panes
+        self.panes()
             .iter()
             .any(|p| p.core == core && p.market == market)
     }
@@ -198,54 +247,17 @@ impl Container {
     /// Закрыть ВСЕ панели (кнопка «закрыть все графики» в выносном окне). Возвращает их
     /// (core, market) — для отписки от стаканов.
     pub fn clear_panes(&mut self) -> Vec<(CoreId, String)> {
-        let out = self
-            .panes
-            .iter()
-            .map(|p| (p.core, p.market.clone()))
-            .collect();
-        self.panes.clear();
-        self.clamp_focus();
-        out
+        self.pane
+            .take()
+            .map(|p| vec![(p.core, p.market)])
+            .unwrap_or_default()
     }
 
-    fn clamp_focus(&mut self) {
-        if let Mode::Fullscreen(i) = &mut self.mode {
-            *i = (*i).min(self.panes.len().saturating_sub(1));
-        }
-    }
-
-    /// Тоггл фулскрин ↔ тайл (ПКМ). `focus` — панель под курсором (для входа в фулскрин).
-    pub fn toggle_mode(&mut self, focus: usize) {
-        self.mode = match self.mode {
-            Mode::Fullscreen(_) => Mode::Tiled,
-            Mode::Tiled => Mode::Fullscreen(focus.min(self.panes.len().saturating_sub(1))),
-        };
-    }
-
-    /// Раскладка видимых панелей: (индекс панели, прямоугольник) в координатах `content` (физ. px).
+    /// Раскладка видимой панели: (индекс панели, прямоугольник) в координатах `content` (физ. px).
     pub fn layout(&self, content: Rect) -> Vec<(usize, Rect)> {
-        if self.panes.is_empty() {
+        if self.pane.is_none() {
             return Vec::new();
         }
-        match self.mode {
-            Mode::Fullscreen(i) => vec![(i.min(self.panes.len() - 1), content)],
-            Mode::Tiled => {
-                let n = self.panes.len();
-                let h = content.h / n as f32;
-                (0..n)
-                    .map(|k| {
-                        (
-                            k,
-                            Rect {
-                                x: content.x,
-                                y: content.y + h * k as f32,
-                                w: content.w,
-                                h,
-                            },
-                        )
-                    })
-                    .collect()
-            }
-        }
+        vec![(0, content)]
     }
 }

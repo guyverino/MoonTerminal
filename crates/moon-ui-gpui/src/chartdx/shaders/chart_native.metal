@@ -126,6 +126,12 @@ fragment float4 background_fragment(BgOut in [[stage_in]],
     return float4(mix(bp.bg.rgb, photo, saturate(bp.opacity)), 1.0);
 }
 
+fragment float4 blit_fragment(BgOut in [[stage_in]],
+                              texture2d<float> tex [[texture(0)]],
+                              sampler samp [[sampler(0)]]) {
+    return tex.sample(samp, in.uv);
+}
+
 struct GridOut { float4 position [[position]]; float2 px; };
 
 vertex GridOut grid_vertex(uint vid [[vertex_id]], constant GridParams& gp [[buffer(0)]]) {
@@ -207,7 +213,7 @@ struct CrossOut { float4 position [[position]]; float2 uv; uint side [[flat]]; }
 vertex CrossOut crosses_vertex(uint vid [[vertex_id]], uint iid [[instance_id]],
                                constant ChartView& cv [[buffer(0)]],
                                const device Cross* crosses [[buffer(1)]]) {
-    Cross c = crosses[iid];
+    Cross c = crosses[uint(max(cv.pad, 0.0)) + iid];
     float sx = round(cv.bounds.x + (c.time_rel - cv.view_time0) * cv.time_to_px);
     float sy = round(cv.bounds.y + cv.bounds.w - (c.price - cv.view_price0) * cv.price_to_px);
     if (sx < cv.bounds.x - 8.0 || sx > cv.bounds.x + cv.bounds.z + 8.0 ||
@@ -234,7 +240,7 @@ struct VolumeOut { float4 position [[position]]; uint side [[flat]]; };
 vertex VolumeOut volume_vertex(uint vid [[vertex_id]], uint iid [[instance_id]],
                                constant ChartView& cv [[buffer(0)]],
                                const device Cross* crosses [[buffer(1)]]) {
-    Cross c = crosses[iid];
+    Cross c = crosses[uint(max(cv.pad, 0.0)) + iid];
     float sx = cv.bounds.x + (c.time_rel - cv.view_time0) * cv.time_to_px;
     if (sx < cv.bounds.x - 2.0 || sx > cv.bounds.x + cv.bounds.z + 2.0 || c.qty <= 0.0) {
         return { float4(2.0, 2.0, 0.0, 1.0), 0 };

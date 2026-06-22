@@ -8,6 +8,11 @@ description = "MoonTerminal backend core — feed/session/market/config/db, UI-a
 name = "moon_core"
 path = "src/lib.rs"
 
+[features]
+# Explicit debug/test bridge for the terminal debug button. Default builds must
+# not enable MoonProto diagnostics; see tests/moonproto_feature_guard.rs.
+moonproto-diagnostics = ["moonproto/diagnostics"]
+
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
@@ -40,7 +45,7 @@ bytemuck = { version = "1", features = ["derive"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 
 # Связь с ядром MoonBot (feed/live.rs) — единственный, кто знает транспорт.
-moonproto = { git = "https://github.com/Moonbot-Tech/MoonProtoBeta", features = ["diagnostics"] }
+moonproto = { git = "https://github.com/Moonbot-Tech/MoonProtoBeta" }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_System_Performance"] }

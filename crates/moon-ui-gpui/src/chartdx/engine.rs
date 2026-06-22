@@ -9,6 +9,7 @@ fn hex3(rgb: [u8; 3]) -> u32 {
 }
 
 fn initial_palette_from_theme(theme: &ChartTheme) -> moon_ui::MoonPalette {
+    let base = moon_ui::MoonPalette::default();
     let panel = hex3(theme.panel_bg);
     let chart_bg = hex3(theme.bg);
     let border = hex3(theme.grid);
@@ -22,6 +23,10 @@ fn initial_palette_from_theme(theme: &ChartTheme) -> moon_ui::MoonPalette {
         panel_high: panel,
         chart_bg,
         border,
+        border_hover: border,
+        shadow: base.shadow,
+        overlay: base.overlay,
+        on_accent: base.on_accent,
         text: accent,
         text_soft: border,
         text_muted: border,
@@ -59,6 +64,8 @@ impl ChartEngine {
             text_run_cursor: 0,
             firetest_text_labels: Vec::new(),
             firetest_text_runs: Vec::new(),
+            firetest_text_layer: GpuCanvasRetainedTextLayer::default(),
+            firetest_text_revision: 0,
             firetest_force_present: false,
             ui_palette: initial_palette_from_theme(&theme),
             slot_origin: [0.0, 0.0],
@@ -73,7 +80,7 @@ impl ChartEngine {
             #[cfg(windows)]
             scissor_rs: None,
             #[cfg(windows)]
-            scissor_dev: std::ptr::null_mut(),
+            scissor_generation: 0,
             #[cfg(windows)]
             window_bg: background::BackgroundLayer::new(background::SPLASH_PNG),
             #[cfg(windows)]
@@ -101,9 +108,6 @@ impl ChartEngine {
             scale: None,
             follow: true,
             present_rate_hz: 60.0,
-            w: 1024,
-            h: 576,
-            origin: (0.0, 0.0),
         }
     }
 
@@ -124,33 +128,42 @@ impl ChartEngine {
         gpui::gpu_canvas(self.canvas.clone())
     }
 
-    /// Размер слота чарта (девайс-px). Combo сам пересоздаёт битмап при смене размера.
-    pub fn resize(&mut self, w: u32, h: u32) {
-        let next_w = w.max(1);
-        let next_h = h.max(1);
-        if self.w == next_w && self.h == next_h {
-            return;
-        }
-        self.w = next_w;
-        self.h = next_h;
-        let mut data = self.data.borrow_mut();
-        data.w = self.w;
-        data.h = self.h;
-        data.mark_view_dirty();
+    pub fn slot_geometry(&self) -> Option<(Bounds<Pixels>, f32, (u32, u32))> {
+        let data = self.data.borrow();
+        Some((data.slot_bounds?, data.last_ppp, (data.w, data.h)))
     }
 
-    /// Левый-верхний угол слота чарта В ОКНЕ (девайс-px) — для координат own-pass в backbuffer.
-    pub fn set_origin(&mut self, x: f32, y: f32) {
-        if self.origin == (x, y) {
-            return;
-        }
-        self.origin = (x, y);
-        {
-            let mut data = self.data.borrow_mut();
-            data.origin = self.origin;
-            data.mark_view_dirty();
-        }
-        self.state.borrow_mut().set_slot_origin(x, y);
+    pub fn slot_dev_size(&self) -> (u32, u32) {
+        let data = self.data.borrow();
+        (data.w.max(1), data.h.max(1))
+    }
+
+    pub fn slot_dev_width(&self) -> f32 {
+        self.data.borrow().w.max(1) as f32
+    }
+
+    pub fn chart_local_from_window_pos(
+        &self,
+        pos: gpui::Point<Pixels>,
+    ) -> Option<((f32, f32), bool)> {
+        let (bounds, sf, _) = self.slot_geometry()?;
+        let lx = f32::from(pos.x) - f32::from(bounds.origin.x);
+        let ly = f32::from(pos.y) - f32::from(bounds.origin.y);
+        let w = f32::from(bounds.size.width);
+        let h = f32::from(bounds.size.height);
+        let within = lx >= 0.0 && lx <= w && ly >= 0.0 && ly <= h;
+        Some(((lx * sf, ly * sf), within))
+    }
+
+    pub fn pane_rects(&self) -> Vec<(usize, Rect)> {
+        let (w, h) = self.slot_dev_size();
+        let area = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: w as f32,
+            h: h as f32,
+        };
+        self.container.borrow().layout(area)
     }
 
     pub fn set_present_rate_hz(&mut self, hz: f32) {
@@ -251,19 +264,17 @@ impl ChartEngine {
         true
     }
 
-    /// Глобальный live-follow из тулбара (Live/Пауза) ко ВСЕМ панелям. Реагирует ТОЛЬКО
-    /// на смену самого глобального флага (явный клик). НЕ на производное состояние от пана
-    /// одной панели: иначе пан одной монеты в Tiled гасил бы live у соседних, которых не
-    /// трогали (их view.follow перетирался). Пан/rejoin отдельной панели живут в её
-    /// view.follow; сюда уже сведённое значение прилетает через sync_follow_from_views, и
-    /// если глобальный флаг не изменился — выходим, панели не трогаем.
+    /// Глобальный live-follow из тулбара (Live/Пауза) для единственной панели этого
+    /// `ChartEngine`. Реагирует только на смену самого глобального флага (явный клик).
+    /// Пан/rejoin отдельной панели живут в её `view.follow`; сюда уже сведённое значение
+    /// прилетает через `sync_follow_from_views`.
     pub fn set_follow(&mut self, follow: bool, now_ms: f64) -> bool {
         if self.follow == follow {
             return false;
         }
         self.follow = follow;
         self.data.borrow_mut().follow = follow;
-        for p in &mut self.container.borrow_mut().panes {
+        for p in self.container.borrow_mut().panes_mut() {
             if follow {
                 // Возобновляем live только у панелей, которые НЕ следовали (явный Live из
                 // тулбара): уже живые панели не трогаем — их окно/зум не сбрасываем.
@@ -288,7 +299,7 @@ impl ChartEngine {
     pub fn next_auto_live_deadline_ms(&self) -> Option<f64> {
         self.container
             .borrow()
-            .panes
+            .panes()
             .iter()
             .filter_map(|p| p.view.auto_live_deadline_ms())
             .reduce(f64::min)
@@ -298,7 +309,7 @@ impl ChartEngine {
     /// «сейчас». Возвращает true, если хоть одна возобновила live (нужен кадр/нотифай).
     pub fn tick_auto_live(&mut self, now_ms: f64) -> bool {
         let mut resumed = false;
-        for p in &mut self.container.borrow_mut().panes {
+        for p in self.container.borrow_mut().panes_mut() {
             resumed |= p.view.tick_auto_live(now_ms);
         }
         if resumed {
@@ -310,10 +321,10 @@ impl ChartEngine {
 
     pub fn sync_follow_from_views(&mut self) -> bool {
         let container = self.container.borrow();
-        let follow = if container.panes.is_empty() {
+        let follow = if container.is_empty() {
             self.follow
         } else {
-            container.panes.iter().all(|p| p.view.follow)
+            container.panes().iter().all(|p| p.view.follow)
         };
         drop(container);
         if self.follow == follow {
@@ -333,7 +344,7 @@ impl ChartEngine {
         self.data.borrow_mut().mark_view_dirty();
     }
 
-    /// AddToChart: добавить монету авто-панелью (Tiled) с TTL.
+    /// AddToChart: открыть/продлить монету в этой панели с TTL.
     pub fn push_auto(&mut self, core: CoreId, market: &str, ttl_ms: f64, now_ms: f64) {
         self.container
             .borrow_mut()
@@ -341,13 +352,13 @@ impl ChartEngine {
         self.data.borrow_mut().mark_view_dirty();
     }
 
-    /// Убрать истёкшие AddToChart-панели. True — если что-то удалили.
-    pub fn prune_ttl(&mut self, now_ms: f64) -> bool {
-        let changed = self.container.borrow_mut().prune_ttl(now_ms);
-        if changed {
+    /// Убрать истёкшие AddToChart-панели. Возвращает удалённые рынки.
+    pub fn prune_ttl(&mut self, now_ms: f64) -> Vec<(CoreId, String)> {
+        let removed = self.container.borrow_mut().prune_ttl(now_ms);
+        if !removed.is_empty() {
             self.data.borrow_mut().mark_view_dirty();
         }
-        changed
+        removed
     }
 
     #[allow(dead_code)]
@@ -406,11 +417,7 @@ impl ChartEngine {
     /// Core/market активной (фулскрин/первой) панели.
     pub fn active_target(&self) -> Option<(CoreId, String)> {
         let container = self.container.borrow();
-        let idx = match container.mode {
-            Mode::Fullscreen(i) => i,
-            Mode::Tiled => 0,
-        };
-        container.panes.get(idx).map(|p| (p.core, p.market.clone()))
+        container.pane(0).map(|p| (p.core, p.market.clone()))
     }
 
     /// Рынок активной (фулскрин/первой) панели — для подписи вкладки.
@@ -436,23 +443,25 @@ impl ChartEngine {
     }
 
     pub fn pane_count(&self) -> usize {
-        self.container.borrow().panes.len()
+        self.container.borrow().pane_count()
     }
 
     /// Снимки осей ПО ВИДИМЫМ ПАНЕЛЯМ: (индекс, прямоугольник девайс-px, снимок). Звать ПОСЛЕ prepare.
     pub fn axis_panes(&self, tz_offset_sec: i64) -> Vec<(usize, Rect, AxisSnapshot)> {
-        let area = Rect {
-            x: 0.0,
-            y: 0.0,
-            w: self.w as f32,
-            h: self.h as f32,
-        };
         let container = self.container.borrow();
         container
-            .layout(area)
+            .layout({
+                let data = self.data.borrow();
+                Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: data.w.max(1) as f32,
+                    h: data.h.max(1) as f32,
+                }
+            })
             .into_iter()
             .filter_map(|(idx, rect)| {
-                let v = &container.panes.get(idx)?.view;
+                let v = &container.pane(idx)?.view;
                 Some((
                     idx,
                     rect,

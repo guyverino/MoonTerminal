@@ -6,7 +6,7 @@ description = "MoonTerminal GPUI shell over moon-core and MoonUI."
 
 [features]
 default = ["linux-x11", "linux-wayland"]
-debug-tools = []
+debug-tools = ["moon-core/moonproto-diagnostics"]
 linux-x11 = ["gpui_platform/x11"]
 linux-wayland = ["gpui_platform/wayland"]
 
@@ -71,6 +71,7 @@ raw-window-handle = "0.6"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 wgpu = { git = "https://github.com/zed-industries/wgpu.git", rev = "357a0c56e0070480ad9daea5d2eaa83150b79e88" }
+x11 = { version = "2.21", features = ["xlib", "xtest"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 metal = "0.33"

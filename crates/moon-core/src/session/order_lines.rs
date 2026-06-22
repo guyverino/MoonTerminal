@@ -7,6 +7,7 @@
 //! линии = время создания ордера, конец = время закрытия (или живой правый край).
 //! Это уникальный источник старта/узлов/конца для маркеров и отрезков (рисует чарт).
 
+use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::feed::{OrderRow, OrderTrace};
@@ -205,14 +206,15 @@ impl OrderLineStore {
 
         for r in rows {
             seen.insert(r.uid);
-            let seq = self.seq_counter;
-            let order = self.orders.entry(r.uid).or_insert_with(|| {
-                changed = true;
-                RetainedOrder::new(r, now_ms, seq)
-            });
-            if order.seq == seq {
-                self.seq_counter += 1;
-            }
+            let order = match self.orders.entry(r.uid) {
+                Entry::Occupied(entry) => entry.into_mut(),
+                Entry::Vacant(entry) => {
+                    let seq = self.seq_counter;
+                    self.seq_counter = self.seq_counter.wrapping_add(1);
+                    changed = true;
+                    entry.insert(RetainedOrder::new(r, now_ms, seq))
+                }
+            };
             order.last_seen_ms = now_ms;
             // Воскрешение: ранее закрытый uid снова АКТИВЕН (НЕ job_is_done) → опять живой.
             // Терминальный (job_is_done) ордер может оставаться в снимке весь deferred-window

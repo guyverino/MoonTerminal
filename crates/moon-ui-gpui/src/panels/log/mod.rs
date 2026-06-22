@@ -64,8 +64,14 @@ pub struct LogPanel {
     /// Кэш загруженного файла — чтобы не читать диск каждый кадр.
     loaded_name: Option<String>,
     loaded_lines: Vec<LogLine>,
+    /// Кэш списка файлов выбранного источника. `render` не должен ходить в FS ради dropdown.
+    available_files_label: Option<String>,
+    available_files: Vec<String>,
+    /// Нефильтрованные строки текущего источника/file. Обновляются вне render.
+    raw_lines: Vec<LogLine>,
     /// Отфильтрованные строки текущего кадра (читает рендер списка по индексу).
     lines: Vec<LogLine>,
+    total: usize,
     scroll: MoonVirtualListScrollHandle,
     /// Сигнатура лога прошлого кадра — чтобы НЕ пересобирать лог каждые 100мс
     /// (gather клонирует до 5000 строк; на холостом ходу это лишняя нагрузка).
@@ -83,8 +89,9 @@ impl LogPanel {
     ) -> Self {
         let query =
             cx.new(|cx| MoonInputState::new(window, cx).placeholder(t!("log.search").to_string()));
-        cx.subscribe(&query, |_t, _e, ev: &MoonInputEvent, cx| {
+        cx.subscribe(&query, |t, _e, ev: &MoonInputEvent, cx| {
             if matches!(ev, MoonInputEvent::Change) {
+                t.apply_filter(cx);
                 cx.notify();
             }
         })
@@ -94,11 +101,12 @@ impl LogPanel {
             let sig = render::log_sig(backend.read(cx), &this.group);
             if sig != this.last_sig {
                 this.last_sig = sig;
+                this.reload_rows(backend.read(cx), cx);
                 cx.notify();
             }
         })
         .detach();
-        Self {
+        let mut this = Self {
             backend,
             group,
             source: LogSource::Aggregate,
@@ -107,12 +115,19 @@ impl LogPanel {
             query,
             loaded_name: None,
             loaded_lines: Vec::new(),
+            available_files_label: None,
+            available_files: Vec::new(),
+            raw_lines: Vec::new(),
             lines: Vec::new(),
+            total: 0,
             scroll: MoonVirtualListScrollHandle::new(),
             last_sig: 0,
             dock: None,
             focus: cx.focus_handle(),
-        }
+        };
+        let backend_for_initial_load = this.backend.clone();
+        this.reload_rows(backend_for_initial_load.read(cx), cx);
+        this
     }
 
     /// Список источников в области видимости (порт `App::build_log_sources`).
@@ -156,6 +171,14 @@ impl LogPanel {
             .unwrap_or_else(|| "app".into())
     }
 
+    fn refresh_available_files(&mut self, label: &str) {
+        if self.available_files_label.as_deref() == Some(label) {
+            return;
+        }
+        self.available_files = applog::list_files(label);
+        self.available_files_label = Some(label.to_string());
+    }
+
     /// Строки для текущего выбора (Live — из памяти/агрегат слиянием; Named — из файла).
     fn gather(&mut self, store: &CoreStore, sources: &[LogSourceItem]) -> Vec<LogLine> {
         match &self.file {
@@ -180,18 +203,53 @@ impl LogPanel {
         }
     }
 
+    fn apply_filter(&mut self, cx: &App) {
+        let query = self.query.read(cx).value().trim().to_lowercase();
+        let errors_only = self.errors_only;
+        self.total = self.raw_lines.len();
+        let previous_len = self.lines.len();
+        self.lines = self
+            .raw_lines
+            .iter()
+            .filter(|l| !errors_only || l.is_errorish())
+            .filter(|l| query.is_empty() || l.msg.to_lowercase().contains(&query))
+            .cloned()
+            .collect();
+        if previous_len != self.lines.len() && !self.lines.is_empty() {
+            self.scroll
+                .scroll_to_item(self.lines.len() - 1, ScrollStrategy::Bottom);
+        }
+    }
+
+    fn reload_rows(&mut self, b: &Backend, cx: &App) {
+        let sources = self.sources(b);
+        let is_agg = matches!(self.source, LogSource::Aggregate);
+        if !is_agg {
+            let label = self.file_label(&sources);
+            self.refresh_available_files(&label);
+        }
+        self.raw_lines = self.gather(b.session.store(), &sources);
+        self.apply_filter(cx);
+    }
+
     pub(super) fn set_source(&mut self, s: LogSource, cx: &mut Context<Self>) {
         if self.source != s {
             self.source = s;
             // Смена источника → к Live, сброс кэша файла.
             self.file = LogFile::Live;
             self.loaded_name = None;
+            self.available_files_label = None;
+            self.available_files.clear();
+            let backend = self.backend.clone();
+            self.reload_rows(backend.read(cx), cx);
             cx.notify();
         }
     }
     pub(super) fn set_file(&mut self, f: LogFile, cx: &mut Context<Self>) {
         if self.file != f {
             self.file = f;
+            let backend = self.backend.clone();
+            self.reload_rows(backend.read(cx), cx);
             cx.notify();
         }
     }
@@ -244,32 +302,10 @@ impl Panel for LogPanel {
 impl Render for LogPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = MoonPalette::active(cx);
-        let query = self.query.read(cx).value().trim().to_lowercase();
-        let errors_only = self.errors_only;
 
         let sources = self.sources(self.backend.read(cx));
-        // gather читает store (живой) — store берём из backend (tied to cx).
-        let gathered = {
-            let store = self.backend.read(cx).session.store();
-            // store-borrow tied to cx; gather мутирует self (кэш) — disjoint поля.
-            self.gather(store, &sources)
-        };
-        let total = gathered.len();
-        let filtered: Vec<LogLine> = gathered
-            .into_iter()
-            .filter(|l| !errors_only || l.is_errorish())
-            .filter(|l| query.is_empty() || l.msg.to_lowercase().contains(&query))
-            .collect();
-
-        // Держим лог у хвоста, как старый Bottom-aligned список.
-        let previous_len = self.lines.len();
-        self.lines = filtered;
-        if previous_len != self.lines.len() && !self.lines.is_empty() {
-            self.scroll
-                .scroll_to_item(self.lines.len() - 1, ScrollStrategy::Bottom);
-        }
-
         let is_agg = matches!(self.source, LogSource::Aggregate);
+        let total = self.total;
 
         // ── Панель управления ──
         let mut controls = h_flex()
@@ -288,7 +324,7 @@ impl Render for LogPanel {
                         .text_color(rgb(p.text_soft))
                         .child(t!("log.file").to_string()),
                 )
-                .child(self.file_combo(&sources, cx));
+                .child(self.file_combo(&self.available_files, cx));
         }
         controls = controls
             .child(
@@ -307,6 +343,7 @@ impl Render for LogPanel {
                     .on_change(cx.listener(|t, ch: &bool, _, cx| {
                         if t.errors_only != *ch {
                             t.errors_only = *ch;
+                            t.apply_filter(cx);
                             cx.notify();
                         }
                     })),
@@ -315,9 +352,7 @@ impl Render for LogPanel {
                 div()
                     .text_size(crate::design::t_body(cx))
                     .text_color(rgb(p.text_muted))
-                    .child(
-                        t!("log.count", shown = self.lines.len(), total = total).to_string(),
-                    ),
+                    .child(t!("log.count", shown = self.lines.len(), total = total).to_string()),
             );
 
         // ── Список (виртуализирован, к низу) ──

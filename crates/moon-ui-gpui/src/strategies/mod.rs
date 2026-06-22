@@ -107,12 +107,17 @@ pub struct StrategiesView {
 
 impl StrategiesView {
     fn new(backend: Entity<Backend>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let search =
-            cx.new(|cx| MoonInputState::new(window, cx).placeholder(t!("strat.search").to_string()));
-        // Печать в поиске → перерисовать (значение читаем из инпута в render).
-        cx.subscribe(&search, |_this, _e, ev: &MoonInputEvent, cx| {
+        let search = cx
+            .new(|cx| MoonInputState::new(window, cx).placeholder(t!("strat.search").to_string()));
+        // Печать в поиске → обновить фильтр и перерисовать. Render не должен читать input
+        // как event source.
+        cx.subscribe(&search, |this, input, ev: &MoonInputEvent, cx| {
             if matches!(ev, MoonInputEvent::Change) {
-                cx.notify();
+                let value = input.read(cx).value().to_string();
+                if this.filter.search != value {
+                    this.filter.search = value;
+                    cx.notify();
+                }
             }
         })
         .detach();
@@ -126,6 +131,8 @@ impl StrategiesView {
             let sig = strategies_sig(backend.read(cx));
             if sig != this.last_sig {
                 this.last_sig = sig;
+                this.sync_pending_select(cx);
+                this.clamp_selected_section(cx);
                 cx.notify();
             }
         })
@@ -147,24 +154,26 @@ impl StrategiesView {
         })
         .detach();
 
-        cx.spawn(async move |this, cx| {
-            let executor = cx.update(|cx| cx.background_executor().clone());
-            loop {
-                executor.timer(Duration::from_secs(1)).await;
-                let alive = cx.update(|cx| {
-                    this.update(cx, |this, cx| {
-                        if this.rules.reload_if_changed() {
-                            cx.notify();
-                        }
-                    })
-                    .is_ok()
-                });
-                if !alive {
-                    break;
+        if std::env::var_os("MOON_STRATEGY_RULES_HOT_RELOAD").is_some() {
+            cx.spawn(async move |this, cx| {
+                let executor = cx.update(|cx| cx.background_executor().clone());
+                loop {
+                    executor.timer(Duration::from_secs(1)).await;
+                    let alive = cx.update(|cx| {
+                        this.update(cx, |this, cx| {
+                            if this.rules.reload_if_changed() {
+                                cx.notify();
+                            }
+                        })
+                        .is_ok()
+                    });
+                    if !alive {
+                        break;
+                    }
                 }
-            }
-        })
-        .detach();
+            })
+            .detach();
+        }
 
         Self {
             backend,
@@ -231,6 +240,42 @@ impl StrategiesView {
         // Первичная (источник схемы/секций) — всегда кликнутая. Раздел не сбрасываем.
         self.selected = Some(key);
         before_selected != self.selected || before_anchor != self.anchor || before_sel != self.sel
+    }
+
+    fn sync_pending_select(&mut self, cx: &App) -> bool {
+        let Some((core, name)) = self.pending_select.clone() else {
+            return false;
+        };
+        let key = {
+            let store = self.backend.read(cx).session.store();
+            store.core(core).and_then(|cd| {
+                cd.strategies
+                    .iter()
+                    .find(|row| row.name == name)
+                    .map(|row| (core, row.id))
+            })
+        };
+        let Some(key) = key else {
+            return false;
+        };
+        self.selected = Some(key);
+        self.sel.clear();
+        self.sel.insert(key);
+        self.pending_select = None;
+        self.clamp_selected_section(cx);
+        true
+    }
+
+    fn clamp_selected_section(&mut self, cx: &App) -> bool {
+        let store = self.backend.read(cx).session.store();
+        let Some(sections) = selected_sections(self, store) else {
+            return false;
+        };
+        if self.selected_section < sections.len() {
+            return false;
+        }
+        self.selected_section = 0;
+        true
     }
 
     // ── Действия (старт/стоп отмеченных) ─────────────────────────────────────
@@ -489,7 +534,11 @@ impl StrategiesView {
             .px(design::ui_px(cx, 10.0))
             .py(design::ui_px(cx, 12.0))
             .gap(design::ui_px(cx, 7.0))
-            .child(div().font_weight(FontWeight::SEMIBOLD).child(t!("strat.sections").to_string()))
+            .child(
+                div()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(t!("strat.sections").to_string()),
+            )
             .child(div().w_full().h(px(1.0)).bg(border));
 
         let Some(sections) = selected_sections(self, store) else {
@@ -592,9 +641,6 @@ impl Focusable for StrategiesView {
 
 impl Render for StrategiesView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Поиск читаем из инпута в фильтр (единый источник).
-        self.filter.search = self.search.read(cx).value().to_string();
-
         // Список ядер (id, имя) — все подключённые, как egui (session.sessions()).
         let cores: Vec<(CoreId, String)> = {
             let b = self.backend.read(cx);
@@ -604,35 +650,6 @@ impl Render for StrategiesView {
                 .map(|s| (s.id, s.name.clone()))
                 .collect()
         };
-
-        // Появилась ли ожидаемая стратегия (эхо ядра после create/paste)? → выбрать её.
-        if let Some((core, name)) = self.pending_select.clone() {
-            let key = {
-                let store = self.backend.read(cx).session.store();
-                store.core(core).and_then(|cd| {
-                    cd.strategies
-                        .iter()
-                        .find(|r| r.name == name)
-                        .map(|r| (core, r.id))
-                })
-            };
-            if let Some(key) = key {
-                self.selected = Some(key);
-                self.sel.clear();
-                self.sel.insert(key);
-                self.pending_select = None;
-            }
-        }
-
-        // Клампим выбранный раздел в диапазон (как sections::show).
-        {
-            let store = self.backend.read(cx).session.store();
-            if let Some(secs) = selected_sections(self, store) {
-                if self.selected_section >= secs.len() {
-                    self.selected_section = 0;
-                }
-            }
-        }
 
         // Плоский порядок прошлого кадра (для Shift-диапазона) + новый накапливаем.
         let order = Arc::new(self.flat_order.clone());
@@ -647,11 +664,11 @@ impl Render for StrategiesView {
             )
         };
         let params = self.params_panel(params_model, window, cx);
-        if self.op.is_none() && self.op_input.is_some() {
-            self.op_input = None;
+        // Сохранить порядок текущего кадра (store-borrow держит cx, не self). Это render-cache
+        // для Shift-диапазона; не будим view, если порядок не изменился.
+        if self.flat_order != built {
+            self.flat_order = built;
         }
-        // Сохранить порядок текущего кадра (store-borrow держит cx, не self).
-        self.flat_order = built;
 
         let p = MoonPalette::active(cx);
         let chrome_width = match window.window_bounds() {

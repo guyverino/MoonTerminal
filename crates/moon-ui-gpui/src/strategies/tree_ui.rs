@@ -6,9 +6,7 @@ use super::tree_ops;
 use super::*;
 use anyhow::Result;
 use moon_core::feed::NewStrategySpec;
-use moon_ui::MoonContextMenuWindowExt as _;
-use moon_ui::components::WindowExt as _;
-use moon_ui::components::notification::Notification;
+use moon_ui::{MoonContextMenuWindowExt as _, MoonNotification, MoonWindowExt as _};
 use rust_i18n::t;
 
 /// Активная модалка операции (взаимоисключающая; рисуется оверлеем поверх окна).
@@ -95,7 +93,9 @@ fn op_title(op: &TreeOp) -> String {
 
 fn op_ok_label(op: &TreeOp) -> String {
     match op {
-        TreeOp::CreateStrategy { .. } | TreeOp::CreateFolder { .. } => t!("dialogs.create").to_string(),
+        TreeOp::CreateStrategy { .. } | TreeOp::CreateFolder { .. } => {
+            t!("dialogs.create").to_string()
+        }
         TreeOp::RenameFolder { .. } => t!("dialogs.rename").to_string(),
         TreeOp::ConfirmDeleteStrategies { .. } | TreeOp::ConfirmDeleteFolder { .. } => {
             t!("dialogs.yes").to_string()
@@ -263,7 +263,8 @@ fn op_dialog_footer(
                         Ok(false) => {}
                         Err(error) => {
                             log::warn!("strategies operation failed: {error}");
-                            window.push_notification(Notification::error(error.to_string()), cx);
+                            window
+                                .push_notification(MoonNotification::error(error.to_string()), cx);
                         }
                     }
                 })
@@ -431,7 +432,7 @@ impl StrategiesView {
     fn open_op_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.ensure_op_input(window, cx);
         let view = cx.entity();
-        window.open_unique_dialog(
+        window.open_unique_moon_dialog(
             "strategies-tree-op-dialog",
             cx,
             move |dialog, _window, cx| {
@@ -529,8 +530,11 @@ impl StrategiesView {
         if !tree_ops::all_off(&under) {
             return; // есть запущенные — нельзя
         }
-        let label = t!("strat.folder_named", name = path.last().cloned().unwrap_or_default())
-            .to_string();
+        let label = t!(
+            "strat.folder_named",
+            name = path.last().cloned().unwrap_or_default()
+        )
+        .to_string();
         self.op = Some(TreeOp::ConfirmDeleteFolder { core, path, label });
         self.open_op_dialog(window, cx);
         cx.notify();
@@ -910,6 +914,7 @@ impl StrategiesView {
         cx: &mut Context<Self>,
     ) {
         self.op = None;
+        self.op_input = None;
         let pos = menu.pos;
         let items = self.context_menu_items(&menu, cx);
         window.open_moon_context_menu(cx, "strategies-context-menu", pos, items, 190.0);
@@ -1000,21 +1005,24 @@ impl StrategiesView {
         let view = cx.entity();
         let t1 = target.clone();
         let items = vec![
-            MoonMenuItem::with_key("new-strat", t!("strat.menu_new_strategy").to_string()).on_click({
-                let view = view.clone();
-                move |_, window, app| {
-                    let (core, t) = (core, t1.clone());
-                    view.update(app, |this, c| this.open_create_strategy(core, t, window, c));
-                }
-            }),
-            MoonMenuItem::with_key("new-folder", t!("strat.menu_new_folder").to_string()).on_click({
-                let view = view.clone();
-                let t2 = target.clone();
-                move |_, window, app| {
-                    let (core, t) = (core, t2.clone());
-                    view.update(app, |this, c| this.open_create_folder(core, t, window, c));
-                }
-            }),
+            MoonMenuItem::with_key("new-strat", t!("strat.menu_new_strategy").to_string())
+                .on_click({
+                    let view = view.clone();
+                    move |_, window, app| {
+                        let (core, t) = (core, t1.clone());
+                        view.update(app, |this, c| this.open_create_strategy(core, t, window, c));
+                    }
+                }),
+            MoonMenuItem::with_key("new-folder", t!("strat.menu_new_folder").to_string()).on_click(
+                {
+                    let view = view.clone();
+                    let t2 = target.clone();
+                    move |_, window, app| {
+                        let (core, t) = (core, t2.clone());
+                        view.update(app, |this, c| this.open_create_folder(core, t, window, c));
+                    }
+                },
+            ),
         ];
         MoonDropdown::new("strat-create")
             .label(format!("＋ {} ▾", t!("strat.menu_create")))
@@ -1039,33 +1047,39 @@ impl StrategiesView {
             MenuTarget::Folder(path) => {
                 let pp = path.clone();
                 items.push(
-                    MoonMenuItem::with_key("rename-folder", t!("strat.menu_rename").to_string()).on_click({
-                        let view = view.clone();
-                        move |_, window, app| {
-                            window.close_context_menu(app);
-                            view.update(app, |this, cx| {
-                                this.open_rename_folder(core, pp.clone(), window, cx);
-                            });
-                        }
-                    }),
+                    MoonMenuItem::with_key("rename-folder", t!("strat.menu_rename").to_string())
+                        .on_click({
+                            let view = view.clone();
+                            move |_, window, app| {
+                                window.close_context_menu(app);
+                                view.update(app, |this, cx| {
+                                    this.open_rename_folder(core, pp.clone(), window, cx);
+                                });
+                            }
+                        }),
                 );
                 let pp = path.clone();
                 items.push(
-                    MoonMenuItem::with_key("copy-folder", t!("strat.menu_copy").to_string()).on_click({
-                        let view = view.clone();
-                        move |_, window, app| {
-                            window.close_context_menu(app);
-                            view.update(app, |this, cx| {
-                                this.copy_folder(core, pp.clone(), cx);
-                                cx.notify();
-                            });
-                        }
-                    }),
+                    MoonMenuItem::with_key("copy-folder", t!("strat.menu_copy").to_string())
+                        .on_click({
+                            let view = view.clone();
+                            move |_, window, app| {
+                                window.close_context_menu(app);
+                                view.update(app, |this, cx| {
+                                    this.copy_folder(core, pp.clone(), cx);
+                                    cx.notify();
+                                });
+                            }
+                        }),
                 );
                 if can_paste {
                     let t = tree_ops::join_path(path);
                     items.push(
-                        MoonMenuItem::with_key("paste-here", t!("strat.menu_paste_here").to_string()).on_click({
+                        MoonMenuItem::with_key(
+                            "paste-here",
+                            t!("strat.menu_paste_here").to_string(),
+                        )
+                        .on_click({
                             let view = view.clone();
                             move |_, window, app| {
                                 window.close_context_menu(app);
@@ -1079,21 +1093,27 @@ impl StrategiesView {
                 }
                 let t = tree_ops::join_path(path);
                 items.push(
-                    MoonMenuItem::with_key("new-strategy-here", t!("strat.menu_new_strategy_here").to_string()).on_click(
-                        {
-                            let view = view.clone();
-                            move |_, window, app| {
-                                window.close_context_menu(app);
-                                view.update(app, |this, cx| {
-                                    this.open_create_strategy(core, t.clone(), window, cx);
-                                });
-                            }
-                        },
-                    ),
+                    MoonMenuItem::with_key(
+                        "new-strategy-here",
+                        t!("strat.menu_new_strategy_here").to_string(),
+                    )
+                    .on_click({
+                        let view = view.clone();
+                        move |_, window, app| {
+                            window.close_context_menu(app);
+                            view.update(app, |this, cx| {
+                                this.open_create_strategy(core, t.clone(), window, cx);
+                            });
+                        }
+                    }),
                 );
                 let t = tree_ops::join_path(path);
                 items.push(
-                    MoonMenuItem::with_key("new-folder-here", t!("strat.menu_new_folder_here").to_string()).on_click({
+                    MoonMenuItem::with_key(
+                        "new-folder-here",
+                        t!("strat.menu_new_folder_here").to_string(),
+                    )
+                    .on_click({
                         let view = view.clone();
                         move |_, window, app| {
                             window.close_context_menu(app);
@@ -1105,44 +1125,51 @@ impl StrategiesView {
                 );
                 let pp = path.clone();
                 items.push(
-                    MoonMenuItem::with_key("delete-folder", t!("strat.menu_delete_folder").to_string())
-                        .tone(MoonTone::Danger)
-                        .on_click({
-                            let view = view.clone();
-                            move |_, window, app| {
-                                window.close_context_menu(app);
-                                view.update(app, |this, cx| {
-                                    this.request_delete_folder(core, pp.clone(), window, cx);
-                                });
-                            }
-                        }),
-                );
-            }
-            MenuTarget::Strategy(_id) => {
-                items.push(
-                    MoonMenuItem::with_key("copy-strategy", t!("strat.menu_copy").to_string()).on_click({
+                    MoonMenuItem::with_key(
+                        "delete-folder",
+                        t!("strat.menu_delete_folder").to_string(),
+                    )
+                    .tone(MoonTone::Danger)
+                    .on_click({
                         let view = view.clone();
                         move |_, window, app| {
                             window.close_context_menu(app);
                             view.update(app, |this, cx| {
-                                this.copy_selection(cx);
-                                cx.notify();
+                                this.request_delete_folder(core, pp.clone(), window, cx);
                             });
                         }
                     }),
                 );
+            }
+            MenuTarget::Strategy(_id) => {
                 items.push(
-                    MoonMenuItem::with_key("delete-strategy", t!("strat.menu_delete_strategy").to_string())
-                        .tone(MoonTone::Danger)
+                    MoonMenuItem::with_key("copy-strategy", t!("strat.menu_copy").to_string())
                         .on_click({
                             let view = view.clone();
                             move |_, window, app| {
                                 window.close_context_menu(app);
                                 view.update(app, |this, cx| {
-                                    this.request_delete_selection(window, cx);
+                                    this.copy_selection(cx);
+                                    cx.notify();
                                 });
                             }
                         }),
+                );
+                items.push(
+                    MoonMenuItem::with_key(
+                        "delete-strategy",
+                        t!("strat.menu_delete_strategy").to_string(),
+                    )
+                    .tone(MoonTone::Danger)
+                    .on_click({
+                        let view = view.clone();
+                        move |_, window, app| {
+                            window.close_context_menu(app);
+                            view.update(app, |this, cx| {
+                                this.request_delete_selection(window, cx);
+                            });
+                        }
+                    }),
                 );
             }
         }

@@ -48,6 +48,34 @@ const DEFAULT_VISIBLE: &[&str] = &[
     "comment",
 ];
 
+struct ReportQueryResult {
+    cores: Vec<(u64, String)>,
+    table: ReportTable,
+    totals: (f64, i64),
+}
+
+fn empty_report_query_result() -> ReportQueryResult {
+    ReportQueryResult {
+        cores: Vec::new(),
+        table: ReportTable {
+            cols: db::DISPLAY_COLUMNS,
+            rows: Vec::new(),
+        },
+        totals: (0.0, 0),
+    }
+}
+
+fn run_report_query(filter: ReportFilter, sort_key: String, sort_desc: bool) -> ReportQueryResult {
+    let Some(conn) = db::open_reader() else {
+        return empty_report_query_result();
+    };
+    ReportQueryResult {
+        cores: db::distinct_cores(&conn),
+        table: db::query_reports(&conn, &filter, &sort_key, sort_desc, MAX_REPORT_ROWS),
+        totals: db::query_totals(&conn, &filter),
+    }
+}
+
 pub struct ReportPanel {
     pub(super) backend: Entity<Backend>,
     pub(super) group: String,
@@ -68,6 +96,8 @@ pub struct ReportPanel {
     to: Entity<MoonInputState>,
     pub(super) side: SideFilter,
     needs_query: bool,
+    query_inflight: bool,
+    query_seq: u64,
 
     /// Видимость колонок (параллельно db::DISPLAY_COLUMNS).
     pub(super) visible: Vec<bool>,
@@ -119,17 +149,19 @@ impl ReportPanel {
             state.set_sort(sort_key.clone(), !sort_desc);
         });
 
-        let coin =
-            cx.new(|cx| MoonInputState::new(window, cx).placeholder(t!("report.filter.coin_ph").to_string()));
-        let from =
-            cx.new(|cx| MoonInputState::new(window, cx).placeholder(t!("report.filter.date_ph").to_string()));
-        let to =
-            cx.new(|cx| MoonInputState::new(window, cx).placeholder(t!("report.filter.date_ph").to_string()));
+        let coin = cx.new(|cx| {
+            MoonInputState::new(window, cx).placeholder(t!("report.filter.coin_ph").to_string())
+        });
+        let from = cx.new(|cx| {
+            MoonInputState::new(window, cx).placeholder(t!("report.filter.date_ph").to_string())
+        });
+        let to = cx.new(|cx| {
+            MoonInputState::new(window, cx).placeholder(t!("report.filter.date_ph").to_string())
+        });
         for st in [&coin, &from, &to] {
             cx.subscribe(st, |t, _e, ev: &MoonInputEvent, cx| {
                 if matches!(ev, MoonInputEvent::Change) {
-                    t.needs_query = true;
-                    cx.notify();
+                    t.request_requery(cx);
                 }
             })
             .detach();
@@ -141,14 +173,13 @@ impl ReportPanel {
                 let v = g.load(Ordering::Relaxed);
                 if v != this.last_gen {
                     this.last_gen = v;
-                    this.needs_query = true;
-                    cx.notify();
+                    this.request_requery(cx);
                 }
             }
         })
         .detach();
 
-        Self {
+        let mut this = Self {
             backend,
             group,
             generation,
@@ -168,11 +199,15 @@ impl ReportPanel {
             to,
             side: SideFilter::All,
             needs_query: true,
+            query_inflight: false,
+            query_seq: 0,
             visible,
             table_state,
             dock: None,
             focus: cx.focus_handle(),
-        }
+        };
+        this.schedule_requery(cx);
+        this
     }
 
     fn filter(&self, cx: &App) -> ReportFilter {
@@ -189,47 +224,62 @@ impl ReportPanel {
         }
     }
 
-    fn poll(&mut self) {
-        if let Some(g) = &self.generation {
-            let v = g.load(Ordering::Relaxed);
-            if v != self.last_gen {
-                self.last_gen = v;
-                self.needs_query = true;
-            }
-        }
+    fn request_requery(&mut self, cx: &mut Context<Self>) {
+        self.needs_query = true;
+        self.schedule_requery(cx);
+        cx.notify();
     }
 
-    fn requery(&mut self, cx: &App) {
-        if self.conn.is_none() {
-            self.conn = db::open_reader();
-        }
-        let f = self.filter(cx);
-        if let Some(conn) = &self.conn {
-            self.cores = db::distinct_cores(conn);
-            self.table = Rc::new(db::query_reports(
-                conn,
-                &f,
-                &self.sort_key,
-                self.sort_desc,
-                MAX_REPORT_ROWS,
-            ));
-            self.totals = db::query_totals(conn, &f);
+    fn schedule_requery(&mut self, cx: &mut Context<Self>) {
+        if !self.needs_query || self.query_inflight {
+            return;
         }
         self.needs_query = false;
+        self.query_inflight = true;
+        self.query_seq = self.query_seq.wrapping_add(1);
+
+        let request_id = self.query_seq;
+        let filter = self.filter(cx);
+        let sort_key = self.sort_key.clone();
+        let sort_desc = self.sort_desc;
+
+        cx.spawn(async move |this, cx| {
+            let executor = cx.update(|cx| cx.background_executor().clone());
+            let result = executor
+                .spawn(async move { run_report_query(filter, sort_key, sort_desc) })
+                .await;
+
+            let _ = cx.update(|cx| {
+                let _ = this.update(cx, |this, cx| {
+                    if this.query_seq != request_id {
+                        return;
+                    }
+                    this.query_inflight = false;
+                    if this.needs_query {
+                        this.schedule_requery(cx);
+                        return;
+                    }
+
+                    this.cores = result.cores;
+                    this.table = Rc::new(result.table);
+                    this.totals = result.totals;
+                    cx.notify();
+                });
+            });
+        })
+        .detach();
     }
 
     pub(super) fn set_core(&mut self, i: usize, cx: &mut Context<Self>) {
         if self.sel_core != i {
             self.sel_core = i;
-            self.needs_query = true;
-            cx.notify();
+            self.request_requery(cx);
         }
     }
     pub(super) fn set_side(&mut self, s: SideFilter, cx: &mut Context<Self>) {
         if self.side != s {
             self.side = s;
-            self.needs_query = true;
-            cx.notify();
+            self.request_requery(cx);
         }
     }
     /// Переключить видимость колонки и СОХРАНИТЬ набор (app_meta) — переживает рестарт.
@@ -257,11 +307,10 @@ impl ReportPanel {
         self.table_state.update(cx, |state, _| {
             state.set_sort(col.to_string(), !sort_desc);
         });
-        self.needs_query = true;
         if let Some(conn) = &self.conn {
             db::save_sort(conn, &self.sort_key, self.sort_desc);
         }
-        cx.notify();
+        self.request_requery(cx);
     }
 }
 
@@ -311,16 +360,8 @@ impl Panel for ReportPanel {
 
 impl Render for ReportPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.poll();
-        if self.needs_query {
-            self.requery(cx);
-        }
-
         let p = MoonPalette::active(cx);
         let border = rgb(p.border);
-        self.table_state.update(cx, |state, _| {
-            state.set_sort(self.sort_key.clone(), !self.sort_desc);
-        });
 
         // ── Фильтры ──
         let filters = h_flex()

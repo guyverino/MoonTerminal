@@ -90,6 +90,8 @@ impl RenderState {
         self.firetest_text_runs
             .resize_with(count, GpuCanvasTextRun::default);
         self.firetest_text_runs.truncate(count);
+        self.firetest_text_layer.clear();
+        self.firetest_text_revision = self.firetest_text_revision.wrapping_add(1);
         self.needs_present = true;
         true
     }
@@ -149,37 +151,58 @@ impl RenderState {
             return Ok(());
         }
 
-        let cols = ((count as f32 * plot_w.max(1.0) / plot_h.max(1.0))
-            .sqrt()
-            .ceil() as usize)
-            .clamp(1, count);
-        let rows = count.div_ceil(cols).max(1);
+        // FireTest intentionally bakes the whole retained set, but draws only a
+        // physically visible page. Drawing all 10k labels every present would
+        // measure GPU fill/instance cost, not retained text churn.
+        let cols = ((plot_w / 150.0).floor() as usize).clamp(1, count);
+        let rows = ((plot_h / (FIRETEST_TEXT_LINE_H + 4.0)).floor() as usize)
+            .max(1)
+            .min(count.div_ceil(cols));
+        let visible_count = count.min(cols.saturating_mul(rows).max(1));
         let step_x = plot_w / cols as f32;
         let step_y = plot_h / rows as f32;
         let font = gpui::font(crate::design::mono());
+        let layout_key = (count as u64)
+            ^ ((visible_count as u64) << 3)
+            ^ ((cols as u64) << 17)
+            ^ ((rows as u64) << 29)
+            ^ ((step_x.to_bits() as u64) << 7)
+            ^ ((step_y.to_bits() as u64) << 39);
         let mut drawn = 0_u64;
         let mut cold = 0_u64;
-
-        for i in 0..count {
-            let col = i % cols;
-            let row = i / cols;
-            let x = plot_left + col as f32 * step_x;
-            let y = plot_top + row as f32 * step_y;
-            let run = &mut self.firetest_text_runs[i];
-            if !run.is_cached() {
-                cold += 1;
-            }
-            run.draw(
-                ctx,
-                point(px(x), px(y)),
-                self.firetest_text_labels[i].as_str(),
-                font.clone(),
-                px(FIRETEST_TEXT_FONT_SIZE),
-                px(FIRETEST_TEXT_LINE_H),
-                color,
-            )?;
-            drawn += 1;
-        }
+        ctx.draw_retained_text_layer(
+            &mut self.firetest_text_layer,
+            layout_key,
+            self.firetest_text_revision,
+            GpuCanvasTextTransform::identity(),
+            0..visible_count as u32,
+            |builder| {
+                for i in 0..count {
+                    let page = i / visible_count;
+                    let local = i % visible_count;
+                    let col = local % cols;
+                    let row = local / cols;
+                    let x = plot_left + page as f32 * (plot_w + step_x) + col as f32 * step_x;
+                    let y = plot_top + row as f32 * step_y;
+                    let run = &mut self.firetest_text_runs[i];
+                    if !run.is_cached() {
+                        cold += 1;
+                    }
+                    builder.set_label_id(i as u32);
+                    run.draw(
+                        builder.context(),
+                        point(px(x), px(y)),
+                        self.firetest_text_labels[i].as_str(),
+                        font.clone(),
+                        px(FIRETEST_TEXT_FONT_SIZE),
+                        px(FIRETEST_TEXT_LINE_H),
+                        color,
+                    )?;
+                    drawn += 1;
+                }
+                Ok(())
+            },
+        )?;
 
         crate::diag::bump_by(&crate::diag::FIRETEST_TEXT_DRAW, drawn);
         crate::diag::bump_by(&crate::diag::FIRETEST_TEXT_COLD, cold);

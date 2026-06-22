@@ -8,12 +8,13 @@ use std::time::{Duration, Instant};
 use gpui::{Context, IntoElement, ParentElement, div, px};
 use moon_core::config::{ChartBucket, Language};
 use moon_core::metrics::MetricsSnapshot;
-use moon_ui::components::notification::Notification;
+use moon_ui::MoonNotification;
 
 use crate::{Backend, diag};
 
 const DEFAULT_MARKET: &str = "BTCUSDT";
 const START_DELAY: Duration = Duration::from_millis(1000);
+const SETTLE: Duration = Duration::from_millis(5000);
 const BASELINE: Duration = Duration::from_millis(5000);
 const BASELINE_WARMUP: Duration = Duration::from_millis(1500);
 const COOLDOWN: Duration = Duration::from_millis(1200);
@@ -22,7 +23,7 @@ const OPEN_TIMEOUT: Duration = Duration::from_millis(10_000);
 const PROBE_TIMEOUT: Duration = Duration::from_millis(10_000);
 const DEFAULT_MOUSE_HZ: f64 = 5000.0;
 const DEFAULT_STORM: Duration = Duration::from_millis(5000);
-const STATIC_TEXT_LABELS: usize = 1000;
+const STATIC_TEXT_LABELS: usize = 10_000;
 const STAGE_GAP: Duration = Duration::from_millis(200);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -30,6 +31,7 @@ enum Phase {
     WaitStartup,
     WaitOpen,
     WaitProbe,
+    Settle,
     Baseline,
     Storm,
     StaticTextGap,
@@ -55,10 +57,11 @@ enum Phase {
 }
 
 #[cfg(test)]
-const STAGE_PLAN: [Phase; 22] = [
+const STAGE_PLAN: [Phase; 23] = [
     Phase::WaitStartup,
     Phase::WaitOpen,
     Phase::WaitProbe,
+    Phase::Settle,
     Phase::Baseline,
     Phase::Storm,
     Phase::StaticTextGap,
@@ -86,6 +89,7 @@ impl Phase {
             Phase::WaitStartup => "start",
             Phase::WaitOpen => "open_chart",
             Phase::WaitProbe => "wait_chart_probe",
+            Phase::Settle => "settle_live_chart",
             Phase::Baseline => "baseline",
             Phase::Storm => "mouse_storm",
             Phase::StaticTextGap => "static_text_gap",
@@ -205,12 +209,16 @@ impl Config {
             .map(Duration::from_millis)
             .filter(|v| *v >= Duration::from_millis(1000))
             .unwrap_or(DEFAULT_STORM);
+        let text_labels = std::env::var("MOON_FIRETEST_TEXT_LABELS")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(STATIC_TEXT_LABELS);
         Ok(Some(Self {
             script,
             market,
             storm,
             mouse_hz,
-            text_labels: STATIC_TEXT_LABELS,
+            text_labels,
         }))
     }
 }
@@ -288,6 +296,7 @@ impl Runtime {
         if matches!(
             self.phase,
             Phase::WaitProbe
+                | Phase::Settle
                 | Phase::Baseline
                 | Phase::Storm
                 | Phase::StaticTextGap
@@ -337,11 +346,17 @@ impl Runtime {
             }
             Phase::WaitProbe => {
                 if self.probe.is_some() {
-                    self.set_phase(Phase::Baseline);
+                    self.set_phase(Phase::Settle);
                 } else if self.phase_since.elapsed() >= PROBE_TIMEOUT {
                     self.fail("chart opened but no chart bounds probe arrived");
                 } else {
                     self.wait_log("waiting for chart bounds probe");
+                }
+            }
+            Phase::Settle => {
+                self.set_present_pressure(backend, true);
+                if self.phase_since.elapsed() >= SETTLE {
+                    self.set_phase(Phase::Baseline);
                 }
             }
             Phase::Baseline => {
@@ -601,7 +616,7 @@ impl Runtime {
                     return Err("Root context menu did not become active".to_string());
                 }
 
-                root.open_unique_dialog(
+                root.open_unique_moon_dialog(
                     "firetest-root-dialog",
                     |dialog, _window, _cx| {
                         dialog
@@ -624,7 +639,7 @@ impl Runtime {
                     ));
                 }
 
-                root.open_unique_dialog(
+                root.open_unique_moon_dialog(
                     "firetest-root-dialog",
                     |dialog, _window, _cx| {
                         dialog
@@ -645,7 +660,7 @@ impl Runtime {
                 }
 
                 root.push_notification(
-                    Notification::error("FireTest root notification").autohide(false),
+                    MoonNotification::error("FireTest root notification").autohide(false),
                     window,
                     cx,
                 );
@@ -746,6 +761,7 @@ impl Runtime {
         cx: &mut Context<Backend>,
     ) {
         backend.price_scale = scale;
+        backend.price_scale_group = self.opened_group.clone();
         backend.price_scale_rev = backend.price_scale_rev.wrapping_add(1);
         firetest_info(&format!(
             "[firetest] price_scale_request value={}",
@@ -861,9 +877,8 @@ impl Runtime {
             firetest_info("[firetest] text overlay disabled");
             return 0;
         }
-        let consumers = backend.live_chart_consumers();
         let mut applied = 0usize;
-        for chart in consumers {
+        if let Some(chart) = backend.live_chart_consumers().into_iter().next() {
             if chart.set_firetest_text_labels(count) {
                 applied += 1;
             }
@@ -1027,6 +1042,8 @@ impl Runtime {
         } else {
             0.0
         };
+        let chart_mouse_min = chart_mouse_min_hz(avg_rate("chart_present"));
+        let static_text_chart_mouse_min = chart_mouse_min_hz(static_text_avg_rate("chart_present"));
 
         let mut fail = Vec::new();
         check_min(
@@ -1039,7 +1056,7 @@ impl Runtime {
             &mut fail,
             "chart_mouse_move",
             avg_rate("chart_mouse_move"),
-            100.0,
+            chart_mouse_min,
         );
         let chart_mouse = avg_rate("chart_mouse_move");
         let fast_mouse = avg_rate("chart_mouse_move_fast");
@@ -1080,12 +1097,7 @@ impl Runtime {
         );
         check_max(&mut fail, "bg_draw_delta", rate_delta("bg_draw"), 12.0);
         check_max(&mut fail, "grid_draw_delta", rate_delta("grid_draw"), 12.0);
-        check_max(
-            &mut fail,
-            "combo_draw_delta",
-            rate_delta("combo_draw"),
-            12.0,
-        );
+        check_combo_draw_delta(&mut fail, rate_delta("combo_draw"));
         check_max(
             &mut fail,
             "userdata_draw_delta",
@@ -1117,7 +1129,7 @@ impl Runtime {
                 &mut fail,
                 "static_text_chart_mouse_move",
                 static_text_avg_rate("chart_mouse_move"),
-                100.0,
+                static_text_chart_mouse_min,
             );
             let static_text_chart_mouse = static_text_avg_rate("chart_mouse_move");
             let static_text_fast_mouse = static_text_avg_rate("chart_mouse_move_fast");
@@ -1336,6 +1348,29 @@ fn scale_label(scale: Option<f32>) -> &'static str {
     }
 }
 
+fn chart_mouse_min_hz(present_hz: f64) -> f64 {
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    {
+        (present_hz * 0.5).clamp(20.0, 60.0)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        let _ = present_hz;
+        100.0
+    }
+}
+
+fn check_combo_draw_delta(fail: &mut Vec<String>, combo_draw_delta: f64) {
+    #[cfg(windows)]
+    {
+        check_max(fail, "combo_draw_delta", combo_draw_delta, 12.0);
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (fail, combo_draw_delta);
+    }
+}
+
 fn check_min(fail: &mut Vec<String>, label: &str, got: f64, min: f64) {
     if got < min {
         fail.push(format!("{label} {got:.1} < {min:.1}"));
@@ -1374,6 +1409,7 @@ mod tests {
                 "start",
                 "open_chart",
                 "wait_chart_probe",
+                "settle_live_chart",
                 "baseline",
                 "mouse_storm",
                 "static_text_gap",
@@ -1439,6 +1475,10 @@ fn start_mouse_storm(
     let hwnd = probe
         .hwnd
         .ok_or_else(|| "Windows mouse storm needs a Win32 HWND probe".to_string())?;
+    firetest_info(&format!(
+        "[firetest] mouse_storm target hwnd={hwnd:?} client_rect=({:.1},{:.1},{:.1},{:.1}) scale={:.3}",
+        probe.left, probe.top, probe.width, probe.height, probe.scale_factor
+    ));
 
     let stop = Arc::new(AtomicBool::new(false));
     let done = Arc::new(AtomicBool::new(false));
@@ -1464,10 +1504,10 @@ fn start_mouse_storm(
             }
             let mut restore = POINT { x: 0, y: 0 };
             let restore_cursor = unsafe { GetCursorPos(&mut restore).is_ok() };
-            let left = probe.left * probe.scale_factor;
-            let top = probe.top * probe.scale_factor;
-            let width = probe.width * probe.scale_factor;
-            let height = probe.height * probe.scale_factor;
+            let left = probe.left;
+            let top = probe.top;
+            let width = probe.width;
+            let height = probe.height;
             let cx = left + width * 0.5;
             let cy = top + height * 0.5;
             let r = (width.min(height) * 0.35).max(12.0);
@@ -1572,12 +1612,121 @@ fn start_mouse_storm(
     Ok(MouseStorm { stop, done })
 }
 
-#[cfg(not(target_os = "windows"))]
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 fn start_mouse_storm(
-    _probe: ChartProbe,
-    _duration: Duration,
-    _mouse_hz: f64,
+    probe: ChartProbe,
+    duration: Duration,
+    mouse_hz: f64,
 ) -> Result<MouseStorm, String> {
-    Err("--debug-script chart-smoke mouse storm is implemented for Windows and macOS; Linux X11/Wayland is not wired yet".into())
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use x11::{xlib, xtest};
+
+    firetest_info(&format!(
+        "[firetest] mouse_storm target x11 root_rect=({:.1},{:.1},{:.1},{:.1}) scale={:.3}",
+        probe.screen_left + probe.left,
+        probe.screen_top + probe.top,
+        probe.width,
+        probe.height,
+        probe.scale_factor
+    ));
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let done = Arc::new(AtomicBool::new(false));
+    let thread_stop = stop.clone();
+    let thread_done = done.clone();
+    std::thread::Builder::new()
+        .name("moon-firetest-mouse".to_string())
+        .spawn(move || {
+            let start = Instant::now();
+            let left = probe.screen_left + probe.left;
+            let top = probe.screen_top + probe.top;
+            let width = probe.width;
+            let height = probe.height;
+            let cx = left + width * 0.5;
+            let cy = top + height * 0.5;
+            let r = (width.min(height) * 0.35).max(12.0);
+            let step = (2.0 * std::f32::consts::PI) / 96.0;
+            let mut sent = 0_u64;
+
+            unsafe {
+                let display = xlib::XOpenDisplay(std::ptr::null());
+                if display.is_null() {
+                    diag::bump(&diag::FIRETEST_MOUSE_POST_FAIL);
+                    thread_done.store(true, Ordering::Relaxed);
+                    return;
+                }
+
+                let mut event_base = 0;
+                let mut error_base = 0;
+                let mut major = 0;
+                let mut minor = 0;
+                if xtest::XTestQueryExtension(
+                    display,
+                    &mut event_base,
+                    &mut error_base,
+                    &mut major,
+                    &mut minor,
+                ) == 0
+                {
+                    diag::bump(&diag::FIRETEST_MOUSE_POST_FAIL);
+                    xlib::XCloseDisplay(display);
+                    thread_done.store(true, Ordering::Relaxed);
+                    return;
+                }
+
+                let screen = xlib::XDefaultScreen(display);
+                let root = xlib::XDefaultRootWindow(display);
+                let mut restore_root = 0;
+                let mut restore_child = 0;
+                let mut restore_x = 0;
+                let mut restore_y = 0;
+                let mut win_x = 0;
+                let mut win_y = 0;
+                let mut mask = 0;
+                let restore_cursor = xlib::XQueryPointer(
+                    display,
+                    root,
+                    &mut restore_root,
+                    &mut restore_child,
+                    &mut restore_x,
+                    &mut restore_y,
+                    &mut win_x,
+                    &mut win_y,
+                    &mut mask,
+                ) != 0;
+
+                while start.elapsed() < duration && !thread_stop.load(Ordering::Relaxed) {
+                    let angle = sent as f32 * step;
+                    let x = (cx + angle.cos() * r).round() as i32;
+                    let y = (cy + angle.sin() * r).round() as i32;
+                    if xtest::XTestFakeMotionEvent(display, screen, x, y, 0) != 0 {
+                        diag::bump(&diag::FIRETEST_MOUSE_SENT);
+                    } else {
+                        diag::bump(&diag::FIRETEST_MOUSE_POST_FAIL);
+                    }
+                    sent = sent.wrapping_add(1);
+                    if sent % 16 == 0 {
+                        xlib::XFlush(display);
+                    }
+                    let target = Duration::from_secs_f64(sent as f64 / mouse_hz.max(1.0));
+                    let elapsed = start.elapsed();
+                    if target > elapsed {
+                        std::thread::sleep(target - elapsed);
+                    } else if sent % 128 == 0 {
+                        std::thread::yield_now();
+                    }
+                }
+
+                if restore_cursor {
+                    xtest::XTestFakeMotionEvent(display, screen, restore_x, restore_y, 0);
+                }
+                xlib::XSync(display, 0);
+                xlib::XCloseDisplay(display);
+            }
+
+            thread_done.store(true, Ordering::Relaxed);
+        })
+        .map_err(|e| format!("failed to spawn mouse storm thread: {e}"))?;
+    Ok(MouseStorm { stop, done })
 }

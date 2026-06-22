@@ -6,11 +6,11 @@
 
 use gpui::prelude::FluentBuilder;
 use gpui::*;
-use rust_i18n::t;
-use moon_ui::components::{progress::Progress, tag::Tag};
 use moon_ui::{
-    MoonButton, MoonButtonSize, MoonButtonVariant, MoonPalette, MoonWindowFrame, h_flex,
+    MoonButton, MoonButtonSize, MoonButtonVariant, MoonPalette, MoonProgress, MoonTag,
+    MoonWindowFrame, h_flex,
 };
+use rust_i18n::t;
 
 use crate::{Backend, design, settings, strategies};
 
@@ -144,18 +144,19 @@ fn risk_meter(p: MoonPalette, cx: &App) -> impl IntoElement {
         )
         .child(
             div().w(px(64.0)).child(
-                Progress::new("risk-meter")
+                MoonProgress::new("risk-meter")
                     .value(18.0)
-                    .color(rgb(p.green))
-                    .h(design::ui_px(cx, 4.0))
-                    .rounded(design::ui_px(cx, 2.0)),
+                    .color(p.green)
+                    .height(4.0)
+                    .radius(2.0)
+                    .render(),
             ),
         )
         .child(div().text_color(rgb(p.green)).child("18%"))
 }
 
 fn exchange_pill(p: MoonPalette, cx: &App) -> impl IntoElement {
-    Tag::new()
+    MoonTag::new()
         .outline()
         .rounded_full()
         .child(design::status_dot(p.green, cx))

@@ -4,8 +4,7 @@
 
 use super::*;
 use anyhow::Result;
-use moon_ui::components::WindowExt as _;
-use moon_ui::components::notification::Notification;
+use moon_ui::{MoonNotification, MoonWindowExt as _};
 use rust_i18n::t;
 
 /// Полезная нагрузка drag&drop переноса актива между кошельками.
@@ -55,8 +54,8 @@ impl AssetsView {
     /// Секция кошельков ядра: заголовок (+ ↻ refresh) и 3 контейнера в ряд.
     pub(super) fn wallets_section(
         &self,
-        b: &Backend,
         core: CoreId,
+        wallets: &[WalletColumnSnapshot],
         cx: &Context<Self>,
     ) -> impl IntoElement {
         let p = MoonPalette::active(cx);
@@ -88,10 +87,12 @@ impl AssetsView {
                                 {
                                     log::warn!("assets refresh failed for core {core}: {error}");
                                     window.push_notification(
-                                        Notification::error(error.to_string()),
+                                        MoonNotification::error(error.to_string()),
                                         cx,
                                     );
                                 }
+                                let backend = this.backend.clone();
+                                this.rebuild_cache(backend.read(cx));
                                 cx.notify();
                             }))
                             .render(),
@@ -99,9 +100,9 @@ impl AssetsView {
             )
             .child(
                 h_flex().w_full().flex_1().min_h(px(0.0)).children(
-                    WalletKind::ALL
-                        .into_iter()
-                        .map(|kind| self.wallet_column(b, core, kind, cx)),
+                    wallets
+                        .iter()
+                        .map(|snapshot| self.wallet_column(core, snapshot, cx)),
                 ),
             )
     }
@@ -110,31 +111,15 @@ impl AssetsView {
     /// drop-таргет. Бросок монеты из другого кошелька открывает диалог количества.
     fn wallet_column(
         &self,
-        b: &Backend,
         core: CoreId,
-        kind: WalletKind,
+        snapshot: &WalletColumnSnapshot,
         cx: &Context<Self>,
     ) -> impl IntoElement {
         let p = MoonPalette::active(cx);
-        let all_items = b
-            .session
-            .store()
-            .core(core)
-            .map(|c| c.transfer_assets.wallet(kind).to_vec())
-            .unwrap_or_default();
-        // Фильтр >1 USDT (нет цены → скрыто), сортировка по убыванию стоимости.
-        let mut items: Vec<&TransferAssetRow> = all_items
-            .iter()
-            .filter(|a| self.show_all || a.value_usdt > 1.0)
-            .collect();
-        items.sort_by(|a, b| {
-            b.value_usdt
-                .partial_cmp(&a.value_usdt)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        let kind = snapshot.kind;
 
         let mut list = v_flex().w_full().gap_0().p(px(4.0));
-        if items.is_empty() {
+        if snapshot.rows.is_empty() {
             list = list.child(
                 div()
                     .px(design::ui_px(cx, 6.0))
@@ -144,7 +129,7 @@ impl AssetsView {
                     .child("—"),
             );
         }
-        for a in items {
+        for a in &snapshot.rows {
             let drag = AssetDrag {
                 core,
                 asset: a.currency.clone(),
@@ -216,7 +201,7 @@ impl AssetsView {
                     .text_size(design::t_body(cx))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(rgb(p.text_soft))
-                    .child(format!("{} ({})", kind.label(), all_items.len())),
+                    .child(format!("{} ({})", kind.label(), snapshot.total_count)),
             )
             .child(
                 div()
@@ -258,7 +243,7 @@ impl AssetsView {
         self.pending_transfer = Some(pending.clone());
         self.transfer_input = Some(input);
         let view = cx.entity();
-        window.open_unique_dialog("assets-transfer-dialog", cx, move |dialog, _window, cx| {
+        window.open_unique_moon_dialog("assets-transfer-dialog", cx, move |dialog, _window, cx| {
             let p = MoonPalette::active(cx);
             let title = t!(
                 "assets.transfer_title",
@@ -341,7 +326,7 @@ impl AssetsView {
                                         Err(error) => {
                                             log::warn!("asset transfer failed: {error}");
                                             window.push_notification(
-                                                Notification::error(error.to_string()),
+                                                MoonNotification::error(error.to_string()),
                                                 cx,
                                             );
                                         }

@@ -19,8 +19,6 @@ use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 use anyhow::{anyhow, Result};
-use moonproto::state::{LastPricePoint, MarkPricePoint, SeqRingReader, TradeHistoryRow};
-use moonproto::MoonClient;
 
 use crate::config::AppConfig;
 use crate::db::ReportTx;
@@ -76,104 +74,17 @@ pub struct SessionManager {
     last_cmd: HashMap<CoreId, (bool, Vec<String>)>,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct DrainStats {
     /// At least one feed message was applied to session state.
     pub any: bool,
     /// Data visible to chart GPU state changed: market ticks/book/price-lines or order lines.
     pub chart_data: bool,
+    /// Provider-local market targets that need a compatibility refresh outside
+    /// the native chart frame path.
+    pub chart_markets: Vec<(CoreId, String)>,
     /// Slow GPUI chrome/account state changed and the Backend entity should be notified.
     pub ui_state: bool,
-}
-
-fn log_diag_market_history_after_fill(client: &MoonClient, market: &str, provider: CoreId) {
-    let Some(snapshot) = client.snapshot_versioned() else {
-        log::warn!("diag history fill verify: no snapshot provider={provider} market={market}");
-        return;
-    };
-    let revision = client.snapshot_revision().unwrap_or(0);
-    let Some(readers) = snapshot.market_history_readers(market) else {
-        log::warn!(
-            "diag history fill verify: no history readers provider={provider} market={market} rev={revision}"
-        );
-        return;
-    };
-    log::info!(
-        "diag history fill verify: provider={provider} market={market} rev={revision} {} {} {}",
-        trade_reader_summary("futures_trades", readers.futures_trades),
-        trade_reader_summary("spot_trades", readers.spot_trades),
-        price_reader_summary("last", readers.last_prices),
-    );
-    log::info!(
-        "diag history fill verify: provider={provider} market={market} rev={revision} {}",
-        mark_reader_summary("mark", readers.mark_prices),
-    );
-}
-
-fn trade_reader_summary(name: &str, reader: Option<SeqRingReader<TradeHistoryRow>>) -> String {
-    let Some(reader) = reader else {
-        return format!("{name}=none");
-    };
-    let bounds = reader.bounds();
-    let first = (bounds.len > 0)
-        .then(|| reader.read_at_seq(bounds.oldest_seq))
-        .flatten()
-        .map(|r| format!("{}:{:.4}", r.unix_millis(), r.price))
-        .unwrap_or_else(|| "-".to_string());
-    let mut last = Vec::new();
-    reader.copy_last(1, &mut last);
-    let last = last
-        .last()
-        .map(|r| format!("{}:{:.4}", r.unix_millis(), r.price))
-        .unwrap_or_else(|| "-".to_string());
-    format!(
-        "{name}=len:{}/{} seq:[{}..{}) first:{} last:{}",
-        bounds.len, bounds.capacity, bounds.oldest_seq, bounds.next_seq, first, last
-    )
-}
-
-fn price_reader_summary(name: &str, reader: Option<SeqRingReader<LastPricePoint>>) -> String {
-    let Some(reader) = reader else {
-        return format!("{name}=none");
-    };
-    let bounds = reader.bounds();
-    let first = (bounds.len > 0)
-        .then(|| reader.read_at_seq(bounds.oldest_seq))
-        .flatten()
-        .map(|r| format!("{}:{:.4}", r.unix_millis(), r.price()))
-        .unwrap_or_else(|| "-".to_string());
-    let mut last = Vec::new();
-    reader.copy_last(1, &mut last);
-    let last = last
-        .last()
-        .map(|r| format!("{}:{:.4}", r.unix_millis(), r.price()))
-        .unwrap_or_else(|| "-".to_string());
-    format!(
-        "{name}=len:{}/{} seq:[{}..{}) first:{} last:{}",
-        bounds.len, bounds.capacity, bounds.oldest_seq, bounds.next_seq, first, last
-    )
-}
-
-fn mark_reader_summary(name: &str, reader: Option<SeqRingReader<MarkPricePoint>>) -> String {
-    let Some(reader) = reader else {
-        return format!("{name}=none");
-    };
-    let bounds = reader.bounds();
-    let first = (bounds.len > 0)
-        .then(|| reader.read_at_seq(bounds.oldest_seq))
-        .flatten()
-        .map(|r| format!("{}:{:.4}", r.unix_millis(), r.price()))
-        .unwrap_or_else(|| "-".to_string());
-    let mut last = Vec::new();
-    reader.copy_last(1, &mut last);
-    let last = last
-        .last()
-        .map(|r| format!("{}:{:.4}", r.unix_millis(), r.price()))
-        .unwrap_or_else(|| "-".to_string());
-    format!(
-        "{name}=len:{}/{} seq:[{}..{}) first:{} last:{}",
-        bounds.len, bounds.capacity, bounds.oldest_seq, bounds.next_seq, first, last
-    )
 }
 
 impl SessionManager {
@@ -235,8 +146,9 @@ impl SessionManager {
         }
     }
 
-    /// Дренирует все каналы ядер. Аккаунтные сообщения → CoreStore; рыночные →
-    /// MarketStore (по ядру-источнику, т.е. провайдеру); Identity → core_key.
+    /// Дренирует все каналы ядер. Аккаунтные сообщения → CoreStore; market-data
+    /// payload-и сюда не едут: live/synth публикуют их в read-model/MarketStore и
+    /// шлют только лёгкий `MarketDataChanged` wake. Identity → core_key.
     /// Зовётся частым data-drain тиком перед `set_open`. Возвращает, что именно
     /// изменилось: общий UI-state и отдельно данные, которые могут менять GPU-пиксели чарта.
     pub fn drain(&mut self) -> DrainStats {
@@ -253,33 +165,14 @@ impl SessionManager {
                         self.core_base.insert(sess.id, base);
                         stats.ui_state = true;
                     }
-                    FeedMsg::Ticks { market, ticks } => {
-                        self.market
-                            .write()
-                            .expect("market store poisoned")
-                            .apply_ticks(sess.id, &market, &ticks);
-                        stats.chart_data = true;
-                    }
-                    FeedMsg::PriceLine {
-                        market,
-                        kind,
-                        points,
-                    } => {
-                        self.market
-                            .write()
-                            .expect("market store poisoned")
-                            .apply_price_line(sess.id, &market, kind, &points);
-                        stats.chart_data = true;
-                    }
-                    FeedMsg::OrderBook { market, book } => {
-                        self.market
-                            .write()
-                            .expect("market store poisoned")
-                            .apply_book(sess.id, &market, &book);
-                        stats.chart_data = true;
-                    }
-                    FeedMsg::MarketDataChanged => {
-                        stats.chart_data = true;
+                    FeedMsg::MarketDataChanged(markets) => {
+                        if !markets.is_empty() {
+                            self.market_source.mark_dirty(sess.id, &markets);
+                            stats
+                                .chart_markets
+                                .extend(markets.into_iter().map(|dirty| (sess.id, dirty.market)));
+                            stats.chart_data = true;
+                        }
                     }
                     FeedMsg::Orders(orders) => {
                         if let Some(core) = self.store.core_mut(sess.id) {
@@ -307,10 +200,18 @@ impl SessionManager {
         self.market_source.refresh_for_open(desired)
     }
 
-    /// Diagnostics-only stress fixture: ask the MoonProto provider for `core` to
-    /// fill every retained history ring for `market` to its effective capacity.
-    /// This deliberately stays behind the session boundary: GPUI/debug UI should
-    /// not talk to MoonProto clients directly.
+    pub fn refresh_market_data_for_dirty(&self, dirty: &[(CoreId, String)]) -> bool {
+        self.market_source
+            .refresh_markets(dirty.iter().map(|(core, market)| (*core, market.as_str())))
+    }
+
+    /// Debug-only stress fixture for the dev panel fill button.
+    ///
+    /// Production/default terminal builds deliberately do not enable MoonProto's
+    /// diagnostics feature. The real hook is available only through the explicit
+    /// `moonproto-diagnostics` feature, which `moon-ui-gpui/debug-tools` enables
+    /// for local/manual stress runs.
+    #[cfg(feature = "moonproto-diagnostics")]
     pub fn diag_fill_market_history_to_capacity(
         &self,
         core: CoreId,
@@ -320,36 +221,50 @@ impl SessionManager {
     ) -> bool {
         let provider = self.core_provider.get(&core).copied().unwrap_or(core);
         let Some(sess) = self.sessions.iter().find(|s| s.id == provider) else {
-            log::warn!(
-                "diag history fill: no provider session for core={core} provider={provider}"
-            );
+            log::warn!("diag history fill skipped: provider core={provider} not found");
             return false;
         };
         let Some(client) = sess.handle.client.get() else {
-            log::warn!("diag history fill: no MoonProto client for provider={provider}");
+            log::warn!(
+                "diag history fill skipped: provider core={provider} has no MoonProto client"
+            );
             return false;
         };
+
         match client.diag_fill_market_history_to_capacity(market, now_ms, span_ms) {
-            Ok(true) => {
+            Ok(filled) => {
                 log::info!(
-                    "diag history fill: market={market} core={core} provider={provider} span_ms={span_ms}"
+                    "diag history fill: core={core} provider={provider} market={market} \
+                     span_ms={span_ms} filled={filled}",
                 );
-                log_diag_market_history_after_fill(&client, market, provider);
-                true
-            }
-            Ok(false) => {
-                log::warn!(
-                    "diag history fill: MoonProto returned false for market={market} provider={provider}"
-                );
-                false
+                filled
             }
             Err(err) => {
                 log::warn!(
-                    "diag history fill: MoonProto error for market={market} provider={provider}: {err}"
+                    "diag history fill failed: core={core} provider={provider} \
+                     market={market} span_ms={span_ms}: {err:#}"
                 );
                 false
             }
         }
+    }
+
+    /// Same public method in production builds: the button path stays compiled,
+    /// but hidden MoonProto diagnostics are not pulled into the dependency graph.
+    #[cfg(not(feature = "moonproto-diagnostics"))]
+    pub fn diag_fill_market_history_to_capacity(
+        &self,
+        core: CoreId,
+        market: &str,
+        now_ms: i64,
+        span_ms: i64,
+    ) -> bool {
+        let provider = self.core_provider.get(&core).copied().unwrap_or(core);
+        log::warn!(
+            "diag history fill disabled: MoonProto diagnostics feature is forbidden in terminal \
+             core={core} provider={provider} market={market} now_ms={now_ms} span_ms={span_ms}"
+        );
+        false
     }
 
     /// Снимок статусов подключения всех ядер (id → статус) — для бейджей в окне

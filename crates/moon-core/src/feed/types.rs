@@ -388,11 +388,58 @@ pub enum ConnStatus {
     Disconnected,
 }
 
+/// Market-data domains that can wake a visible chart.
+///
+/// The payload is intentionally small: data rows stay in MoonProto/MarketStore,
+/// while the terminal keeps causal per-market revisions and pulls only visible
+/// chart targets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MarketDirtyFlags(u8);
+
+impl MarketDirtyFlags {
+    pub const HISTORY: Self = Self(1 << 0);
+    pub const ORDERBOOK: Self = Self(1 << 1);
+    pub const MARKET_META: Self = Self(1 << 2);
+    pub const ALL: Self = Self(Self::HISTORY.0 | Self::ORDERBOOK.0 | Self::MARKET_META.0);
+
+    pub fn contains(self, other: Self) -> bool {
+        self.0 & other.0 == other.0
+    }
+
+    pub fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+}
+
+impl std::ops::BitOr for MarketDirtyFlags {
+    type Output = Self;
+
+    fn bitor(self, rhs: Self) -> Self::Output {
+        self.union(rhs)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MarketDirty {
+    pub market: String,
+    pub flags: MarketDirtyFlags,
+}
+
+impl MarketDirty {
+    pub fn new(market: impl Into<String>, flags: MarketDirtyFlags) -> Self {
+        Self {
+            market: market.into(),
+            flags,
+        }
+    }
+}
+
 /// Сообщение от backend к UI.
 ///
-/// Делится на два плана. Аккаунтные (Status/Orders/Detects/Strategies) — свои у
-/// каждого ядра. Рыночные (Ticks/OrderBook) — общие для биржи, шлёт только
-/// ядро-провайдер, и они помечены именем рынка. Identity сообщает биржу ядра.
+/// Аккаунтные сообщения (Status/Orders/Detects/Strategies) несут готовый UI state
+/// конкретного ядра. Рыночные тики/стакан/price-lines через этот канал не едут:
+/// feed thread публикует их в MoonProto/MarketStore и шлёт только лёгкий
+/// [`MarketDataChanged`] wake для consumer-side pull.
 #[derive(Debug, Clone)]
 pub enum FeedMsg {
     Status(ConnStatus),
@@ -400,27 +447,13 @@ pub enum FeedMsg {
     Identity(ExchangeId),
     /// Базовая валюта аккаунта ядра ("USDT"/"BTC"/…) из `server_info`. Шлётся один раз
     /// (рядом с `Identity`). Нужна UI для дефолтов размера ордера по базе (BTC vs USDT).
-    CoreBase { base: String },
-    /// Пачка новых тиков рынка (append-only по времени). Только от провайдера.
-    Ticks {
-        market: String,
-        ticks: Vec<Tick>,
-    },
-    /// Новые точки retained price-line рынка. Только от провайдера.
-    PriceLine {
-        market: String,
-        kind: PriceLineKind,
-        points: Vec<PricePoint>,
-    },
-    /// Свежий снимок стакана рынка. Только от провайдера.
-    OrderBook {
-        market: String,
-        book: OrderBook,
+    CoreBase {
+        base: String,
     },
     /// Рыночный read-model изменился. Это лёгкий пинок consumer-side pull:
-    /// `SessionManager` перечитает provider snapshot для видимых графиков.
-    /// Сами тики/стакан через UI-channel не едут.
-    MarketDataChanged,
+    /// `SessionManager` отмечает dirty конкретных рынков, а видимые графики
+    /// сами подтягивают нужный snapshot. Сами тики/стакан через UI-channel не едут.
+    MarketDataChanged(Vec<MarketDirty>),
     /// Открытые ордера ядра (все рынки).
     Orders(Vec<OrderRow>),
     /// Пачка новых детектов (накопленных за тик дренажа событий).

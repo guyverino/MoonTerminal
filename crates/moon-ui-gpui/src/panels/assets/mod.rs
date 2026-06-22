@@ -39,7 +39,7 @@ use wallets::PendingTransfer;
 const ASSETS_HEADER_H: f32 = 32.0;
 
 /// Область охвата панели «Активы».
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 enum AssetsScope {
     /// Dock-панель окна группы — ядра этой группы.
     Group(String),
@@ -48,6 +48,7 @@ enum AssetsScope {
 }
 
 /// Строка таблицы активов с привязкой к ядру + посчитанная USDT-стоимость.
+#[derive(Clone)]
 pub(super) struct AssetEntry {
     pub(super) core_name: String,
     pub(super) row: AssetRow,
@@ -56,6 +57,7 @@ pub(super) struct AssetEntry {
 }
 
 /// Подытог по ядру: баланс свободно/итого в USDT (для полосы ядер и левого списка).
+#[derive(Clone)]
 pub(super) struct CoreAgg {
     pub(super) id: CoreId,
     pub(super) name: String,
@@ -63,6 +65,13 @@ pub(super) struct CoreAgg {
     pub(super) free: f64,
     /// Итоговый баланс в USDT (btc_full * курс, с нереализ. PnL).
     pub(super) total: f64,
+}
+
+#[derive(Clone)]
+pub(super) struct WalletColumnSnapshot {
+    pub(super) kind: WalletKind,
+    pub(super) total_count: usize,
+    pub(super) rows: Vec<TransferAssetRow>,
 }
 
 /// Разбить целую часть на тройки пробелом: "1111" → "1 111".
@@ -119,6 +128,14 @@ pub struct AssetsView {
     transfer_input: Option<Entity<MoonInputState>>,
     /// Гейт перерисовки (сигнатура assets_rev/transfer_rev ИЛИ 1 Гц-тик, пол 250мс).
     gate: RenderGate,
+    cache_sig: Option<(u64, bool)>,
+    cached_cores: Vec<(CoreId, String)>,
+    cached_entries: Rc<Vec<AssetEntry>>,
+    cached_aggs: Rc<Vec<CoreAgg>>,
+    cached_wallet_key: Option<(Option<CoreId>, u64, bool)>,
+    cached_wallets: Rc<Vec<WalletColumnSnapshot>>,
+    cached_total_value: f64,
+    cached_total_pnl: f64,
     dock: Option<WeakEntity<DockArea>>,
     focus: FocusHandle,
 }
@@ -134,8 +151,13 @@ impl AssetsView {
         // Перерисовка по дренажу backend — только при изменении активов (rev) или раз в сек.
         cx.observe(&backend, |this, backend, cx| {
             let now = moon_chart::paint::now_unix_ms();
-            let sig = this.assets_sig(backend.read(cx));
-            if this.gate.should_notify(sig, now) {
+            let b = backend.read(cx);
+            let sig = this.assets_sig(b);
+            let key = (sig, this.show_all);
+            let changed = this.cache_sig != Some(key);
+            let due = this.gate.should_notify(sig, now);
+            if changed || due {
+                this.rebuild_cache(b);
                 cx.notify();
             }
         })
@@ -167,6 +189,14 @@ impl AssetsView {
             pending_transfer: None,
             transfer_input: None,
             gate: RenderGate::default(),
+            cache_sig: None,
+            cached_cores: Vec::new(),
+            cached_entries: Rc::new(Vec::new()),
+            cached_aggs: Rc::new(Vec::new()),
+            cached_wallet_key: None,
+            cached_wallets: Rc::new(Vec::new()),
+            cached_total_value: 0.0,
+            cached_total_pnl: 0.0,
             dock: None,
             focus: cx.focus_handle(),
         };
@@ -181,6 +211,8 @@ impl AssetsView {
                 log::warn!("assets initial refresh failed for core {core}: {error}");
             }
         }
+        let backend_for_initial_cache = this.backend.clone();
+        this.rebuild_cache(backend_for_initial_cache.read(cx));
         this
     }
 
@@ -268,6 +300,76 @@ impl AssetsView {
             })
             .collect()
     }
+
+    fn rebuild_cache(&mut self, b: &Backend) {
+        let sig = self.assets_sig(b);
+        let cores = self.scope_cores(b);
+        let selected_valid = self
+            .selected_core
+            .is_some_and(|core| cores.iter().any(|(id, _)| *id == core));
+        if !selected_valid {
+            self.selected_core = cores.first().map(|(id, _)| *id);
+            self.cached_wallet_key = None;
+        }
+        self.cached_cores = cores;
+        self.cached_entries = Rc::new(self.collect(b));
+        self.cached_aggs = Rc::new(self.per_core(b));
+        self.rebuild_wallet_cache(b);
+        self.cached_total_value = self.cached_entries.iter().map(|e| e.value).sum();
+        self.cached_total_pnl = self
+            .cached_cores
+            .iter()
+            .filter_map(|(id, _)| b.session.store().core(*id))
+            .map(|cd| cd.assets.global.pnl_usdt)
+            .sum();
+        self.cache_sig = Some((sig, self.show_all));
+    }
+
+    fn wallet_cache_key(&self, b: &Backend) -> (Option<CoreId>, u64, bool) {
+        let transfer_rev = self
+            .selected_core
+            .and_then(|core| b.session.store().core(core).map(|cd| cd.transfer_rev))
+            .unwrap_or(0);
+        (self.selected_core, transfer_rev, self.show_all)
+    }
+
+    fn rebuild_wallet_cache(&mut self, b: &Backend) {
+        let key = self.wallet_cache_key(b);
+        if self.cached_wallet_key == Some(key) {
+            return;
+        }
+        let Some(core) = key.0 else {
+            self.cached_wallets = Rc::new(Vec::new());
+            self.cached_wallet_key = Some(key);
+            return;
+        };
+        let Some(cd) = b.session.store().core(core) else {
+            self.cached_wallets = Rc::new(Vec::new());
+            self.cached_wallet_key = Some(key);
+            return;
+        };
+        let mut snapshots = Vec::new();
+        for kind in WalletKind::ALL {
+            let all_items = cd.transfer_assets.wallet(kind).to_vec();
+            let total_count = all_items.len();
+            let mut rows: Vec<TransferAssetRow> = all_items
+                .into_iter()
+                .filter(|a| self.show_all || a.value_usdt > 1.0)
+                .collect();
+            rows.sort_by(|a, b| {
+                b.value_usdt
+                    .partial_cmp(&a.value_usdt)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            snapshots.push(WalletColumnSnapshot {
+                kind,
+                total_count,
+                rows,
+            });
+        }
+        self.cached_wallets = Rc::new(snapshots);
+        self.cached_wallet_key = Some(key);
+    }
 }
 
 /// Сортировка строк по убыванию USDT-стоимости (самые большие сверху).
@@ -338,29 +440,23 @@ impl Panel for AssetsView {
 
 impl Render for AssetsView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let b = self.backend.read(cx);
-        let cores = self.scope_cores(b);
-        let entries = self.collect(b);
+        let cores = self.cached_cores.clone();
+        let entries = self.cached_entries.clone();
         let p = MoonPalette::active(cx);
         let windowed = self.windowed;
 
         let count = entries.len();
-        let total_value: f64 = entries.iter().map(|e| e.value).sum();
-        // PnL берём СЕРВЕРНЫЙ (`global.pnl_usdt` = RecalcTotalPnl ядра), а не сумму `profit_*`
-        // по строкам: построчная сумма мешает котировки и расходится с реальным PnL ядра.
-        let total_pnl: f64 = self
-            .scope_cores(b)
-            .iter()
-            .filter_map(|(id, _)| b.session.store().core(*id))
-            .map(|cd| cd.assets.global.pnl_usdt)
-            .sum();
+        let total_value = self.cached_total_value;
+        let total_pnl = self.cached_total_pnl;
 
-        let aggs = self.per_core(b);
+        let aggs = self.cached_aggs.clone();
         let controls = self.controls(count, total_value, total_pnl, cx);
         let core_strip = self.core_strip(&aggs, cx);
         // Контейнеры переноса (список ядер + кошельки) — только в отдельном ОКНЕ; во
         // вкладке показываем позиции/балансы по всем ядрам охвата (таблица на всю ширину).
-        let tree_section = windowed.then(|| self.bottom(b, &cores, cx).into_any_element());
+        let wallets = self.cached_wallets.clone();
+        let tree_section =
+            windowed.then(|| self.bottom(&cores, &aggs, &wallets, cx).into_any_element());
         let table = table::assets_table("assets-table", entries, cx);
 
         // Ширина окна для хит-оверлея титлбара (drag/resize/контролы) — как у «Стратегий».

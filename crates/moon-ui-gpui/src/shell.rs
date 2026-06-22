@@ -34,7 +34,7 @@ pub(crate) struct Shell {
     /// Время прошлого кадра и сглаженный fps рендера — для статус-бара (как egui host).
     last_frame: Option<Instant>,
     fps: f32,
-    /// Троттл observe-notify бэкенда: Shell-рендер обновляет лишь статус-бар (tick/book/cpu/
+    /// Троттл observe-notify бэкенда: Shell-рендер обновляет лишь статус-бар (book/cpu/
     /// fps), его дёргать чаще ~4 Гц человеку незачем, а он тащит top-down тяжёлый Orders.
     last_notify: Option<Instant>,
     /// Прошлое виденное значение follow (Live/Пауза). Смена = клик юзера → отражаем кнопку
@@ -46,10 +46,9 @@ pub(crate) struct Shell {
     /// Прошлая виденная ревизия выбора размера ордера (F1-F6). Клик юзера → выбранную
     /// кнопку отражаем мгновенно, мимо 250мс-троттла (иначе selected «залипает» до ¼с).
     last_order_size_rev: u64,
-    pending_detach: Vec<String>,
-    /// Имена панелей, чью × нажали (DockEvent::PanelCloseRequested). Обрабатываются в render
-    /// (нужен window): панель убирается с текущего места и возвращается в нижнюю строку.
-    pending_close: Vec<String>,
+    /// Handle своего ОС-окна. Нужен event/observe callbacks, где нет `&mut Window`,
+    /// но нельзя переносить window-bound операции в `render()`.
+    window_handle: AnyWindowHandle,
     /// Инпут инлайн-редактирования значения кнопки размера ордера (дабл-клик в тулбаре).
     /// Один на Shell, переиспользуется для любой F-кнопки.
     size_input: Entity<MoonInputState>,
@@ -82,6 +81,7 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let window_handle = window.window_handle();
         // Единый DockArea на окно. Панели: чарт=center, детекты+ордер=right (split),
         // нижние вкладки=bottom. Dock/TabPanel — MoonPalette, чтобы фоны управлялись
         // MoonBackgroundPolicy и не перекрывали chart UnderScene.
@@ -192,14 +192,16 @@ impl Shell {
         }
 
         // Header/статус-бар читают backend; но это GPUI-перерисовка top-down → тащит тяжёлый
-        // Orders. Данные статуса (tick/book/cpu/fps) меняются ≤10 Гц, человеку хватает ≤4 Гц.
+        // Orders. Данные статуса (book/cpu/fps) меняются ≤10 Гц, человеку хватает ≤4 Гц.
         // Троттлим notify до ≥250мс (Пример 5: не будить всю сцену общим молотком на каждый тик).
         cx.observe(&backend, |this, backend, cx| {
             crate::diag::bump(&crate::diag::SHELL_OBS_FIRE);
+            this.drain_order_size_edit_request(cx);
+            this.drain_repin_requests(cx);
             let now = Instant::now();
             // Follow/Live и Scale меняются по КЛИКУ юзера — отражаем мгновенно,
             // мимо 250мс-троттла.
-            // Прочее (tick/book/cpu/fps) меняется само и человеку хватает ≤4 Гц → троттлим.
+            // Прочее (book/cpu/fps) меняется само и человеку хватает ≤4 Гц → троттлим.
             let (follow, price_scale, order_size_rev) = {
                 let b = backend.read(cx);
                 (b.follow, b.price_scale, b.order_size_rev)
@@ -228,11 +230,14 @@ impl Shell {
         // Любое изменение раскладки доков (drag/split/resize/detach) → дамп в backend,
         // сохранение дебаунсит дренаж-таймер (docks.json). Порт персиста раскладки.
         cx.subscribe(&dock, |this, dock, event: &DockEvent, cx| {
-            if let DockEvent::DetachRequested { panel_name } = event {
-                this.pending_detach.push(panel_name.to_string());
-            }
-            if let DockEvent::PanelCloseRequested { panel_name } = event {
-                this.pending_close.push(panel_name.to_string());
+            match event {
+                DockEvent::DetachRequested { panel_name } => {
+                    this.defer_detach_panel(panel_name.to_string(), cx);
+                }
+                DockEvent::PanelCloseRequested { panel_name } => {
+                    this.defer_restore_closed_panel(panel_name.to_string(), cx);
+                }
+                DockEvent::LayoutChanged => {}
             }
             let state = dock.read(cx).dump(cx);
             let group = this.group.clone();
@@ -240,6 +245,11 @@ impl Shell {
                 b.dock_states.insert(group, state);
                 b.dock_dirty = true;
             });
+        })
+        .detach();
+
+        cx.observe_window_bounds(window, |this, window, cx| {
+            this.persist_group_geometry(window, cx);
         })
         .detach();
 
@@ -291,45 +301,42 @@ impl Shell {
             last_follow: true,
             last_price_scale: None,
             last_order_size_rev: 0,
-            pending_detach: Vec::new(),
-            pending_close: Vec::new(),
+            window_handle,
             size_input,
             size_edit: None,
         }
     }
-}
 
-impl Render for Shell {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        crate::diag::bump(&crate::diag::SHELL_RENDER);
-        // Инлайн-редактирование размера: дабл-клик по кнопке F1-F6 кладёт запрос в Backend.
-        // Забираем его, открываем инпут на текущем значении кнопки ядра и фокусируем.
-        let edit_req = self
-            .backend
-            .update(cx, |b, _| b.order_size_edit_req.take());
-        if let Some((core, ix)) = edit_req.filter(|(_, i)| *i < 6) {
-            let cur = {
-                let b = self.backend.read(cx);
-                let base = b.session.core_base(core).unwrap_or("");
-                b.config
-                    .servers
-                    .iter()
-                    .find(|s| s.id == core)
-                    .map(|s| s.order_sizes_or_default(base)[ix])
-                    .unwrap_or_else(|| {
-                        moon_core::config::servers::default_order_sizes(base)[ix]
-                    })
-            };
-            self.size_edit = Some((core, ix));
-            let val = format!("{cur}");
-            self.size_input.update(cx, |st, c| {
-                st.set_value(val, window, c);
-                st.focus(window, c);
+    fn drain_order_size_edit_request(&mut self, cx: &mut Context<Self>) {
+        let edit_req = self.backend.update(cx, |b, _| b.order_size_edit_req.take());
+        let Some((core, ix)) = edit_req.filter(|(_, i)| *i < 6) else {
+            return;
+        };
+        let cur = {
+            let b = self.backend.read(cx);
+            let base = b.session.core_base(core).unwrap_or("");
+            b.config
+                .servers
+                .iter()
+                .find(|s| s.id == core)
+                .map(|s| s.order_sizes_or_default(base)[ix])
+                .unwrap_or_else(|| moon_core::config::servers::default_order_sizes(base)[ix])
+        };
+        self.size_edit = Some((core, ix));
+        let input = self.size_input.clone();
+        let value = format!("{cur}");
+        let handle = self.window_handle;
+        cx.defer(move |app| {
+            let _ = handle.update(app, move |_, window, app| {
+                input.update(app, |st, cx| {
+                    st.set_value(value, window, cx);
+                    st.focus(window, cx);
+                });
             });
-        }
-        // Репин: вернуть в док панели, чьи окна открепления закрыли (запрос из Backend).
-        // Закрытие окна открепления → DetachedWindow.on_release → repin_request; здесь
-        // (своя группа) строим свежую панель, добавляем в свой DockArea, убираем спеку.
+        });
+    }
+
+    fn drain_repin_requests(&mut self, cx: &mut Context<Self>) {
         let group = self.group.clone();
         let repins: Vec<String> = self.backend.update(cx, |b, _| {
             let mut mine = Vec::new();
@@ -343,153 +350,159 @@ impl Render for Shell {
             });
             mine
         });
-        for panel_name in repins {
-            let backend = self.backend.clone();
-            let dock = self.dock.clone();
-            if let Some(panel) = detached::build_panel(&panel_name, &group, &backend, window, cx) {
-                let ix = dock_home_priority(&panel_name);
-                dock.update(cx, |area, cx| {
-                    // Возврат в нижнюю строку вкладок на исходную позицию (а не в Center-корень,
-                    // что схлопнуло бы весь split). Ищем Tabs-узел с dock-панелями и вставляем
-                    // туда по домашнему порядку Orders<Assets<Log<Report. Fallback — если строки
-                    // вкладок нет совсем (все откреплены).
-                    if !area.insert_panel_into_home_tabs(
-                        panel.clone(),
-                        ix,
-                        &DOCK_TAB_ORDER,
-                        window,
-                        cx,
-                    ) {
-                        // Крайний случай (ни одного соседа в доке): кладём в отдельный
-                        // bottom-dock, а НЕ в Center — add_panel(Center) на split-раскладке
-                        // схлопнул бы её в фулскрин.
-                        area.add_panel(panel, DockPlacement::Bottom, None, window, cx);
-                    }
-                });
-            }
-            backend.update(cx, |b, _| {
-                b.detached
-                    .retain(|s| !(s.group == group && s.panel == panel_name));
-                b.detached_dirty = true;
-            });
+        if repins.is_empty() {
+            return;
         }
-
-        let detaches = std::mem::take(&mut self.pending_detach);
-        for panel_name in detaches {
-            // «Активы» откпрепляются НЕ в per-group окно, а в ГЛОБАЛЬНОЕ singleton-окно
-            // (все ядра, с деревом переноса) — как окно «Стратегии». Панель из дока не
-            // убираем (она остаётся вкладкой group-scope). Так дабл-клик = кнопка «⧉».
-            if panel_name == "Assets" {
-                let backend = self.backend.clone();
-                let owner = window.window_handle();
-                cx.defer(move |cx| {
-                    crate::panels::open_assets_window(backend, Some(owner), cx);
-                });
-                continue;
-            }
-            let group = self.group.clone();
-            if detached::supports_panel(&panel_name) {
-                self.dock.update(cx, |area, cx| {
-                    area.remove_panel_by_name(&panel_name, window, cx);
-                });
-                let spec = detached::DetachedSpec::new(group, panel_name);
-                let backend = self.backend.clone();
-                let owner = window.window_handle();
-                // open_window нельзя звать во время render (arena уже очищается) — отложим.
-                // Это путь дабл-клика/встроенного detach; toolbar-⧉ спавнит из on_click сам.
-                cx.defer(move |cx| {
-                    detached::spawn(cx, &backend, &spec, Some(owner));
-                    backend.update(cx, |b, _| {
-                        if !b
-                            .detached
-                            .iter()
-                            .any(|s| s.group == spec.group && s.panel == spec.panel)
-                        {
-                            b.detached.push(spec);
-                            b.detached_dirty = true;
-                        }
+        let backend = self.backend.clone();
+        let dock = self.dock.clone();
+        let handle = self.window_handle;
+        cx.defer(move |app| {
+            let _ = handle.update(app, move |_, window, app| {
+                for panel_name in repins {
+                    restore_panel_to_home_tabs(&dock, &backend, &group, &panel_name, window, app);
+                    backend.update(app, |b, _| {
+                        b.detached
+                            .retain(|s| !(s.group == group && s.panel == panel_name));
+                        b.detached_dirty = true;
                     });
-                });
-            }
-        }
-
-        // Закрытие (×) dock-панели: не удаляем, а возвращаем в нижнюю строку на своё место.
-        // Убираем с текущего места (split-слот схлопнётся) и вставляем свежую в home-tabs.
-        let closes = std::mem::take(&mut self.pending_close);
-        for panel_name in closes {
-            if !detached::supports_panel(&panel_name) {
-                continue;
-            }
-            let group = self.group.clone();
-            let backend = self.backend.clone();
-            let ix = dock_home_priority(&panel_name);
-            if let Some(panel) = detached::build_panel(&panel_name, &group, &backend, window, cx) {
-                self.dock.update(cx, |area, cx| {
-                    area.remove_panel_by_name(&panel_name, window, cx);
-                    if !area.insert_panel_into_home_tabs(
-                        panel.clone(),
-                        ix,
-                        &DOCK_TAB_ORDER,
-                        window,
-                        cx,
-                    ) {
-                        // Крайний случай (ни одного соседа в доке): кладём в отдельный
-                        // bottom-dock, а НЕ в Center — add_panel(Center) на split-раскладке
-                        // схлопнул бы её в фулскрин.
-                        area.add_panel(panel, DockPlacement::Bottom, None, window, cx);
-                    }
-                });
-            }
-        }
-
-        // Снять геометрию окна → раскладка (save дебаунсит дренаж-таймер). Для Maximized/
-        // Fullscreen window_bounds() отдаёт RESTORE-bounds (размер в обычном состоянии) —
-        // сохраняем именно их + флаг maximized, иначе развёрнутое окно теряло размер и при
-        // следующем запуске открывалось «сжатым» (старое условие ловило только Windowed).
-        let (b, maximized) = match window.window_bounds() {
-            WindowBounds::Windowed(b) => (Some(b), false),
-            WindowBounds::Maximized(b) => (Some(b), true),
-            WindowBounds::Fullscreen(b) => (Some(b), false),
-        };
-        if let Some(b) = b {
-            let g = GroupLayout {
-                x: f32::from(b.origin.x) as i32,
-                y: f32::from(b.origin.y) as i32,
-                w: f32::from(b.size.width) as u32,
-                h: f32::from(b.size.height) as u32,
-                maximized,
-                collapsed: false,
-                tab: 0,
-                dock_h: 220.0,
-                orders_primary: 0,
-                orders_newest_first: true,
-                orders_only_current: false,
-                orders_kind: 0,
-            };
-            let group = self.group.clone();
-            self.backend.update(cx, |bk, _| {
-                let changed = bk
-                    .layout
-                    .groups
-                    .get(&group)
-                    .map(|o| {
-                        o.x != g.x
-                            || o.y != g.y
-                            || o.w != g.w
-                            || o.h != g.h
-                            || o.maximized != g.maximized
-                    })
-                    .unwrap_or(true);
-                if changed {
-                    bk.layout.groups.insert(group, g);
-                    bk.layout_dirty = true;
                 }
             });
-        }
+        });
+    }
 
+    fn defer_detach_panel(&mut self, panel_name: String, cx: &mut Context<Self>) {
+        let backend = self.backend.clone();
+        let dock = self.dock.clone();
+        let group = self.group.clone();
+        let handle = self.window_handle;
+        cx.defer(move |app| {
+            let _ = handle.update(app, move |_, window, app| {
+                if panel_name == "Assets" {
+                    crate::panels::open_assets_window(
+                        backend.clone(),
+                        Some(window.window_handle()),
+                        app,
+                    );
+                    return;
+                }
+                if !detached::supports_panel(&panel_name) {
+                    return;
+                }
+                let spec = detached::DetachedSpec::new(group.clone(), panel_name.clone());
+                if backend
+                    .read(app)
+                    .detached
+                    .iter()
+                    .any(|s| s.group == spec.group && s.panel == spec.panel)
+                {
+                    return;
+                }
+                let owner = window.window_handle();
+                if let Err(err) = detached::spawn(app, &backend, &spec, Some(owner)) {
+                    log::warn!(
+                        "detach panel failed group={} panel={}: {err:#}",
+                        group,
+                        panel_name
+                    );
+                    return;
+                }
+                dock.update(app, |area, cx| {
+                    area.remove_panel_by_name(&panel_name, window, cx);
+                });
+                backend.update(app, |b, _| {
+                    b.detached.push(spec);
+                    b.detached_dirty = true;
+                });
+            });
+        });
+    }
+
+    fn defer_restore_closed_panel(&mut self, panel_name: String, cx: &mut Context<Self>) {
+        if !detached::supports_panel(&panel_name) {
+            return;
+        }
+        let backend = self.backend.clone();
+        let dock = self.dock.clone();
+        let group = self.group.clone();
+        let handle = self.window_handle;
+        cx.defer(move |app| {
+            let _ = handle.update(app, move |_, window, app| {
+                restore_panel_to_home_tabs(&dock, &backend, &group, &panel_name, window, app);
+            });
+        });
+    }
+
+    fn persist_group_geometry(&mut self, window: &Window, cx: &mut Context<Self>) {
+        let (bounds, maximized) = match window.window_bounds() {
+            WindowBounds::Windowed(bounds) => (Some(bounds), false),
+            WindowBounds::Maximized(bounds) => (Some(bounds), true),
+            WindowBounds::Fullscreen(bounds) => (Some(bounds), false),
+        };
+        let Some(bounds) = bounds else {
+            return;
+        };
+        let layout = GroupLayout {
+            x: f32::from(bounds.origin.x) as i32,
+            y: f32::from(bounds.origin.y) as i32,
+            w: f32::from(bounds.size.width) as u32,
+            h: f32::from(bounds.size.height) as u32,
+            maximized,
+            collapsed: false,
+            tab: 0,
+            dock_h: 220.0,
+            orders_primary: 0,
+            orders_newest_first: true,
+            orders_only_current: false,
+            orders_kind: 0,
+        };
+        let group = self.group.clone();
+        self.backend.update(cx, |backend, _| {
+            let changed = backend
+                .layout
+                .groups
+                .get(&group)
+                .map(|old| {
+                    old.x != layout.x
+                        || old.y != layout.y
+                        || old.w != layout.w
+                        || old.h != layout.h
+                        || old.maximized != layout.maximized
+                })
+                .unwrap_or(true);
+            if changed {
+                backend.layout.groups.insert(group, layout);
+                backend.layout_dirty = true;
+            }
+        });
+    }
+}
+
+fn restore_panel_to_home_tabs(
+    dock: &Entity<DockArea>,
+    backend: &Entity<Backend>,
+    group: &str,
+    panel_name: &str,
+    window: &mut Window,
+    app: &mut App,
+) {
+    let Some(panel) = detached::build_panel(panel_name, group, backend, window, app) else {
+        return;
+    };
+    let ix = dock_home_priority(panel_name);
+    dock.update(app, |area, cx| {
+        area.remove_panel_by_name(panel_name, window, cx);
+        if !area.insert_panel_into_home_tabs(panel.clone(), ix, &DOCK_TAB_ORDER, window, cx) {
+            area.add_panel(panel, DockPlacement::Bottom, None, window, cx);
+        }
+    });
+}
+
+impl Render for Shell {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::diag::bump(&crate::diag::SHELL_RENDER);
         let _order_count = panels::count_orders(self.backend.read(cx), &self.group);
 
-        // Header-данные (рынок/цена/тики/conn). Чарт/ввод/оси — в ChartPanel.
+        // Header-данные (рынок/цена/conn). Чарт/ввод/оси — в ChartPanel.
         // FPS рендера (сглаженный) — диагностика статус-бара (порт host.fps).
         let now_inst = Instant::now();
         if let Some(prev) = self.last_frame {
@@ -499,23 +512,12 @@ impl Render for Shell {
         self.last_frame = Some(now_inst);
         let fps = self.fps;
 
-        let (conn, snap, market_label, _price_label, tick_count, book_levels) = {
+        let (conn, snap, market_label, _price_label, book_levels) = {
             let b = self.backend.read(cx);
             let conn = b.session.conn_summary_group(&self.group);
             let snap = b.snap;
-            let (market_label, price_label, tick_count, book_levels) = {
-                let focus = b
-                    .session
-                    .sessions()
-                    .iter()
-                    .find(|s| s.group == self.group)
-                    .map(|s| s.id);
-                match focus.and_then(|core| {
-                    b.desired
-                        .iter()
-                        .find(|(id, _)| *id == core)
-                        .map(|(_, m)| (core, m.clone()))
-                }) {
+            let (market_label, price_label, book_levels) = {
+                match b.main_chart_target(&self.group) {
                     Some((core, m)) => b.session.with_market_view(core, &m, |data| {
                         let label = m.clone();
                         match data {
@@ -524,23 +526,15 @@ impl Render for Shell {
                                 v.last_price
                                     .map(|p| format!("{p:.2}"))
                                     .unwrap_or_else(|| "—".into()),
-                                v.ticks_rev as usize,
                                 v.book.len(),
                             ),
-                            None => (label, "—".into(), 0, 0),
+                            None => (label, "—".into(), 0),
                         }
                     }),
-                    None => ("—".into(), "—".into(), 0, 0),
+                    None => ("—".into(), "—".into(), 0),
                 }
             };
-            (
-                conn,
-                snap,
-                market_label,
-                price_label,
-                tick_count,
-                book_levels,
-            )
+            (conn, snap, market_label, price_label, book_levels)
         };
         let chrome_width = f32::from(window.viewport_size().width);
         let p = MoonPalette::active(cx);
@@ -589,7 +583,7 @@ impl Render for Shell {
                     ),
             )
             // ── Status bar (полный порт egui `shell::ui` нижней панели) ──
-            .child(self.status_bar(conn, snap, tick_count, book_levels, fps, cx))
+            .child(self.status_bar(conn, snap, book_levels, fps, cx))
             .child(
                 MoonWindowFrame::main("moon-main-window-frame", chrome_width)
                     .header_height(design::HEADER_TOP_H)
@@ -603,13 +597,11 @@ impl Render for Shell {
 impl Shell {
     /// Нижняя строка состояния (порт egui `shell::mod`): слева — бейдж соединения
     /// «● N/M подключено» (зелёный=все на связи, красный=есть упавшие, иначе янтарный)
-    /// с тултипом по не-подключённым; затем диагностика ticks/book/fps/CPU/RAM.
-    #[allow(clippy::too_many_arguments)]
+    /// с тултипом по не-подключённым; затем диагностика book/fps/CPU/RAM.
     fn status_bar(
         &self,
         conn: ConnSummary,
         snap: MetricsSnapshot,
-        tick_count: usize,
         book_levels: usize,
         fps: f32,
         cx: &App,
@@ -686,12 +678,6 @@ impl Shell {
                             .color(p.text_soft)
                             .gap_after(10.0),
                         MoonStatusItem::separator().gap_after(10.0),
-                        MoonStatusItem::new("ticks")
-                            .color(p.text_muted)
-                            .gap_after(6.0),
-                        MoonStatusItem::new(format!("{tick_count}"))
-                            .color(p.text_soft)
-                            .gap_after(10.0),
                         MoonStatusItem::new("book")
                             .color(p.text_muted)
                             .gap_after(6.0),

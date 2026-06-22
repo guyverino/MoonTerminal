@@ -25,6 +25,7 @@ use crate::windowing;
 struct DebugPerfWindow {
     backend: Entity<Backend>,
     group: String,
+    diag_tail: String,
     focus: FocusHandle,
 }
 
@@ -102,12 +103,18 @@ impl Render for DebugChartHost {
 #[cfg(any(debug_assertions, moon_profile_debug, feature = "debug-tools"))]
 impl DebugPerfWindow {
     fn new(backend: Entity<Backend>, group: String, cx: &mut Context<Self>) -> Self {
-        cx.observe(&backend, |_, _, cx| cx.notify()).detach();
         cx.spawn(async move |this, cx| {
             let executor = cx.update(|cx| cx.background_executor().clone());
             loop {
                 executor.timer(Duration::from_secs(1)).await;
-                let alive = cx.update(|cx| this.update(cx, |_, cx| cx.notify()).is_ok());
+                let diag_tail = latest_render_diag_line();
+                let alive = cx.update(|cx| {
+                    this.update(cx, |this, cx| {
+                        this.diag_tail = diag_tail;
+                        cx.notify();
+                    })
+                    .is_ok()
+                });
                 if !alive {
                     break;
                 }
@@ -117,6 +124,7 @@ impl DebugPerfWindow {
         Self {
             backend,
             group,
+            diag_tail: latest_render_diag_line(),
             focus: cx.focus_handle(),
         }
     }
@@ -224,7 +232,7 @@ impl Render for DebugPerfWindow {
         let main_chart_shift_text = main_chart_shift_hz
             .map(|hz| format!("{hz:.1} shifts/s"))
             .unwrap_or_else(|| "no main chart".to_string());
-        let diag_tail = latest_render_diag_line();
+        let diag_tail = self.diag_tail.clone();
         let cwd = std::env::current_dir()
             .map(|p| p.display().to_string())
             .unwrap_or_else(|e| format!("<cwd error: {e}>"));

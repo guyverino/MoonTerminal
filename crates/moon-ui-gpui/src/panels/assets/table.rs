@@ -2,7 +2,7 @@
 //! (баланс USDT), таблица позиций/балансов и нижний список ядер (свободно/итого).
 
 use super::*;
-use moon_ui::components::{WindowExt as _, notification::Notification};
+use moon_ui::{MoonNotification, MoonWindowExt as _};
 use rust_i18n::t;
 
 impl AssetsView {
@@ -44,6 +44,8 @@ impl AssetsView {
                     .on_change(cx.listener(|this, ch: &bool, _, cx| {
                         if this.show_all != *ch {
                             this.show_all = *ch;
+                            let backend = this.backend.clone();
+                            this.rebuild_cache(backend.read(cx));
                             cx.notify();
                         }
                     })),
@@ -103,8 +105,9 @@ impl AssetsView {
     /// 3 контейнера кошельков выбранного ядра с переносом.
     pub(super) fn bottom(
         &self,
-        b: &Backend,
         cores: &[(CoreId, String)],
+        aggs: &[CoreAgg],
+        wallets: &[WalletColumnSnapshot],
         cx: &Context<Self>,
     ) -> impl IntoElement {
         let p = MoonPalette::active(cx);
@@ -113,7 +116,6 @@ impl AssetsView {
             .selected_core
             .filter(|c| cores.iter().any(|(id, _)| id == c))
             .or_else(|| cores.first().map(|(id, _)| *id));
-        let aggs = self.per_core(b);
 
         // ── Левая колонка: список ядер (имя + свободно/итого USDT) ──
         let mut list = v_flex().w_full().gap_0();
@@ -136,11 +138,12 @@ impl AssetsView {
                 .cursor_pointer()
                 .text_color(rgb(p.text))
                 .child(div().flex_1().min_w_0().truncate().child(name.clone()))
-                .child(div().text_size(design::t_body(cx)).text_color(rgb(p.text_soft)).child(format!(
-                    "{} / {}",
-                    money(free),
-                    money(total)
-                )))
+                .child(
+                    div()
+                        .text_size(design::t_body(cx))
+                        .text_color(rgb(p.text_soft))
+                        .child(format!("{} / {}", money(free), money(total))),
+                )
                 .on_click(cx.listener(move |this, _, window, cx| {
                     if this.selected_core != Some(cid) {
                         this.selected_core = Some(cid);
@@ -148,8 +151,11 @@ impl AssetsView {
                             this.backend.read(cx).session.refresh_transfer_assets(cid)
                         {
                             log::warn!("assets refresh failed for core {cid}: {error}");
-                            window.push_notification(Notification::error(error.to_string()), cx);
+                            window
+                                .push_notification(MoonNotification::error(error.to_string()), cx);
                         }
+                        let backend = this.backend.clone();
+                        this.rebuild_cache(backend.read(cx));
                         cx.notify();
                     }
                 }));
@@ -187,7 +193,7 @@ impl AssetsView {
 
         // ── Правая часть: 3 контейнера кошельков (Спот/Фьючерсы/Квартальные) ──
         let right = match selected {
-            Some(core) => self.wallets_section(b, core, cx).into_any_element(),
+            Some(core) => self.wallets_section(core, wallets, cx).into_any_element(),
             None => div()
                 .p_4()
                 .text_color(rgb(p.text_muted))
@@ -207,9 +213,8 @@ impl AssetsView {
 }
 
 fn assets_columns() -> Vec<MoonDataTableColumn> {
-    let numeric = |key: &'static str, title: String, w: f32| {
-        MoonDataTableColumn::new(key, title, w).right()
-    };
+    let numeric =
+        |key: &'static str, title: String, w: f32| MoonDataTableColumn::new(key, title, w).right();
     vec![
         MoonDataTableColumn::new("core", t!("assets.col.core").to_string(), 90.0),
         MoonDataTableColumn::new("coin", t!("assets.col.coin").to_string(), 70.0),
@@ -225,11 +230,10 @@ fn assets_columns() -> Vec<MoonDataTableColumn> {
 
 pub(super) fn assets_table(
     id: &'static str,
-    entries: Vec<AssetEntry>,
+    rows: Rc<Vec<AssetEntry>>,
     cx: &Context<AssetsView>,
 ) -> impl IntoElement {
-    let empty = entries.is_empty();
-    let rows = Rc::new(entries);
+    let empty = rows.is_empty();
     let row_count = rows.len();
     let table_rows = rows.clone();
     let p = MoonPalette::active(cx);

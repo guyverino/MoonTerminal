@@ -2,15 +2,12 @@
 //! Процедурный fullscreen-проход над chart_area (1 drawcall). Рисуется ПЕРВЫМ в нашем
 //! own-pass — под крестами/данными. Вертикали не «едут» (модель MoonBot).
 
-use std::ffi::c_void;
-
 use gpui::RawGpuAccess;
 use windows::Win32::Graphics::Direct3D::D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
 use windows::Win32::Graphics::Direct3D11::*;
 
 use super::gpu::{
-    create_alpha_blend, create_dynamic_cb, d3d_device_ptr, full_viewport, make_ps, make_vs,
-    update_dynamic,
+    create_alpha_blend, create_dynamic_cb, full_viewport, make_ps, make_vs, update_dynamic,
 };
 pub use super::types::GridParams;
 
@@ -25,14 +22,14 @@ struct GridPipe {
 
 pub struct GridLayer {
     pipe: Option<GridPipe>,
-    device_ptr: *mut c_void,
+    device_generation: u64,
 }
 
 impl GridLayer {
     pub fn new() -> Self {
         Self {
             pipe: None,
-            device_ptr: std::ptr::null_mut(),
+            device_generation: 0,
         }
     }
 
@@ -49,11 +46,11 @@ impl GridLayer {
         if params.bounds[2] <= 0.0 || params.bounds[3] <= 0.0 {
             return;
         }
-        // device-lost guard (как в combo).
-        let device_ptr = d3d_device_ptr(gpu);
-        if self.device_ptr != device_ptr {
+        // device-lost guard: all DX chart layers use RawGpuAccess generation.
+        let generation = gpu.device_generation();
+        if self.device_generation != generation {
             self.pipe = None;
-            self.device_ptr = device_ptr;
+            self.device_generation = generation;
         }
         if self.pipe.is_none() {
             self.pipe = Some(Self::create_pipe(device));

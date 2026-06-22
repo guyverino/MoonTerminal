@@ -42,22 +42,29 @@ fn load_render_image(id: u32) -> Option<Arc<RenderImage>> {
 
 /// Кэш иконок (по `Arc<RenderImage>` на id). Один на окно настроек.
 pub struct IconSet {
-    /// Сколько `{id}.png` найдено в каталоге (для пикера: id 0..count).
-    pub count: u32,
+    /// Реальные id `{id}.png` из каталога, отсортированы. Id могут быть с дырками.
+    pub ids: Vec<u32>,
     cache: HashMap<u32, Option<Arc<RenderImage>>>,
 }
 
 impl IconSet {
     pub fn discover() -> Self {
-        let count = std::fs::read_dir(icons_dir())
+        let mut ids: Vec<u32> = std::fs::read_dir(icons_dir())
             .map(|rd| {
                 rd.filter_map(|e| e.ok())
-                    .filter(|e| e.path().extension().is_some_and(|x| x == "png"))
-                    .count() as u32
+                    .filter_map(|e| {
+                        let path = e.path();
+                        (path.extension().is_some_and(|x| x == "png"))
+                            .then(|| path.file_stem()?.to_string_lossy().parse::<u32>().ok())
+                            .flatten()
+                    })
+                    .collect()
             })
-            .unwrap_or(0);
+            .unwrap_or_default();
+        ids.sort_unstable();
+        ids.dedup();
         Self {
-            count,
+            ids,
             cache: HashMap::new(),
         }
     }

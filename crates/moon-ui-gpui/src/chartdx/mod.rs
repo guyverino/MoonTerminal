@@ -42,15 +42,14 @@ mod wgpu_backend;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-#[cfg(windows)]
-use std::ffi::c_void;
 use std::rc::{Rc, Weak};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use gpui::{
-    GpuBackend, GpuCanvasDriver, GpuCanvasHandle, GpuCanvasTextContext, GpuCanvasTextRun,
-    GpuFrameDecision, GpuFrameInfo, RawGpuAccess,
+    Bounds, GpuBackend, GpuCanvasDriver, GpuCanvasHandle, GpuCanvasRetainedTextLayer,
+    GpuCanvasTextContext, GpuCanvasTextRun, GpuCanvasTextTransform, GpuFrameDecision, GpuFrameInfo,
+    Pixels, RawGpuAccess,
 };
 use moon_chart::axes::AxisSnapshot;
 use moon_chart::paint::now_unix_ms;
@@ -65,7 +64,7 @@ use windows::Win32::Graphics::Direct3D11::{
 };
 
 use backend::PlatformLayers;
-use pane::{Container, ContainerKind, Mode};
+use pane::{Container, ContainerKind};
 use types::{
     BackgroundParams, BookStyle, ChartCross, ChartViewGpu, CursorParams, GridParams, ReadoutRect,
     cover_uv, fill_cross_upload, fill_price_upload, rgb4,
@@ -280,6 +279,8 @@ struct RenderState {
     text_run_cursor: usize,
     firetest_text_labels: Vec<String>,
     firetest_text_runs: Vec<GpuCanvasTextRun>,
+    firetest_text_layer: GpuCanvasRetainedTextLayer,
+    firetest_text_revision: u64,
     firetest_force_present: bool,
     ui_palette: moon_ui::MoonPalette,
     /// Левый верхний угол chart slot в backbuffer. Cursor приходит из UI в локальных
@@ -294,7 +295,7 @@ struct RenderState {
     #[cfg(windows)]
     scissor_rs: Option<ID3D11RasterizerState>,
     #[cfg(windows)]
-    scissor_dev: *mut c_void,
+    scissor_generation: u64,
     /// Полно-оконная тёмная база: рисуется ПЕРВЫМ слоем own-pass на ВЕСЬ backbuffer
     /// (без scissor), чтобы закрыть белый незакрашенный фон GPUI/SwapChain на первом кадре.
     /// Брендовый empty-state логотип рисуется SVG-слоем GPUI, не растровым native splash.
@@ -375,6 +376,7 @@ struct ChartDataState {
     present_rate_candidate_hz: f32,
     present_rate_candidate_hits: u8,
     last_ppp: f32,
+    slot_bounds: Option<Bounds<Pixels>>,
     last_order_sig: u64,
     last_prepared_market_sig: u64,
     last_source_market_sig: u64,
@@ -466,10 +468,4 @@ pub struct ChartEngine {
     scale: Option<f32>,
     follow: bool,
     present_rate_hz: f32,
-    /// Размер слота чарта (девайс-px) — меряется canvas-оверлеем окна.
-    w: u32,
-    h: u32,
-    /// Левый-верхний угол слота чарта В ОКНЕ (девайс-px). own-pass рисует в backbuffer ОКНА,
-    /// поэтому координаты слоёв = origin слота + локальные, а cv_resolution = размер backbuffer.
-    origin: (f32, f32),
 }

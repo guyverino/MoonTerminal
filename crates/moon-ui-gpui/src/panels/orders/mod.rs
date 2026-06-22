@@ -42,6 +42,13 @@ pub(super) struct OrderEntry {
     pub(super) row: OrderRow,
 }
 
+#[derive(Clone, PartialEq, Eq)]
+struct OrdersCacheKey {
+    data_sig: u64,
+    view: OrdersViewState,
+    current: Option<(CoreId, String)>,
+}
+
 /// Первичный ключ сортировки (тогл-группа в меню).
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum PrimarySort {
@@ -144,6 +151,9 @@ pub struct OrdersPanel {
     /// Гейт перерисовки: ордерные ивенты летят часто, цены/P&L живут от рынка — общий
     /// `RenderGate` (сигнатура ИЛИ 1 Гц-тик, пол 250мс) экономит UI-поток на холостом ходу.
     gate: RenderGate,
+    cache_key: Option<OrdersCacheKey>,
+    cached_cores: Vec<(CoreId, String)>,
+    cached_entries: Rc<Vec<OrderEntry>>,
     dock: Option<WeakEntity<DockArea>>,
     focus: FocusHandle,
 }
@@ -159,21 +169,31 @@ impl OrdersPanel {
         cx.observe(&backend, |this, backend, cx| {
             crate::diag::bump(&crate::diag::ORDERS_OBS_FIRE);
             let now = moon_chart::paint::now_unix_ms();
-            let sig = orders_sig(backend.read(cx), &this.group);
-            if this.gate.should_notify(sig, now) {
+            let b = backend.read(cx);
+            let key = this.cache_key(b);
+            let changed = this.cache_key.as_ref() != Some(&key);
+            let due = this.gate.should_notify(key.data_sig, now);
+            if changed || due {
+                this.rebuild_cache(b);
                 crate::diag::bump(&crate::diag::ORDERS_OBS_NOTIFY);
                 cx.notify();
             }
         })
         .detach();
-        Self {
+        let mut this = Self {
             backend,
             group,
             view: OrdersViewState::default(),
             gate: RenderGate::default(),
+            cache_key: None,
+            cached_cores: Vec::new(),
+            cached_entries: Rc::new(Vec::new()),
             dock: None,
             focus: cx.focus_handle(),
-        }
+        };
+        let backend_for_initial_cache = this.backend.clone();
+        this.rebuild_cache(backend_for_initial_cache.read(cx));
+        this
     }
 
     /// Открытые ордера ядер группы (с именем ядра и quote) — порт `collect_orders`.
@@ -209,16 +229,19 @@ impl OrdersPanel {
 
     /// (ядро, маркет) монеты, открытой на Main группы — для фильтра «только текущий».
     fn current_market(&self, b: &Backend) -> Option<(CoreId, String)> {
-        let focus = b
-            .session
-            .sessions()
-            .iter()
-            .find(|s| s.group == self.group)
-            .map(|s| s.id)?;
-        b.desired
-            .iter()
-            .find(|(id, _)| *id == focus)
-            .map(|(c, m)| (*c, m.clone()))
+        b.main_chart_target(&self.group)
+    }
+
+    fn cache_key(&self, b: &Backend) -> OrdersCacheKey {
+        OrdersCacheKey {
+            data_sig: orders_sig(b, &self.group),
+            view: self.view,
+            current: self
+                .view
+                .only_current_market
+                .then(|| self.current_market(b))
+                .flatten(),
+        }
     }
 
     /// Имена ядер группы (id, имя) — для поля-списка источника.
@@ -229,6 +252,42 @@ impl OrdersPanel {
             .filter(|s| s.group == self.group)
             .map(|s| (s.id, s.name.clone()))
             .collect()
+    }
+
+    fn build_entries(
+        &self,
+        b: &Backend,
+        view: &OrdersViewState,
+        current: &Option<(CoreId, String)>,
+    ) -> Vec<OrderEntry> {
+        let mut entries = self.collect(b);
+        entries.retain(|e| {
+            let by_source = match view.source {
+                OrdersSource::All => true,
+                OrdersSource::Core(id) => e.core == id,
+            };
+            let by_kind = match view.kind {
+                OrderKind::All => true,
+                OrderKind::Real => !e.row.emulator,
+                OrderKind::Emu => e.row.emulator,
+            };
+            by_source
+                && by_kind
+                && (!view.only_current_market
+                    || match current {
+                        Some((c, m)) => e.core == *c && &e.row.market == m,
+                        None => true,
+                    })
+        });
+        sort_entries(&mut entries, view);
+        entries
+    }
+
+    fn rebuild_cache(&mut self, b: &Backend) {
+        let key = self.cache_key(b);
+        self.cached_cores = self.group_cores(b);
+        self.cached_entries = Rc::new(self.build_entries(b, &key.view, &key.current));
+        self.cache_key = Some(key);
     }
 
     /// Реконструкция из `docks.json`: как `new`, но применяет сохранённое состояние
@@ -256,6 +315,8 @@ impl OrdersPanel {
             f(&mut next);
             if next != this.view {
                 this.view = next;
+                let backend = this.backend.clone();
+                this.rebuild_cache(backend.read(cx));
                 cx.notify();
                 true
             } else {
@@ -389,32 +450,9 @@ impl Panel for OrdersPanel {
 impl Render for OrdersPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::diag::bump(&crate::diag::ORDERS_RENDER);
-        let b = self.backend.read(cx);
-        let cores = self.group_cores(b);
-        let current = self.current_market(b);
-        let mut entries = self.collect(b);
-
-        // Фильтрация (источник / тип / только текущий маркет).
         let view = self.view;
-        entries.retain(|e| {
-            let by_source = match view.source {
-                OrdersSource::All => true,
-                OrdersSource::Core(id) => e.core == id,
-            };
-            let by_kind = match view.kind {
-                OrderKind::All => true,
-                OrderKind::Real => !e.row.emulator,
-                OrderKind::Emu => e.row.emulator,
-            };
-            by_source
-                && by_kind
-                && (!view.only_current_market
-                    || match &current {
-                        Some((c, m)) => e.core == *c && &e.row.market == m,
-                        None => true,
-                    })
-        });
-        sort_entries(&mut entries, &view);
+        let cores = self.cached_cores.clone();
+        let entries = self.cached_entries.clone();
         let shown = entries.len();
         let p = MoonPalette::active(cx);
 

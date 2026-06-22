@@ -3,13 +3,15 @@
 
 use std::num::NonZeroU64;
 
+use bytemuck::Zeroable;
 use gpui::RawGpuAccess;
 use moon_chart::layers::{LineInstance, MarkerInstance, SegInstance, ZoneInstance};
 use moon_core::data::{LevelInstance, PriceLinePoint};
 
 use super::types::{
-    BackgroundParams, BookStyle, ChartCross, ChartViewGpu, CursorParams, GridParams, HLineGpu,
-    MarkerGpu, ReadoutRect, SegGpu, ZoneGpu,
+    BackgroundParams, BookStyle, ChartCross, ChartViewGpu, CursorParams, DEFAULT_VOLUME_ALPHA,
+    GridParams, HLineGpu, MarkerGpu, ReadoutRect, SegGpu, ZoneGpu, append_cross_ring,
+    ordered_cross_ring, reset_cross_ring,
 };
 
 const BACKGROUND_SHADER: &str = include_str!("shaders/native_background.wgsl");
@@ -25,6 +27,23 @@ const MARKER_SHADER: &str = include_str!("shaders/native_marker.wgsl");
 const READOUT_SHADER: &str = include_str!("shaders/native_readout.wgsl");
 const BACKGROUND_PNG: &[u8] = include_bytes!("../../../../assets/img/3Dlogo_s01.png");
 const MIN_COMBO_CAPACITY: usize = 1;
+
+#[inline]
+fn texel_aligned_time0(time0: f32, time_to_px: f32) -> f32 {
+    if !(time_to_px > 1e-9) {
+        return time0;
+    }
+    (time0 * time_to_px).floor() / time_to_px
+}
+
+fn append_ranges(start: usize, len: usize, capacity: usize) -> [(usize, usize); 2] {
+    if len == 0 || capacity == 0 {
+        return [(0, 0), (0, 0)];
+    }
+    let first = len.min(capacity - start.min(capacity - 1));
+    let second = len.saturating_sub(first);
+    [(start, first), (0, second)]
+}
 
 fn hl_of(h: &LineInstance) -> HLineGpu {
     HLineGpu {
@@ -90,6 +109,35 @@ impl BufferSlot {
         recreated
     }
 
+    fn write_range<T: bytemuck::Pod>(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        label: &str,
+        usage: wgpu::BufferUsages,
+        start: usize,
+        data: &[T],
+        total_len: usize,
+    ) -> bool {
+        let elem = std::mem::size_of::<T>();
+        let need = (total_len.max(1) * elem).max(4) as u64;
+        let recreated = self.buffer.as_ref().is_none() || self.size < need;
+        if recreated {
+            self.buffer = Some(device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(label),
+                size: need.next_power_of_two(),
+                usage: usage | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+            self.size = need.next_power_of_two();
+        }
+        let bytes = bytemuck::cast_slice(data);
+        if !bytes.is_empty() {
+            queue.write_buffer(self.buffer.as_ref().unwrap(), (start * elem) as u64, bytes);
+        }
+        recreated
+    }
+
     fn binding(&self) -> wgpu::BindingResource<'_> {
         self.buffer.as_ref().unwrap().as_entire_binding()
     }
@@ -103,6 +151,7 @@ struct Pipelines {
     view_storage_layout: wgpu::BindGroupLayout,
     book_layout: wgpu::BindGroupLayout,
     background: wgpu::RenderPipeline,
+    blit: wgpu::RenderPipeline,
     grid: wgpu::RenderPipeline,
     cursor: wgpu::RenderPipeline,
     readout_rect: wgpu::RenderPipeline,
@@ -117,6 +166,7 @@ struct Pipelines {
     seg: wgpu::RenderPipeline,
     marker: wgpu::RenderPipeline,
     sampler: wgpu::Sampler,
+    point_sampler: wgpu::Sampler,
 }
 
 struct BackgroundTexture {
@@ -130,6 +180,66 @@ struct BaseTexture {
     w: u32,
     h: u32,
     generation: u64,
+}
+
+struct ComboTexture {
+    _texture: wgpu::Texture,
+    view: wgpu::TextureView,
+    bind_group: Option<wgpu::BindGroup>,
+    blit_uniform: BufferSlot,
+    w: u32,
+    h: u32,
+    generation: u64,
+    bake_t0: f32,
+    last_baked_head: usize,
+    last_time_to_px: f32,
+    last_price_to_px: f32,
+    last_view_price0: f32,
+    last_marker_half: f32,
+    valid: bool,
+}
+
+impl ComboTexture {
+    fn prepare_blit_bind_group(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        layout: &wgpu::BindGroupLayout,
+        sampler: &wgpu::Sampler,
+        params: BackgroundParams,
+    ) -> &wgpu::BindGroup {
+        let recreated = self.blit_uniform.write(
+            device,
+            queue,
+            "moon_chart_combo_blit_uniform",
+            wgpu::BufferUsages::UNIFORM,
+            &[params],
+        );
+        if recreated {
+            self.bind_group = None;
+        }
+        if self.bind_group.is_none() {
+            self.bind_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("moon_chart_combo_blit_bind"),
+                layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: self.blit_uniform.binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(&self.view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::Sampler(sampler),
+                    },
+                ],
+            }));
+        }
+        self.bind_group.as_ref().unwrap()
+    }
 }
 
 #[derive(Default)]
@@ -264,7 +374,11 @@ pub struct WgpuLayers {
     background_texture: Option<BackgroundTexture>,
     prepared_binds: Option<PreparedBindGroups>,
     base_cache: BaseCache,
+    combo_texture: Option<ComboTexture>,
+    combo_dirty_ranges: Vec<(usize, usize)>,
     crosses: Vec<ChartCross>,
+    cross_head: usize,
+    cross_count: usize,
     last_line: Vec<PriceLinePoint>,
     mark_line: Vec<PriceLinePoint>,
     combo_capacity: usize,
@@ -306,7 +420,11 @@ impl WgpuLayers {
             background_texture: None,
             prepared_binds: None,
             base_cache: BaseCache::default(),
+            combo_texture: None,
+            combo_dirty_ranges: Vec::new(),
             crosses: Vec::new(),
+            cross_head: 0,
+            cross_count: 0,
             last_line: Vec::new(),
             mark_line: Vec::new(),
             combo_capacity: MIN_COMBO_CAPACITY,
@@ -347,52 +465,101 @@ impl WgpuLayers {
         {
             return;
         }
+        let ordered = ordered_cross_ring(
+            &self.crosses,
+            self.cross_head,
+            self.cross_count,
+            self.combo_capacity,
+        );
         self.combo_capacity = combo_capacity;
         self.price_line_capacity = price_line_capacity;
-        if self.crosses.len() > self.combo_capacity {
-            let drop = self.crosses.len() - self.combo_capacity;
-            self.crosses.drain(0..drop);
+        reset_cross_ring(
+            &mut self.crosses,
+            &mut self.cross_head,
+            &mut self.cross_count,
+            self.combo_capacity,
+            &ordered,
+        );
+        if self.crosses.len() < self.combo_capacity {
+            self.crosses
+                .resize(self.combo_capacity, ChartCross::zeroed());
         }
         if self.last_line.len() > self.price_line_capacity {
-            let drop = self.last_line.len() - self.price_line_capacity;
-            self.last_line.drain(0..drop);
+            self.last_line = tail_vec(&self.last_line, self.price_line_capacity);
         }
         if self.mark_line.len() > self.price_line_capacity {
-            let drop = self.mark_line.len() - self.price_line_capacity;
-            self.mark_line.drain(0..drop);
+            self.mark_line = tail_vec(&self.mark_line, self.price_line_capacity);
         }
         self.recalc_volume_scale();
         self.combo_buffers_dirty = true;
         self.price_line_buffers_dirty = true;
-        self.base_cache.valid = false;
+        self.combo_texture = None;
+        self.combo_dirty_ranges.clear();
     }
 
     pub fn reset_combo(&mut self, data: Vec<ChartCross>) {
-        self.crosses = cap_tail(data, self.combo_capacity);
+        reset_cross_ring(
+            &mut self.crosses,
+            &mut self.cross_head,
+            &mut self.cross_count,
+            self.combo_capacity,
+            &data,
+        );
+        if self.crosses.len() < self.combo_capacity {
+            self.crosses
+                .resize(self.combo_capacity, ChartCross::zeroed());
+        }
         self.recalc_volume_scale();
         self.combo_buffers_dirty = true;
-        self.base_cache.valid = false;
+        if let Some(tex) = self.combo_texture.as_mut() {
+            tex.valid = false;
+        }
+        self.combo_dirty_ranges.clear();
     }
 
     pub fn append_combo(&mut self, data: &[ChartCross]) {
         if data.is_empty() {
             return;
         }
-        self.crosses.extend_from_slice(data);
-        if self.crosses.len() > self.combo_capacity {
-            let drop = self.crosses.len() - self.combo_capacity;
-            self.crosses.drain(0..drop);
+        let before_scale = (self.volume_buy_max, self.volume_sell_max);
+        let old_head = self.cross_head;
+        let full_reset = data.len() >= self.combo_capacity;
+        append_cross_ring(
+            &mut self.crosses,
+            &mut self.cross_head,
+            &mut self.cross_count,
+            self.combo_capacity,
+            data,
+        );
+        if self.crosses.len() < self.combo_capacity {
+            self.crosses
+                .resize(self.combo_capacity, ChartCross::zeroed());
         }
-        self.recalc_volume_scale();
+        self.update_volume_scale(data);
         self.combo_buffers_dirty = true;
-        self.base_cache.valid = false;
+        if full_reset || before_scale != (self.volume_buy_max, self.volume_sell_max) {
+            if let Some(tex) = self.combo_texture.as_mut() {
+                tex.valid = false;
+            }
+            self.combo_dirty_ranges.clear();
+        } else {
+            let appended = data.len().min(self.combo_capacity);
+            for (start, count) in append_ranges(old_head, appended, self.combo_capacity) {
+                if count > 0 {
+                    self.combo_dirty_ranges.push((start, count));
+                }
+            }
+        }
     }
 
     pub fn set_price_lines(&mut self, last: &[PriceLinePoint], mark: &[PriceLinePoint]) {
-        self.last_line = cap_tail(last.to_vec(), self.price_line_capacity);
-        self.mark_line = cap_tail(mark.to_vec(), self.price_line_capacity);
+        self.last_line = tail_vec(last, self.price_line_capacity);
+        self.mark_line = tail_vec(mark, self.price_line_capacity);
         self.price_line_buffers_dirty = true;
-        self.base_cache.valid = false;
+        if let Some(tex) = self.combo_texture.as_mut() {
+            tex.valid = false;
+        }
+        self.combo_dirty_ranges.clear();
     }
 
     pub fn set_orderbook(&mut self, levels: Vec<LevelInstance>) {
@@ -480,6 +647,7 @@ impl WgpuLayers {
         } else {
             self.draw_base_layers(pass);
         }
+        self.draw_cached_combo(device, queue, pass, view);
         let sc = bounds_scissor(pane_bounds, gpu.width(), gpu.height());
         pass.set_scissor_rect(sc.0, sc.1, sc.2, sc.3);
         self.draw_cursor_layer(pass, cursor_params, readout_rects);
@@ -493,46 +661,6 @@ impl WgpuLayers {
         draw_pipeline(pass, &pipelines.background, &binds.bg, 6, 1);
         crate::diag::bump(&crate::diag::CHART_GRID_DRAW);
         draw_pipeline(pass, &pipelines.grid, &binds.grid, 6, 1);
-        if !self.crosses.is_empty() {
-            crate::diag::bump(&crate::diag::CHART_COMBO_DRAW);
-            draw_pipeline(
-                pass,
-                &pipelines.volume,
-                &binds.cross,
-                6,
-                self.crosses.len() as u32,
-            );
-        }
-        if self.last_line.len() > 1 {
-            crate::diag::bump(&crate::diag::CHART_COMBO_DRAW);
-            draw_pipeline(
-                pass,
-                &pipelines.price_last,
-                &binds.last,
-                6,
-                (self.last_line.len() - 1) as u32,
-            );
-        }
-        if self.mark_line.len() > 1 {
-            crate::diag::bump(&crate::diag::CHART_COMBO_DRAW);
-            draw_pipeline(
-                pass,
-                &pipelines.price_mark,
-                &binds.mark,
-                6,
-                (self.mark_line.len() - 1) as u32,
-            );
-        }
-        if !self.crosses.is_empty() {
-            crate::diag::bump(&crate::diag::CHART_COMBO_DRAW);
-            draw_pipeline(
-                pass,
-                &pipelines.crosses,
-                &binds.cross,
-                6,
-                self.crosses.len() as u32,
-            );
-        }
         crate::diag::bump(&crate::diag::CHART_BOOK_DRAW);
         draw_pipeline(pass, &pipelines.book_bg, &binds.book, 6, 1);
         if !self.levels.is_empty() {
@@ -578,6 +706,257 @@ impl WgpuLayers {
                 self.markers.len() as u32,
             );
         }
+    }
+
+    fn ensure_combo_texture(
+        &mut self,
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        tex_w: u32,
+        tex_h: u32,
+        generation: u64,
+    ) {
+        let recreate = self
+            .combo_texture
+            .as_ref()
+            .is_none_or(|tex| tex.w != tex_w || tex.h != tex_h || tex.generation != generation);
+        if recreate {
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("moon_chart_combo_cache"),
+                size: wgpu::Extent3d {
+                    width: tex_w,
+                    height: tex_h,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            self.combo_texture = Some(ComboTexture {
+                _texture: texture,
+                view,
+                bind_group: None,
+                blit_uniform: BufferSlot::default(),
+                w: tex_w,
+                h: tex_h,
+                generation,
+                bake_t0: 0.0,
+                last_baked_head: usize::MAX,
+                last_time_to_px: 0.0,
+                last_price_to_px: 0.0,
+                last_view_price0: 0.0,
+                last_marker_half: 0.0,
+                valid: false,
+            });
+        }
+    }
+
+    fn prepare_combo_cache(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        gpu: &RawGpuAccess,
+        format: wgpu::TextureFormat,
+        view: &ChartViewGpu,
+    ) {
+        if self.cross_count == 0 && self.last_line.len() <= 1 && self.mark_line.len() <= 1 {
+            return;
+        }
+        let bw = view.bounds[2];
+        let bh = view.bounds[3];
+        if bw <= 0.0 || bh <= 0.0 {
+            return;
+        }
+        let margin_px = (bw * 0.2).max(128.0);
+        let tex_w = (bw + margin_px).round().max(1.0) as u32;
+        let tex_h = bh.round().max(1.0) as u32;
+        self.ensure_combo_texture(device, format, tex_w, tex_h, gpu.device_generation());
+
+        let (need_full, bake_t0, combo_view) = {
+            let tex = self.combo_texture.as_mut().unwrap();
+            if tex.last_time_to_px != view.time_to_px
+                || tex.last_price_to_px != view.price_to_px
+                || tex.last_view_price0 != view.view_price0
+                || tex.last_marker_half != view.marker_half
+            {
+                tex.valid = false;
+            }
+
+            let u_left_px = (view.view_time0 - tex.bake_t0) * view.time_to_px;
+            let need_full = !tex.valid || u_left_px < 0.0 || u_left_px > margin_px;
+            let bake_t0 = if need_full {
+                texel_aligned_time0(view.view_time0, view.time_to_px)
+            } else {
+                tex.bake_t0
+            };
+            (need_full, bake_t0, tex.view.clone())
+        };
+        if !need_full && self.combo_dirty_ranges.is_empty() {
+            return;
+        }
+        let bake_view = ChartViewGpu {
+            bounds: [0.0, 0.0, tex_w as f32, tex_h as f32],
+            resolution: [tex_w as f32, tex_h as f32],
+            time_to_px: view.time_to_px,
+            view_time0: bake_t0,
+            price_to_px: view.price_to_px,
+            view_price0: view.view_price0,
+            marker_half: view.marker_half,
+            pad: 0.0,
+            volume_buy_inv: 1.0 / self.volume_buy_max.max(1e-6),
+            volume_sell_inv: 1.0 / self.volume_sell_max.max(1e-6),
+            volume_alpha: DEFAULT_VOLUME_ALPHA,
+            _pad2: 0.0,
+        };
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("moon_chart_combo_cache_pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &combo_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: if need_full {
+                            wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT)
+                        } else {
+                            wgpu::LoadOp::Load
+                        },
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: None,
+                ..Default::default()
+            });
+            pass.set_scissor_rect(0, 0, tex_w, tex_h);
+            if need_full {
+                self.draw_combo_layers(
+                    device,
+                    queue,
+                    &mut pass,
+                    bake_view,
+                    0,
+                    self.cross_count,
+                    true,
+                );
+            } else {
+                let ranges = std::mem::take(&mut self.combo_dirty_ranges);
+                for (start, count) in ranges {
+                    if count > 0 {
+                        self.draw_combo_layers(
+                            device, queue, &mut pass, bake_view, start, count, false,
+                        );
+                    }
+                }
+            }
+        }
+        let tex = self.combo_texture.as_mut().unwrap();
+        if need_full {
+            tex.bake_t0 = bake_t0;
+            tex.last_time_to_px = view.time_to_px;
+            tex.last_price_to_px = view.price_to_px;
+            tex.last_view_price0 = view.view_price0;
+            tex.last_marker_half = view.marker_half;
+            tex.valid = true;
+            self.combo_dirty_ranges.clear();
+            crate::diag::bump(&crate::diag::CHART_COMBO_BAKE);
+        }
+        tex.last_baked_head = self.cross_head;
+    }
+
+    fn draw_combo_layers(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        pass: &mut wgpu::RenderPass<'_>,
+        view: ChartViewGpu,
+        start: usize,
+        count: usize,
+        include_price_lines: bool,
+    ) {
+        let recreated = self.view_uniform.write(
+            device,
+            queue,
+            "moon_chart_combo_view_uniform",
+            wgpu::BufferUsages::UNIFORM,
+            &[view],
+        );
+        if recreated || self.prepared_binds.is_none() {
+            self.prepared_binds = None;
+            self.prepare_bind_groups(device);
+        }
+        let pipelines = self.pipelines.as_ref().unwrap();
+        let binds = self.prepared_binds.as_ref().unwrap();
+        if count > 0 {
+            crate::diag::bump(&crate::diag::CHART_COMBO_DRAW);
+            draw_pipeline_range(pass, &pipelines.volume, &binds.cross, 6, start, count);
+        }
+        if include_price_lines && self.last_line.len() > 1 {
+            crate::diag::bump(&crate::diag::CHART_COMBO_DRAW);
+            draw_pipeline(
+                pass,
+                &pipelines.price_last,
+                &binds.last,
+                6,
+                (self.last_line.len() - 1) as u32,
+            );
+        }
+        if include_price_lines && self.mark_line.len() > 1 {
+            crate::diag::bump(&crate::diag::CHART_COMBO_DRAW);
+            draw_pipeline(
+                pass,
+                &pipelines.price_mark,
+                &binds.mark,
+                6,
+                (self.mark_line.len() - 1) as u32,
+            );
+        }
+        if count > 0 {
+            crate::diag::bump(&crate::diag::CHART_COMBO_DRAW);
+            draw_pipeline_range(pass, &pipelines.crosses, &binds.cross, 6, start, count);
+        }
+    }
+
+    fn draw_cached_combo(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        pass: &mut wgpu::RenderPass<'_>,
+        view: &ChartViewGpu,
+    ) {
+        let Some(tex) = self.combo_texture.as_mut() else {
+            return;
+        };
+        if !tex.valid || view.bounds[2] <= 0.0 || view.bounds[3] <= 0.0 {
+            return;
+        }
+        let u_left_px = ((view.view_time0 - tex.bake_t0) * view.time_to_px)
+            .round()
+            .clamp(0.0, (tex.w as f32 - view.bounds[2]).max(0.0));
+        let params = BackgroundParams {
+            dst: view.bounds,
+            resolution: view.resolution,
+            uv_off: [u_left_px / tex.w as f32, 0.0],
+            uv_scale: [view.bounds[2] / tex.w as f32, 1.0],
+            opacity: 1.0,
+            _pad: 0.0,
+            bg: [0.0, 0.0, 0.0, 0.0],
+        };
+        let pipelines = self.pipelines.as_ref().unwrap();
+        let bind = tex.prepare_blit_bind_group(
+            device,
+            queue,
+            &pipelines.bg_layout,
+            &pipelines.point_sampler,
+            params,
+        );
+        crate::diag::bump(&crate::diag::CHART_BASE_BLIT);
+        draw_pipeline(pass, &pipelines.blit, bind, 6, 1);
     }
 
     fn draw_cursor_layer(
@@ -671,6 +1050,7 @@ impl WgpuLayers {
         if rebuild_base || self.base_cache.needs_rebuild(gpu) {
             self.rebuild_base_cache(device, encoder, gpu, format, view, orderbook_view)?;
         }
+        self.prepare_combo_cache(device, queue, encoder, gpu, format, view);
         Ok(())
     }
 
@@ -722,7 +1102,7 @@ impl WgpuLayers {
         let mut view = *view;
         view.volume_buy_inv = 1.0 / self.volume_buy_max.max(1e-6);
         view.volume_sell_inv = 1.0 / self.volume_sell_max.max(1e-6);
-        view.volume_alpha = 0.34;
+        view.volume_alpha = DEFAULT_VOLUME_ALPHA;
         let mut binds_dirty = false;
         binds_dirty |= self.bg_uniform.write(
             device,
@@ -774,13 +1154,30 @@ impl WgpuLayers {
             &[*book_style],
         );
         if self.combo_buffers_dirty || self.cross_buffer.buffer.is_none() {
-            binds_dirty |= self.cross_buffer.write(
-                device,
-                queue,
-                "moon_chart_crosses",
-                wgpu::BufferUsages::STORAGE,
-                &self.crosses,
-            );
+            if self.cross_buffer.buffer.is_some() && !self.combo_dirty_ranges.is_empty() {
+                for &(start, count) in &self.combo_dirty_ranges {
+                    let end = start.saturating_add(count).min(self.crosses.len());
+                    if start < end {
+                        binds_dirty |= self.cross_buffer.write_range(
+                            device,
+                            queue,
+                            "moon_chart_crosses",
+                            wgpu::BufferUsages::STORAGE,
+                            start,
+                            &self.crosses[start..end],
+                            self.crosses.len(),
+                        );
+                    }
+                }
+            } else {
+                binds_dirty |= self.cross_buffer.write(
+                    device,
+                    queue,
+                    "moon_chart_crosses",
+                    wgpu::BufferUsages::STORAGE,
+                    &self.crosses,
+                );
+            }
             self.combo_buffers_dirty = false;
         }
         if self.price_line_buffers_dirty
@@ -868,7 +1265,7 @@ impl WgpuLayers {
         let mut view = *view;
         view.volume_buy_inv = 1.0 / self.volume_buy_max.max(1e-6);
         view.volume_sell_inv = 1.0 / self.volume_sell_max.max(1e-6);
-        view.volume_alpha = 0.34;
+        view.volume_alpha = DEFAULT_VOLUME_ALPHA;
         let mut binds_dirty = false;
         binds_dirty |= self.bg_uniform.write(
             device,
@@ -1051,7 +1448,17 @@ impl WgpuLayers {
     fn recalc_volume_scale(&mut self) {
         self.volume_buy_max = 1e-6;
         self.volume_sell_max = 1e-6;
-        for c in &self.crosses {
+        for c in self.crosses.iter().take(self.cross_count) {
+            if c.side == 0 {
+                self.volume_buy_max = self.volume_buy_max.max(c.qty);
+            } else {
+                self.volume_sell_max = self.volume_sell_max.max(c.qty);
+            }
+        }
+    }
+
+    fn update_volume_scale(&mut self, data: &[ChartCross]) {
+        for c in data {
             if c.side == 0 {
                 self.volume_buy_max = self.volume_buy_max.max(c.qty);
             } else {
@@ -1073,11 +1480,24 @@ fn draw_pipeline(
     pass.draw(0..vertices, 0..instances);
 }
 
-fn cap_tail<T>(mut data: Vec<T>, cap: usize) -> Vec<T> {
-    if data.len() > cap {
-        data.drain(0..data.len() - cap);
-    }
-    data
+fn draw_pipeline_range(
+    pass: &mut wgpu::RenderPass<'_>,
+    pipeline: &wgpu::RenderPipeline,
+    bind_group: &wgpu::BindGroup,
+    vertices: u32,
+    first_instance: usize,
+    instances: usize,
+) {
+    let first = first_instance as u32;
+    let last = first_instance.saturating_add(instances) as u32;
+    pass.set_pipeline(pipeline);
+    pass.set_bind_group(0, bind_group, &[]);
+    pass.draw(0..vertices, first..last);
+}
+
+fn tail_vec<T: Clone>(data: &[T], cap: usize) -> Vec<T> {
+    let start = data.len().saturating_sub(cap);
+    data[start..].to_vec()
 }
 
 fn sanitize_capacity(capacity: usize) -> usize {
@@ -1230,6 +1650,14 @@ fn create_pipelines(device: &wgpu::Device, format: wgpu::TextureFormat) -> Pipel
         "background_vertex",
         "background_fragment",
     );
+    let blit = pipeline(
+        device,
+        format,
+        &background_shader,
+        &bg_layout,
+        "background_vertex",
+        "blit_fragment",
+    );
     let grid = pipeline(
         device,
         format,
@@ -1341,6 +1769,12 @@ fn create_pipelines(device: &wgpu::Device, format: wgpu::TextureFormat) -> Pipel
         min_filter: wgpu::FilterMode::Linear,
         ..Default::default()
     });
+    let point_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        label: Some("moon_chart_point_sampler"),
+        mag_filter: wgpu::FilterMode::Nearest,
+        min_filter: wgpu::FilterMode::Nearest,
+        ..Default::default()
+    });
     Pipelines {
         bg_layout,
         grid_layout,
@@ -1349,6 +1783,7 @@ fn create_pipelines(device: &wgpu::Device, format: wgpu::TextureFormat) -> Pipel
         view_storage_layout,
         book_layout,
         background,
+        blit,
         grid,
         cursor,
         readout_rect,
@@ -1363,6 +1798,7 @@ fn create_pipelines(device: &wgpu::Device, format: wgpu::TextureFormat) -> Pipel
         seg,
         marker,
         sampler,
+        point_sampler,
     }
 }
 

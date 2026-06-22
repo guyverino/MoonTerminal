@@ -3,10 +3,8 @@
 //! +20% запекается крестовым шейдером и блитится с UV-паном. Прошлое неизменно → двигаем
 //! готовый битмап (scroll) + дорисовываем (append) живой край, НЕ перерисовывая историю.
 //!
-//! Защита от device-lost (P0-4): при смене raw-указателя device хука (GPUI пересоздал
+//! Защита от device-lost (P0-4): при смене поколения device хука (GPUI пересоздал
 //! устройство) сбрасываем ВСЕ ресурсы — иначе рисовали бы stale-буферами на новом контексте.
-
-use std::ffi::c_void;
 
 use gpui::RawGpuAccess;
 use moon_core::data::PriceLinePoint;
@@ -16,9 +14,10 @@ use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SA
 
 use super::gpu::{
     BlitParams, ChartCross, ChartViewGpu, create_alpha_blend, create_dynamic_cb,
-    create_point_sampler, create_srv, create_srv_range, create_structured, d3d_device_ptr,
-    full_viewport, ring_write_no_overwrite, set_scissor_rect, update_dynamic,
+    create_point_sampler, create_srv, create_srv_range, create_structured, full_viewport,
+    ring_write_no_overwrite, set_scissor_rect, update_dynamic,
 };
+use super::types::DEFAULT_VOLUME_ALPHA;
 
 const MIN_COMBO_CAPACITY: u32 = 1;
 const CROSSES_HLSL: &str = include_str!("shaders/crosses.hlsl");
@@ -83,8 +82,8 @@ pub struct ComboLayer {
     mark_line_count: u32,
     cross_capacity: u32,
     price_line_capacity: u32,
-    /// Raw-указатель device, на котором созданы ресурсы. Сменился → device-lost, сбрасываем.
-    device_ptr: *mut c_void,
+    /// Поколение RawGpuAccess device, на котором созданы ресурсы. Сменилось → device-lost.
+    device_generation_seen: u64,
     /// Поколение device: ++ при пересоздании (device-lost). Оркестратор сравнивает со своим
     /// last → перезаливает ВСЮ историю (кольцо новое и пустое, append живого края не хватит).
     device_gen: u64,
@@ -107,7 +106,7 @@ impl ComboLayer {
             mark_line_count: 0,
             cross_capacity: MIN_COMBO_CAPACITY,
             price_line_capacity: MIN_COMBO_CAPACITY,
-            device_ptr: std::ptr::null_mut(),
+            device_generation_seen: 0,
             device_gen: 0,
             volume_buy_max: 1e-6,
             volume_sell_max: 1e-6,
@@ -171,15 +170,15 @@ impl ComboLayer {
         // device-lost guard (P0-4): новый device → старые буферы/шейдеры/кольцо невалидны.
         // Сбрасываем ресурсы И счётчики кольца: пересозданный буфер пуст, а stale count заставил
         // бы DrawInstanced читать мусор. device_gen++ → prepare перезальёт всю историю (collect_all).
-        let device_ptr = d3d_device_ptr(gpu);
-        if self.device_ptr != device_ptr {
+        let generation = gpu.device_generation();
+        if self.device_generation_seen != generation {
             self.pipe = None;
             self.tex = None;
             self.count = 0;
             self.head = 0;
             self.last_line_count = 0;
             self.mark_line_count = 0;
-            self.device_ptr = device_ptr;
+            self.device_generation_seen = generation;
             self.device_gen = self.device_gen.wrapping_add(1);
         }
         if self.pipe.is_none() {
@@ -270,7 +269,7 @@ impl ComboLayer {
             pad: 0.0,
             volume_buy_inv: 1.0 / self.volume_buy_max.max(1e-6),
             volume_sell_inv: 1.0 / self.volume_sell_max.max(1e-6),
-            volume_alpha: 0.34,
+            volume_alpha: DEFAULT_VOLUME_ALPHA,
             _pad2: 0.0,
         };
         update_dynamic(context, &pipe.view_cb, &[bake_view]);

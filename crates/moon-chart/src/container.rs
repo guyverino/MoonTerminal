@@ -22,12 +22,3 @@ pub enum PaneSource {
     /// Авто-добавлена по AddToChart — живёт `ttl_ms` от последнего детекта.
     AddToChart { born_ms: f64, ttl_ms: f64 },
 }
-
-/// Режим показа контейнера.
-#[derive(Clone, Copy)]
-pub enum Mode {
-    /// Видна одна панель на всю зону.
-    Fullscreen(usize),
-    /// Все панели стопкой по вертикали.
-    Tiled,
-}

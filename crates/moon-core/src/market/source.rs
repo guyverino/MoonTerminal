@@ -7,7 +7,7 @@ use moonproto::state::{
 };
 use moonproto::MoonTime;
 
-use crate::feed::{Level, OrderBook, PricePoint, SharedMoonClient, Side, Tick};
+use crate::feed::{Level, MarketDirty, OrderBook, PricePoint, SharedMoonClient, Side, Tick};
 use crate::session::CoreId;
 
 use super::{MarketView, SharedMarketStore};
@@ -45,10 +45,29 @@ fn market_diag(msg: impl std::fmt::Display) {
     }
 }
 
+fn bump_generation(revisions: &mut HashMap<CoreId, u64>, provider: CoreId) {
+    let entry = revisions.entry(provider).or_insert(0);
+    *entry = entry.wrapping_add(1);
+}
+
+fn bump_market_revision(
+    revisions: &mut HashMap<(CoreId, String), u64>,
+    provider: CoreId,
+    market: &str,
+) {
+    let entry = revisions.entry((provider, market.to_string())).or_insert(0);
+    *entry = entry.wrapping_add(1);
+}
+
+fn mix_pair(a: u64, b: u64) -> u64 {
+    a.wrapping_mul(0x9e37_79b1_85eb_ca87).rotate_left(17) ^ b
+}
+
 #[derive(Default)]
 struct MarketPullCursor {
     book_phase_ms: Option<u64>,
     last_book_slot: Option<u64>,
+    last_book_revision: Option<u64>,
 }
 
 #[derive(Default)]
@@ -111,6 +130,8 @@ struct MarketDataSourceInner {
     clients: HashMap<CoreId, SharedMoonClient>,
     core_provider: HashMap<CoreId, CoreId>,
     cursors: HashMap<(CoreId, String), MarketPullCursor>,
+    market_revisions: HashMap<(CoreId, String), u64>,
+    provider_generations: HashMap<CoreId, u64>,
     started_at: Instant,
 }
 
@@ -133,6 +154,8 @@ impl MarketDataSource {
                 clients: HashMap::new(),
                 core_provider: HashMap::new(),
                 cursors: HashMap::new(),
+                market_revisions: HashMap::new(),
+                provider_generations: HashMap::new(),
                 started_at: Instant::now(),
             })),
         }
@@ -151,11 +174,10 @@ impl MarketDataSource {
     }
 
     pub fn set_client(&self, core: CoreId, client: SharedMoonClient) {
-        self.inner
-            .write()
-            .expect("market source poisoned")
-            .clients
-            .insert(core, client);
+        let mut inner = self.inner.write().expect("market source poisoned");
+        inner.clients.insert(core, client);
+        inner.cursors.retain(|(provider, _), _| *provider != core);
+        bump_generation(&mut inner.provider_generations, core);
     }
 
     pub fn set_provider_map(&self, core_provider: &HashMap<CoreId, CoreId>) {
@@ -166,12 +188,16 @@ impl MarketDataSource {
         inner
             .cursors
             .retain(|(provider, _), _| active_providers.contains(provider));
+        inner
+            .market_revisions
+            .retain(|(provider, _), _| active_providers.contains(provider));
     }
 
     pub fn reset_market(&self, provider: CoreId, market: &str) {
         let store = {
             let mut inner = self.inner.write().expect("market source poisoned");
             inner.cursors.remove(&(provider, market.to_string()));
+            bump_market_revision(&mut inner.market_revisions, provider, market);
             inner.store.clone()
         };
         market_diag(format!("reset_market provider={provider} market={market}"));
@@ -185,6 +211,7 @@ impl MarketDataSource {
         let store = {
             let mut inner = self.inner.write().expect("market source poisoned");
             inner.cursors.remove(&(provider, market.to_string()));
+            bump_market_revision(&mut inner.market_revisions, provider, market);
             inner.store.clone()
         };
         store
@@ -197,6 +224,7 @@ impl MarketDataSource {
         let store = {
             let mut inner = self.inner.write().expect("market source poisoned");
             inner.cursors.retain(|(p, _), _| *p != provider);
+            bump_generation(&mut inner.provider_generations, provider);
             inner.store.clone()
         };
         store
@@ -210,9 +238,21 @@ impl MarketDataSource {
             let mut inner = self.inner.write().expect("market source poisoned");
             inner.core_provider.clear();
             inner.cursors.clear();
+            inner.market_revisions.clear();
+            inner.provider_generations.clear();
             inner.store.clone()
         };
         store.write().expect("market store poisoned").clear();
+    }
+
+    pub fn mark_dirty(&self, provider: CoreId, dirty: &[MarketDirty]) {
+        if dirty.is_empty() {
+            return;
+        }
+        let mut inner = self.inner.write().expect("market source poisoned");
+        for item in dirty {
+            bump_market_revision(&mut inner.market_revisions, provider, &item.market);
+        }
     }
 
     pub fn refresh_for_open(&self, desired: &[(CoreId, String)]) -> bool {
@@ -244,13 +284,17 @@ impl MarketDataSource {
         let (provider, client, store, elapsed_ms) = {
             let inner = self.inner.read().expect("market source poisoned");
             let Some(provider) = inner.core_provider.get(&core).copied() else {
-                if market_diag_due(format!("no-provider:{core}:{market}"), MARKET_DIAG_FLOOR) {
+                if market_diag_enabled()
+                    && market_diag_due(format!("no-provider:{core}:{market}"), MARKET_DIAG_FLOOR)
+                {
                     market_diag(format!("refresh core={core} market={market}: no provider"));
                 }
                 return false;
             };
             let Some(client) = inner.clients.get(&provider).and_then(SharedMoonClient::get) else {
-                if market_diag_due(format!("no-client:{provider}:{market}"), MARKET_DIAG_FLOOR) {
+                if market_diag_enabled()
+                    && market_diag_due(format!("no-client:{provider}:{market}"), MARKET_DIAG_FLOOR)
+                {
                     market_diag(format!(
                         "refresh core={core} provider={provider} market={market}: no client"
                     ));
@@ -266,10 +310,12 @@ impl MarketDataSource {
         };
 
         let Some(snapshot) = client.snapshot_versioned() else {
-            if market_diag_due(
-                format!("no-snapshot:{provider}:{market}"),
-                MARKET_DIAG_FLOOR,
-            ) {
+            if market_diag_enabled()
+                && market_diag_due(
+                    format!("no-snapshot:{provider}:{market}"),
+                    MARKET_DIAG_FLOOR,
+                )
+            {
                 market_diag(format!(
                     "refresh core={core} provider={provider} market={market}: no snapshot"
                 ));
@@ -296,24 +342,28 @@ impl MarketDataSource {
             if book_due {
                 if let Some(book) = snapshot.order_book(market, OrderBookKind::Futures) {
                     has_book_snapshot = true;
-                    book_update = Some(OrderBook {
-                        bids: book
-                            .buys
-                            .iter()
-                            .map(|l| Level {
-                                price: l.rate as f32,
-                                qty: l.quantity as f32,
-                            })
-                            .collect(),
-                        asks: book
-                            .sells
-                            .iter()
-                            .map(|l| Level {
-                                price: l.rate as f32,
-                                qty: l.quantity as f32,
-                            })
-                            .collect(),
-                    });
+                    let revision = book.revision();
+                    if cursor.last_book_revision != Some(revision) {
+                        cursor.last_book_revision = Some(revision);
+                        book_update = Some(OrderBook {
+                            bids: book
+                                .buys
+                                .iter()
+                                .map(|l| Level {
+                                    price: l.rate as f32,
+                                    qty: l.quantity as f32,
+                                })
+                                .collect(),
+                            asks: book
+                                .sells
+                                .iter()
+                                .map(|l| Level {
+                                    price: l.rate as f32,
+                                    qty: l.quantity as f32,
+                                })
+                                .collect(),
+                        });
+                    }
                 }
                 cursor.last_book_slot = book_slot;
             }
@@ -321,7 +371,9 @@ impl MarketDataSource {
 
         let mut store = store.write().expect("market store poisoned");
         if store.view(provider, market).is_none() {
-            if market_diag_due(format!("no-view:{provider}:{market}"), MARKET_DIAG_FLOOR) {
+            if market_diag_enabled()
+                && market_diag_due(format!("no-view:{provider}:{market}"), MARKET_DIAG_FLOOR)
+            {
                 market_diag(format!(
                     "refresh core={core} provider={provider} market={market}: no store view \
                      readers trades=false last=false mark=false \
@@ -340,7 +392,9 @@ impl MarketDataSource {
             store.apply_book(provider, market, &book);
             changed = true;
         }
-        if market_diag_due(format!("refresh:{provider}:{market}"), MARKET_DIAG_FLOOR) {
+        if market_diag_enabled()
+            && market_diag_due(format!("refresh:{provider}:{market}"), MARKET_DIAG_FLOOR)
+        {
             let (ring_len, ring_total, book_len, last_price) = store
                 .view(provider, market)
                 .map(|v| (0, 0, v.book.len(), v.last_price))
@@ -368,6 +422,27 @@ impl MarketDataSource {
             (provider, client)
         };
         Some((provider, client.snapshot_revision().unwrap_or(0)))
+    }
+
+    /// Cheap per-market wake revision for a consumer core.
+    ///
+    /// This is terminal-owned causality, not a MoonProto storage policy:
+    /// feed threads mark the markets touched by domain events, and visible
+    /// charts compare this one number before pulling retained rows or books.
+    pub fn market_revision(&self, core: CoreId, market: &str) -> Option<(CoreId, u64)> {
+        let inner = self.inner.read().expect("market source poisoned");
+        let provider = inner.core_provider.get(&core).copied()?;
+        let generation = inner
+            .provider_generations
+            .get(&provider)
+            .copied()
+            .unwrap_or(0);
+        let revision = inner
+            .market_revisions
+            .get(&(provider, market.to_string()))
+            .copied()
+            .unwrap_or(0);
+        Some((provider, mix_pair(generation, revision)))
     }
 
     pub fn read_chart_history_into(
@@ -406,7 +481,12 @@ impl MarketDataSource {
             read.combo_capacity = reader.capacity();
             let reset = force_reset || cursor.trades.is_none();
             if reset {
-                reader.copy_last(reader.capacity(), &mut cursor.trade_rows);
+                reader.copy_time_range(
+                    from_time,
+                    to_time,
+                    reader.capacity(),
+                    &mut cursor.trade_rows,
+                );
                 cursor.trades = Some(reader.cursor_from_now());
                 read.combo_reset = true;
                 read.caught_up = true;
@@ -415,7 +495,12 @@ impl MarketDataSource {
                 read.clipped |= meta.clipped;
                 read.caught_up &= meta.caught_up;
                 if meta.clipped {
-                    reader.copy_last(reader.capacity(), &mut cursor.trade_rows);
+                    reader.copy_time_range(
+                        from_time,
+                        to_time,
+                        reader.capacity(),
+                        &mut cursor.trade_rows,
+                    );
                     cursor.trades = Some(reader.cursor_from_now());
                     read.combo_reset = true;
                 }
@@ -462,7 +547,12 @@ impl MarketDataSource {
                 changed = meta.copied > 0 || meta.clipped;
             }
             if changed {
-                reader.copy_last(reader.capacity(), &mut cursor.last_price_rows);
+                reader.copy_time_range(
+                    from_time,
+                    to_time,
+                    reader.capacity(),
+                    &mut cursor.last_price_rows,
+                );
                 last_rows_to_points(&cursor.last_price_rows, &mut out.last_points);
                 read.price_lines_changed = true;
             }
@@ -484,7 +574,12 @@ impl MarketDataSource {
                 changed = meta.copied > 0 || meta.clipped;
             }
             if changed {
-                reader.copy_last(reader.capacity(), &mut cursor.mark_price_rows);
+                reader.copy_time_range(
+                    from_time,
+                    to_time,
+                    reader.capacity(),
+                    &mut cursor.mark_price_rows,
+                );
                 mark_rows_to_points(&cursor.mark_price_rows, &mut out.mark_points);
                 read.price_lines_changed = true;
             }

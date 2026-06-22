@@ -78,34 +78,34 @@ impl OrderBookModel {
         // стакан рисуется обычными непрозрачными прямоугольниками по видимой цене.
         let mut max_qty = 1e-6_f32;
         let mut max_cum = 1e-6_f32;
+        let mut visible: Vec<&RawLevel> = Vec::new();
         for r in &self.raw {
             if !level_overlaps(r, lo, hi) {
                 continue;
             }
             max_qty = max_qty.max(r.qty);
             max_cum = max_cum.max(r.cum);
+            visible.push(r);
         }
 
-        for r in &self.raw {
-            if !level_overlaps(r, lo, hi) {
-                continue;
-            }
+        let inv_max_cum = 1.0 / max_cum.max(1e-6);
+        let inv_max_qty = 1.0 / max_qty.max(1e-6);
+        out.reserve(visible.len().saturating_mul(2));
+
+        for r in &visible {
             out.push(LevelInstance {
                 price: r.price,
                 span: r.span,
-                len_norm: (r.cum / max_cum).clamp(0.0, 1.0),
+                len_norm: (r.cum * inv_max_cum).clamp(0.0, 1.0),
                 kind: if r.is_ask { 1.0 } else { 0.0 },
             });
         }
 
-        for r in &self.raw {
-            if !level_overlaps(r, lo, hi) {
-                continue;
-            }
+        for r in visible {
             out.push(LevelInstance {
                 price: r.price,
                 span: r.span,
-                len_norm: (r.qty / max_qty).clamp(0.0, 1.0) * 0.85,
+                len_norm: (r.qty * inv_max_qty).clamp(0.0, 1.0) * 0.85,
                 kind: if r.is_ask { 3.0 } else { 2.0 },
             });
         }

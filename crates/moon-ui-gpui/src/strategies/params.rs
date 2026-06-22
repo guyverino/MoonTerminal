@@ -107,7 +107,12 @@ impl StrategiesView {
                 h_flex()
                     .items_center()
                     .gap_2()
-                    .child(div().text_size(design::t_body(cx)).text_color(moon(p.text_muted)).child(count))
+                    .child(
+                        div()
+                            .text_size(design::t_body(cx))
+                            .text_color(moon(p.text_muted))
+                            .child(count),
+                    )
                     .when(dirty > 0, |row| {
                         row.child(
                             MoonButton::new("strat-fields-apply")

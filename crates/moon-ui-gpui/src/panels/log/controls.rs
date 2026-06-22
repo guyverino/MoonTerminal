@@ -40,16 +40,11 @@ impl LogPanel {
     }
 
     /// Комбобокс файла (Live + прошлые файлы) — только для одиночного источника.
-    pub(super) fn file_combo(
-        &self,
-        sources: &[LogSourceItem],
-        cx: &Context<Self>,
-    ) -> impl IntoElement {
+    pub(super) fn file_combo(&self, files: &[String], cx: &Context<Self>) -> impl IntoElement {
         let cur = match &self.file {
             LogFile::Live => t!("log.live").to_string(),
             LogFile::Named(n) => n.clone(),
         };
-        let label = self.file_label(sources);
         let view = cx.entity();
         let mut items = vec![
             MoonMenuItem::with_key("lf-live", t!("log.live").to_string())
@@ -61,12 +56,12 @@ impl LogPanel {
                     }
                 }),
         ];
-        for f in applog::list_files(&label) {
-            let selected = matches!(&self.file, LogFile::Named(name) if name == &f);
+        for f in files {
+            let selected = matches!(&self.file, LogFile::Named(name) if name == f);
             let view = view.clone();
             let file = f.clone();
             items.push(
-                MoonMenuItem::with_key(SharedString::from(format!("lf-{f}")), f)
+                MoonMenuItem::with_key(SharedString::from(format!("lf-{f}")), f.clone())
                     .selected(selected)
                     .on_click(move |_, _, app| {
                         let file = file.clone();

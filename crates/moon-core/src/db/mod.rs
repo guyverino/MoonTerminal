@@ -291,7 +291,7 @@ pub fn spawn_writer() -> Option<ReportsHandle> {
     }
     let generation = Arc::new(AtomicU64::new(0));
     let gen_writer = generation.clone();
-    std::thread::Builder::new()
+    if let Err(e) = std::thread::Builder::new()
         .name("reports-db".into())
         .spawn(move || {
             log::info!("отчёты: writer запущен ({})", path.display());
@@ -316,7 +316,10 @@ pub fn spawn_writer() -> Option<ReportsHandle> {
             }
             log::info!("отчёты: writer завершён");
         })
-        .expect("spawn reports-db thread");
+    {
+        log::error!("отчёты: не удалось запустить writer thread: {e}");
+        return None;
+    }
     Some(ReportsHandle { tx, generation })
 }
 

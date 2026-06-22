@@ -41,7 +41,7 @@ pub struct ChartInput {
     wheel_accum: f32,
     wheel_pane: Option<usize>,
     rmb_down: bool,
-    /// ПКМ сдвинулся за порог → зум-перетаскивание, а не клик-тоггл фулскрина.
+    /// ПКМ сдвинулся за порог → зум-перетаскивание цены.
     rmb_moved: bool,
     rmb_start_y: f32,
     rmb_start_range: f32,
@@ -83,7 +83,7 @@ impl ChartInput {
         pane: Option<usize>,
     ) -> Option<&'c mut ChartView> {
         let idx = pane?;
-        container.panes.get_mut(idx).map(|p| &mut p.view)
+        container.view_mut(idx)
     }
 
     /// Двойной ЛКМ по чарту (не стакану) панели под курсором → запомнить монету.
@@ -97,7 +97,7 @@ impl ChartInput {
         if self.last_ptr.0 >= r.x + r.w - glass_w {
             return;
         }
-        self.pending_to_main = container.panes.get(idx).map(|p| (p.core, p.market.clone()));
+        self.pending_to_main = container.target(idx);
     }
 
     /// Колесо: зум по X (или пан по X при Shift) — у панели под курсором.
@@ -140,8 +140,9 @@ impl ChartInput {
     }
 
     /// Нажатие/отпускание кнопки. `gate_ok` — указатель в зоне графика (гейтит
-    /// только нажатия). ПКМ: короткий клик = тоггл фулскрин↔тайл; ПКМ-drag = зум
-    /// цены. `allow_dbl_to_main` — разрешён ли дабл-клик→Main. Возврат: «нужен кадр».
+    /// только нажатия). ПКМ-drag = зум цены; короткий ПКМ-клик ничего не переключает,
+    /// потому что один `ChartEngine` больше не имеет внутреннего tiled-режима.
+    /// `allow_dbl_to_main` — разрешён ли дабл-клик→Main. Возврат: «нужен кадр».
     pub fn mouse_button(
         &mut self,
         button: Btn,
@@ -206,17 +207,10 @@ impl ChartInput {
                         self.rmb_start_center = c;
                     }
                 } else {
-                    // Отпустили ПКМ без сдвига → клик: тоггл фулскрин/тайл.
-                    let toggled = self.rmb_down && !self.rmb_moved && !container.is_empty();
-                    if toggled {
-                        let focus = self.drag_pane.or(self.hovered_pane).unwrap_or(0);
-                        container.toggle_mode(focus);
-                    }
                     self.rmb_down = false;
                     if !self.lmb_down {
                         self.drag_pane = None;
                     }
-                    changed = toggled;
                 }
             }
         }

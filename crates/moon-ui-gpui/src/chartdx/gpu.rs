@@ -252,13 +252,6 @@ pub fn full_viewport(gpu: &RawGpuAccess) -> D3D11_VIEWPORT {
     }
 }
 
-pub fn d3d_device_ptr(gpu: &RawGpuAccess) -> *mut c_void {
-    match gpu {
-        RawGpuAccess::D3d11(access) => access.device.as_ptr(),
-        _ => std::ptr::null_mut(),
-    }
-}
-
 /// borrowed-каст raw-указателей хука (`RawGpuAccess`) в наши windows-rs COM-типы.
 /// Без AddRef — валидны только на время колбэка. Возвращает None, если хук пуст
 /// (не-D3D11 backend / device-lost кадр).

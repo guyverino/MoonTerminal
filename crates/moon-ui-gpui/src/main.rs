@@ -43,7 +43,6 @@ use gpui::*;
 
 use chartdx::ChartDataHandle;
 
-use moon_ui::components::Theme;
 use moon_ui::{DockAreaState, MoonTheme, MoonThemeConfig, Root, init as init_moon_ui};
 
 use moon_core::config::{AppConfig, WindowLayout};
@@ -86,15 +85,6 @@ pub(crate) fn moon_theme_config_for(cfg: &AppConfig) -> MoonThemeConfig {
 
 pub(crate) fn install_moon_theme_for_config(cfg: &AppConfig, cx: &mut App) {
     MoonTheme::install_config(moon_theme_config_for(cfg), cx);
-    // Каретка (мигающий курсор) инпутов: `caret` живёт в gpui-component `Theme.colors`
-    // (его ставит init), а не в `MoonPalette`. В дефолтной теме он фолбэчит на тёмный
-    // `primary`/`foreground` → курсор чёрный на чёрном (поле поиска в дереве стратегий).
-    // Ставим ВИДИМЫЙ цвет = основной текст активной MoonPalette (светлый на тёмном фоне).
-    // `install_config` зовётся и при смене настроек, поэтому оверрайд применяется заново.
-    if cx.has_global::<Theme>() {
-        let text = moon_ui::MoonPalette::active(cx).text;
-        cx.update_global::<Theme, _>(|t, _| t.colors.caret = gpui::rgb(text).into());
-    }
 }
 
 /// Общий backend: живёт в одном `Entity`, дренится таймером, будит окна по notify.
@@ -111,8 +101,16 @@ struct Backend {
     reports: Option<moon_core::db::ReportsHandle>,
     metrics: Metrics,
     snap: MetricsSnapshot,
-    /// Желаемые открытые рынки (ядро, рынок) — держим подписку через coordinator.
+    /// Желаемые открытые рынки (ядро, рынок) — derived view из `chart_market_refs`.
+    /// Снаружи чарт-панели держат owner/refcount, а не мутируют этот список руками.
     desired: Vec<(CoreId, String)>,
+    chart_market_refs: HashMap<(CoreId, String), usize>,
+    chart_market_refs_epoch: u64,
+    desired_open_dirty: bool,
+    last_open_sync: Instant,
+    /// Main fullscreen chart target by group. Panels such as Orders use this for
+    /// "current market"; AddToChart stacks are deliberately not part of that filter.
+    main_chart_targets: HashMap<String, (CoreId, String)>,
     /// Закоммиченный конфиг (тема/ордер-стиль/серверы) — то, что сохранено на диск.
     config: AppConfig,
     /// Черновик окна настроек (draft) — Some, пока окно открыто. Группы-окна, если
@@ -156,6 +154,8 @@ struct Backend {
     /// это поле = «масштаб активной вкладки» (ChartTabs синхронит для показа в тулбаре; тулбар
     /// при выборе бампает `price_scale_rev` → ChartTabs применяет к активной панели).
     price_scale: Option<f32>,
+    /// Группа окна, для которой сделан последний toolbar scale request.
+    price_scale_group: Option<String>,
     /// Ревизия запроса масштаба из тулбара: ++ при выборе в дропдауне. ChartTabs применяет
     /// `price_scale` к АКТИВНОЙ панели, когда rev вырос (а не каждый кадр).
     price_scale_rev: u64,
@@ -249,6 +249,76 @@ impl Backend {
     fn live_chart_consumers(&mut self) -> Vec<ChartDataHandle> {
         self.chart_consumers.retain(ChartDataHandle::is_alive);
         self.chart_consumers.clone()
+    }
+
+    fn set_main_chart_target(&mut self, group: &str, target: Option<(CoreId, String)>) {
+        match target {
+            Some(target) => {
+                self.main_chart_targets.insert(group.to_string(), target);
+            }
+            None => {
+                self.main_chart_targets.remove(group);
+            }
+        }
+    }
+
+    fn main_chart_target(&self, group: &str) -> Option<(CoreId, String)> {
+        self.main_chart_targets.get(group).cloned()
+    }
+
+    fn retain_chart_market(&mut self, core: CoreId, market: &str) {
+        let key = (core, market.to_string());
+        *self.chart_market_refs.entry(key).or_insert(0) += 1;
+        self.rebuild_desired_markets();
+    }
+
+    fn release_chart_market(&mut self, core: CoreId, market: &str) {
+        let key = (core, market.to_string());
+        let mut remove = false;
+        if let Some(count) = self.chart_market_refs.get_mut(&key) {
+            debug_assert!(*count > 0, "chart market refcount over-release");
+            *count = count.saturating_sub(1);
+            remove = *count == 0;
+        } else {
+            debug_assert!(false, "chart market refcount release without owner");
+        }
+        if remove {
+            self.chart_market_refs.remove(&key);
+        }
+        self.rebuild_desired_markets();
+    }
+
+    fn reset_chart_market_refs(&mut self) {
+        self.chart_market_refs.clear();
+        self.desired.clear();
+        self.chart_market_refs_epoch = self.chart_market_refs_epoch.wrapping_add(1);
+        self.desired_open_dirty = true;
+    }
+
+    fn rebuild_desired_markets(&mut self) {
+        let mut desired: Vec<(CoreId, String)> = self
+            .chart_market_refs
+            .iter()
+            .filter_map(|((core, market), count)| (*count > 0).then(|| (*core, market.clone())))
+            .collect();
+        desired.sort_unstable_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+        if self.desired != desired {
+            self.desired = desired;
+            self.desired_open_dirty = true;
+        }
+    }
+
+    fn sync_open_markets_if_due(&mut self) {
+        let now = Instant::now();
+        // The 1s fallback is intentional: provider-side linger/drop/failover is
+        // wall-clock based. The hot path itself is the boolean dirty flag; we no
+        // longer hash the whole desired market list every 100ms.
+        let due = now.duration_since(self.last_open_sync) >= Duration::from_secs(1);
+        if self.desired_open_dirty || due {
+            self.desired_open_dirty = false;
+            self.last_open_sync = now;
+            self.session.set_open(&self.desired);
+        }
     }
 
     fn mark_backend_dirty(&mut self, cx: &mut Context<Self>) {
@@ -434,6 +504,11 @@ fn main() -> anyhow::Result<()> {
             // set_open всё равно избирает провайдера/биржу на старте → subscribe_all_trades
             // (ретейн всех трейдов биржи — как было; ради мгновенного открытия монеты).
             desired: Vec::new(),
+            chart_market_refs: HashMap::new(),
+            chart_market_refs_epoch: 0,
+            desired_open_dirty: true,
+            last_open_sync: Instant::now() - Duration::from_secs(10),
+            main_chart_targets: HashMap::new(),
             config: cfg.clone(),
             preview: None,
             open_request: None,
@@ -457,6 +532,7 @@ fn main() -> anyhow::Result<()> {
             dock_states,
             dock_dirty: false,
             price_scale: None,
+            price_scale_group: None,
             price_scale_rev: 0,
             follow: true,
             order_size_sel: HashMap::new(),
@@ -586,8 +662,8 @@ fn main() -> anyhow::Result<()> {
                             return;
                         }
                         if drain.chart_data {
-                            let desired = b.desired.clone();
-                            b.session.refresh_market_data_for_open(&desired);
+                            b.session
+                                .refresh_market_data_for_dirty(&drain.chart_markets);
                             if drain.ui_state {
                                 let chart_consumers = b.live_chart_consumers();
                                 for chart in chart_consumers {
@@ -617,7 +693,7 @@ fn main() -> anyhow::Result<()> {
                 cx.update(|cx| {
                     let (show_reqs, open_debug_10) = coord_backend.update(cx, |b, cx| {
                         b.maybe_diag_open_first_market(cx);
-                        b.session.set_open(&b.desired);
+                        b.sync_open_markets_if_due();
                         b.snap = b.metrics.sample(Instant::now());
                         crate::firetest::tick_backend(b, cx);
 
@@ -705,7 +781,13 @@ fn main() -> anyhow::Result<()> {
         // detached на старте.
         let specs = backend.read(cx).detached.clone();
         for spec in &specs {
-            detached::spawn(cx, &backend, spec, None);
+            if let Err(err) = detached::spawn(cx, &backend, spec, None) {
+                log::warn!(
+                    "restore detached panel failed group={} panel={}: {err:#}",
+                    spec.group,
+                    spec.panel
+                );
+            }
         }
     });
     Ok(())

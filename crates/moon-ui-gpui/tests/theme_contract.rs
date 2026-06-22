@@ -225,7 +225,7 @@ fn terminal_overlays_use_moonui_window_layers_and_moon_components() {
 
     assert!(
         assets_wallets.contains("WindowExt as _")
-            && assets_wallets.contains("window.open_unique_dialog(")
+            && assets_wallets.contains("window.open_unique_moon_dialog(")
             && assets_wallets.contains(".close_button(true)")
             && !assets_mod.contains("self.transfer_dialog(")
             && !assets_wallets.contains("fn transfer_dialog("),
@@ -233,7 +233,7 @@ fn terminal_overlays_use_moonui_window_layers_and_moon_components() {
     );
     assert!(
         strategies_tree.contains("WindowExt as _")
-            && strategies_tree.contains("window.open_unique_dialog(")
+            && strategies_tree.contains("window.open_unique_moon_dialog(")
             && strategies_tree.contains("fn op_has_close_button(")
             && !strategies_tree.contains("fn op_overlay(")
             && !strategies_mod.contains("op_overlay(cx)")

@@ -43,8 +43,8 @@ pub struct ChartTabs {
     group: String,
     epoch: f64,
     theme: ChartTheme,
-    /// Main-чарт (вкладка Main).
-    main: Entity<ChartPanel>,
+    /// Main-чарты: несколько рынков как stack отдельных `ChartPanel`, активный — fullscreen.
+    main: Entity<MainChartStack>,
     /// AddToChart-вкладки (номер, bucket, стек графиков), отсортированы по (номер, bucket).
     add: Vec<(u32, ChartBucket, Entity<AddChartStack>)>,
     /// Откреплённые в своё ОС-окно вкладки — держим Entity, чтобы при закрытии окна
@@ -67,7 +67,370 @@ pub struct ChartTabs {
     /// Откреп-вкладки на восстановление при загрузке (из charts.json): создаём их пустыми и
     /// открываем окна на ПЕРВОМ render (не в конструкторе окна группы — нельзя вложенно).
     restore_pending: Vec<(u32, ChartBucket, chart_persist::WinGeom, Option<f32>)>,
+    /// Handle окна группы. Backend-observe callbacks не получают `&mut Window`, но open/activate
+    /// и restore detached окон должны жить вне `render()`.
+    window_handle: AnyWindowHandle,
     focus: FocusHandle,
+}
+
+struct MainChartEntry {
+    core: CoreId,
+    market: String,
+    panel: Entity<ChartPanel>,
+}
+
+/// Main-вкладка: один рынок = один отдельный `ChartPanel`/`gpu_canvas`.
+/// Обычный клик по рынку в таблицах открывает/фокусирует его fullscreen. ПКМ в зоне стакана
+/// текущего графика переключает fullscreen ↔ весь stack, не возвращая несколько рынков внутрь
+/// одного `ChartEngine`.
+pub(crate) struct MainChartStack {
+    backend: Entity<Backend>,
+    group: String,
+    epoch: f64,
+    theme: ChartTheme,
+    charts: Vec<MainChartEntry>,
+    active: Option<usize>,
+    show_stack: bool,
+    viewport_h: f32,
+    scale: Option<f32>,
+    scroll: MoonVirtualListScrollHandle,
+}
+
+impl MainChartStack {
+    fn new(
+        backend: Entity<Backend>,
+        group: String,
+        focus_open: Option<(CoreId, String)>,
+        epoch: f64,
+        theme: ChartTheme,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut this = Self {
+            backend,
+            group,
+            epoch,
+            theme,
+            charts: Vec::new(),
+            active: None,
+            show_stack: false,
+            viewport_h: 0.0,
+            scale: None,
+            scroll: MoonVirtualListScrollHandle::new(),
+        };
+        if let Some((core, market)) = focus_open {
+            this.open_or_focus(core, market, cx);
+        }
+        this
+    }
+
+    fn create_panel(
+        &self,
+        core: CoreId,
+        market: &str,
+        cx: &mut Context<Self>,
+    ) -> Entity<ChartPanel> {
+        let backend = self.backend.clone();
+        let epoch = self.epoch;
+        let theme = self.theme.clone();
+        let market = market.to_string();
+        let panel =
+            cx.new(|cx| ChartPanel::new_main(backend, Some((core, market)), epoch, theme, cx));
+        cx.observe(&panel, |this, _, cx| {
+            if this.prune_empty(cx) {
+                this.sync_visibility(cx);
+                this.sync_backend_active(cx);
+                cx.notify();
+            }
+        })
+        .detach();
+        if self.scale.is_some() {
+            panel.update(cx, |panel, pcx| panel.set_scale(self.scale, pcx));
+        }
+        panel
+    }
+
+    fn open_or_focus(&mut self, core: CoreId, market: String, cx: &mut Context<Self>) {
+        if let Some(ix) = self
+            .charts
+            .iter()
+            .position(|entry| entry.core == core && entry.market == market)
+        {
+            self.active = Some(ix);
+            self.show_stack = false;
+            self.sync_visibility(cx);
+            self.sync_backend_active(cx);
+            cx.notify();
+            return;
+        }
+
+        let panel = self.create_panel(core, &market, cx);
+        self.charts.push(MainChartEntry {
+            core,
+            market,
+            panel,
+        });
+        self.active = Some(self.charts.len() - 1);
+        self.show_stack = false;
+        self.sync_visibility(cx);
+        self.sync_backend_active(cx);
+        cx.notify();
+    }
+
+    fn prune_empty(&mut self, cx: &App) -> bool {
+        let before = self.charts.len();
+        let active_key = self
+            .active
+            .and_then(|ix| self.charts.get(ix))
+            .map(|entry| (entry.core, entry.market.clone()));
+        self.charts
+            .retain(|entry| entry.panel.read(cx).pane_count() > 0);
+        if self.charts.is_empty() {
+            self.active = None;
+            self.show_stack = false;
+        } else {
+            self.active = active_key
+                .and_then(|(core, market)| {
+                    self.charts
+                        .iter()
+                        .position(|entry| entry.core == core && entry.market == market)
+                })
+                .or_else(|| Some(self.active.unwrap_or(0).min(self.charts.len() - 1)));
+        }
+        self.charts.len() != before
+    }
+
+    pub(crate) fn scale(&self) -> Option<f32> {
+        self.scale
+    }
+
+    pub(crate) fn set_scale(&mut self, pct: Option<f32>, cx: &mut Context<Self>) {
+        if self.scale == pct {
+            return;
+        }
+        self.scale = pct;
+        for entry in &self.charts {
+            entry
+                .panel
+                .update(cx, |panel, pcx| panel.set_scale(pct, pcx));
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn active_target(&self, cx: &App) -> Option<(CoreId, String)> {
+        self.active
+            .and_then(|ix| self.charts.get(ix))
+            .and_then(|entry| entry.panel.read(cx).active_target())
+    }
+
+    #[cfg(any(debug_assertions, moon_profile_debug, feature = "debug-tools"))]
+    pub(crate) fn debug_data_handle(&self, cx: &App) -> Option<crate::chartdx::ChartDataHandle> {
+        self.active
+            .and_then(|ix| self.charts.get(ix))
+            .map(|entry| entry.panel.read(cx).debug_data_handle())
+    }
+
+    #[cfg(any(debug_assertions, moon_profile_debug, feature = "debug-tools"))]
+    pub(crate) fn debug_fill_history_to_capacity(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(ix) = self.active else {
+            log::warn!("debug fill main chart: no active main chart");
+            return false;
+        };
+        let Some(entry) = self.charts.get(ix) else {
+            log::warn!("debug fill main chart: active main chart index is stale");
+            return false;
+        };
+        entry
+            .panel
+            .update(cx, |panel, pcx| panel.debug_fill_history_to_capacity(pcx))
+    }
+
+    fn set_scene_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
+        if visible {
+            self.sync_visibility(cx);
+        } else {
+            for entry in &self.charts {
+                entry.panel.update(cx, |panel, _| {
+                    panel.set_main_stack_scroll(false);
+                    panel.set_scene_visible(false);
+                });
+            }
+        }
+    }
+
+    fn sync_visibility(&mut self, cx: &mut Context<Self>) {
+        for (ix, entry) in self.charts.iter().enumerate() {
+            // Fullscreen: ровно активный график видим. Stack: конкретные видимые tiles
+            // сами выставят visible=true в `ChartPanel::render`; offscreen элементы
+            // виртуального списка остаются false и не гоняют prepare.
+            let visible = !self.show_stack && Some(ix) == self.active;
+            let stack_scroll = self.show_stack;
+            entry.panel.update(cx, |panel, _| {
+                panel.set_main_stack_scroll(stack_scroll);
+                panel.set_scene_visible(visible);
+            });
+        }
+    }
+
+    fn sync_backend_active(&self, cx: &mut Context<Self>) {
+        let target = self.active_target(cx);
+        self.backend
+            .update(cx, |b, _| b.set_main_chart_target(&self.group, target));
+        #[cfg(any(debug_assertions, moon_profile_debug, feature = "debug-tools"))]
+        {
+            if let Some(handle) = self.debug_data_handle(cx) {
+                self.backend.update(cx, |b, _| {
+                    b.register_debug_main_chart(self.group.clone(), handle);
+                });
+            }
+        }
+    }
+
+    fn toggle_from_chart(&mut self, ix: usize, cx: &mut Context<Self>) {
+        if ix >= self.charts.len() {
+            return;
+        }
+        self.active = Some(ix);
+        self.show_stack = !self.show_stack;
+        self.sync_visibility(cx);
+        self.sync_backend_active(cx);
+        cx.notify();
+    }
+
+    fn stack_item_height(&self, window: &Window) -> f32 {
+        let fallback_h = (f32::from(window.viewport_size().height) - CHART_TAB_STRIP_H).max(1.0);
+        let viewport_h = if self.viewport_h >= 1.0 {
+            self.viewport_h
+        } else {
+            fallback_h
+        };
+        let visible_slots = self.charts.len().clamp(1, 2) as f32;
+        (viewport_h / visible_slots).max(1.0)
+    }
+
+    fn viewport_probe(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let entity = cx.entity();
+        canvas(
+            |bounds, _, _| bounds,
+            move |bounds, _, _window, app| {
+                let h = f32::from(bounds.size.height).max(1.0);
+                let _ = entity.update(app, |this, cx| {
+                    if (this.viewport_h - h).abs() >= 1.0 {
+                        this.viewport_h = h;
+                        cx.notify();
+                    }
+                });
+            },
+        )
+        .absolute()
+        .size_full()
+    }
+
+    fn render_tile(
+        &self,
+        ix: usize,
+        panel: Entity<ChartPanel>,
+        height: Option<f32>,
+        flex: bool,
+        border: Rgba,
+        entity: Entity<Self>,
+    ) -> Stateful<Div> {
+        let panel_for_event = panel.clone();
+        let mut tile = div()
+            .id(("main-chart-stack-tile", ix))
+            .w_full()
+            .relative()
+            .overflow_hidden()
+            .border_1()
+            .border_color(border)
+            .on_mouse_up(
+                MouseButton::Right,
+                move |event: &MouseUpEvent, _window, app| {
+                    if panel_for_event
+                        .read(app)
+                        .window_pos_in_glass_zone(event.position)
+                    {
+                        entity.update(app, |this, cx| this.toggle_from_chart(ix, cx));
+                        app.stop_propagation();
+                    }
+                },
+            );
+        if let Some(height) = height {
+            tile = tile.h(px(height));
+        }
+        if flex {
+            tile = tile.flex_1().min_h(px(0.0));
+        }
+        tile.child(div().size_full().relative().overflow_hidden().child(panel))
+    }
+}
+
+impl Render for MainChartStack {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = moon_ui::MoonPalette::active(cx);
+        if self.charts.is_empty() {
+            return div()
+                .relative()
+                .size_full()
+                .bg(rgb(palette.chart_bg))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(crate::design::logo_glow_sized(220.0))
+                .child(self.viewport_probe(cx))
+                .into_any_element();
+        }
+
+        let active = self.active.unwrap_or(0).min(self.charts.len() - 1);
+        if !self.show_stack {
+            let panel = self.charts[active].panel.clone();
+            let entity = cx.entity();
+            return self
+                .render_tile(active, panel, None, false, rgb(palette.border), entity)
+                .size_full()
+                .border_0()
+                .into_any_element();
+        }
+
+        let stack_h = self.stack_item_height(window);
+        let weak = cx.entity().downgrade();
+        let count = self.charts.len();
+        let border = rgb(palette.border);
+        let group = self.group.clone();
+        let scrollbar_visibility = if count > 2 {
+            MoonScrollbarVisibility::Always
+        } else {
+            MoonScrollbarVisibility::Hidden
+        };
+        let list = MoonVirtualList::new(
+            format!("main-chart-stack-vlist-{group}"),
+            count,
+            stack_h,
+            move |ix, _window, app| {
+                let Some(entity) = weak.upgrade() else {
+                    return div().into_any_element();
+                };
+                let Some(panel) = entity.read(app).charts.get(ix).map(|e| e.panel.clone()) else {
+                    return div().into_any_element();
+                };
+                entity
+                    .read(app)
+                    .render_tile(ix, panel, Some(stack_h), false, border, entity.clone())
+                    .into_any_element()
+            },
+        )
+        .track_scroll(&self.scroll)
+        .surface(false)
+        .border(false)
+        .radius(0.0)
+        .scrollbar_visibility(scrollbar_visibility);
+        div()
+            .id(format!("main-chart-stack-scroll-{}", self.group))
+            .relative()
+            .size_full()
+            .child(list)
+            .child(self.viewport_probe(cx))
+            .into_any_element()
+    }
 }
 
 struct AddChartEntry {
@@ -130,6 +493,12 @@ impl AddChartStack {
         let theme = self.theme.clone();
         let scale = self.scale;
         let panel = cx.new(|cx| ChartPanel::new_addto(backend, num, bucket, epoch, theme, cx));
+        cx.observe(&panel, |this, _, cx| {
+            if this.prune_empty(cx) {
+                cx.notify();
+            }
+        })
+        .detach();
         if scale.is_some() {
             panel.update(cx, |panel, pcx| panel.set_scale(scale, pcx));
         }
@@ -142,9 +511,11 @@ impl AddChartStack {
         cx.notify();
     }
 
-    fn prune_empty(&mut self, cx: &App) {
+    fn prune_empty(&mut self, cx: &App) -> bool {
+        let before = self.charts.len();
         self.charts
             .retain(|entry| entry.panel.read(cx).pane_count() > 0);
+        self.charts.len() != before
     }
 
     pub(crate) fn pane_count(&self, cx: &App) -> usize {
@@ -192,7 +563,6 @@ impl AddChartStack {
 
 impl Render for AddChartStack {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.prune_empty(cx);
         let palette = moon_ui::MoonPalette::active(cx);
         if self.charts.is_empty() {
             // Непрозрачный фон: в выносном окне Root=NoFill и own-pass нет → без фона
@@ -315,22 +685,23 @@ impl ChartTabs {
         cx: &mut Context<Self>,
     ) -> Self {
         let main = cx.new(|cx| {
-            ChartPanel::new(
+            MainChartStack::new(
                 backend.clone(),
+                group.clone(),
                 focus_open,
                 epoch,
                 theme.clone(),
-                window,
                 cx,
             )
         });
         let initial_sig = chart_tabs_sig(backend.read(cx), &group);
         #[cfg(any(debug_assertions, moon_profile_debug, feature = "debug-tools"))]
         {
-            let main_handle = main.read(cx).debug_data_handle();
-            backend.update(cx, |b, _| {
-                b.register_debug_main_chart(group.clone(), main_handle);
-            });
+            if let Some(main_handle) = main.read(cx).debug_data_handle(cx) {
+                backend.update(cx, |b, _| {
+                    b.register_debug_main_chart(group.clone(), main_handle);
+                });
+            }
         }
         // Из charts.json: масштаб Main (num=0) и список откреп-вкладок этой группы на
         // восстановление (создадим пустыми на первом render → ждут детект).
@@ -352,13 +723,25 @@ impl ChartTabs {
         }
         cx.observe(&backend, |this, backend, cx| {
             let sig = chart_tabs_sig(backend.read(cx), &this.group);
-            if sig != this.last_sig {
-                this.last_sig = sig;
-                cx.notify();
+            if sig == this.last_sig {
+                return;
             }
+            this.last_sig = sig;
+            #[cfg(any(debug_assertions, moon_profile_debug, feature = "debug-tools"))]
+            this.drain_debug_fill_main_chart(cx);
+            this.handle_open_request(cx);
+            this.ingest(cx);
+            this.drain_chart_repin(cx);
+            this.sync_active_scale(cx);
+            this.sync_main_chart_target(cx);
+            this.sync_seen_for_active(cx);
+            this.persist_scales(cx);
+            this.sync_inactive_chart_visibility(cx);
+            this.last_sig = chart_tabs_sig(backend.read(cx), &this.group);
+            cx.notify();
         })
         .detach();
-        Self {
+        let mut this = Self {
             backend,
             group,
             epoch,
@@ -372,11 +755,17 @@ impl ChartTabs {
             last_sig: initial_sig,
             last_scale_rev: 0,
             restore_pending,
+            window_handle: window.window_handle(),
             focus: cx.focus_handle(),
-        }
+        };
+        this.restore_detached(cx);
+        this.sync_active_scale(cx);
+        this.sync_main_chart_target(cx);
+        this.persist_scales(cx);
+        this
     }
 
-    fn handle_open_request(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn handle_open_request(&mut self, cx: &mut Context<Self>) {
         let pending = {
             let b = self.backend.read(cx);
             b.open_request
@@ -401,15 +790,23 @@ impl ChartTabs {
         });
         if let Some((core, market, activate)) = req {
             self.main
-                .update(cx, |p, pcx| p.open_market(core, market, pcx));
+                .update(cx, |p, pcx| p.open_or_focus(core, market, pcx));
             self.active = Tab::Main;
             self.last_sig = chart_tabs_sig(self.backend.read(cx), self.group.as_str());
             // П.1: поднимаем/фокусируем окно Main ТОЛЬКО для дабл-клика по чарту
             // (open_request_activate). Клики в Ордерах/Детектах открывают монету, но окно
             // не активируют — иначе любой клик дёргал бы окно на передний план.
             if activate {
-                window.activate_window();
+                let handle = self.window_handle;
+                cx.defer(move |app| {
+                    let _ = handle.update(app, |_, window, _| window.activate_window());
+                });
             }
+            self.sync_inactive_chart_visibility(cx);
+            self.sync_seen_for_active(cx);
+            self.sync_active_scale(cx);
+            self.sync_main_chart_target(cx);
+            self.persist_scales(cx);
         }
     }
 
@@ -451,7 +848,7 @@ impl ChartTabs {
     /// Ключ вкладки — `ChartBucket` ядра (своё ядро / общая / именованная связка),
     /// резолвится из конфига ядра + глоб. `charts_split_by_core`.
     /// БЕЗ авто-перехода: active не трогаем (порт «не уводить на чарт при детекте»).
-    fn ingest(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+    fn ingest(&mut self, cx: &mut Context<Self>) {
         let (split, fresh, cursors): (
             bool,
             Vec<(u32, CoreId, ChartBucket, String, f64)>,
@@ -519,11 +916,6 @@ impl ChartTabs {
         ));
         let (epoch, theme, backend) = (self.epoch, self.theme.clone(), self.backend.clone());
         for (n, core, bucket, market, ttl) in fresh {
-            backend.update(cx, |b, _| {
-                if !b.desired.iter().any(|(c, m)| *c == core && m == &market) {
-                    b.desired.push((core, market.clone()));
-                }
-            });
             let in_detached = self
                 .detached
                 .iter()
@@ -570,6 +962,8 @@ impl ChartTabs {
                 // active НЕ меняем — не уводим пользователя на новую вкладку.
             }
         }
+        self.sync_seen_for_active(cx);
+        self.persist_scales(cx);
     }
 
     fn add_stack(&self, n: u32, bucket: &ChartBucket) -> Option<Entity<AddChartStack>> {
@@ -600,6 +994,24 @@ impl ChartTabs {
         }
     }
 
+    fn main_chart_target(&self, cx: &App) -> Option<(CoreId, String)> {
+        self.main.read(cx).active_target(cx)
+    }
+
+    fn sync_main_chart_target(&self, cx: &mut Context<Self>) {
+        let target = self.main_chart_target(cx);
+        self.backend
+            .update(cx, |b, _| b.set_main_chart_target(&self.group, target));
+        #[cfg(any(debug_assertions, moon_profile_debug, feature = "debug-tools"))]
+        {
+            if let Some(handle) = self.main.read(cx).debug_data_handle(cx) {
+                self.backend.update(cx, |b, _| {
+                    b.register_debug_main_chart(self.group.clone(), handle)
+                });
+            }
+        }
+    }
+
     fn set_active_scale(&self, pct: Option<f32>, cx: &mut Context<Self>) {
         match &self.active {
             Tab::Main => self.main.update(cx, |p, pcx| p.set_scale(pct, pcx)),
@@ -621,14 +1033,45 @@ impl ChartTabs {
     /// гонять CPU prepare. Активная/откреплённая панель сама выставит visible=true в своём render.
     fn sync_inactive_chart_visibility(&self, cx: &mut Context<Self>) {
         let active = self.active.clone();
-        if !matches!(active, Tab::Main) {
+        if matches!(active, Tab::Main) {
             self.main
-                .update(cx, |panel, _| panel.set_scene_visible(false));
+                .update(cx, |panel, pcx| panel.set_scene_visible(true, pcx));
+        } else {
+            self.main
+                .update(cx, |panel, pcx| panel.set_scene_visible(false, pcx));
         }
         for (n, c, panel) in &self.add {
             if Tab::Add(*n, c.clone()) != active {
                 panel.update(cx, |panel, pcx| panel.set_scene_visible(false, pcx));
             }
+        }
+    }
+
+    fn sync_seen_for_active(&mut self, cx: &App) {
+        if let Tab::Add(n, c) = self.active.clone() {
+            if let Some((_, _, panel)) = self.add.iter().find(|(num, cc, _)| *num == n && *cc == c)
+            {
+                let cnt = panel.read(cx).pane_count(cx);
+                self.seen.insert((n, c), cnt);
+            }
+        }
+    }
+
+    fn sync_active_scale(&mut self, cx: &mut Context<Self>) {
+        let (rev, want) = {
+            let b = self.backend.read(cx);
+            (b.price_scale_rev, b.price_scale)
+        };
+        if rev != self.last_scale_rev {
+            self.last_scale_rev = rev;
+            self.set_active_scale(want, cx);
+        } else {
+            let cur = self.active_scale(cx);
+            self.backend.update(cx, |b, _| {
+                if b.price_scale != cur {
+                    b.price_scale = cur;
+                }
+            });
         }
     }
 }
@@ -656,6 +1099,18 @@ fn chart_tabs_sig(b: &Backend, group: &str) -> u64 {
     sig = sig
         .wrapping_mul(31)
         .wrapping_add(u64::from(b.config.chart_stack_height));
+    if b.price_scale_group.as_deref() == Some(group) {
+        sig = sig.wrapping_mul(31).wrapping_add(b.price_scale_rev);
+    }
+    for (g, n, bucket) in &b.chart_repin_request {
+        if g == group {
+            sig = sig
+                .wrapping_mul(31)
+                .wrapping_add(*n as u64)
+                .wrapping_mul(31)
+                .wrapping_add(text_sig(&format!("{bucket:?}")));
+        }
+    }
     #[cfg(any(debug_assertions, moon_profile_debug, feature = "debug-tools"))]
     if b.debug_fill_main_chart_group.as_deref() == Some(group) {
         sig = sig
@@ -667,6 +1122,15 @@ fn chart_tabs_sig(b: &Backend, group: &str) -> u64 {
         if let Some(d) = store.core(s.id) {
             sig = sig.wrapping_mul(31).wrapping_add(d.detects_rev);
         }
+    }
+    sig
+}
+
+fn text_sig(text: &str) -> u64 {
+    let mut sig = 0xcbf29ce484222325u64;
+    for byte in text.bytes() {
+        sig ^= byte as u64;
+        sig = sig.wrapping_mul(0x100000001b3);
     }
     sig
 }
@@ -702,48 +1166,6 @@ impl Panel for ChartTabs {
 
 impl Render for ChartTabs {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        #[cfg(any(debug_assertions, moon_profile_debug, feature = "debug-tools"))]
-        self.drain_debug_fill_main_chart(cx);
-        self.handle_open_request(window, cx);
-        self.ingest(window, cx);
-        self.sync_inactive_chart_visibility(cx);
-        // Откреп-вкладки: вернуть закрытые в стрип (репин) + восстановить сохранённые окна
-        // (charts.json) на первом render — пустыми, ждут детект.
-        self.drain_chart_repin(cx);
-        self.restore_detached(cx);
-        // Бейджи = непрочитанные С МОМЕНТА УХОДА: на АКТИВНОЙ вкладке seen догоняет pane_count
-        // (бейджа нет — ты смотришь). Ушёл → seen заморожен → новые монеты растят бейдж только
-        // этой вкладки (а не всех открытых). Прибраться от закрытых вкладок: чистим seen.
-        if let Tab::Add(n, c) = self.active.clone() {
-            if let Some((_, _, panel)) = self.add.iter().find(|(num, cc, _)| *num == n && *cc == c)
-            {
-                let cnt = panel.read(cx).pane_count(cx);
-                self.seen.insert((n, c), cnt);
-            }
-        }
-        // Масштаб ПО-ВКЛАДОЧНЫЙ: тулбар окна правит масштаб АКТИВНОЙ вкладки. rev вырос (юзер
-        // выбрал) → применяем к активной панели; иначе синхроним backend.price_scale = масштаб
-        // активной панели (чтобы тулбар показывал масштаб именно её).
-        {
-            let (rev, want) = {
-                let b = self.backend.read(cx);
-                (b.price_scale_rev, b.price_scale)
-            };
-            if rev != self.last_scale_rev {
-                self.last_scale_rev = rev;
-                self.set_active_scale(want, cx);
-            } else {
-                let cur = self.active_scale(cx);
-                self.backend.update(cx, |b, _| {
-                    if b.price_scale != cur {
-                        b.price_scale = cur;
-                    }
-                });
-            }
-        }
-        // Сохранить масштаб каждой вкладки в charts.json (upsert при изменении).
-        self.persist_scales(cx);
-
         // Снимок вкладок — чтобы callbacks не держали borrow self.add. (Tab, label, count для
         // ширины, unread для бейджа, detachable.)
         let mut tabs: Vec<(Tab, String, usize, usize, bool)> =
@@ -810,6 +1232,10 @@ impl Render for ChartTabs {
                         {
                             if this.active != tab_id {
                                 this.active = tab_id;
+                                this.sync_seen_for_active(cx);
+                                this.sync_active_scale(cx);
+                                this.sync_inactive_chart_visibility(cx);
+                                this.persist_scales(cx);
                                 cx.notify();
                             }
                         }
@@ -832,6 +1258,10 @@ impl Render for ChartTabs {
                         if this.active == tab_id {
                             this.active = Tab::Main;
                         }
+                        this.sync_seen_for_active(cx);
+                        this.sync_active_scale(cx);
+                        this.sync_inactive_chart_visibility(cx);
+                        this.persist_scales(cx);
                         cx.notify();
                     });
                 }
