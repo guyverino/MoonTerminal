@@ -12,9 +12,9 @@ pub(super) const LINE_H: f32 = FONT_SIZE + 4.0;
 const READOUT_PAD_X: f32 = 5.0;
 const READOUT_PAD_Y: f32 = 2.5;
 const READOUT_INSET: f32 = 2.0;
-// Угловая подпись (имя ядра + тикер). По X отступаем 20px от правого края ПАНЕЛИ — ✕ закрытия
-// занимает крайние ~18px (15px кнопка + зазор), подпись садится слева от него без перекрытия.
-// pub(super): render_state строит по ним плашку-подложку.
+// Угловая подпись (имя ядра + тикер). Якорь правым краем: есть стакан → у края панели (над
+// стаканом, слева от ✕ закрытия); нет стакана → у края плота (в области графика). Инсет 20px
+// освобождает крайние ~18px под ✕. pub(super): render_state строит по ним прозрачную плашку.
 pub(super) const CAPTION_PAD_X: f32 = 20.0;
 pub(super) const CAPTION_PAD_Y: f32 = 4.0;
 const FIRETEST_TEXT_FONT_SIZE: f32 = 9.0;
@@ -218,6 +218,8 @@ impl RenderState {
         let palette = self.ui_palette;
         let ink = color(palette.text_soft);
         let readout = color(mix_hex(palette.text_soft, palette.text, 0.45));
+        // Угловая подпись — светлым шрифтом (самый яркий текст палитры), без подложки.
+        let caption_fg = color(palette.text);
         let tz_offset_sec = local_offset_sec();
         let mut firetest_text_drawn = false;
         let mut readout_metrics_changed = false;
@@ -240,7 +242,6 @@ impl RenderState {
             }
             let pane_left = pane_bounds[0] / sf;
             let pane_right = (pane_bounds[0] + pane_bounds[2]) / sf;
-            let pane_top = pane_bounds[1] / sf;
             let pane_bottom = (pane_bounds[1] + pane_bounds[3]) / sf;
             let plot_left = view.bounds[0] / sf;
             let plot_top = view.bounds[1] / sf;
@@ -258,32 +259,28 @@ impl RenderState {
                 firetest_text_drawn = true;
             }
 
-            // Угловая подпись: имя ядра + тикер в правом верхнем углу ПАНЕЛИ (над стаканом),
-            // рядом с угловым ✕ закрытия (panels/chart.rs) — дешёвый retained-текст (тот же
-            // gpu_canvas, что и оси). Якорим правым краем чуть левее ✕, чтобы не перекрывать.
-            // Контраст над стаканом даёт тёмная плашка-подложка (render_state по `caption_w`).
-            // Угловую подпись рисуем только при включённом стакане (выключен → без подписи,
-            // подложку убираем обнулением caption_w).
-            if orderbook_enabled {
-                let cap_x = pane_right - CAPTION_PAD_X;
-                let cap_y = pane_top + CAPTION_PAD_Y;
+            // Угловая подпись: имя ядра + тикер, светлый текст на прозрачной плашке (её строит
+            // render_state по `caption_w`). Якорь правым краем: есть стакан → у края панели (над
+            // стаканом), нет стакана → у края плота (в области графика). Тот же выбор повторён в
+            // render_state для плашки — держать синхронно.
+            {
+                let right_edge = if orderbook_enabled { pane_right } else { plot_right };
+                let cap_x = right_edge - CAPTION_PAD_X;
+                let cap_y = plot_top + CAPTION_PAD_Y;
                 let mut cap_w = 0.0_f32;
                 if !core_name.is_empty() {
                     cap_w = cap_w.max(self.measure_text(ctx, &core_name).width.as_f32());
-                    self.draw_text(ctx, &core_name, cap_x, cap_y, 1.0, 0.0, readout)?;
+                    self.draw_text(ctx, &core_name, cap_x, cap_y, 1.0, 0.0, caption_fg)?;
                 }
                 let ticker = moon_core::symbol::display_pair(&market);
                 if !ticker.is_empty() {
                     cap_w = cap_w.max(self.measure_text(ctx, &ticker).width.as_f32());
-                    self.draw_text(ctx, &ticker, cap_x, cap_y + LINE_H, 1.0, 0.0, ink)?;
+                    self.draw_text(ctx, &ticker, cap_x, cap_y + LINE_H, 1.0, 0.0, caption_fg)?;
                 }
                 if (self.panes[idx].caption_w - cap_w).abs() > 0.25 {
                     self.panes[idx].caption_w = cap_w;
                     readout_metrics_changed = true;
                 }
-            } else if self.panes[idx].caption_w != 0.0 {
-                self.panes[idx].caption_w = 0.0;
-                readout_metrics_changed = true;
             }
 
             let price_to_px = view.price_to_px / sf;

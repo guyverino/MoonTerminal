@@ -138,8 +138,8 @@ struct PaneRender {
     /// Имя ядра для угловой подписи чарта (резолв из `SessionManager` при синке ордеров).
     /// Тикер подписи выводим из `market` на лету (`symbol::display_pair`), его не храним.
     core_name: String,
-    /// Изменённая ширина (лог. px) самой широкой строки угловой подписи — `prepare_text`
-    /// замеряет её, `sync_readout_params` строит по ней плашку-подложку. 0 = подписи нет.
+    /// Изменённая ширина (лог. px) самой широкой строки угловой подписи — `prepare_text` её
+    /// замеряет, `sync_readout_params` строит по ней прозрачную плашку-подложку. 0 = подписи нет.
     caption_w: f32,
     view: ChartViewGpu,
     layers: PlatformLayers,

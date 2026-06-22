@@ -218,7 +218,6 @@ impl RenderState {
 
             let pane_left = pr.pane_bounds[0] / sf;
             let pane_right = (pr.pane_bounds[0] + pr.pane_bounds[2]) / sf;
-            let pane_top = pr.pane_bounds[1] / sf;
             let pane_bottom = (pr.pane_bounds[1] + pr.pane_bounds[3]) / sf;
             let plot_left = pr.view.bounds[0] / sf;
             let plot_top = pr.view.bounds[1] / sf;
@@ -231,13 +230,14 @@ impl RenderState {
             let plot_bottom = plot_top + plot_h;
             let plot_right = plot_left + plot_w;
 
-            // Плашка-подложка под угловую подпись (контраст над стаканом). Всегда, не только при
-            // курсоре. Ширина — замеренная `caption_w`; строк = имя ядра (если есть) + тикер.
+            // Прозрачная плашка-подложка под угловую подпись (alpha 0.2 — 80% прозрачности).
+            // Якорь совпадает с текстом (text.rs): есть стакан → у края панели, нет → у края плота.
             if pr.caption_w > 0.0 {
                 let lines = (!pr.core_name.is_empty()) as u32 + (!pr.market.is_empty()) as u32;
                 if lines > 0 {
-                    let cap_x = pane_right - super::text::CAPTION_PAD_X;
-                    let cap_y = pane_top + super::text::CAPTION_PAD_Y;
+                    let right_edge = if pr.orderbook_enabled { pane_right } else { plot_right };
+                    let cap_x = right_edge - super::text::CAPTION_PAD_X;
+                    let cap_y = plot_top + super::text::CAPTION_PAD_Y;
                     let (pad_l, pad_r, pad_y) = (5.0_f32, 3.0_f32, 2.0_f32);
                     let dst = [
                         (cap_x - pr.caption_w - pad_l) * sf,
@@ -245,7 +245,13 @@ impl RenderState {
                         (pr.caption_w + pad_l + pad_r) * sf,
                         (lines as f32 * super::text::LINE_H + pad_y * 2.0) * sf,
                     ];
-                    pr.readout_rects.push(ReadoutRect { dst, bg, border, m });
+                    let cap_bg = hex_rgba(self.ui_palette.chart_bg, 0.2);
+                    pr.readout_rects.push(ReadoutRect {
+                        dst,
+                        bg: cap_bg,
+                        border: cap_bg,
+                        m,
+                    });
                 }
             }
 
