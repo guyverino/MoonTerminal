@@ -5,7 +5,6 @@
 use gpui::*;
 use moon_ui::{MoonScrollbarVisibility, MoonVirtualList, MoonVirtualListScrollHandle, v_flex};
 
-use crate::Backend;
 use crate::chart_persist::StackLayoutMode;
 use crate::panels::ChartPanel;
 use moon_core::session::CoreId;
@@ -17,35 +16,32 @@ pub(super) struct ChartStackEntry {
     pub panel: Entity<ChartPanel>,
 }
 
-/// Глобальный дефолт раскладки из конфига: `(scroll, compress, высота_слота)`. Применяется к
-/// вкладкам, у которых нет своей per-tab настройки.
-pub(super) fn stack_layout_cfg(b: &Backend) -> (bool, bool, f32) {
-    (
-        b.config.charts_stack_scroll,
-        b.config.charts_stack_compress,
-        b.config.chart_stack_height.clamp(120, 2000) as f32,
-    )
-}
+/// Дефолтная высота слота в режиме Scroll (px), когда у вкладки нет своей.
+pub(super) const DEFAULT_SCROLL_HEIGHT: u16 = 300;
 
-/// Разрешить раскладку стека: per-tab настройка вкладки (`mode`/`height`), а где её нет —
-/// глобальный дефолт конфига. Возвращает `(scroll, compress, высота_слота)`.
+/// Разрешить раскладку стека из per-tab настроек вкладки в `(scroll, compress, высота_слота)`:
+/// - `Fit` + высота 0 → растяжение (делят высоту окна): `(false, false, _)`;
+/// - `Fit` + высота ≥20 → COMPRESS (фикс. высота, без скролла, сжатие): `(true, true, h)`;
+/// - `Scroll` → фикс. высота + скролл: `(true, false, h)`.
 pub(super) fn resolve_layout(
     mode: Option<StackLayoutMode>,
-    height: Option<u16>,
-    b: &Backend,
+    height_fit: Option<u16>,
+    height_scroll: Option<u16>,
 ) -> (bool, bool, f32) {
-    let (def_scroll, def_compress, def_h) = stack_layout_cfg(b);
-    let (scroll, compress) = mode.map_or((def_scroll, def_compress), |m| m.to_scroll_compress());
-    let h = height.map_or(def_h, |h| h.clamp(120, 2000) as f32);
-    (scroll, compress, h)
-}
-
-/// Текущий режим вкладки как `StackLayoutMode` (per-tab или из глобального дефолта) — для
-/// показа выбранного пункта в попапе настроек.
-pub(super) fn resolve_mode(mode: Option<StackLayoutMode>, b: &Backend) -> StackLayoutMode {
-    mode.unwrap_or_else(|| {
-        StackLayoutMode::from_scroll_compress(b.config.charts_stack_scroll, b.config.charts_stack_compress)
-    })
+    match mode.unwrap_or(StackLayoutMode::Fit) {
+        StackLayoutMode::Fit => {
+            let hf = height_fit.unwrap_or(0);
+            if hf == 0 {
+                (false, false, 0.0)
+            } else {
+                (true, true, hf.clamp(20, 4000) as f32)
+            }
+        }
+        StackLayoutMode::Scroll => {
+            let hs = height_scroll.unwrap_or(DEFAULT_SCROLL_HEIGHT).clamp(20, 4000);
+            (true, false, hs as f32)
+        }
+    }
 }
 
 /// Применить масштаб ко всем панелям стека.

@@ -118,6 +118,30 @@ pub(crate) fn trading_window_options(
     )
 }
 
+/// Безрамочное окно-поповер (например, настройки раскладки чарта). Кроссплатформенно через
+/// `WindowKind::PopUp`: каждый бэкенд gpui сам делает его без рамки и без кнопки в таскбаре и
+/// поверх остальных окон. Без titlebar, неперемещаемое и неизменяемого размера; закрытие — по
+/// потере фокуса (см. `chart_tabs::layout_popup_window`). Фон окна задаёт `window_clear_color`
+/// (выставляет вызывающий под активную тему). НЕ зовём Win32-специфику — только gpui-опции.
+pub(crate) fn popup_window_options(
+    window_bounds: WindowBounds,
+    display_id: Option<DisplayId>,
+) -> WindowOptions {
+    WindowOptions {
+        window_bounds: Some(window_bounds),
+        titlebar: None,
+        focus: true,
+        show: true,
+        kind: WindowKind::PopUp,
+        is_movable: false,
+        is_resizable: false,
+        is_minimizable: false,
+        display_id,
+        app_id: Some(APP_ID.to_string()),
+        ..Default::default()
+    }
+}
+
 pub(crate) fn tool_window_options(
     title: impl Into<SharedString>,
     window_bounds: WindowBounds,

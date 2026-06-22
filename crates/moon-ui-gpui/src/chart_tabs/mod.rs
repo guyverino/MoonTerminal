@@ -8,24 +8,24 @@
 //! `DetachedChartHost`) — в [`windows`].
 
 mod layout_popup;
+mod layout_popup_window;
 mod stack;
 mod windows;
 
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
 use stack::{
-    ChartStackEntry, render_chart_stack, resolve_layout, resolve_mode, retain_nonempty_panels,
-    set_panels_scale,
+    ChartStackEntry, render_chart_stack, resolve_layout, retain_nonempty_panels, set_panels_scale,
 };
 
 use crate::chart_persist::StackLayoutMode;
 
 use gpui::*;
 use moon_ui::{
-    MoonBackgroundPolicy, MoonButton, MoonButtonSize, MoonButtonVariant, MoonInputEvent,
-    MoonInputState, MoonRect, MoonTabItem, MoonTabStrip, MoonVirtualListScrollHandle, Panel,
-    PanelEvent, PanelState, v_flex,
+    MoonBackgroundPolicy, MoonButton, MoonButtonSize, MoonButtonVariant, MoonRect, MoonTabItem,
+    MoonTabStrip, MoonVirtualListScrollHandle, Panel, PanelEvent, PanelState, Root, v_flex,
 };
 
 use crate::Backend;
@@ -80,14 +80,17 @@ pub struct ChartTabs {
     /// и restore detached окон должны жить вне `render()`.
     window_handle: AnyWindowHandle,
     focus: FocusHandle,
-    /// Открыт ли попап настроек раскладки (кнопка ⚙ в полоске вкладок). Применяется к
-    /// АКТИВНОЙ вкладке.
-    layout_popup_open: bool,
-    /// Был ли курсор уже внутри попапа (для авто-скрытия: закрываем по уходу ТОЛЬКО после
-    /// первого входа — иначе попап закрылся бы сразу, т.к. при открытии курсор ещё на кнопке).
-    layout_popup_hovered: bool,
-    /// Поле ввода высоты слота в попапе раскладки (Blur/Enter → применить к активной вкладке).
-    layout_height_input: Entity<MoonInputState>,
+    /// Окно-поповер настроек раскладки активной вкладки (кнопка ⚙). Отдельное безрамочное ОС-окно
+    /// (см. [`layout_popup_window`]) — иначе оси own-pass просвечивают сквозь in-scene попап.
+    /// Some = открыто; закрытие по потере фокуса само сбросит в None (`on_layout_popup_closed`).
+    layout_popup: Option<WindowHandle<Root>>,
+    /// Оконный (логич. px) прямоугольник кнопки ⚙ — снимается canvas-пробой в paint, читается при
+    /// открытии попапа для позиционирования. `Cell`, чтобы писать из paint без borrow самого view.
+    settings_btn_rect: Rc<Cell<Option<Bounds<Pixels>>>>,
+    /// Время (unix ms) последнего авто-закрытия попапа по потере фокуса. Клик по ⚙ при открытом
+    /// окне сперва уводит фокус (окно закрывается, handle чистится), и тогда тот же клик открыл бы
+    /// его заново → флаг. Если с момента закрытия прошло <~250мс, повторное открытие гасим.
+    layout_popup_closed_ms: f64,
 }
 
 
@@ -104,10 +107,12 @@ pub(crate) struct MainChartStack {
     active: Option<usize>,
     show_stack: bool,
     scale: Option<f32>,
-    /// Per-tab режим раскладки (None = глобальный дефолт конфига).
+    /// Per-tab режим раскладки (Fit/Scroll; None = дефолт Fit).
     layout_mode: Option<StackLayoutMode>,
-    /// Per-tab высота слота px (None = глобальный дефолт).
-    layout_height: Option<u16>,
+    /// Высота слота для Fit: 0 = растяжение, ≥20 = compress. None = дефолт.
+    layout_height_fit: Option<u16>,
+    /// Высота слота для Scroll. None = дефолт.
+    layout_height_scroll: Option<u16>,
     scroll: MoonVirtualListScrollHandle,
 }
 
@@ -130,7 +135,8 @@ impl MainChartStack {
             show_stack: false,
             scale: None,
             layout_mode: None,
-            layout_height: None,
+            layout_height_fit: None,
+            layout_height_scroll: None,
             scroll: MoonVirtualListScrollHandle::new(),
         };
         if let Some((core, market)) = focus_open {
@@ -230,22 +236,31 @@ impl MainChartStack {
         self.layout_mode
     }
 
-    pub(crate) fn layout_height(&self) -> Option<u16> {
-        self.layout_height
+    pub(crate) fn layout_height_fit(&self) -> Option<u16> {
+        self.layout_height_fit
     }
 
-    /// Применить per-tab раскладку (режим + высоту) к этому стеку.
+    pub(crate) fn layout_height_scroll(&self) -> Option<u16> {
+        self.layout_height_scroll
+    }
+
+    /// Применить per-tab раскладку (режим + раздельные высоты Fit/Scroll) к этому стеку.
     pub(crate) fn set_layout(
         &mut self,
         mode: Option<StackLayoutMode>,
-        height: Option<u16>,
+        height_fit: Option<u16>,
+        height_scroll: Option<u16>,
         cx: &mut Context<Self>,
     ) {
-        if self.layout_mode == mode && self.layout_height == height {
+        if self.layout_mode == mode
+            && self.layout_height_fit == height_fit
+            && self.layout_height_scroll == height_scroll
+        {
             return;
         }
         self.layout_mode = mode;
-        self.layout_height = height;
+        self.layout_height_fit = height_fit;
+        self.layout_height_scroll = height_scroll;
         cx.notify();
     }
 
@@ -398,7 +413,7 @@ impl Render for MainChartStack {
 
         // Stack: per-tab раскладка (FIT/SCROLL/COMPRESS + высота), иначе глобальный дефолт.
         let (scroll, compress, cfg_h) =
-            resolve_layout(self.layout_mode, self.layout_height, self.backend.read(cx));
+            resolve_layout(self.layout_mode, self.layout_height_fit, self.layout_height_scroll);
         let count = self.charts.len();
         let border = rgb(palette.border);
         let base_id = format!("main-chart-stack-{}", self.group);
@@ -433,10 +448,12 @@ pub(crate) struct AddChartStack {
     theme: ChartTheme,
     charts: Vec<ChartStackEntry>,
     scale: Option<f32>,
-    /// Per-tab режим раскладки (None = глобальный дефолт конфига).
+    /// Per-tab режим раскладки (Fit/Scroll; None = дефолт Fit).
     layout_mode: Option<StackLayoutMode>,
-    /// Per-tab высота слота px (None = глобальный дефолт).
-    layout_height: Option<u16>,
+    /// Высота слота для Fit: 0 = растяжение, ≥20 = compress. None = дефолт.
+    layout_height_fit: Option<u16>,
+    /// Высота слота для Scroll. None = дефолт.
+    layout_height_scroll: Option<u16>,
     /// Скролл-хэндл вертикального MoonVirtualList (scroll-режим стека).
     scroll: MoonVirtualListScrollHandle,
 }
@@ -458,7 +475,8 @@ impl AddChartStack {
             charts: Vec::new(),
             scale: None,
             layout_mode: None,
-            layout_height: None,
+            layout_height_fit: None,
+            layout_height_scroll: None,
             scroll: MoonVirtualListScrollHandle::new(),
         }
     }
@@ -528,22 +546,31 @@ impl AddChartStack {
         self.layout_mode
     }
 
-    pub(crate) fn layout_height(&self) -> Option<u16> {
-        self.layout_height
+    pub(crate) fn layout_height_fit(&self) -> Option<u16> {
+        self.layout_height_fit
     }
 
-    /// Применить per-tab раскладку (режим + высоту) к этому стеку.
+    pub(crate) fn layout_height_scroll(&self) -> Option<u16> {
+        self.layout_height_scroll
+    }
+
+    /// Применить per-tab раскладку (режим + раздельные высоты Fit/Scroll) к этому стеку.
     pub(crate) fn set_layout(
         &mut self,
         mode: Option<StackLayoutMode>,
-        height: Option<u16>,
+        height_fit: Option<u16>,
+        height_scroll: Option<u16>,
         cx: &mut Context<Self>,
     ) {
-        if self.layout_mode == mode && self.layout_height == height {
+        if self.layout_mode == mode
+            && self.layout_height_fit == height_fit
+            && self.layout_height_scroll == height_scroll
+        {
             return;
         }
         self.layout_mode = mode;
-        self.layout_height = height;
+        self.layout_height_fit = height_fit;
+        self.layout_height_scroll = height_scroll;
         cx.notify();
     }
 
@@ -586,7 +613,7 @@ impl Render for AddChartStack {
         // ВАЖНО: чарт-слоты ПРОЗРАЧНЫЕ. own-pass (combo/стакан) — слой GpuCanvasLayer::UnderScene
         // (под сценой); любой непрозрачный `.bg()` над слотом его перекрывает. Разделитель — рамка.
         let (scroll, compress, cfg_h) =
-            resolve_layout(self.layout_mode, self.layout_height, self.backend.read(cx));
+            resolve_layout(self.layout_mode, self.layout_height_fit, self.layout_height_scroll);
         let count = self.charts.len();
         let border = rgb(palette.border);
         let base_id = format!("add-chart-stack-{}", self.num);
@@ -661,13 +688,15 @@ impl ChartTabs {
         #[allow(clippy::type_complexity)]
         let (main_scale, main_layout, restore_pending): (
             Option<f32>,
-            (Option<StackLayoutMode>, Option<u16>),
+            (Option<StackLayoutMode>, Option<u16>, Option<u16>),
             Vec<_>,
         ) = {
             let specs = &backend.read(cx).chart_specs;
             let main_spec = specs.iter().find(|s| s.group == group && s.num == 0);
             let main_scale = main_spec.and_then(|s| s.scale);
-            let main_layout = main_spec.map_or((None, None), |s| (s.layout_mode, s.layout_height));
+            let main_layout = main_spec.map_or((None, None, None), |s| {
+                (s.layout_mode, s.layout_height_fit, s.layout_height_scroll)
+            });
             let pending = specs
                 .iter()
                 .filter(|s| s.group == group && s.num >= 1 && s.detached.is_some())
@@ -678,8 +707,10 @@ impl ChartTabs {
         if main_scale.is_some() {
             main.update(cx, |p, pcx| p.set_scale(main_scale, pcx));
         }
-        if main_layout.0.is_some() || main_layout.1.is_some() {
-            main.update(cx, |p, pcx| p.set_layout(main_layout.0, main_layout.1, pcx));
+        if main_layout.0.is_some() || main_layout.1.is_some() || main_layout.2.is_some() {
+            main.update(cx, |p, pcx| {
+                p.set_layout(main_layout.0, main_layout.1, main_layout.2, pcx)
+            });
         }
         cx.observe(&backend, |this, backend, cx| {
             let sig = chart_tabs_sig(backend.read(cx), &this.group);
@@ -701,22 +732,6 @@ impl ChartTabs {
             cx.notify();
         })
         .detach();
-        // Поле высоты попапа раскладки: Blur (клик вне) / Enter → применить к активной вкладке.
-        let layout_height_input = cx.new(|cx| MoonInputState::new(window, cx));
-        cx.subscribe(
-            &layout_height_input,
-            |this, inp, ev: &MoonInputEvent, cx| {
-                if !matches!(ev, MoonInputEvent::Blur | MoonInputEvent::PressEnter { .. }) {
-                    return;
-                }
-                let raw = inp.read(cx).value().to_string();
-                if let Ok(h) = raw.trim().parse::<u16>() {
-                    let mode = this.active_layout_mode(cx);
-                    this.apply_layout(mode, Some(h.clamp(120, 2000)), cx);
-                }
-            },
-        )
-        .detach();
         let mut this = Self {
             backend,
             group,
@@ -733,9 +748,9 @@ impl ChartTabs {
             restore_pending,
             window_handle: window.window_handle(),
             focus: cx.focus_handle(),
-            layout_popup_open: false,
-            layout_popup_hovered: false,
-            layout_height_input,
+            layout_popup: None,
+            settings_btn_rect: Rc::new(Cell::new(None)),
+            layout_popup_closed_ms: 0.0,
         };
         this.restore_detached(cx);
         this.sync_active_scale(cx);
@@ -823,22 +838,74 @@ impl ChartTabs {
         }
     }
 
-    /// Открыть/закрыть попап настроек раскладки. При открытии заполняет поле высоты текущим
-    /// значением активной вкладки (нужен `window` для `set_value`).
+    /// Открыть/закрыть попап настроек раскладки. При открытии заполняет оба поля высоты
+    /// (Fit/Scroll) текущими значениями активной вкладки (нужен `window` для `set_value`).
+    /// Открыть/закрыть окно-поповер настроек раскладки активной вкладки. Открытие — отдельным
+    /// безрамочным ОС-окном у кнопки ⚙ (см. [`layout_popup_window`]); повторный клик закрывает.
     fn toggle_layout_popup(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.layout_popup_open = !self.layout_popup_open;
-        self.layout_popup_hovered = false;
-        if self.layout_popup_open {
-            let (_, _, h) = resolve_layout(
-                self.active_layout_mode(cx),
-                self.active_layout_height(cx),
-                self.backend.read(cx),
-            );
-            let val = format!("{}", h as u16);
-            self.layout_height_input
-                .update(cx, |st, c| st.set_value(val, window, c));
+        if let Some(handle) = self.layout_popup.take() {
+            let _ = handle.update(cx, |_, w, _| w.remove_window());
+            cx.notify();
+            return;
         }
+        // Клик по ⚙ только что закрыл окно по blur → не открывать заново (см. поле).
+        if moon_chart::paint::now_unix_ms() - self.layout_popup_closed_ms < 250.0 {
+            return;
+        }
+        let mode = self.active_layout_mode(cx).unwrap_or(StackLayoutMode::Fit);
+        let hf = self.active_layout_height_fit(cx);
+        let hs = self.active_layout_height_scroll(cx);
+        let origin = self.popup_origin(window, cx);
+        let display_id = cx
+            .displays()
+            .into_iter()
+            .find(|d| d.bounds().contains(&origin))
+            .map(|d| d.id());
+        let clear = layout_popup_window::clear_color(cx);
+        let owner = cx.entity();
+        let apply: layout_popup_window::ApplyFn = Rc::new(move |m, hf, hs, app| {
+            owner.update(app, |o, oc| o.apply_layout(Some(m), hf, hs, oc));
+        });
+        let owner2 = cx.entity();
+        let closed: layout_popup_window::ClosedFn = Rc::new(move |app| {
+            owner2.update(app, |o, oc| o.on_layout_popup_closed(oc));
+        });
+        self.layout_popup =
+            layout_popup_window::open(origin, display_id, clear, mode, hf, hs, apply, closed, cx);
         cx.notify();
+    }
+
+    /// Экранная точка левого-верха окна-поповера: под кнопкой ⚙ (правый край попапа ≈ правый край
+    /// кнопки), с клампом к дисплею. Локальный rect кнопки берём из `settings_btn_rect` (canvas-проба).
+    fn popup_origin(&self, window: &Window, cx: &App) -> Point<Pixels> {
+        let win = window.window_bounds().get_bounds();
+        let btn = self.settings_btn_rect.get().unwrap_or(Bounds {
+            origin: point(win.size.width - px(40.0), px(4.0)),
+            size: size(px(34.0), px(22.0)),
+        });
+        let mut x = win.origin.x + btn.origin.x + btn.size.width - px(layout_popup_window::POPUP_W);
+        let mut y = win.origin.y + btn.origin.y + btn.size.height + px(2.0);
+        if let Some(d) = cx.displays().into_iter().find(|d| {
+            d.bounds().contains(&point(x, y))
+                || d.bounds().contains(&(win.origin + btn.origin))
+        }) {
+            let db = d.bounds();
+            x = x
+                .max(db.origin.x)
+                .min(db.origin.x + db.size.width - px(layout_popup_window::POPUP_W));
+            y = y
+                .max(db.origin.y)
+                .min(db.origin.y + db.size.height - px(layout_popup_window::POPUP_H));
+        }
+        point(x, y)
+    }
+
+    /// Окно-поповер закрылось (по потере фокуса) — забыть handle, перерисовать кнопку ⚙.
+    fn on_layout_popup_closed(&mut self, cx: &mut Context<Self>) {
+        self.layout_popup_closed_ms = moon_chart::paint::now_unix_ms();
+        if self.layout_popup.take().is_some() {
+            cx.notify();
+        }
     }
 
     /// Ключ персиста активной вкладки: Main → (0, Shared); AddToChart → (num, bucket).
@@ -849,7 +916,7 @@ impl ChartTabs {
         }
     }
 
-    /// Per-tab режим раскладки активной вкладки (None = глобальный дефолт).
+    /// Per-tab режим раскладки активной вкладки (None = дефолт Fit).
     fn active_layout_mode(&self, cx: &App) -> Option<StackLayoutMode> {
         match &self.active {
             Tab::Main => self.main.read(cx).layout_mode(),
@@ -861,37 +928,54 @@ impl ChartTabs {
         }
     }
 
-    /// Per-tab высота слота активной вкладки (None = глобальный дефолт).
-    fn active_layout_height(&self, cx: &App) -> Option<u16> {
+    /// Per-tab высота Fit активной вкладки.
+    fn active_layout_height_fit(&self, cx: &App) -> Option<u16> {
         match &self.active {
-            Tab::Main => self.main.read(cx).layout_height(),
+            Tab::Main => self.main.read(cx).layout_height_fit(),
             Tab::Add(n, b) => self
                 .add
                 .iter()
                 .find(|(num, bk, _)| num == n && bk == b)
-                .and_then(|(_, _, p)| p.read(cx).layout_height()),
+                .and_then(|(_, _, p)| p.read(cx).layout_height_fit()),
         }
     }
 
-    /// Применить раскладку (режим + высоту) к АКТИВНОЙ вкладке и сохранить в charts.json.
+    /// Per-tab высота Scroll активной вкладки.
+    fn active_layout_height_scroll(&self, cx: &App) -> Option<u16> {
+        match &self.active {
+            Tab::Main => self.main.read(cx).layout_height_scroll(),
+            Tab::Add(n, b) => self
+                .add
+                .iter()
+                .find(|(num, bk, _)| num == n && bk == b)
+                .and_then(|(_, _, p)| p.read(cx).layout_height_scroll()),
+        }
+    }
+
+    /// Применить раскладку (режим + раздельные высоты Fit/Scroll) к АКТИВНОЙ вкладке и
+    /// сохранить в charts.json.
     fn apply_layout(
         &mut self,
         mode: Option<StackLayoutMode>,
-        height: Option<u16>,
+        height_fit: Option<u16>,
+        height_scroll: Option<u16>,
         cx: &mut Context<Self>,
     ) {
         match self.active.clone() {
-            Tab::Main => self.main.update(cx, |s, c| s.set_layout(mode, height, c)),
+            Tab::Main => self
+                .main
+                .update(cx, |s, c| s.set_layout(mode, height_fit, height_scroll, c)),
             Tab::Add(n, b) => {
                 if let Some((_, _, p)) = self.add.iter().find(|(num, bk, _)| *num == n && *bk == b) {
-                    p.update(cx, |s, c| s.set_layout(mode, height, c));
+                    p.update(cx, |s, c| s.set_layout(mode, height_fit, height_scroll, c));
                 }
             }
         }
         let (num, bucket) = self.active_stack_key();
         self.upsert_spec(cx, num, &bucket, move |s| {
             s.layout_mode = mode;
-            s.layout_height = height;
+            s.layout_height_fit = height_fit;
+            s.layout_height_scroll = height_scroll;
         });
         cx.notify();
     }
@@ -1000,14 +1084,18 @@ impl ChartTabs {
                         .find(|s| s.group == self.group && s.num == n && s.bucket() == bucket);
                     (
                         spec.and_then(|s| s.scale),
-                        spec.map_or((None, None), |s| (s.layout_mode, s.layout_height)),
+                        spec.map_or((None, None, None), |s| {
+                            (s.layout_mode, s.layout_height_fit, s.layout_height_scroll)
+                        }),
                     )
                 };
                 if saved_scale.is_some() {
                     panel.update(cx, |p, pcx| p.set_scale(saved_scale, pcx));
                 }
-                if saved_layout.0.is_some() || saved_layout.1.is_some() {
-                    panel.update(cx, |p, pcx| p.set_layout(saved_layout.0, saved_layout.1, pcx));
+                if saved_layout.0.is_some() || saved_layout.1.is_some() || saved_layout.2.is_some() {
+                    panel.update(cx, |p, pcx| {
+                        p.set_layout(saved_layout.0, saved_layout.1, saved_layout.2, pcx)
+                    });
                 }
                 panel.update(cx, |p, pcx| p.add_coin(core, &market, ttl, pcx));
                 self.add.push((n, bucket.clone(), panel));
@@ -1349,61 +1437,41 @@ impl Render for ChartTabs {
             )
         });
 
-        // Кнопка настроек раскладки активной вкладки (⚙) — справа в полосе вкладок.
+        // Кнопка настроек раскладки активной вкладки (⚙) — справа в полосе вкладок. canvas-проба
+        // (size_full поверх кнопки) снимает её оконный rect в `settings_btn_rect` для позиционирования
+        // окна-поповера. Открыт ли попап — по наличию handle.
+        let popup_open = self.layout_popup.is_some();
         let settings_btn = {
             let entity = cx.entity();
-            div().absolute().right(px(6.0)).top(px(4.0)).child(
-                MoonButton::new("chart-layout-settings")
-                    .label("⚙")
-                    .size(MoonButtonSize::Micro)
-                    .variant(if self.layout_popup_open {
-                        MoonButtonVariant::Blue
-                    } else {
-                        MoonButtonVariant::Ghost
-                    })
-                    .selected(self.layout_popup_open)
-                    .on_click(move |_, window, app| {
-                        entity.update(app, |this, cx| this.toggle_layout_popup(window, cx));
-                    })
-                    .render(),
-            )
-        };
-
-        // Попап раскладки — поверх содержимого (вне overflow_hidden стрипа).
-        let popup = self.layout_popup_open.then(|| {
-            let entity = cx.entity();
-            let current = resolve_mode(self.active_layout_mode(cx), self.backend.read(cx));
-            let p = moon_ui::MoonPalette::active(cx);
+            let rect_cell = self.settings_btn_rect.clone();
             div()
-                .id("chart-layout-popup-wrap")
-                .occlude()
                 .absolute()
                 .right(px(6.0))
-                .top(px(CHART_TAB_STRIP_H + 2.0))
-                // Авто-скрытие: закрываем по уходу курсора, но только ПОСЛЕ первого входа
-                // (при открытии курсор ещё на кнопке, не на попапе).
-                .on_hover(cx.listener(|this, hovered: &bool, _w, cx| {
-                    if *hovered {
-                        this.layout_popup_hovered = true;
-                    } else if this.layout_popup_hovered {
-                        this.layout_popup_open = false;
-                        cx.notify();
-                    }
-                }))
-                .child(layout_popup::render_layout_popup(
-                    "chart-layout",
-                    current,
-                    &self.layout_height_input,
-                    p,
-                    cx,
-                    move |mode, app| {
-                        entity.update(app, |this, cx| {
-                            let h = this.active_layout_height(cx);
-                            this.apply_layout(Some(mode), h, cx);
-                        });
-                    },
-                ))
-        });
+                .top(px(4.0))
+                .child(
+                    MoonButton::new("chart-layout-settings")
+                        .label("⚙")
+                        .size(MoonButtonSize::Micro)
+                        .variant(if popup_open {
+                            MoonButtonVariant::Blue
+                        } else {
+                            MoonButtonVariant::Ghost
+                        })
+                        .selected(popup_open)
+                        .on_click(move |_, window, app| {
+                            entity.update(app, |this, cx| this.toggle_layout_popup(window, cx));
+                        })
+                        .render(),
+                )
+                .child(
+                    canvas(
+                        move |bounds, _, _| bounds,
+                        move |bounds, _, _w, _cx| rect_cell.set(Some(bounds)),
+                    )
+                    .absolute()
+                    .size_full(),
+                )
+        };
 
         v_flex()
             .size_full()
@@ -1425,7 +1493,6 @@ impl Render for ChartTabs {
                     .min_h(px(0.0))
                     .child(self.active_element()),
             )
-            .children(popup)
     }
 }
 

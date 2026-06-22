@@ -79,15 +79,27 @@ chartwin.clear:
   en: "Close window (remove all charts)"
   es: "Cerrar ventana (quitar todos los gráficos)"
 
-# --- Попап настроек раскладки чарт-вкладки (FIT/SCROLL/COMPRESS + высота) ---
+# --- Попап настроек раскладки чарт-вкладки (Fit/Scroll + раздельные высоты) ---
 chart.layout.title:
   ru: "Раскладка вкладки"
   en: "Tab layout"
   es: "Disposición de pestaña"
-chart.layout.height:
-  ru: "Высота, px"
-  en: "Height, px"
-  es: "Altura, px"
+chart.layout.height_fit:
+  ru: "Высота Fit"
+  en: "Fit height"
+  es: "Altura Fit"
+chart.layout.height_fit_hint:
+  ru: "0 — растянуть по окну\n≥20 — фиксированная высота без скролла"
+  en: "0 — stretch to window\n≥20 — fixed height, no scroll"
+  es: "0 — estirar a ventana\n≥20 — altura fija sin scroll"
+chart.layout.height_scroll:
+  ru: "Высота Scroll"
+  en: "Scroll height"
+  es: "Altura Scroll"
+chart.layout.height_scroll_hint:
+  ru: "≥20 — фиксированная высота"
+  en: "≥20 — fixed height"
+  es: "≥20 — altura fija"
 chart.layout.tip:
   ru: "Настройки раскладки этой вкладки"
   en: "This tab's layout settings"

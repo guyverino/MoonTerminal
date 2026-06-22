@@ -3,16 +3,17 @@
 //! `chart_tabs` как отдельная подсистема выносных окон — сама полоска вкладок про неё
 //! знает лишь через несколько `pub(super)`-методов, дёргаемых из event/observe путей.
 
+use std::cell::Cell;
+use std::rc::Rc;
+
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use rust_i18n::t;
 use moon_ui::{
-    MoonBackgroundPolicy, MoonButton, MoonButtonSize, MoonButtonVariant, MoonInputEvent,
-    MoonInputState, MoonPalette, MoonWindowFrame, MoonWindowFrameControls, Root, h_flex, v_flex,
+    MoonBackgroundPolicy, MoonButton, MoonButtonSize, MoonButtonVariant, MoonPalette,
+    MoonWindowFrame, MoonWindowFrameControls, Root, h_flex, v_flex,
 };
 
-use super::layout_popup::render_layout_popup;
-use super::stack::{resolve_layout, resolve_mode};
 use super::{AddChartStack, ChartTabs, Tab, chart_pane_label};
 use crate::Backend;
 use crate::chart_persist::{self, StackLayoutMode};
@@ -194,7 +195,8 @@ impl ChartTabs {
                     scale: None,
                     detached: None,
                     layout_mode: None,
-                    layout_height: None,
+                    layout_height_fit: None,
+                    layout_height_scroll: None,
                 };
                 f(&mut s);
                 b.chart_specs.push(s);
@@ -319,12 +321,16 @@ struct DetachedChartHost {
     /// уже показано и кнопка создана). Окно при этом остаётся обычным independent → FancyZones его
     /// видит. Несколько тиков — подстраховка от гонки «кнопка ещё не появилась».
     taskbar_hide_ticks: u8,
-    /// Открыт ли попап настроек раскладки (кнопка ⚙ в шапке выносного окна).
-    layout_popup_open: bool,
-    /// Был ли курсор уже внутри попапа (для авто-скрытия по уходу — см. ChartTabs).
-    layout_popup_hovered: bool,
-    /// Поле ввода высоты слота в попапе раскладки (Blur/Enter → применить к этой вкладке).
-    layout_height_input: Entity<MoonInputState>,
+    /// Окно-поповер настроек раскладки этой вкладки (кнопка ⚙) — отдельное безрамочное ОС-окно
+    /// (см. [`super::layout_popup_window`]). Some = открыто; закрытие по потере фокуса само
+    /// сбросит в None.
+    layout_popup: Option<WindowHandle<Root>>,
+    /// Оконный (логич. px) rect кнопки ⚙ — снимается canvas-пробой в paint, читается при открытии
+    /// попапа для позиционирования. `Cell` — писать из paint без borrow самого view.
+    settings_btn_rect: Rc<Cell<Option<Bounds<Pixels>>>>,
+    /// Время (unix ms) последнего авто-закрытия попапа по blur — гасит повторное открытие тем же
+    /// кликом по ⚙ (см. ChartTabs).
+    layout_popup_closed_ms: f64,
 }
 
 impl DetachedChartHost {
@@ -358,31 +364,15 @@ impl DetachedChartHost {
             });
         })
         .detach();
-        // Поле высоты попапа раскладки: Blur (клик вне) / Enter → применить к этой вкладке.
-        let layout_height_input = cx.new(|cx| MoonInputState::new(window, cx));
-        cx.subscribe(
-            &layout_height_input,
-            |this, inp, ev: &MoonInputEvent, cx| {
-                if !matches!(ev, MoonInputEvent::Blur | MoonInputEvent::PressEnter { .. }) {
-                    return;
-                }
-                let raw = inp.read(cx).value().to_string();
-                if let Ok(h) = raw.trim().parse::<u16>() {
-                    let mode = this.panel.read(cx).layout_mode();
-                    this.apply_layout(mode, Some(h.clamp(120, 2000)), cx);
-                }
-            },
-        )
-        .detach();
         // Восстановить сохранённую раскладку вкладки из charts.json в панель.
         let (group2, num2, bucket2) = (group.clone(), num, bucket.clone());
         let saved = backend.read(cx).chart_specs.iter().find_map(|s| {
             (s.group == group2 && s.num == num2 && s.bucket() == bucket2)
-                .then(|| (s.layout_mode, s.layout_height))
+                .then(|| (s.layout_mode, s.layout_height_fit, s.layout_height_scroll))
         });
-        if let Some((m, h)) = saved {
-            if m.is_some() || h.is_some() {
-                panel.update(cx, |p, pcx| p.set_layout(m, h, pcx));
+        if let Some((m, hf, hs)) = saved {
+            if m.is_some() || hf.is_some() || hs.is_some() {
+                panel.update(cx, |p, pcx| p.set_layout(m, hf, hs, pcx));
             }
         }
         Self {
@@ -394,37 +384,96 @@ impl DetachedChartHost {
             persist_armed: !restored,
             restore_size,
             taskbar_hide_ticks: 8,
-            layout_popup_open: false,
-            layout_popup_hovered: false,
-            layout_height_input,
+            layout_popup: None,
+            settings_btn_rect: Rc::new(Cell::new(None)),
+            layout_popup_closed_ms: 0.0,
         }
     }
 
-    /// Открыть/закрыть попап раскладки; при открытии — заполнить высоту текущим значением.
+    /// Текущая per-tab раскладка панели этого окна: `(mode, height_fit, height_scroll)`.
+    fn panel_layout(&self, cx: &App) -> (Option<StackLayoutMode>, Option<u16>, Option<u16>) {
+        let p = self.panel.read(cx);
+        (p.layout_mode(), p.layout_height_fit(), p.layout_height_scroll())
+    }
+
+    /// Открыть/закрыть окно-поповер раскладки этой вкладки. Открытие — отдельным безрамочным
+    /// ОС-окном у кнопки ⚙ (см. [`super::layout_popup_window`]); повторный клик закрывает.
     fn toggle_layout_popup(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.layout_popup_open = !self.layout_popup_open;
-        self.layout_popup_hovered = false;
-        if self.layout_popup_open {
-            let (m, h) = {
-                let p = self.panel.read(cx);
-                (p.layout_mode(), p.layout_height())
-            };
-            let (_, _, hh) = resolve_layout(m, h, self.backend.read(cx));
-            let val = format!("{}", hh as u16);
-            self.layout_height_input
-                .update(cx, |st, c| st.set_value(val, window, c));
+        if let Some(handle) = self.layout_popup.take() {
+            let _ = handle.update(cx, |_, w, _| w.remove_window());
+            cx.notify();
+            return;
         }
+        if moon_chart::paint::now_unix_ms() - self.layout_popup_closed_ms < 250.0 {
+            return;
+        }
+        let (mode, hf, hs) = self.panel_layout(cx);
+        let mode = mode.unwrap_or(StackLayoutMode::Fit);
+        let origin = self.popup_origin(window, cx);
+        let display_id = cx
+            .displays()
+            .into_iter()
+            .find(|d| d.bounds().contains(&origin))
+            .map(|d| d.id());
+        let clear = super::layout_popup_window::clear_color(cx);
+        let owner = cx.entity();
+        let apply: super::layout_popup_window::ApplyFn = Rc::new(move |m, hf, hs, app| {
+            owner.update(app, |o, oc| o.apply_layout(Some(m), hf, hs, oc));
+        });
+        let owner2 = cx.entity();
+        let closed: super::layout_popup_window::ClosedFn = Rc::new(move |app| {
+            owner2.update(app, |o, oc| o.on_layout_popup_closed(oc));
+        });
+        self.layout_popup = super::layout_popup_window::open(
+            origin, display_id, clear, mode, hf, hs, apply, closed, cx,
+        );
         cx.notify();
+    }
+
+    /// Экранная точка левого-верха окна-поповера: под кнопкой ⚙ в шапке, с клампом к дисплею.
+    fn popup_origin(&self, window: &Window, cx: &App) -> Point<Pixels> {
+        let win = window.window_bounds().get_bounds();
+        let btn = self.settings_btn_rect.get().unwrap_or(Bounds {
+            origin: point(win.size.width - px(80.0), px(6.0)),
+            size: size(px(28.0), px(22.0)),
+        });
+        let mut x =
+            win.origin.x + btn.origin.x + btn.size.width - px(super::layout_popup_window::POPUP_W);
+        let mut y = win.origin.y + btn.origin.y + btn.size.height + px(2.0);
+        if let Some(d) = cx
+            .displays()
+            .into_iter()
+            .find(|d| d.bounds().contains(&(win.origin + btn.origin)))
+        {
+            let db = d.bounds();
+            x = x
+                .max(db.origin.x)
+                .min(db.origin.x + db.size.width - px(super::layout_popup_window::POPUP_W));
+            y = y
+                .max(db.origin.y)
+                .min(db.origin.y + db.size.height - px(super::layout_popup_window::POPUP_H));
+        }
+        point(x, y)
+    }
+
+    /// Окно-поповер закрылось (потеря фокуса) — забыть handle, перерисовать кнопку ⚙.
+    fn on_layout_popup_closed(&mut self, cx: &mut Context<Self>) {
+        self.layout_popup_closed_ms = moon_chart::paint::now_unix_ms();
+        if self.layout_popup.take().is_some() {
+            cx.notify();
+        }
     }
 
     /// Применить раскладку к панели вкладки и сохранить в charts.json.
     fn apply_layout(
         &mut self,
         mode: Option<StackLayoutMode>,
-        height: Option<u16>,
+        height_fit: Option<u16>,
+        height_scroll: Option<u16>,
         cx: &mut Context<Self>,
     ) {
-        self.panel.update(cx, |p, c| p.set_layout(mode, height, c));
+        self.panel
+            .update(cx, |p, c| p.set_layout(mode, height_fit, height_scroll, c));
         let (group, num, bucket) = (self.group.clone(), self.num, self.bucket.clone());
         self.backend.update(cx, |bk, _| {
             if let Some(s) = bk
@@ -433,7 +482,8 @@ impl DetachedChartHost {
                 .find(|s| s.group == group && s.num == num && s.bucket() == bucket)
             {
                 s.layout_mode = mode;
-                s.layout_height = height;
+                s.layout_height_fit = height_fit;
+                s.layout_height_scroll = height_scroll;
             } else {
                 bk.chart_specs.push(chart_persist::ChartTabSpec {
                     group,
@@ -443,7 +493,8 @@ impl DetachedChartHost {
                     scale: None,
                     detached: None,
                     layout_mode: mode,
-                    layout_height: height,
+                    layout_height_fit: height_fit,
+                    layout_height_scroll: height_scroll,
                 });
             }
             bk.chart_specs_dirty = true;
@@ -512,39 +563,7 @@ impl Render for DetachedChartHost {
             .header_height(34.0)
             .controls(MoonWindowFrameControls::Close)
             .show_controls(design::show_custom_window_controls());
-        // Попап настроек раскладки этой вкладки (поверх тела, под кнопкой ⚙).
-        let layout_popup = self.layout_popup_open.then(|| {
-            let entity = cx.entity();
-            let current = resolve_mode(self.panel.read(cx).layout_mode(), self.backend.read(cx));
-            div()
-                .id("detached-layout-popup-wrap")
-                .occlude()
-                .absolute()
-                .right(px(6.0))
-                .top(px(36.0))
-                // Авто-скрытие: закрываем по уходу курсора, но только ПОСЛЕ первого входа.
-                .on_hover(cx.listener(|this, hovered: &bool, _w, cx| {
-                    if *hovered {
-                        this.layout_popup_hovered = true;
-                    } else if this.layout_popup_hovered {
-                        this.layout_popup_open = false;
-                        cx.notify();
-                    }
-                }))
-                .child(render_layout_popup(
-                    "detached-layout",
-                    current,
-                    &self.layout_height_input,
-                    p,
-                    cx,
-                    move |mode, app| {
-                        entity.update(app, |this, cx| {
-                            let h = this.panel.read(cx).layout_height();
-                            this.apply_layout(Some(mode), h, cx);
-                        });
-                    },
-                ))
-        });
+        let popup_open = self.layout_popup.is_some();
         // Шапка — ТОЛЬКО у выносных окон вкладок (в основном доке её нет): масштаб слева,
         // «закрыть все графики» справа.
         v_flex()
@@ -576,21 +595,37 @@ impl Render for DetachedChartHost {
                     ))
                     .child({
                         let entity = cx.entity();
-                        let open = self.layout_popup_open;
-                        MoonButton::new("detached-layout-settings")
-                            .label("⚙")
-                            .tooltip(t!("chart.layout.tip").to_string())
-                            .size(MoonButtonSize::Micro)
-                            .variant(if open {
-                                MoonButtonVariant::Blue
-                            } else {
-                                MoonButtonVariant::Ghost
-                            })
-                            .selected(open)
-                            .on_click(move |_, window, app| {
-                                entity.update(app, |this, cx| this.toggle_layout_popup(window, cx));
-                            })
-                            .render()
+                        let rect_cell = self.settings_btn_rect.clone();
+                        // Кнопка ⚙ + canvas-проба (снимает её оконный rect для позиционирования
+                        // окна-поповера). relative-обёртка нужна, чтобы проба легла поверх кнопки.
+                        div()
+                            .relative()
+                            .child(
+                                MoonButton::new("detached-layout-settings")
+                                    .label("⚙")
+                                    .tooltip(t!("chart.layout.tip").to_string())
+                                    .size(MoonButtonSize::Micro)
+                                    .variant(if popup_open {
+                                        MoonButtonVariant::Blue
+                                    } else {
+                                        MoonButtonVariant::Ghost
+                                    })
+                                    .selected(popup_open)
+                                    .on_click(move |_, window, app| {
+                                        entity.update(app, |this, cx| {
+                                            this.toggle_layout_popup(window, cx)
+                                        });
+                                    })
+                                    .render(),
+                            )
+                            .child(
+                                canvas(
+                                    move |bounds, _, _| bounds,
+                                    move |bounds, _, _w, _cx| rect_cell.set(Some(bounds)),
+                                )
+                                .absolute()
+                                .size_full(),
+                            )
                     })
                     .child(
                         MoonButton::new("detached-close-all")
@@ -617,6 +652,5 @@ impl Render for DetachedChartHost {
                     // чартами закрывает тёмный clear окна (правка форка MoonUI), белого нет.
                     .child(self.panel.clone()),
             )
-            .children(layout_popup)
     }
 }

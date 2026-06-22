@@ -1,6 +1,9 @@
-//! Попап настроек раскладки чарт-вкладки: режим (FIT/SCROLL/COMPRESS) + высота слота.
-//! Per-tab (заменил глобальные настройки). Рендер общий для полоски вкладок главного окна и
-//! шапки выносного окна; обработчики (применение к нужному стеку + persist) задаёт вызывающий.
+//! Попап настроек раскладки чарт-вкладки: режим (Fit/Scroll) + высота ТОЛЬКО активного режима.
+//! Per-tab. Рендер общий для полоски вкладок главного окна и шапки выносного окна; обработчики
+//! (применение к нужному стеку + persist) задаёт вызывающий.
+//!
+//! Семантика: Fit=0 → растяжение (делят окно); Fit≥20 → COMPRESS (фикс. высота без скролла);
+//! Scroll → фикс. высота слота + скролл. Допустимый диапазон высоты — [MIN_H, MAX_H].
 
 use gpui::*;
 use moon_ui::{
@@ -12,28 +15,29 @@ use rust_i18n::t;
 use crate::chart_persist::StackLayoutMode;
 use crate::design;
 
-/// Порядок режимов в сегмент-контроле попапа.
-pub(super) const POPUP_MODES: [StackLayoutMode; 3] = [
-    StackLayoutMode::Fit,
-    StackLayoutMode::Scroll,
-    StackLayoutMode::Compress,
-];
+/// Порядок режимов в сегмент-контроле попапа (два положения).
+pub(super) const POPUP_MODES: [StackLayoutMode; 2] = [StackLayoutMode::Fit, StackLayoutMode::Scroll];
+
+/// Границы высоты слота (px). Меньше MIN (кроме 0 у Fit = растяжение) и больше MAX вводить нельзя.
+pub(super) const MIN_H: u16 = 20;
+pub(super) const MAX_H: u16 = 4000;
 
 fn mode_label(m: StackLayoutMode) -> &'static str {
     match m {
         StackLayoutMode::Fit => "FIT",
         StackLayoutMode::Scroll => "SCROLL",
-        StackLayoutMode::Compress => "COMPRESS",
     }
 }
 
-/// Маленькое окошко настроек раскладки. `current` — выбранный режим (per-tab или дефолт),
-/// `height_input` — поле высоты (подписку на Blur/Enter держит вызывающий). `on_pick_mode`
-/// вызывается при выборе режима. Позиционируется вызывающим (он оборачивает в `.absolute()`).
+/// Маленькое окошко настроек раскладки. Показывает поле высоты ТОЛЬКО для текущего режима.
+/// `height_fit_input`/`height_scroll_input` — раздельные поля (подписку на Blur/Enter держит
+/// вызывающий). `on_pick_mode` вызывается при выборе режима. Позиционируется вызывающим.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn render_layout_popup<F>(
     id: &str,
     current: StackLayoutMode,
-    height_input: &Entity<MoonInputState>,
+    height_fit_input: &Entity<MoonInputState>,
+    height_scroll_input: &Entity<MoonInputState>,
     p: MoonPalette,
     cx: &App,
     on_pick_mode: F,
@@ -46,7 +50,7 @@ where
         .iter()
         .enumerate()
         .map(|(i, m)| {
-            let mut it = MoonSegmentItem::new("", mode_label(*m)).width(82.0);
+            let mut it = MoonSegmentItem::new("", mode_label(*m)).width(110.0);
             if i == sel {
                 it = it.selected(true);
             }
@@ -63,16 +67,48 @@ where
         })
         .render();
 
+    // Поле + примечание — только для активного режима.
+    let (input, label, hint) = match current {
+        StackLayoutMode::Fit => (
+            height_fit_input,
+            t!("chart.layout.height_fit").to_string(),
+            t!("chart.layout.height_fit_hint").to_string(),
+        ),
+        StackLayoutMode::Scroll => (
+            height_scroll_input,
+            t!("chart.layout.height_scroll").to_string(),
+            t!("chart.layout.height_scroll_hint").to_string(),
+        ),
+    };
+    // "Высота X  [поле]  px"
+    let height_line = h_flex()
+        .gap(design::ui_px(cx, 6.0))
+        .items_center()
+        .child(div().text_color(rgb(p.text)).child(label))
+        .child(
+            div()
+                .w(px(64.0))
+                .child(MoonInput::new(SharedString::from(format!("{id}-input"))).state(input).small()),
+        )
+        .child(div().text_color(rgb(p.text_muted)).child("px"));
+    // Примечание под полем (многострочное по '\n').
+    let hint_block = v_flex().children(hint.split('\n').map(|line| {
+        div()
+            .text_size(design::t_caption(cx))
+            .text_color(rgb(p.text_muted))
+            .child(line.to_string())
+    }));
+
+    // Контент заполняет всё окно-поповер (рамка = край самого ОС-окна, border_1 даёт видимый кант
+    // поверх чарта). БЕЗ rounded/shadow/фикс-ширины — иначе была бы «рамка в рамке» внутри окна.
     v_flex()
         .id(SharedString::from(format!("{id}-popup")))
-        .w(px(280.0))
+        .size_full()
         .p(design::ui_px(cx, 8.0))
         .gap(design::ui_px(cx, 8.0))
         .bg(rgb(p.panel_high))
         .border_1()
         .border_color(rgb(p.border))
-        .rounded(px(6.0))
-        .shadow_md()
         .child(
             div()
                 .text_size(design::t_caption(cx))
@@ -80,21 +116,16 @@ where
                 .child(t!("chart.layout.title").to_string()),
         )
         .child(seg)
-        .child(
-            h_flex()
-                .gap(design::ui_px(cx, 8.0))
-                .items_center()
-                .child(
-                    div()
-                        .flex_1()
-                        .text_color(rgb(p.text_soft))
-                        .child(t!("chart.layout.height").to_string()),
-                )
-                .child(
-                    div()
-                        .w(px(90.0))
-                        .child(MoonInput::new(format!("{id}-height")).state(height_input).small()),
-                ),
-        )
+        .child(height_line)
+        .child(hint_block)
         .into_any_element()
+}
+
+/// Клампинг введённой высоты: Fit допускает 0 (растяжение), иначе [MIN_H, MAX_H]; Scroll — всегда
+/// [MIN_H, MAX_H].
+pub(super) fn clamp_height(mode: StackLayoutMode, raw: u16) -> u16 {
+    match mode {
+        StackLayoutMode::Fit if raw == 0 => 0,
+        _ => raw.clamp(MIN_H, MAX_H),
+    }
 }
