@@ -297,14 +297,10 @@ pub fn toolbar(
 ) -> impl IntoElement {
     let (scale, follow, focus_core, size_values, size_sel) = {
         let b = backend.read(cx);
-        // Фокусное ядро группы (как market_label в header): первое ядро группы. Размер
-        // ордера per-core, т.к. база (BTC/USDT) и значения разные.
-        let focus_core = b
-            .session
-            .sessions()
-            .iter()
-            .find(|s| s.group == group)
-            .map(|s| s.id);
+        // Фокусное ядро = ядро ОТКРЫТОГО ФУЛСКРИНОМ Main-чарта этой группы. Размеры показываем
+        // и редактируем для него (открыл монету на байбите → размеры байбита, на бинансе →
+        // бинанса). Нет открытого фулскрина → нет ядра (дефолтные значения, клики игнор).
+        let focus_core = b.main_chart_target(group).map(|(core, _)| core);
         let (size_values, size_sel) = match focus_core {
             Some(core) => {
                 let base = b.session.core_base(core).unwrap_or("");

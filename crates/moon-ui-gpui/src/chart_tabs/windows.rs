@@ -5,14 +5,17 @@
 
 use gpui::prelude::FluentBuilder;
 use gpui::*;
+use rust_i18n::t;
 use moon_ui::{
-    MoonBackgroundPolicy, MoonButton, MoonButtonSize, MoonButtonVariant, MoonPalette,
-    MoonWindowFrame, MoonWindowFrameControls, Root, h_flex, v_flex,
+    MoonBackgroundPolicy, MoonButton, MoonButtonSize, MoonButtonVariant, MoonInputEvent,
+    MoonInputState, MoonPalette, MoonWindowFrame, MoonWindowFrameControls, Root, h_flex, v_flex,
 };
 
+use super::layout_popup::render_layout_popup;
+use super::stack::{resolve_layout, resolve_mode};
 use super::{AddChartStack, ChartTabs, Tab, chart_pane_label};
 use crate::Backend;
-use crate::chart_persist;
+use crate::chart_persist::{self, StackLayoutMode};
 use crate::design;
 use moon_core::config::ChartBucket;
 
@@ -167,7 +170,7 @@ impl ChartTabs {
     }
 
     /// Найти/создать спеку вкладки (group/num/bucket), применить мутатор, пометить dirty.
-    fn upsert_spec(
+    pub(super) fn upsert_spec(
         &self,
         cx: &mut Context<Self>,
         num: u32,
@@ -190,6 +193,8 @@ impl ChartTabs {
                     bucket: Some(bucket.clone()),
                     scale: None,
                     detached: None,
+                    layout_mode: None,
+                    layout_height: None,
                 };
                 f(&mut s);
                 b.chart_specs.push(s);
@@ -314,6 +319,12 @@ struct DetachedChartHost {
     /// уже показано и кнопка создана). Окно при этом остаётся обычным independent → FancyZones его
     /// видит. Несколько тиков — подстраховка от гонки «кнопка ещё не появилась».
     taskbar_hide_ticks: u8,
+    /// Открыт ли попап настроек раскладки (кнопка ⚙ в шапке выносного окна).
+    layout_popup_open: bool,
+    /// Был ли курсор уже внутри попапа (для авто-скрытия по уходу — см. ChartTabs).
+    layout_popup_hovered: bool,
+    /// Поле ввода высоты слота в попапе раскладки (Blur/Enter → применить к этой вкладке).
+    layout_height_input: Entity<MoonInputState>,
 }
 
 impl DetachedChartHost {
@@ -347,6 +358,33 @@ impl DetachedChartHost {
             });
         })
         .detach();
+        // Поле высоты попапа раскладки: Blur (клик вне) / Enter → применить к этой вкладке.
+        let layout_height_input = cx.new(|cx| MoonInputState::new(window, cx));
+        cx.subscribe(
+            &layout_height_input,
+            |this, inp, ev: &MoonInputEvent, cx| {
+                if !matches!(ev, MoonInputEvent::Blur | MoonInputEvent::PressEnter { .. }) {
+                    return;
+                }
+                let raw = inp.read(cx).value().to_string();
+                if let Ok(h) = raw.trim().parse::<u16>() {
+                    let mode = this.panel.read(cx).layout_mode();
+                    this.apply_layout(mode, Some(h.clamp(120, 2000)), cx);
+                }
+            },
+        )
+        .detach();
+        // Восстановить сохранённую раскладку вкладки из charts.json в панель.
+        let (group2, num2, bucket2) = (group.clone(), num, bucket.clone());
+        let saved = backend.read(cx).chart_specs.iter().find_map(|s| {
+            (s.group == group2 && s.num == num2 && s.bucket() == bucket2)
+                .then(|| (s.layout_mode, s.layout_height))
+        });
+        if let Some((m, h)) = saved {
+            if m.is_some() || h.is_some() {
+                panel.update(cx, |p, pcx| p.set_layout(m, h, pcx));
+            }
+        }
         Self {
             panel,
             backend,
@@ -356,7 +394,61 @@ impl DetachedChartHost {
             persist_armed: !restored,
             restore_size,
             taskbar_hide_ticks: 8,
+            layout_popup_open: false,
+            layout_popup_hovered: false,
+            layout_height_input,
         }
+    }
+
+    /// Открыть/закрыть попап раскладки; при открытии — заполнить высоту текущим значением.
+    fn toggle_layout_popup(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.layout_popup_open = !self.layout_popup_open;
+        self.layout_popup_hovered = false;
+        if self.layout_popup_open {
+            let (m, h) = {
+                let p = self.panel.read(cx);
+                (p.layout_mode(), p.layout_height())
+            };
+            let (_, _, hh) = resolve_layout(m, h, self.backend.read(cx));
+            let val = format!("{}", hh as u16);
+            self.layout_height_input
+                .update(cx, |st, c| st.set_value(val, window, c));
+        }
+        cx.notify();
+    }
+
+    /// Применить раскладку к панели вкладки и сохранить в charts.json.
+    fn apply_layout(
+        &mut self,
+        mode: Option<StackLayoutMode>,
+        height: Option<u16>,
+        cx: &mut Context<Self>,
+    ) {
+        self.panel.update(cx, |p, c| p.set_layout(mode, height, c));
+        let (group, num, bucket) = (self.group.clone(), self.num, self.bucket.clone());
+        self.backend.update(cx, |bk, _| {
+            if let Some(s) = bk
+                .chart_specs
+                .iter_mut()
+                .find(|s| s.group == group && s.num == num && s.bucket() == bucket)
+            {
+                s.layout_mode = mode;
+                s.layout_height = height;
+            } else {
+                bk.chart_specs.push(chart_persist::ChartTabSpec {
+                    group,
+                    num,
+                    core: None,
+                    bucket: Some(bucket),
+                    scale: None,
+                    detached: None,
+                    layout_mode: mode,
+                    layout_height: height,
+                });
+            }
+            bk.chart_specs_dirty = true;
+        });
+        cx.notify();
     }
 
     fn persist_geometry(&mut self, window: &Window, cx: &mut Context<Self>) {
@@ -420,10 +512,44 @@ impl Render for DetachedChartHost {
             .header_height(34.0)
             .controls(MoonWindowFrameControls::Close)
             .show_controls(design::show_custom_window_controls());
+        // Попап настроек раскладки этой вкладки (поверх тела, под кнопкой ⚙).
+        let layout_popup = self.layout_popup_open.then(|| {
+            let entity = cx.entity();
+            let current = resolve_mode(self.panel.read(cx).layout_mode(), self.backend.read(cx));
+            div()
+                .id("detached-layout-popup-wrap")
+                .occlude()
+                .absolute()
+                .right(px(6.0))
+                .top(px(36.0))
+                // Авто-скрытие: закрываем по уходу курсора, но только ПОСЛЕ первого входа.
+                .on_hover(cx.listener(|this, hovered: &bool, _w, cx| {
+                    if *hovered {
+                        this.layout_popup_hovered = true;
+                    } else if this.layout_popup_hovered {
+                        this.layout_popup_open = false;
+                        cx.notify();
+                    }
+                }))
+                .child(render_layout_popup(
+                    "detached-layout",
+                    current,
+                    &self.layout_height_input,
+                    p,
+                    cx,
+                    move |mode, app| {
+                        entity.update(app, |this, cx| {
+                            let h = this.panel.read(cx).layout_height();
+                            this.apply_layout(Some(mode), h, cx);
+                        });
+                    },
+                ))
+        });
         // Шапка — ТОЛЬКО у выносных окон вкладок (в основном доке её нет): масштаб слева,
         // «закрыть все графики» справа.
         v_flex()
             .size_full()
+            .relative()
             .child(
                 h_flex()
                     .h(design::fit_h_px(cx, 34.0, 13.0, 10.5))
@@ -448,13 +574,30 @@ impl Render for DetachedChartHost {
                         panel.clone(),
                         p,
                     ))
+                    .child({
+                        let entity = cx.entity();
+                        let open = self.layout_popup_open;
+                        MoonButton::new("detached-layout-settings")
+                            .label("⚙")
+                            .tooltip(t!("chart.layout.tip").to_string())
+                            .size(MoonButtonSize::Micro)
+                            .variant(if open {
+                                MoonButtonVariant::Blue
+                            } else {
+                                MoonButtonVariant::Ghost
+                            })
+                            .selected(open)
+                            .on_click(move |_, window, app| {
+                                entity.update(app, |this, cx| this.toggle_layout_popup(window, cx));
+                            })
+                            .render()
+                    })
                     .child(
                         MoonButton::new("detached-close-all")
                             .label("🗑")
-                            .tooltip("Закрыть все графики")
-                            .width(34.0)
-                            .size(MoonButtonSize::Action)
-                            .variant(MoonButtonVariant::OutlineRed)
+                            .tooltip(t!("chartwin.clear").to_string())
+                            .size(MoonButtonSize::Micro)
+                            .variant(MoonButtonVariant::Ghost)
                             .on_click(move |_, _w, app| {
                                 close_all_panel.update(app, |p, cx| p.close_all_panes(cx));
                             })
@@ -474,5 +617,6 @@ impl Render for DetachedChartHost {
                     // чартами закрывает тёмный clear окна (правка форка MoonUI), белого нет.
                     .child(self.panel.clone()),
             )
+            .children(layout_popup)
     }
 }

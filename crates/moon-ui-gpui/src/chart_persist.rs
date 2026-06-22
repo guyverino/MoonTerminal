@@ -20,6 +20,35 @@ pub struct WinGeom {
     pub h: u32,
 }
 
+/// Режим раскладки чарт-стека вкладки (per-tab, заменил глобальные настройки):
+/// FIT — делят высоту окна; SCROLL — фикс. высота + скролл; COMPRESS — фикс. высота со сжатием.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub enum StackLayoutMode {
+    Fit,
+    Scroll,
+    Compress,
+}
+
+impl StackLayoutMode {
+    /// `(scroll, compress)` — пара флагов для раскладки стека.
+    pub fn to_scroll_compress(self) -> (bool, bool) {
+        match self {
+            StackLayoutMode::Fit => (false, false),
+            StackLayoutMode::Scroll => (true, false),
+            StackLayoutMode::Compress => (true, true),
+        }
+    }
+
+    /// Из пары `(scroll, compress)` (напр. из глобального дефолта конфига).
+    pub fn from_scroll_compress(scroll: bool, compress: bool) -> Self {
+        match (scroll, compress) {
+            (false, _) => StackLayoutMode::Fit,
+            (true, false) => StackLayoutMode::Scroll,
+            (true, true) => StackLayoutMode::Compress,
+        }
+    }
+}
+
 /// Состояние одной чарт-вкладки. `num == 0` — Main; `num >= 1` — AddToChart-N.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ChartTabSpec {
@@ -38,6 +67,12 @@ pub struct ChartTabSpec {
     /// Some → вкладка откреплена в своё окно с этой геометрией; None → во вкладочном стрипе.
     #[serde(default)]
     pub detached: Option<WinGeom>,
+    /// Режим раскладки стека этой вкладки. None → глобальный дефолт из конфига.
+    #[serde(default)]
+    pub layout_mode: Option<StackLayoutMode>,
+    /// Высота слота (px) в SCROLL/COMPRESS. None → глобальный дефолт из конфига.
+    #[serde(default)]
+    pub layout_height: Option<u16>,
 }
 
 impl ChartTabSpec {

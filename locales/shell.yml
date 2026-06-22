@@ -78,3 +78,17 @@ chartwin.clear:
   ru: "Закрыть окно (убрать все графики)"
   en: "Close window (remove all charts)"
   es: "Cerrar ventana (quitar todos los gráficos)"
+
+# --- Попап настроек раскладки чарт-вкладки (FIT/SCROLL/COMPRESS + высота) ---
+chart.layout.title:
+  ru: "Раскладка вкладки"
+  en: "Tab layout"
+  es: "Disposición de pestaña"
+chart.layout.height:
+  ru: "Высота, px"
+  en: "Height, px"
+  es: "Altura, px"
+chart.layout.tip:
+  ru: "Настройки раскладки этой вкладки"
+  en: "This tab's layout settings"
+  es: "Ajustes de disposición de esta pestaña"

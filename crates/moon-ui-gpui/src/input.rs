@@ -292,6 +292,13 @@ impl ChartInput {
         }
     }
 
+    /// Сдвигался ли ПКМ за порог зум-перетаскивания цены с момента нажатия. true =
+    /// это был зум-drag, а не короткий клик (нужно, чтобы возврат из фулскрина по ПКМ
+    /// не срабатывал после зума цены).
+    pub fn rmb_moved(&self) -> bool {
+        self.rmb_moved
+    }
+
     /// Hit-тест панели под точкой по `pane_rects`.
     pub fn pane_at(&self, x: f32, y: f32) -> Option<usize> {
         self.pane_rects

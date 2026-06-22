@@ -7,16 +7,25 @@
 //! Подсистема выносных ОС-окон откреп-вкладок (detach/restore/repin/персист + хост
 //! `DetachedChartHost`) — в [`windows`].
 
+mod layout_popup;
+mod stack;
 mod windows;
 
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use stack::{
+    ChartStackEntry, render_chart_stack, resolve_layout, resolve_mode, retain_nonempty_panels,
+    set_panels_scale,
+};
+
+use crate::chart_persist::StackLayoutMode;
+
 use gpui::*;
 use moon_ui::{
-    MoonBackgroundPolicy, MoonButton, MoonButtonSize, MoonButtonVariant, MoonRect,
-    MoonScrollbarVisibility, MoonTabItem, MoonTabStrip, MoonVirtualList,
-    MoonVirtualListScrollHandle, Panel, PanelEvent, PanelState, v_flex,
+    MoonBackgroundPolicy, MoonButton, MoonButtonSize, MoonButtonVariant, MoonInputEvent,
+    MoonInputState, MoonRect, MoonTabItem, MoonTabStrip, MoonVirtualListScrollHandle, Panel,
+    PanelEvent, PanelState, v_flex,
 };
 
 use crate::Backend;
@@ -71,28 +80,34 @@ pub struct ChartTabs {
     /// и restore detached окон должны жить вне `render()`.
     window_handle: AnyWindowHandle,
     focus: FocusHandle,
+    /// Открыт ли попап настроек раскладки (кнопка ⚙ в полоске вкладок). Применяется к
+    /// АКТИВНОЙ вкладке.
+    layout_popup_open: bool,
+    /// Был ли курсор уже внутри попапа (для авто-скрытия: закрываем по уходу ТОЛЬКО после
+    /// первого входа — иначе попап закрылся бы сразу, т.к. при открытии курсор ещё на кнопке).
+    layout_popup_hovered: bool,
+    /// Поле ввода высоты слота в попапе раскладки (Blur/Enter → применить к активной вкладке).
+    layout_height_input: Entity<MoonInputState>,
 }
 
-struct MainChartEntry {
-    core: CoreId,
-    market: String,
-    panel: Entity<ChartPanel>,
-}
 
 /// Main-вкладка: один рынок = один отдельный `ChartPanel`/`gpu_canvas`.
-/// Обычный клик по рынку в таблицах открывает/фокусирует его fullscreen. ПКМ в зоне стакана
-/// текущего графика переключает fullscreen ↔ весь stack, не возвращая несколько рынков внутрь
-/// одного `ChartEngine`.
+/// Обычный клик по рынку в таблицах открывает/фокусирует его fullscreen. ПКМ по ОБЛАСТИ
+/// ГРАФИКА (не по стакану) текущего графика переключает fullscreen ↔ весь stack, не возвращая
+/// несколько рынков внутрь одного `ChartEngine`.
 pub(crate) struct MainChartStack {
     backend: Entity<Backend>,
     group: String,
     epoch: f64,
     theme: ChartTheme,
-    charts: Vec<MainChartEntry>,
+    charts: Vec<ChartStackEntry>,
     active: Option<usize>,
     show_stack: bool,
-    viewport_h: f32,
     scale: Option<f32>,
+    /// Per-tab режим раскладки (None = глобальный дефолт конфига).
+    layout_mode: Option<StackLayoutMode>,
+    /// Per-tab высота слота px (None = глобальный дефолт).
+    layout_height: Option<u16>,
     scroll: MoonVirtualListScrollHandle,
 }
 
@@ -113,8 +128,9 @@ impl MainChartStack {
             charts: Vec::new(),
             active: None,
             show_stack: false,
-            viewport_h: 0.0,
             scale: None,
+            layout_mode: None,
+            layout_height: None,
             scroll: MoonVirtualListScrollHandle::new(),
         };
         if let Some((core, market)) = focus_open {
@@ -164,7 +180,7 @@ impl MainChartStack {
         }
 
         let panel = self.create_panel(core, &market, cx);
-        self.charts.push(MainChartEntry {
+        self.charts.push(ChartStackEntry {
             core,
             market,
             panel,
@@ -177,13 +193,11 @@ impl MainChartStack {
     }
 
     fn prune_empty(&mut self, cx: &App) -> bool {
-        let before = self.charts.len();
         let active_key = self
             .active
             .and_then(|ix| self.charts.get(ix))
             .map(|entry| (entry.core, entry.market.clone()));
-        self.charts
-            .retain(|entry| entry.panel.read(cx).pane_count() > 0);
+        let changed = retain_nonempty_panels(&mut self.charts, cx);
         if self.charts.is_empty() {
             self.active = None;
             self.show_stack = false;
@@ -196,7 +210,7 @@ impl MainChartStack {
                 })
                 .or_else(|| Some(self.active.unwrap_or(0).min(self.charts.len() - 1)));
         }
-        self.charts.len() != before
+        changed
     }
 
     pub(crate) fn scale(&self) -> Option<f32> {
@@ -208,11 +222,30 @@ impl MainChartStack {
             return;
         }
         self.scale = pct;
-        for entry in &self.charts {
-            entry
-                .panel
-                .update(cx, |panel, pcx| panel.set_scale(pct, pcx));
+        set_panels_scale(&self.charts, pct, cx);
+        cx.notify();
+    }
+
+    pub(crate) fn layout_mode(&self) -> Option<StackLayoutMode> {
+        self.layout_mode
+    }
+
+    pub(crate) fn layout_height(&self) -> Option<u16> {
+        self.layout_height
+    }
+
+    /// Применить per-tab раскладку (режим + высоту) к этому стеку.
+    pub(crate) fn set_layout(
+        &mut self,
+        mode: Option<StackLayoutMode>,
+        height: Option<u16>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.layout_mode == mode && self.layout_height == height {
+            return;
         }
+        self.layout_mode = mode;
+        self.layout_height = height;
         cx.notify();
     }
 
@@ -296,35 +329,6 @@ impl MainChartStack {
         cx.notify();
     }
 
-    fn stack_item_height(&self, window: &Window) -> f32 {
-        let fallback_h = (f32::from(window.viewport_size().height) - CHART_TAB_STRIP_H).max(1.0);
-        let viewport_h = if self.viewport_h >= 1.0 {
-            self.viewport_h
-        } else {
-            fallback_h
-        };
-        let visible_slots = self.charts.len().clamp(1, 2) as f32;
-        (viewport_h / visible_slots).max(1.0)
-    }
-
-    fn viewport_probe(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let entity = cx.entity();
-        canvas(
-            |bounds, _, _| bounds,
-            move |bounds, _, _window, app| {
-                let h = f32::from(bounds.size.height).max(1.0);
-                let _ = entity.update(app, |this, cx| {
-                    if (this.viewport_h - h).abs() >= 1.0 {
-                        this.viewport_h = h;
-                        cx.notify();
-                    }
-                });
-            },
-        )
-        .absolute()
-        .size_full()
-    }
-
     fn render_tile(
         &self,
         ix: usize,
@@ -345,17 +349,19 @@ impl MainChartStack {
             .on_mouse_up(
                 MouseButton::Right,
                 move |event: &MouseUpEvent, _window, app| {
-                    if panel_for_event
-                        .read(app)
-                        .window_pos_in_glass_zone(event.position)
-                    {
+                    // Возврат из фулскрина — ПКМ по ОБЛАСТИ ГРАФИКА (не по стакану) и только
+                    // коротким кликом (не зум-перетаскиванием цены).
+                    let panel = panel_for_event.read(app);
+                    if panel.window_pos_in_chart_plot(event.position) && !panel.rmb_was_moved() {
                         entity.update(app, |this, cx| this.toggle_from_chart(ix, cx));
                         app.stop_propagation();
                     }
                 },
             );
         if let Some(height) = height {
-            tile = tile.h(px(height));
+            // Фикс. высота: min_h=0 даёт COMPRESS-сжатие при переполнении окна (в SCROLL —
+            // безвредно, высота слота фиксирована виртуальным списком).
+            tile = tile.h(px(height)).min_h(px(0.0));
         }
         if flex {
             tile = tile.flex_1().min_h(px(0.0));
@@ -365,7 +371,7 @@ impl MainChartStack {
 }
 
 impl Render for MainChartStack {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = moon_ui::MoonPalette::active(cx);
         if self.charts.is_empty() {
             return div()
@@ -376,7 +382,6 @@ impl Render for MainChartStack {
                 .items_center()
                 .justify_center()
                 .child(crate::design::logo_glow_sized(220.0))
-                .child(self.viewport_probe(cx))
                 .into_any_element();
         }
 
@@ -391,52 +396,30 @@ impl Render for MainChartStack {
                 .into_any_element();
         }
 
-        let stack_h = self.stack_item_height(window);
-        let weak = cx.entity().downgrade();
+        // Stack: per-tab раскладка (FIT/SCROLL/COMPRESS + высота), иначе глобальный дефолт.
+        let (scroll, compress, cfg_h) =
+            resolve_layout(self.layout_mode, self.layout_height, self.backend.read(cx));
         let count = self.charts.len();
         let border = rgb(palette.border);
-        let group = self.group.clone();
-        let scrollbar_visibility = if count > 2 {
-            MoonScrollbarVisibility::Always
-        } else {
-            MoonScrollbarVisibility::Hidden
-        };
-        let list = MoonVirtualList::new(
-            format!("main-chart-stack-vlist-{group}"),
+        let base_id = format!("main-chart-stack-{}", self.group);
+        let entity = cx.entity();
+        render_chart_stack(
+            &base_id,
+            self,
+            entity,
             count,
-            stack_h,
-            move |ix, _window, app| {
-                let Some(entity) = weak.upgrade() else {
-                    return div().into_any_element();
-                };
-                let Some(panel) = entity.read(app).charts.get(ix).map(|e| e.panel.clone()) else {
-                    return div().into_any_element();
-                };
-                entity
-                    .read(app)
-                    .render_tile(ix, panel, Some(stack_h), false, border, entity.clone())
+            scroll,
+            compress,
+            cfg_h,
+            &self.scroll,
+            border,
+            |s, ix| s.charts.get(ix).map(|e| e.panel.clone()),
+            |s, ix, panel, height, flex, border, ent| {
+                s.render_tile(ix, panel, height, flex, border, ent)
                     .into_any_element()
             },
         )
-        .track_scroll(&self.scroll)
-        .surface(false)
-        .border(false)
-        .radius(0.0)
-        .scrollbar_visibility(scrollbar_visibility);
-        div()
-            .id(format!("main-chart-stack-scroll-{}", self.group))
-            .relative()
-            .size_full()
-            .child(list)
-            .child(self.viewport_probe(cx))
-            .into_any_element()
     }
-}
-
-struct AddChartEntry {
-    core: CoreId,
-    market: String,
-    panel: Entity<ChartPanel>,
 }
 
 /// AddToChart-вкладка: визуально это один список графиков, но архитектурно каждый график —
@@ -448,8 +431,12 @@ pub(crate) struct AddChartStack {
     bucket: ChartBucket,
     epoch: f64,
     theme: ChartTheme,
-    charts: Vec<AddChartEntry>,
+    charts: Vec<ChartStackEntry>,
     scale: Option<f32>,
+    /// Per-tab режим раскладки (None = глобальный дефолт конфига).
+    layout_mode: Option<StackLayoutMode>,
+    /// Per-tab высота слота px (None = глобальный дефолт).
+    layout_height: Option<u16>,
     /// Скролл-хэндл вертикального MoonVirtualList (scroll-режим стека).
     scroll: MoonVirtualListScrollHandle,
 }
@@ -470,6 +457,8 @@ impl AddChartStack {
             theme,
             charts: Vec::new(),
             scale: None,
+            layout_mode: None,
+            layout_height: None,
             scroll: MoonVirtualListScrollHandle::new(),
         }
     }
@@ -503,7 +492,7 @@ impl AddChartStack {
             panel.update(cx, |panel, pcx| panel.set_scale(scale, pcx));
         }
         panel.update(cx, |panel, pcx| panel.add_coin(core, market, ttl_ms, pcx));
-        self.charts.push(AddChartEntry {
+        self.charts.push(ChartStackEntry {
             core,
             market: market.to_string(),
             panel,
@@ -512,10 +501,7 @@ impl AddChartStack {
     }
 
     fn prune_empty(&mut self, cx: &App) -> bool {
-        let before = self.charts.len();
-        self.charts
-            .retain(|entry| entry.panel.read(cx).pane_count() > 0);
-        self.charts.len() != before
+        retain_nonempty_panels(&mut self.charts, cx)
     }
 
     pub(crate) fn pane_count(&self, cx: &App) -> usize {
@@ -534,11 +520,30 @@ impl AddChartStack {
             return;
         }
         self.scale = pct;
-        for entry in &self.charts {
-            entry
-                .panel
-                .update(cx, |panel, pcx| panel.set_scale(pct, pcx));
+        set_panels_scale(&self.charts, pct, cx);
+        cx.notify();
+    }
+
+    pub(crate) fn layout_mode(&self) -> Option<StackLayoutMode> {
+        self.layout_mode
+    }
+
+    pub(crate) fn layout_height(&self) -> Option<u16> {
+        self.layout_height
+    }
+
+    /// Применить per-tab раскладку (режим + высоту) к этому стеку.
+    pub(crate) fn set_layout(
+        &mut self,
+        mode: Option<StackLayoutMode>,
+        height: Option<u16>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.layout_mode == mode && self.layout_height == height {
+            return;
         }
+        self.layout_mode = mode;
+        self.layout_height = height;
         cx.notify();
     }
 
@@ -577,100 +582,48 @@ impl Render for AddChartStack {
                 .into_any_element();
         }
 
-        // Режим раскладки стека (Настройки):
-        //  • scroll=false               → FIT: графики делят высоту окна (масштаб по вертикали);
-        //  • scroll=true, compress=false → SCROLL: каждый график фикс. высоты, MoonVirtualList
-        //    со скроллбаром MoonUI;
-        //  • scroll=true, compress=true  → COMPRESS: фикс. высоты, без скролла — при
-        //    переполнении окна графики сжимаются (как в FIT).
+        // Stack: per-tab раскладка (FIT/SCROLL/COMPRESS + высота), иначе глобальный дефолт.
         // ВАЖНО: чарт-слоты ПРОЗРАЧНЫЕ. own-pass (combo/стакан) — слой GpuCanvasLayer::UnderScene
         // (под сценой); любой непрозрачный `.bg()` над слотом его перекрывает. Разделитель — рамка.
-        let (scroll, compress, stack_h) = {
-            let b = self.backend.read(cx);
-            (
-                b.config.charts_stack_scroll,
-                b.config.charts_stack_compress,
-                b.config.chart_stack_height.clamp(120, 2000) as f32,
-            )
-        };
-        let num = self.num;
-
-        if scroll && !compress {
-            // SCROLL: MoonUI-скроллбар + виртуальный список фикс. высоты stack_h. Рендер плитки —
-            // через weak-entity (как лог-панель), т.к. render-фабрика MoonVirtualList отдаёт App.
-            let weak = cx.entity().downgrade();
-            let count = self.charts.len();
-            let border = palette.border;
-            let list = MoonVirtualList::new(
-                format!("add-chart-stack-vlist-{num:?}"),
-                count,
-                stack_h,
-                move |ix, _window, app| {
-                    let Some(entity) = weak.upgrade() else {
-                        return div().into_any_element();
-                    };
-                    let Some(panel) = entity.read(app).charts.get(ix).map(|e| e.panel.clone())
-                    else {
-                        return div().into_any_element();
-                    };
-                    div()
-                        .id(("add-chart-stack-tile", ix))
-                        .w_full()
-                        .h(px(stack_h))
-                        .relative()
-                        .overflow_hidden()
-                        .border_1()
-                        .border_color(rgb(border))
-                        .child(div().size_full().relative().overflow_hidden().child(panel))
-                        .into_any_element()
-                },
-            )
-            .track_scroll(&self.scroll)
-            .surface(false)
-            .border(false)
-            .radius(0.0)
-            .scrollbar_visibility(MoonScrollbarVisibility::Scrolling);
-            return div()
-                .id(format!("add-chart-stack-scroll-{num:?}"))
-                .size_full()
-                .child(list)
-                .into_any_element();
-        }
-
-        // FIT / COMPRESS: без скролла, v_flex на всю высоту окна.
-        let compress_mode = compress;
-        let tiles = self.charts.iter().map(|entry| {
-            let tile = div()
-                .id(format!(
-                    "add-chart-stack-{}-{}-{}",
-                    num, entry.core, entry.market
-                ))
-                .w_full()
-                .relative()
-                .overflow_hidden()
-                .border_1()
-                .border_color(rgb(palette.border));
-            let tile = if compress_mode {
-                // COMPRESS: целевая высота, но даём сжиматься при переполнении (min_h=0).
-                tile.h(px(stack_h)).min_h(px(0.0))
-            } else {
-                // FIT: делим высоту окна поровну.
-                tile.flex_1().min_h(px(0.0))
-            };
-            tile.child(
-                div()
-                    .size_full()
+        let (scroll, compress, cfg_h) =
+            resolve_layout(self.layout_mode, self.layout_height, self.backend.read(cx));
+        let count = self.charts.len();
+        let border = rgb(palette.border);
+        let base_id = format!("add-chart-stack-{}", self.num);
+        let entity = cx.entity();
+        render_chart_stack(
+            &base_id,
+            self,
+            entity,
+            count,
+            scroll,
+            compress,
+            cfg_h,
+            &self.scroll,
+            border,
+            |s, ix| s.charts.get(ix).map(|e| e.panel.clone()),
+            |s, ix, panel, height, flex, border, _ent| {
+                let id = match s.charts.get(ix) {
+                    Some(e) => format!("add-chart-stack-tile-{}-{}-{}", s.num, e.core, e.market),
+                    None => format!("add-chart-stack-tile-{}-{ix}", s.num),
+                };
+                let mut tile = div()
+                    .id(SharedString::from(id))
+                    .w_full()
                     .relative()
                     .overflow_hidden()
-                    .child(entry.panel.clone()),
-            )
-        });
-        div()
-            .id(format!("add-chart-stack-fit-{num:?}"))
-            .size_full()
-            .overflow_hidden()
-            .child(v_flex().size_full().children(tiles))
-            .into_any_element()
+                    .border_1()
+                    .border_color(border);
+                if let Some(h) = height {
+                    tile = tile.h(px(h)).min_h(px(0.0));
+                }
+                if flex {
+                    tile = tile.flex_1().min_h(px(0.0));
+                }
+                tile.child(div().size_full().relative().overflow_hidden().child(panel))
+                    .into_any_element()
+            },
+        )
     }
 }
 
@@ -705,21 +658,28 @@ impl ChartTabs {
         }
         // Из charts.json: масштаб Main (num=0) и список откреп-вкладок этой группы на
         // восстановление (создадим пустыми на первом render → ждут детект).
-        let (main_scale, restore_pending): (Option<f32>, Vec<_>) = {
+        #[allow(clippy::type_complexity)]
+        let (main_scale, main_layout, restore_pending): (
+            Option<f32>,
+            (Option<StackLayoutMode>, Option<u16>),
+            Vec<_>,
+        ) = {
             let specs = &backend.read(cx).chart_specs;
-            let main_scale = specs
-                .iter()
-                .find(|s| s.group == group && s.num == 0)
-                .and_then(|s| s.scale);
+            let main_spec = specs.iter().find(|s| s.group == group && s.num == 0);
+            let main_scale = main_spec.and_then(|s| s.scale);
+            let main_layout = main_spec.map_or((None, None), |s| (s.layout_mode, s.layout_height));
             let pending = specs
                 .iter()
                 .filter(|s| s.group == group && s.num >= 1 && s.detached.is_some())
                 .map(|s| (s.num, s.bucket(), s.detached.unwrap(), s.scale))
                 .collect();
-            (main_scale, pending)
+            (main_scale, main_layout, pending)
         };
         if main_scale.is_some() {
             main.update(cx, |p, pcx| p.set_scale(main_scale, pcx));
+        }
+        if main_layout.0.is_some() || main_layout.1.is_some() {
+            main.update(cx, |p, pcx| p.set_layout(main_layout.0, main_layout.1, pcx));
         }
         cx.observe(&backend, |this, backend, cx| {
             let sig = chart_tabs_sig(backend.read(cx), &this.group);
@@ -741,6 +701,22 @@ impl ChartTabs {
             cx.notify();
         })
         .detach();
+        // Поле высоты попапа раскладки: Blur (клик вне) / Enter → применить к активной вкладке.
+        let layout_height_input = cx.new(|cx| MoonInputState::new(window, cx));
+        cx.subscribe(
+            &layout_height_input,
+            |this, inp, ev: &MoonInputEvent, cx| {
+                if !matches!(ev, MoonInputEvent::Blur | MoonInputEvent::PressEnter { .. }) {
+                    return;
+                }
+                let raw = inp.read(cx).value().to_string();
+                if let Ok(h) = raw.trim().parse::<u16>() {
+                    let mode = this.active_layout_mode(cx);
+                    this.apply_layout(mode, Some(h.clamp(120, 2000)), cx);
+                }
+            },
+        )
+        .detach();
         let mut this = Self {
             backend,
             group,
@@ -757,6 +733,9 @@ impl ChartTabs {
             restore_pending,
             window_handle: window.window_handle(),
             focus: cx.focus_handle(),
+            layout_popup_open: false,
+            layout_popup_hovered: false,
+            layout_height_input,
         };
         this.restore_detached(cx);
         this.sync_active_scale(cx);
@@ -842,6 +821,79 @@ impl ChartTabs {
             self.last_sig = chart_tabs_sig(self.backend.read(cx), self.group.as_str());
             cx.notify();
         }
+    }
+
+    /// Открыть/закрыть попап настроек раскладки. При открытии заполняет поле высоты текущим
+    /// значением активной вкладки (нужен `window` для `set_value`).
+    fn toggle_layout_popup(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.layout_popup_open = !self.layout_popup_open;
+        self.layout_popup_hovered = false;
+        if self.layout_popup_open {
+            let (_, _, h) = resolve_layout(
+                self.active_layout_mode(cx),
+                self.active_layout_height(cx),
+                self.backend.read(cx),
+            );
+            let val = format!("{}", h as u16);
+            self.layout_height_input
+                .update(cx, |st, c| st.set_value(val, window, c));
+        }
+        cx.notify();
+    }
+
+    /// Ключ персиста активной вкладки: Main → (0, Shared); AddToChart → (num, bucket).
+    fn active_stack_key(&self) -> (u32, ChartBucket) {
+        match &self.active {
+            Tab::Main => (0, ChartBucket::Shared),
+            Tab::Add(n, b) => (*n, b.clone()),
+        }
+    }
+
+    /// Per-tab режим раскладки активной вкладки (None = глобальный дефолт).
+    fn active_layout_mode(&self, cx: &App) -> Option<StackLayoutMode> {
+        match &self.active {
+            Tab::Main => self.main.read(cx).layout_mode(),
+            Tab::Add(n, b) => self
+                .add
+                .iter()
+                .find(|(num, bk, _)| num == n && bk == b)
+                .and_then(|(_, _, p)| p.read(cx).layout_mode()),
+        }
+    }
+
+    /// Per-tab высота слота активной вкладки (None = глобальный дефолт).
+    fn active_layout_height(&self, cx: &App) -> Option<u16> {
+        match &self.active {
+            Tab::Main => self.main.read(cx).layout_height(),
+            Tab::Add(n, b) => self
+                .add
+                .iter()
+                .find(|(num, bk, _)| num == n && bk == b)
+                .and_then(|(_, _, p)| p.read(cx).layout_height()),
+        }
+    }
+
+    /// Применить раскладку (режим + высоту) к АКТИВНОЙ вкладке и сохранить в charts.json.
+    fn apply_layout(
+        &mut self,
+        mode: Option<StackLayoutMode>,
+        height: Option<u16>,
+        cx: &mut Context<Self>,
+    ) {
+        match self.active.clone() {
+            Tab::Main => self.main.update(cx, |s, c| s.set_layout(mode, height, c)),
+            Tab::Add(n, b) => {
+                if let Some((_, _, p)) = self.add.iter().find(|(num, bk, _)| *num == n && *bk == b) {
+                    p.update(cx, |s, c| s.set_layout(mode, height, c));
+                }
+            }
+        }
+        let (num, bucket) = self.active_stack_key();
+        self.upsert_spec(cx, num, &bucket, move |s| {
+            s.layout_mode = mode;
+            s.layout_height = height;
+        });
+        cx.notify();
     }
 
     /// Ингест AddToChart-детектов (add_to_chart>0) → создать/наполнить вкладку.
@@ -940,16 +992,22 @@ impl ChartTabs {
                 let panel = cx.new(|_| {
                     AddChartStack::new(backend.clone(), n, bucket.clone(), epoch, theme.clone())
                 });
-                // Восстановить сохранённый масштаб этой вкладки (charts.json), если был.
-                let saved_scale = self
-                    .backend
-                    .read(cx)
-                    .chart_specs
-                    .iter()
-                    .find(|s| s.group == self.group && s.num == n && s.bucket() == bucket)
-                    .and_then(|s| s.scale);
+                // Восстановить сохранённый масштаб и раскладку этой вкладки (charts.json).
+                let (saved_scale, saved_layout) = {
+                    let specs = &self.backend.read(cx).chart_specs;
+                    let spec = specs
+                        .iter()
+                        .find(|s| s.group == self.group && s.num == n && s.bucket() == bucket);
+                    (
+                        spec.and_then(|s| s.scale),
+                        spec.map_or((None, None), |s| (s.layout_mode, s.layout_height)),
+                    )
+                };
                 if saved_scale.is_some() {
                     panel.update(cx, |p, pcx| p.set_scale(saved_scale, pcx));
+                }
+                if saved_layout.0.is_some() || saved_layout.1.is_some() {
+                    panel.update(cx, |p, pcx| p.set_layout(saved_layout.0, saved_layout.1, pcx));
                 }
                 panel.update(cx, |p, pcx| p.add_coin(core, &market, ttl, pcx));
                 self.add.push((n, bucket.clone(), panel));
@@ -1279,7 +1337,7 @@ impl Render for ChartTabs {
             .count();
         let gather_btn = (detached_count > 0).then(|| {
             let entity = cx.entity();
-            div().absolute().right(px(6.0)).top(px(4.0)).child(
+            div().absolute().right(px(34.0)).top(px(4.0)).child(
                 MoonButton::new("chart-gather-windows")
                     .label("▦")
                     .size(MoonButtonSize::Micro)
@@ -1291,8 +1349,65 @@ impl Render for ChartTabs {
             )
         });
 
+        // Кнопка настроек раскладки активной вкладки (⚙) — справа в полосе вкладок.
+        let settings_btn = {
+            let entity = cx.entity();
+            div().absolute().right(px(6.0)).top(px(4.0)).child(
+                MoonButton::new("chart-layout-settings")
+                    .label("⚙")
+                    .size(MoonButtonSize::Micro)
+                    .variant(if self.layout_popup_open {
+                        MoonButtonVariant::Blue
+                    } else {
+                        MoonButtonVariant::Ghost
+                    })
+                    .selected(self.layout_popup_open)
+                    .on_click(move |_, window, app| {
+                        entity.update(app, |this, cx| this.toggle_layout_popup(window, cx));
+                    })
+                    .render(),
+            )
+        };
+
+        // Попап раскладки — поверх содержимого (вне overflow_hidden стрипа).
+        let popup = self.layout_popup_open.then(|| {
+            let entity = cx.entity();
+            let current = resolve_mode(self.active_layout_mode(cx), self.backend.read(cx));
+            let p = moon_ui::MoonPalette::active(cx);
+            div()
+                .id("chart-layout-popup-wrap")
+                .occlude()
+                .absolute()
+                .right(px(6.0))
+                .top(px(CHART_TAB_STRIP_H + 2.0))
+                // Авто-скрытие: закрываем по уходу курсора, но только ПОСЛЕ первого входа
+                // (при открытии курсор ещё на кнопке, не на попапе).
+                .on_hover(cx.listener(|this, hovered: &bool, _w, cx| {
+                    if *hovered {
+                        this.layout_popup_hovered = true;
+                    } else if this.layout_popup_hovered {
+                        this.layout_popup_open = false;
+                        cx.notify();
+                    }
+                }))
+                .child(layout_popup::render_layout_popup(
+                    "chart-layout",
+                    current,
+                    &self.layout_height_input,
+                    p,
+                    cx,
+                    move |mode, app| {
+                        entity.update(app, |this, cx| {
+                            let h = this.active_layout_height(cx);
+                            this.apply_layout(Some(mode), h, cx);
+                        });
+                    },
+                ))
+        });
+
         v_flex()
             .size_full()
+            .relative()
             .child(
                 div()
                     .h(px(CHART_TAB_STRIP_H))
@@ -1300,7 +1415,8 @@ impl Render for ChartTabs {
                     .relative()
                     .overflow_hidden()
                     .child(strip)
-                    .children(gather_btn),
+                    .children(gather_btn)
+                    .child(settings_btn),
             )
             .child(
                 div()
@@ -1309,6 +1425,7 @@ impl Render for ChartTabs {
                     .min_h(px(0.0))
                     .child(self.active_element()),
             )
+            .children(popup)
     }
 }
 

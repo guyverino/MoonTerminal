@@ -560,6 +560,34 @@ impl ChartPanel {
         })
     }
 
+    /// Позиция в ОБЛАСТИ ГРАФИКА панели (в пределах панели, но НЕ в зоне стакана). Для
+    /// возврата из фулскрина по ПКМ: срабатывает по чарту, а не по стакану.
+    pub(crate) fn window_pos_in_chart_plot(&self, pos: Point<Pixels>) -> bool {
+        let Some(((x, y), within)) = self.chart_local(pos) else {
+            return false;
+        };
+        if !within {
+            return false;
+        }
+        let rects = if self.input.pane_rects.is_empty() {
+            self.chart.pane_rects()
+        } else {
+            self.input.pane_rects.clone()
+        };
+        rects.iter().any(|(_, r)| {
+            if x < r.x || x > r.x + r.w || y < r.y || y > r.y + r.h {
+                return false;
+            }
+            let glass_w = moon_chart::GLASS_ZONE_PX.min(r.w * 0.5);
+            x < r.x + r.w - glass_w
+        })
+    }
+
+    /// Был ли последний ПКМ зум-перетаскиванием цены (а не коротким кликом).
+    pub(crate) fn rmb_was_moved(&self) -> bool {
+        self.input.rmb_moved()
+    }
+
     fn sync_native_cursor(&mut self) -> bool {
         let cursor = self
             .input

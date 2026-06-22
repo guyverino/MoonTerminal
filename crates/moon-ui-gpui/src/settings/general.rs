@@ -32,66 +32,16 @@ impl SettingsView {
         }
     }
 
-    /// Изменить высоту графика в скролл-стеке (шаг 20px, кламп 120..=2000), правит draft.
-    fn adjust_stack_height(&mut self, delta: i32, cx: &mut Context<Self>) {
-        let changed = self.backend.update(cx, |b, bcx| {
-            let mut changed = false;
-            if let Some(p) = b.preview.as_mut() {
-                let v = (p.chart_stack_height as i32 + delta).clamp(120, 2000) as u16;
-                if p.chart_stack_height != v {
-                    p.chart_stack_height = v;
-                    bcx.notify();
-                    changed = true;
-                }
-            }
-            changed
-        });
-        if changed {
-            cx.notify();
-        }
-    }
-
-    /// Переключить bool-поле draft-конфига (общий помощник для галок стека).
-    fn toggle_cfg_bool(
-        &mut self,
-        v: bool,
-        get: impl Fn(&mut moon_core::config::AppConfig) -> &mut bool,
-        cx: &mut Context<Self>,
-    ) {
-        let changed = self.backend.update(cx, |b, bcx| {
-            let mut changed = false;
-            if let Some(p) = b.preview.as_mut() {
-                let slot = get(p);
-                if *slot != v {
-                    *slot = v;
-                    bcx.notify();
-                    changed = true;
-                }
-            }
-            changed
-        });
-        if changed {
-            cx.notify();
-        }
-    }
-
     /// Вкладка «Общие» — порт egui `settings/general.rs` точь-в-точь: язык (выпадающий
     /// список) + хинт; разделитель; чекбокс «чарт-вкладка на ядро» + хинт; разделитель;
     /// чекбокс «писать лог в файлы» + хинт; срок хранения (число) + хинт.
     pub(super) fn general_tab(&self, cx: &Context<Self>) -> impl IntoElement {
         let p = MoonPalette::active(cx);
         let muted = rgba_from(p.text_muted, 1.0);
-        let (split, scroll, compress, stack_h, logf, ret) = {
+        let (split, logf, ret) = {
             let b = self.backend.read(cx);
             let d = b.preview.as_ref().unwrap_or(&b.config);
-            (
-                d.charts_split_by_core,
-                d.charts_stack_scroll,
-                d.charts_stack_compress,
-                d.chart_stack_height,
-                d.log_to_file,
-                d.log_retention_days,
-            )
+            (d.charts_split_by_core, d.log_to_file, d.log_retention_days)
         };
         let hint = |s: &str| div().text_color(muted).child(s.to_string());
 
@@ -141,83 +91,8 @@ impl SettingsView {
             )
             .child(hint(&t!("general.charts_split_by_core_hint")))
             .child(super::separator(p, cx))
-            // Раскладка вкладки с несколькими графиками: скролл / как раньше (масштаб по
-            // вертикали). Высота графика и «сжимать по заполнению» активны только при скролле.
-            .child(
-                MoonCheckbox::new("stack-scroll")
-                    .label(t!("general.charts_scroll").to_string())
-                    .checked(scroll)
-                    .size(MoonCheckboxSize::Normal)
-                    .on_change(cx.listener(|this, ch: &bool, _w, cx| {
-                        let v = *ch;
-                        this.toggle_cfg_bool(v, |p| &mut p.charts_stack_scroll, cx);
-                    })),
-            )
-            .child(hint(&t!("general.charts_scroll_hint")))
-            // Высота графика — активна только при скролле (как срок хранения при логах).
-            .child(
-                h_flex()
-                    .gap(design::ui_px(cx, 8.0))
-                    .items_center()
-                    .child(
-                        div()
-                            .text_color(if scroll {
-                                rgba_from(p.text, 1.0)
-                            } else {
-                                muted
-                            })
-                            .child(t!("general.chart_height").to_string()),
-                    )
-                    .child(
-                        MoonButton::new("stack-h-")
-                            .ghost()
-                            .size(MoonButtonSize::Micro)
-                            .width(24.0)
-                            .label("-")
-                            .disabled(!scroll)
-                            .on_click(
-                                cx.listener(|this, _, _, cx| this.adjust_stack_height(-20, cx)),
-                            )
-                            .render(),
-                    )
-                    .child(
-                        div()
-                            .w(px(64.0))
-                            .text_center()
-                            .text_color(if scroll {
-                                rgba_from(p.text, 1.0)
-                            } else {
-                                muted
-                            })
-                            .child(format!("{stack_h} px")),
-                    )
-                    .child(
-                        MoonButton::new("stack-h+")
-                            .ghost()
-                            .size(MoonButtonSize::Micro)
-                            .width(24.0)
-                            .label("+")
-                            .disabled(!scroll)
-                            .on_click(
-                                cx.listener(|this, _, _, cx| this.adjust_stack_height(20, cx)),
-                            )
-                            .render(),
-                    ),
-            )
-            // Сжимать по заполнению — только в скролл-режиме.
-            .child(
-                MoonCheckbox::new("stack-compress")
-                    .label(t!("general.compress_fill").to_string())
-                    .checked(compress)
-                    .disabled(!scroll)
-                    .size(MoonCheckboxSize::Normal)
-                    .on_change(cx.listener(|this, ch: &bool, _w, cx| {
-                        let v = *ch;
-                        this.toggle_cfg_bool(v, |p| &mut p.charts_stack_compress, cx);
-                    })),
-            )
-            .child(hint(&t!("general.compress_fill_hint")))
-            .child(super::separator(p, cx))
+            // Раскладка стека (FIT/SCROLL/COMPRESS + высота) теперь per-вкладка — кнопка ⚙
+            // в полоске вкладок / шапке выносного окна (см. chart_tabs::layout_popup).
             // Логи в файлы + срок хранения.
             .child(
                 MoonCheckbox::new("logf")
