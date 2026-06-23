@@ -88,12 +88,10 @@ impl TradeMetric {
             TradeMetric::Tp => cd.client_settings.as_ref().map(|s| s.take_profit_pct as f32),
             TradeMetric::Sl => cd.client_settings.as_ref().map(|s| s.stop_loss_pct),
             TradeMetric::Lev => {
+                // Плечо монеты main-чарта из per-core карты (любой отслеживаемый рынок, не
+                // только с позицией). Нет в карте → плечо неизвестно (покажем «—»).
                 let (_, market) = b.main_chart_target(group)?;
-                cd.assets
-                    .rows
-                    .iter()
-                    .find(|r| r.market == market)
-                    .map(|r| r.leverage as f32)
+                cd.assets.leverage.get(&market).map(|l| *l as f32)
             }
         }
     }

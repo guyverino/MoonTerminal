@@ -345,6 +345,10 @@ pub struct GlobalBalanceRow {
 pub struct AssetsSnapshot {
     pub rows: Vec<AssetRow>,
     pub global: GlobalBalanceRow,
+    /// Плечо по рынку (`leverage_x`) — per-core, для ЛЮБОГО отслеживаемого рынка (не только с
+    /// позицией): тулбар Lev читает её для монеты main-чарта. Не включаем рынки без account-
+    /// данных (там ядро сбрасывает leverage_x в 1) — их плечо неизвестно, показываем «—».
+    pub leverage: std::collections::HashMap<String, i32>,
 }
 
 /// Один transfer-актив кошелька (для дерева переноса). Декаплено от moonproto.
