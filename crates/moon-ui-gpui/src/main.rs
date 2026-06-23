@@ -194,6 +194,10 @@ struct Backend {
     /// Запрос инлайн-редактирования значения fixed-sell пресета (дабл-клик по S-кнопке):
     /// `(ядро, индекс S1-S6)`. По Blur/Enter Shell шлёт `SetFixedSellPct` в ядро.
     sell_edit_req: Option<(CoreId, usize)>,
+    /// Оптимистичный локальный кэш fixed-sell процентов `(ядро, индекс)→%`. Колесо/правка пишут
+    /// сюда СРАЗУ (дисплей живой), параллельно шлём в ядро. Иначе значение обновлялось бы только
+    /// эхом сервера (`send_settings` локальный снимок не трогает) — для sell это незаметно/лаг.
+    sell_pct_local: HashMap<(CoreId, usize), f64>,
     /// Backend-level notify is only for slow GPUI chrome/status/overlays. High-rate chart
     /// data goes straight into retained chart handles and must not dirty the whole tree.
     backend_dirty_since_notify: bool,
@@ -300,14 +304,31 @@ impl Backend {
         }
     }
 
-    /// Текущий видимый процент fixed-sell пресета `ix` (S1-S6) ядра. 0 если настроек ещё нет.
+    /// Текущий видимый процент fixed-sell пресета `ix` (S1-S6) ядра: оптимистичный локальный
+    /// кэш, если есть (свежая правка колесом/инпутом), иначе значение из снимка ClientSettings.
     fn fixed_sell_pct(&self, core: CoreId, ix: usize) -> f64 {
+        if let Some(v) = self.sell_pct_local.get(&(core, ix)) {
+            return *v;
+        }
         self.session
             .store()
             .core(core)
             .and_then(|d| d.client_settings.as_ref())
             .map(|s| s.fixed_sell_pcts[ix.min(5)])
             .unwrap_or(0.0)
+    }
+
+    /// Записать оптимистичный локальный процент fixed-sell (живой дисплей до эха ядра).
+    fn set_fixed_sell_pct_local(&mut self, core: CoreId, ix: usize, v: f64) {
+        self.sell_pct_local.insert((core, ix), v);
+    }
+
+    /// Локальный кэш `(core,ix)`, иначе `fallback` (значение ядра) — для дисплея sell-полосы.
+    fn fixed_sell_pct_with(&self, core: CoreId, ix: usize, fallback: f64) -> f64 {
+        self.sell_pct_local
+            .get(&(core, ix))
+            .copied()
+            .unwrap_or(fallback)
     }
 
     fn cancel_buy_for_main_chart(&self, group: &str) -> usize {
@@ -749,6 +770,7 @@ fn main() -> anyhow::Result<()> {
             order_size_rev: 0,
             order_size_edit_req: None,
             sell_edit_req: None,
+            sell_pct_local: HashMap::new(),
             backend_dirty_since_notify: false,
             last_backend_notify: None,
             reconnect_request: Vec::new(),

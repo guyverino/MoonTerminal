@@ -322,7 +322,11 @@ impl Shell {
             };
             if let Ok(v) = inp.read(cx).value().trim().replace(',', ".").parse::<f64>() {
                 if v >= 0.0 && ix < 6 {
-                    this.backend.update(cx, |b, _| {
+                    this.backend.update(cx, |b, bcx| {
+                        // Оптимистичный локальный кэш (живой дисплей) + отправка в ядро.
+                        b.set_fixed_sell_pct_local(core, ix, v);
+                        b.order_size_rev = b.order_size_rev.wrapping_add(1);
+                        bcx.notify();
                         if let Err(error) = b.session.edit_client_settings(
                             core,
                             ClientSettingsEdit::SetFixedSellPct { slot: ix + 1, pct: v },
@@ -485,7 +489,7 @@ impl Shell {
         };
         self.size_edit = Some((core, ix));
         let input = self.size_input.clone();
-        let value = format!("{cur}");
+        let value = controls::fmt_adaptive(cur);
         let handle = self.window_handle;
         cx.defer(move |app| {
             let _ = handle.update(app, move |_, window, app| {
@@ -507,7 +511,7 @@ impl Shell {
         let cur = self.backend.read(cx).fixed_sell_pct(core, ix);
         self.sell_edit = Some((core, ix));
         let input = self.sell_input.clone();
-        let value = format!("{cur}");
+        let value = controls::fmt_adaptive(cur);
         let handle = self.window_handle;
         cx.defer(move |app| {
             let _ = handle.update(app, move |_, window, app| {

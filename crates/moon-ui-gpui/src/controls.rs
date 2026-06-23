@@ -286,14 +286,30 @@ const SIZE_W: [f32; 6] = [54.0, 61.0, 56.0, 56.0, 56.0, 56.0];
 /// Дефолтный выбранный пресет размера (F3), когда у ядра ещё нет своего выбора.
 const SIZE_SEL_DEFAULT: usize = 2;
 
-/// Компактная подпись значения размера: целые без дроби (USDT: "1000"), дробные —
-/// без хвостовых нулей (BTC: "0.05").
-fn fmt_size(v: f64) -> String {
-    if v.fract() == 0.0 {
-        format!("{}", v as i64)
+/// Умная подпись значения по порядку величины (size/sell). Точность адаптивная: ≥100 — целое
+/// (без десятых), 10..100 — десятые (без сотых), 1..10 — сотые, <1 — столько знаков, чтобы
+/// показать ~2 значащих (0.6→"0.6", 0.001→"0.001", 0.00001→"0.00001"). Хвостовые нули убираем
+/// (убирает и float-мусор от f32, напр. 0.6000000238 → "0.6").
+pub fn fmt_adaptive(v: f64) -> String {
+    let a = v.abs();
+    let decimals: usize = if a == 0.0 {
+        0
+    } else if a >= 100.0 {
+        0
+    } else if a >= 10.0 {
+        1
+    } else if a >= 1.0 {
+        2
     } else {
-        let s = format!("{v:.4}");
+        // <1: ~2 значащих цифры. 0.6→2, 0.001→4, 0.00001→6.
+        let lead = (-a.log10().floor()) as i32; // 0.6→1, 0.001→3, 0.00001→5
+        (lead + 1).clamp(2, 8) as usize
+    };
+    let s = format!("{:.*}", decimals, v);
+    if s.contains('.') {
         s.trim_end_matches('0').trim_end_matches('.').to_string()
+    } else {
+        s
     }
 }
 
@@ -348,7 +364,7 @@ fn size_strip(
 ) -> impl IntoElement {
     let items: Vec<MoonSegmentItem> = (0..6)
         .map(|i| {
-            let mut it = MoonSegmentItem::new("", fmt_size(values[i])).width(SIZE_W[i]);
+            let mut it = MoonSegmentItem::new("", fmt_adaptive(values[i])).width(SIZE_W[i]);
             if i == sel {
                 it = it.selected(true);
             }
@@ -437,7 +453,7 @@ fn sell_strip(
     let items: Vec<MoonSegmentItem> = (0..6)
         .map(|i| {
             let value = match pcts {
-                Some(p) => format!("+{:.1}%", p[i]),
+                Some(p) => format!("+{}%", fmt_adaptive(p[i])),
                 None => "—".to_string(),
             };
             let mut it = MoonSegmentItem::new("", value).width(SELL_W[i]);
@@ -485,10 +501,14 @@ fn sell_strip(
                     })
                     .on_scroll_wheel(move |ev, _w, cx| {
                         let up = scroll_up(ev);
-                        backend_wheel.update(cx, |b, _| {
+                        backend_wheel.update(cx, |b, bcx| {
                             let cur = b.fixed_sell_pct(core, i);
                             let next = wheel_step(cur, up, 0.5);
                             if next != cur {
+                                // Оптимистично: локальный кэш + перерисовка СРАЗУ; в ядро — тоже.
+                                b.set_fixed_sell_pct_local(core, i, next);
+                                b.order_size_rev = b.order_size_rev.wrapping_add(1);
+                                bcx.notify();
                                 if let Err(error) = b.session.edit_client_settings(
                                     core,
                                     ClientSettingsEdit::SetFixedSellPct {
@@ -682,7 +702,12 @@ pub fn toolbar(
         let sl_str = cs
             .map(|s| format!("{}%", fmt_field2_signed(s.stop_loss_pct)))
             .unwrap_or_else(|| "—".to_string());
-        let sell_pcts = cs.map(|s| s.fixed_sell_pcts);
+        // Накладываем оптимистичный локальный кэш поверх значений ядра (живой sell-дисплей).
+        let sell_pcts = focus_core.zip(cs).map(|(core, s)| {
+            let arr: [f64; 6] =
+                std::array::from_fn(|i| b.fixed_sell_pct_with(core, i, s.fixed_sell_pcts[i]));
+            arr
+        });
         let sell_slot = cs.map(|s| s.fixed_sell_slot);
         // Lev = плечо монеты main-чарта на активном ядре (per-core, per-coin) из ассетов.
         let lev_str = TradeMetric::Lev
