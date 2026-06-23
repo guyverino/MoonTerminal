@@ -69,20 +69,43 @@ impl AddChartStack {
         ttl_ms: f64,
         cx: &mut Context<Self>,
     ) {
+        let (_, compress, _) = resolve_layout(
+            self.layout_mode,
+            self.layout_height_fit,
+            self.layout_height_scroll,
+        );
+
         // Уже есть такой график → продлить TTL.
-        if let Some(entry) = self
+        if let Some(i) = self
             .charts
             .iter()
-            .find(|e| e.core == core && e.market == market)
+            .position(|e| e.core == core && e.market == market)
         {
-            entry
-                .panel
-                .update(cx, |panel, pcx| panel.add_coin(core, market, ttl_ms, pcx));
+            if self.charts[i].vacated {
+                self.charts[i].vacated = false;
+                self.charts[i].arrived_at = std::time::Instant::now();
+            }
+            let panel = self.charts[i].panel.clone();
+            panel.update(cx, |panel, pcx| panel.add_coin(core, market, ttl_ms, pcx));
             cx.notify();
             return;
         }
 
-        // Новый график — в конец (запиненные сами всплывут наверх при сортировке в render).
+        // COMPRESS: новый занимает ПЕРВЫЙ пустой держащийся слот (без сдвига/смены размера соседей).
+        if compress {
+            if let Some(i) = self.charts.iter().position(|e| e.vacated) {
+                self.charts[i].core = core;
+                self.charts[i].market = market.to_string();
+                self.charts[i].arrived_at = std::time::Instant::now();
+                self.charts[i].vacated = false;
+                let panel = self.charts[i].panel.clone();
+                panel.update(cx, |panel, pcx| panel.add_coin(core, market, ttl_ms, pcx));
+                cx.notify();
+                return;
+            }
+        }
+
+        // Новый график — в конец (в FIT-stretch запиненные всплывут при сортировке в render).
         let backend = self.backend.clone();
         let num = self.num;
         let bucket = self.bucket.clone();
@@ -93,7 +116,7 @@ impl AddChartStack {
         // Любое изменение панели (вкл. переключение пина ●/○) → перерисовать стек: prune пустых +
         // пере-сортировка запиненных наверх происходит в render.
         cx.observe(&panel, |this, _, cx| {
-            this.prune_empty(cx);
+            this.prune_or_hold(cx);
             cx.notify();
         })
         .detach();
@@ -109,13 +132,34 @@ impl AddChartStack {
         cx.notify();
     }
 
-    /// Снятие выбывших графиков (TTL истёк → пустая панель). Запиненные панели TTL не трогает
-    /// (`prune_ttl` пропускает pinned), так что наверху они держатся. Удаляем пустые сразу —
-    /// стабильность позиции обеспечивает пин (см. сортировку в render), а не задержка.
-    fn prune_empty(&mut self, cx: &App) -> bool {
-        let before = self.charts.len();
-        self.charts.retain(|e| e.panel.read(cx).pane_count() > 0);
-        self.charts.len() != before
+    /// Реакция на выбытие графиков (TTL истёк → пустая панель).
+    /// - **FIT-stretch / Scroll**: удаляем пустые сразу (стабильность даёт пин — сортировка в render).
+    /// - **COMPRESS (Fit+пиксели)**: слот НЕ удаляем — помечаем `vacated` (держит позицию и размер
+    ///   соседей). Сброс ВСЕХ слотов — только когда пустыми стали все (→ вернётся дефолтная высота).
+    fn prune_or_hold(&mut self, cx: &App) -> bool {
+        let (_, compress, _) = resolve_layout(
+            self.layout_mode,
+            self.layout_height_fit,
+            self.layout_height_scroll,
+        );
+        if !compress {
+            let before = self.charts.len();
+            self.charts.retain(|e| e.panel.read(cx).pane_count() > 0);
+            return self.charts.len() != before;
+        }
+        let mut changed = false;
+        for e in self.charts.iter_mut() {
+            let empty = e.panel.read(cx).pane_count() == 0;
+            if empty != e.vacated {
+                e.vacated = empty;
+                changed = true;
+            }
+        }
+        if !self.charts.is_empty() && self.charts.iter().all(|e| e.vacated) {
+            self.charts.clear();
+            changed = true;
+        }
+        changed
     }
 
     pub(crate) fn pane_count(&self, cx: &App) -> usize {
@@ -181,6 +225,12 @@ impl AddChartStack {
         self.layout_mode = mode;
         self.layout_height_fit = height_fit;
         self.layout_height_scroll = height_scroll;
+        // Слоты держатся только в COMPRESS. При переключении в другой режим пустые слоты убираем,
+        // чтобы FIT-stretch/Scroll не показывали пустые плашки.
+        let (_, compress, _) = resolve_layout(mode, height_fit, height_scroll);
+        if !compress {
+            self.charts.retain(|e| !e.vacated);
+        }
         cx.notify();
     }
 
@@ -227,10 +277,12 @@ impl Render for AddChartStack {
             self.layout_height_fit,
             self.layout_height_scroll,
         );
-        // Запиненные графики — наверх кластером (стабильная сортировка: порядок внутри групп
-        // сохраняется). Пин защищает от TTL (prune_ttl), так что они держатся вверху.
-        self.charts
-            .sort_by_key(|e| !e.panel.read(cx).is_pinned());
+        // Запиненные наверх кластером — ТОЛЬКО НЕ в COMPRESS (там слоты позиционно стабильны,
+        // сортировка их бы двигала). В FIT-stretch/Scroll пин поднимает график к запиненным.
+        if !compress {
+            self.charts
+                .sort_by_key(|e| !e.panel.read(cx).is_pinned());
+        }
         let count = self.charts.len();
         let border = rgb(palette.border);
         let accent = rgb(palette.blue);
@@ -246,7 +298,8 @@ impl Render for AddChartStack {
             cfg_h,
             &self.scroll,
             border,
-            |s, ix| s.charts.get(ix).map(|e| e.panel.clone()),
+            // Пустой (держащийся) COMPRESS-слот → None: render покажет прозрачную плашку.
+            |s, ix| s.charts.get(ix).filter(|e| !e.vacated).map(|e| e.panel.clone()),
             move |s, ix, panel, height, flex, border, _ent| {
                 let (id, fresh) = match s.charts.get(ix) {
                     Some(e) => (
@@ -262,11 +315,15 @@ impl Render for AddChartStack {
                     .overflow_hidden()
                     .border_1()
                     .border_color(border);
-                if let Some(h) = height {
-                    tile = tile.h(px(h)).min_h(px(0.0));
-                }
+                // flex+height → max_h (COMPRESS: до cfg_h, сжатие при переполнении); height без
+                // flex → фикс; flex без height → растяжение (FIT).
                 if flex {
                     tile = tile.flex_1().min_h(px(0.0));
+                    if let Some(h) = height {
+                        tile = tile.max_h(px(h));
+                    }
+                } else if let Some(h) = height {
+                    tile = tile.h(px(h)).min_h(px(0.0));
                 }
                 // Подсветка только что появившегося графика: яркая акцентная рамка поверх, пульс
                 // (3 мигания за HIGHLIGHT). Сдвинута внутрь на 1px, чтобы overflow_hidden её не

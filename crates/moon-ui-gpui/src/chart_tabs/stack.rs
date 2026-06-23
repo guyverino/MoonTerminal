@@ -11,13 +11,17 @@ use crate::chart_persist::StackLayoutMode;
 use crate::panels::ChartPanel;
 use moon_core::session::CoreId;
 
-/// Одна запись стека: рынок ядра + его отдельный `ChartPanel`.
+/// Одна запись (слот) стека: рынок ядра + его отдельный `ChartPanel`.
 pub(super) struct ChartStackEntry {
     pub core: CoreId,
     pub market: String,
     pub panel: Entity<ChartPanel>,
     /// Когда график появился в слоте (для подсветки «нового» — пульс рамки `HIGHLIGHT`).
     pub arrived_at: Instant,
+    /// Слот пуст (график закрылся/истёк по TTL), но держится позиционно — только COMPRESS
+    /// (Fit+пиксели): соседи не сдвигаются и не меняют размер; новый занимает первый пустой;
+    /// сброс всех слотов — когда пустыми стали ВСЕ. Рисуется прозрачной плашкой.
+    pub vacated: bool,
 }
 
 impl ChartStackEntry {
@@ -27,6 +31,7 @@ impl ChartStackEntry {
             market,
             panel,
             arrived_at: Instant::now(),
+            vacated: false,
         }
     }
 }
@@ -157,17 +162,31 @@ where
     }
 
     // FIT / COMPRESS: v_flex на всю высоту окна, без скролла.
+    // COMPRESS: каждый слот flex с cap = cfg_h (height=Some+flex=true → max_h в плитке): мало
+    // графиков — каждый по cfg_h (низ пустой), много — сжимаются до window/count. FIT: flex без cap.
     let mut tiles: Vec<AnyElement> = Vec::with_capacity(count);
     for ix in 0..count {
-        let Some(panel) = panel_at(s, ix) else {
-            continue;
-        };
         let (height, flex) = if compress {
-            (Some(cfg_h), false)
+            (Some(cfg_h), true)
         } else {
             (None, true)
         };
-        tiles.push(tile(s, ix, panel, height, flex, border, entity.clone()));
+        match panel_at(s, ix) {
+            Some(panel) => tiles.push(tile(s, ix, panel, height, flex, border, entity.clone())),
+            None => {
+                // Пустой (держащийся) слот COMPRESS — прозрачная плашка тех же размеров.
+                let mut e = div().w_full().relative().overflow_hidden();
+                if flex {
+                    e = e.flex_1().min_h(px(0.0));
+                    if let Some(h) = height {
+                        e = e.max_h(px(h));
+                    }
+                } else if let Some(h) = height {
+                    e = e.h(px(h)).min_h(px(0.0));
+                }
+                tiles.push(e.into_any_element());
+            }
+        }
     }
     div()
         .id(format!("{base_id}-fit"))

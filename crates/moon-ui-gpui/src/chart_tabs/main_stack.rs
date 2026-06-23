@@ -312,13 +312,15 @@ impl MainChartStack {
                     }
                 },
             );
-        if let Some(height) = height {
-            // Фикс. высота: min_h=0 даёт COMPRESS-сжатие при переполнении окна (в SCROLL —
-            // безвредно, высота слота фиксирована виртуальным списком).
-            tile = tile.h(px(height)).min_h(px(0.0));
-        }
+        // flex+height → max_h (COMPRESS: до cfg_h, сжатие при переполнении); height без flex →
+        // фикс; flex без height → растяжение (FIT).
         if flex {
             tile = tile.flex_1().min_h(px(0.0));
+            if let Some(height) = height {
+                tile = tile.max_h(px(height));
+            }
+        } else if let Some(height) = height {
+            tile = tile.h(px(height)).min_h(px(0.0));
         }
         tile.child(div().size_full().relative().overflow_hidden().child(panel))
     }
