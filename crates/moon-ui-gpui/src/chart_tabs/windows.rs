@@ -478,13 +478,15 @@ impl DetachedChartHost {
     }
 
     fn seed_layout_popup_inputs(&self, window: &mut Window, cx: &mut Context<Self>) {
+        // Эффективные значения вместо пустоты при None (Fit→0, Scroll→дефолт) — иначе после
+        // рестарта поля высоты пустые, без цифр.
         let (_, hf, hs) = self.panel_layout(cx);
-        self.layout_fit_input.update(cx, |input, c| {
-            input.set_value(hf.map(|v| v.to_string()).unwrap_or_default(), window, c)
-        });
-        self.layout_scroll_input.update(cx, |input, c| {
-            input.set_value(hs.map(|v| v.to_string()).unwrap_or_default(), window, c)
-        });
+        let fit = hf.unwrap_or(0).to_string();
+        let scroll = hs.unwrap_or(super::stack::DEFAULT_SCROLL_HEIGHT).to_string();
+        self.layout_fit_input
+            .update(cx, |input, c| input.set_value(fit, window, c));
+        self.layout_scroll_input
+            .update(cx, |input, c| input.set_value(scroll, window, c));
     }
 
     fn read_layout_height(&self, mode: StackLayoutMode, cx: &App) -> Option<u16> {

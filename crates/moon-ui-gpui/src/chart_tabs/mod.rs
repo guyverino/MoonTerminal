@@ -319,14 +319,13 @@ impl ChartTabs {
     }
 
     fn seed_layout_popup_inputs(&self, window: &mut Window, cx: &mut Context<Self>) {
-        let fit = self
-            .active_layout_height_fit(cx)
-            .map(|v| v.to_string())
-            .unwrap_or_default();
+        // Показываем ЭФФЕКТИВНЫЕ значения (а не пусто при None): Fit→0 (растянуть), Scroll→дефолт.
+        // Иначе после рестарта у неустановленных высот поле было пустым, без цифр.
+        let fit = self.active_layout_height_fit(cx).unwrap_or(0).to_string();
         let scroll = self
             .active_layout_height_scroll(cx)
-            .map(|v| v.to_string())
-            .unwrap_or_default();
+            .unwrap_or(stack::DEFAULT_SCROLL_HEIGHT)
+            .to_string();
         self.layout_fit_input
             .update(cx, |input, c| input.set_value(fit, window, c));
         self.layout_scroll_input

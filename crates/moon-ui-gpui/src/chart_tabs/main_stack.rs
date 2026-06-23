@@ -113,11 +113,7 @@ impl MainChartStack {
         }
 
         let panel = self.create_panel(core, &market, cx);
-        self.charts.push(ChartStackEntry {
-            core,
-            market,
-            panel,
-        });
+        self.charts.push(ChartStackEntry::new(core, market, panel));
         self.active = Some(self.charts.len() - 1);
         self.show_stack = false;
         self.sync_visibility(cx);

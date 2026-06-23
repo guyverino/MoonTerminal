@@ -2,6 +2,8 @@
 //! хелперы масштаба/очистки и 3-режимная раскладка (FIT/SCROLL/COMPRESS), параметризованная
 //! фабрикой плитки. Нюансы Main (fullscreen / active / ПКМ-возврат) остаются в `MainChartStack`.
 
+use std::time::{Duration, Instant};
+
 use gpui::*;
 use moon_ui::{MoonScrollbarVisibility, MoonVirtualList, MoonVirtualListScrollHandle, v_flex};
 
@@ -14,10 +16,26 @@ pub(super) struct ChartStackEntry {
     pub core: CoreId,
     pub market: String,
     pub panel: Entity<ChartPanel>,
+    /// Когда график появился в слоте (для подсветки «нового» — пульс рамки `HIGHLIGHT`).
+    pub arrived_at: Instant,
+}
+
+impl ChartStackEntry {
+    pub(super) fn new(core: CoreId, market: String, panel: Entity<ChartPanel>) -> Self {
+        Self {
+            core,
+            market,
+            panel,
+            arrived_at: Instant::now(),
+        }
+    }
 }
 
 /// Дефолтная высота слота в режиме Scroll (px), когда у вкладки нет своей.
 pub(super) const DEFAULT_SCROLL_HEIGHT: u16 = 300;
+
+/// Длительность подсветки рамки только что появившегося графика (пульс).
+pub(super) const HIGHLIGHT: Duration = Duration::from_millis(2600);
 
 /// Разрешить раскладку стека из per-tab настроек вкладки в `(scroll, compress, высота_слота)`:
 /// - `Fit` + высота 0 → растяжение (делят высоту окна): `(false, false, _)`;

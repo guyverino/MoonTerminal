@@ -411,7 +411,10 @@ impl SettingsView {
                     MoonInput::new(SharedString::from(format!("key-{i}")))
                         .state(&row.key)
                         .small()
-                        .mask_toggle(),
+                        .mask_toggle()
+                        // Кнопка очистки (×) — быстро удалить/заменить ключ. Авто-выделение всей
+                        // строки при фокусе недоступно из moon_ui (select_all приватный в форке).
+                        .cleanable(true),
                 ),
             )
             .child(
@@ -780,11 +783,15 @@ impl SettingsView {
                     ),
             );
             // ── Ядра-листья этой группы (с отступом + вертикальная линия ветки) ──
-            for (i, (id, srv_active, _g)) in servers
+            // Неактивные сервера — вниз (стабильная сортировка: порядок внутри групп сохраняется).
+            // `i` — исходный индекс в config.servers (нужен для мутаций draft), его сохраняем.
+            let mut members: Vec<(usize, &(u64, bool, String))> = servers
                 .iter()
                 .enumerate()
                 .filter(|(_, (_, _, g))| g == name)
-            {
+                .collect();
+            members.sort_by_key(|(_, (_, active, _))| !*active);
+            for (i, (id, srv_active, _g)) in members {
                 if let Some(row) = self.conn.get(i) {
                     let st = status.get(id).cloned();
                     list_col = list_col.child(

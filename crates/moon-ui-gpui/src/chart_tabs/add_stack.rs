@@ -6,8 +6,8 @@ use gpui::*;
 use moon_ui::MoonVirtualListScrollHandle;
 
 use super::stack::{
-    ChartStackEntry, render_chart_stack, resolve_layout, retain_nonempty_panels,
-    set_panels_orderbook_enabled, set_panels_scale,
+    ChartStackEntry, HIGHLIGHT, render_chart_stack, resolve_layout, set_panels_orderbook_enabled,
+    set_panels_scale,
 };
 use crate::Backend;
 use crate::chart_persist::StackLayoutMode;
@@ -69,17 +69,20 @@ impl AddChartStack {
         ttl_ms: f64,
         cx: &mut Context<Self>,
     ) {
+        // Уже есть такой график → продлить TTL.
         if let Some(entry) = self
             .charts
             .iter()
-            .find(|entry| entry.core == core && entry.market == market)
+            .find(|e| e.core == core && e.market == market)
         {
             entry
                 .panel
                 .update(cx, |panel, pcx| panel.add_coin(core, market, ttl_ms, pcx));
+            cx.notify();
             return;
         }
 
+        // Новый график — в конец (запиненные сами всплывут наверх при сортировке в render).
         let backend = self.backend.clone();
         let num = self.num;
         let bucket = self.bucket.clone();
@@ -87,10 +90,11 @@ impl AddChartStack {
         let theme = self.theme.clone();
         let scale = self.scale;
         let panel = cx.new(|cx| ChartPanel::new_addto(backend, num, bucket, epoch, theme, cx));
+        // Любое изменение панели (вкл. переключение пина ●/○) → перерисовать стек: prune пустых +
+        // пере-сортировка запиненных наверх происходит в render.
         cx.observe(&panel, |this, _, cx| {
-            if this.prune_empty(cx) {
-                cx.notify();
-            }
+            this.prune_empty(cx);
+            cx.notify();
         })
         .detach();
         if scale.is_some() {
@@ -100,16 +104,18 @@ impl AddChartStack {
             panel.update(cx, |panel, pcx| panel.set_orderbook_enabled(en, pcx));
         }
         panel.update(cx, |panel, pcx| panel.add_coin(core, market, ttl_ms, pcx));
-        self.charts.push(ChartStackEntry {
-            core,
-            market: market.to_string(),
-            panel,
-        });
+        self.charts
+            .push(ChartStackEntry::new(core, market.to_string(), panel));
         cx.notify();
     }
 
+    /// Снятие выбывших графиков (TTL истёк → пустая панель). Запиненные панели TTL не трогает
+    /// (`prune_ttl` пропускает pinned), так что наверху они держатся. Удаляем пустые сразу —
+    /// стабильность позиции обеспечивает пин (см. сортировку в render), а не задержка.
     fn prune_empty(&mut self, cx: &App) -> bool {
-        retain_nonempty_panels(&mut self.charts, cx)
+        let before = self.charts.len();
+        self.charts.retain(|e| e.panel.read(cx).pane_count() > 0);
+        self.charts.len() != before
     }
 
     pub(crate) fn pane_count(&self, cx: &App) -> usize {
@@ -221,8 +227,13 @@ impl Render for AddChartStack {
             self.layout_height_fit,
             self.layout_height_scroll,
         );
+        // Запиненные графики — наверх кластером (стабильная сортировка: порядок внутри групп
+        // сохраняется). Пин защищает от TTL (prune_ttl), так что они держатся вверху.
+        self.charts
+            .sort_by_key(|e| !e.panel.read(cx).is_pinned());
         let count = self.charts.len();
         let border = rgb(palette.border);
+        let accent = rgb(palette.blue);
         let base_id = format!("add-chart-stack-{}", self.num);
         let entity = cx.entity();
         render_chart_stack(
@@ -236,13 +247,16 @@ impl Render for AddChartStack {
             &self.scroll,
             border,
             |s, ix| s.charts.get(ix).map(|e| e.panel.clone()),
-            |s, ix, panel, height, flex, border, _ent| {
-                let id = match s.charts.get(ix) {
-                    Some(e) => format!("add-chart-stack-tile-{}-{}-{}", s.num, e.core, e.market),
-                    None => format!("add-chart-stack-tile-{}-{ix}", s.num),
+            move |s, ix, panel, height, flex, border, _ent| {
+                let (id, fresh) = match s.charts.get(ix) {
+                    Some(e) => (
+                        format!("add-chart-stack-tile-{}-{}-{}", s.num, e.core, e.market),
+                        e.arrived_at.elapsed() < HIGHLIGHT,
+                    ),
+                    None => (format!("add-chart-stack-tile-{}-{ix}", s.num), false),
                 };
                 let mut tile = div()
-                    .id(SharedString::from(id))
+                    .id(SharedString::from(id.clone()))
                     .w_full()
                     .relative()
                     .overflow_hidden()
@@ -254,7 +268,31 @@ impl Render for AddChartStack {
                 if flex {
                     tile = tile.flex_1().min_h(px(0.0));
                 }
+                // Подсветка только что появившегося графика: яркая акцентная рамка поверх, пульс
+                // (3 мигания за HIGHLIGHT). Сдвинута внутрь на 1px, чтобы overflow_hidden её не
+                // срезал; opacity не падает в 0 на пике, чтобы было хорошо видно. gpui гонит кадры.
+                let highlight = fresh.then(|| {
+                    div()
+                        .absolute()
+                        .top(px(1.0))
+                        .left(px(1.0))
+                        .right(px(1.0))
+                        .bottom(px(1.0))
+                        .border_2()
+                        .border_color(accent)
+                        .rounded(px(2.0))
+                        .with_animation(
+                            SharedString::from(format!("{id}-arrive")),
+                            Animation::new(HIGHLIGHT),
+                            |el, delta| {
+                                // 3 чётких мигания: 0 → 1 → 0, повторённые.
+                                let pulse = (delta * std::f32::consts::PI * 3.0).sin().abs();
+                                el.opacity(pulse)
+                            },
+                        )
+                });
                 tile.child(div().size_full().relative().overflow_hidden().child(panel))
+                    .children(highlight)
                     .into_any_element()
             },
         )

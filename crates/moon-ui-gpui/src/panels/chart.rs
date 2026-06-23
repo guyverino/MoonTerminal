@@ -355,6 +355,12 @@ impl ChartPanel {
         self.chart.pane_count()
     }
 
+    /// Закреплён ли хоть один график панели (●). Стек сортирует запиненные наверх; пин также
+    /// защищает график от TTL (`prune_ttl` пропускает pinned).
+    pub fn is_pinned(&self) -> bool {
+        (0..self.chart.pane_count()).any(|i| self.chart.pane_pinned(i))
+    }
+
     #[cfg(any(debug_assertions, moon_profile_debug, feature = "debug-tools"))]
     pub fn debug_data_handle(&self) -> crate::chartdx::ChartDataHandle {
         self.chart.data_handle()
