@@ -11,6 +11,7 @@
 
 mod connections;
 mod general;
+mod hotkeys;
 mod interface;
 mod lines;
 
@@ -44,17 +45,25 @@ const SETTINGS_HEADER_H: f32 = 30.0;
 enum Tab {
     Connections,
     General,
+    Hotkeys,
     Interface,
     Lines,
 }
 
 impl Tab {
-    const ALL: [Tab; 4] = [Tab::Connections, Tab::General, Tab::Interface, Tab::Lines];
+    const ALL: [Tab; 5] = [
+        Tab::Connections,
+        Tab::General,
+        Tab::Hotkeys,
+        Tab::Interface,
+        Tab::Lines,
+    ];
     /// Стабильный id вкладки (для `MoonButton::new`/ключей) — НЕ переводим.
     fn id(self) -> &'static str {
         match self {
             Tab::Connections => "Подключения",
             Tab::General => "Общие",
+            Tab::Hotkeys => "Хоткеи",
             Tab::Interface => "Интерфейс",
             Tab::Lines => "Линии",
         }
@@ -64,6 +73,7 @@ impl Tab {
         match self {
             Tab::Connections => t!("tab.connections"),
             Tab::General => t!("tab.general"),
+            Tab::Hotkeys => t!("tab.hotkeys"),
             Tab::Interface => t!("tab.interface"),
             Tab::Lines => t!("tab.lines"),
         }
@@ -582,6 +592,7 @@ impl Render for SettingsView {
         let content = match self.active {
             Tab::Interface => self.interface_tab(cx).into_any_element(),
             Tab::General => self.general_tab(cx).into_any_element(),
+            Tab::Hotkeys => self.hotkeys_tab(cx).into_any_element(),
             Tab::Lines => self.lines_tab(cx).into_any_element(),
             Tab::Connections => self.connections_tab(cx).into_any_element(),
         };
@@ -693,6 +704,7 @@ fn settings_sig(b: &Backend) -> u64 {
     cfg.log_retention_days.hash(&mut h);
     cfg.ui_font_delta.to_bits().hash(&mut h);
     cfg.ui_scale.to_bits().hash(&mut h);
+    cfg.hotkeys.hash(&mut h);
     format!("{:?}", cfg.theme).hash(&mut h);
     format!("{:?}", cfg.orders).hash(&mut h);
 

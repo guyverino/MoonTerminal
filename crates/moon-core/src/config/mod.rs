@@ -16,6 +16,7 @@
 
 pub mod crypto;
 pub mod groups;
+pub mod hotkeys;
 pub mod lang;
 pub mod layout;
 pub mod orders;
@@ -31,6 +32,9 @@ mod store;
 mod toml_io;
 
 pub use groups::GroupConfig;
+pub use hotkeys::{
+    HotkeysConfig, MouseGestureBinding, MANUAL_STRATEGY_KEYS, ORDER_SIZE_KEYS, SELL_PRESET_KEYS,
+};
 pub use lang::Language;
 pub use layout::{DetachedLayout, GeomRect, GroupLayout, WindowLayout};
 pub use orders::{LineStyle, OrdersStyle};
@@ -69,6 +73,8 @@ pub struct AppConfig {
     pub ui_scale: f32,
     /// Множитель RAM-budget для retained market history. 100 = авто-база, 800 = 8x.
     pub chart_memory_percent: u16,
+    /// Горячие клавиши терминала (settings.toml, открытый формат).
+    pub hotkeys: HotkeysConfig,
     /// Тема оформления чарта (отдельный переносимый theme.toml).
     pub theme: ChartTheme,
     /// Стиль линий ордеров (отдельный переносимый orders.toml).
@@ -102,6 +108,7 @@ impl AppConfig {
                 ui_font_delta: merged.ui_font_delta,
                 ui_scale: merged.ui_scale,
                 chart_memory_percent: merged.chart_memory_percent,
+                hotkeys: merged.hotkeys,
                 theme,
                 orders,
             };
@@ -132,6 +139,7 @@ impl AppConfig {
             cfg.ui_font_delta = schema::default_ui_font_delta();
             cfg.ui_scale = schema::default_ui_scale();
             cfg.chart_memory_percent = schema::default_chart_memory_percent();
+            cfg.hotkeys = HotkeysConfig::default();
             cfg.save()?;
             log::info!("мигрировано из config.enc → servers.enc + settings.toml");
             return Ok(cfg);
@@ -147,6 +155,7 @@ impl AppConfig {
             cfg.ui_font_delta = schema::default_ui_font_delta();
             cfg.ui_scale = schema::default_ui_scale();
             cfg.chart_memory_percent = schema::default_chart_memory_percent();
+            cfg.hotkeys = HotkeysConfig::default();
             cfg.save()?;
             log::info!("мигрировано из config.toml → servers.enc + settings.toml");
             return Ok(cfg);
@@ -163,6 +172,7 @@ impl AppConfig {
             ui_font_delta: schema::default_ui_font_delta(),
             ui_scale: schema::default_ui_scale(),
             chart_memory_percent: schema::default_chart_memory_percent(),
+            hotkeys: HotkeysConfig::default(),
             ..Self::default()
         })
     }
@@ -228,6 +238,7 @@ impl AppConfig {
             ui_font_delta: schema::default_ui_font_delta(),
             ui_scale: schema::default_ui_scale(),
             chart_memory_percent: schema::default_chart_memory_percent(),
+            hotkeys: HotkeysConfig::default(),
             theme,
             orders,
         }))
@@ -253,6 +264,7 @@ impl AppConfig {
             self.ui_font_delta,
             self.ui_scale,
             self.chart_memory_percent,
+            self.hotkeys.clone(),
         );
         store::write_servers(&sf)?;
         store::write_settings(&meta)?;
@@ -289,8 +301,8 @@ impl AppConfig {
     }
 
     /// Сигнатура «структурной» части конфига: серверы + группы, БЕЗ темы/языка/режима
-    /// рынка. По ней App решает, нужен ли при сохранении настроек реконнект к ядрам и
-    /// пересоздание окон. Тема меняется живо, язык и режим рынка — без реконнекта,
+    /// рынка/хоткеев. По ней App решает, нужен ли при сохранении настроек реконнект к ядрам и
+    /// пересоздание окон. Тема меняется живо, язык, режим рынка и хоткеи — без реконнекта,
     /// поэтому их исключаем (нейтрализуем дефолтом).
     pub fn structural_sig(&self) -> String {
         // Связка чарт-вкладок (`chart_bundle`) и пресеты размера ордера (`order_sizes`) —
@@ -319,6 +331,7 @@ impl AppConfig {
             schema::default_ui_font_delta(),
             schema::default_ui_scale(),
             schema::default_chart_memory_percent(),
+            HotkeysConfig::default(),
         );
         let a = toml::to_string(&sf).unwrap_or_default();
         let b = toml::to_string(&meta).unwrap_or_default();

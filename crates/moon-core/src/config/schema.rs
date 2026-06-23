@@ -8,6 +8,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::groups::GroupConfig;
+use super::hotkeys::HotkeysConfig;
 use super::lang::Language;
 use super::secrets::Secret;
 use super::servers::{self, FeedFlags};
@@ -19,8 +20,8 @@ use crate::market::MarketDataMode;
 /// v4: добавлено `charts_split_by_core`. v5: добавлены `log_to_file` + `log_retention_days`.
 /// v6: добавлены `ui_font_delta` + `ui_scale`.
 /// v7: добавлен `chart_memory_percent`. v8: добавлен per-server `chart_bundle`.
-/// v9: добавлен `charts_stack_scroll`.
-pub const SCHEMA_VERSION: u32 = 9;
+/// v9: добавлен `charts_stack_scroll`. v10: добавлен блок `hotkeys`.
+pub const SCHEMA_VERSION: u32 = 10;
 
 /// Старые файлы без поля `version` читаются как 0 → меньше SCHEMA_VERSION →
 /// триггерят досейв с дослоением новых дефолтов.
@@ -149,6 +150,9 @@ pub struct SettingsFile {
     /// 100 = авто-база, 800 = 8x, как Delphi UseMemForCharts.
     #[serde(default = "default_chart_memory_percent")]
     pub chart_memory_percent: u16,
+    /// Горячие клавиши терминала. Открытый формат, без секретов.
+    #[serde(default)]
+    pub hotkeys: HotkeysConfig,
     #[serde(default)]
     pub groups: Vec<GroupConfig>,
     #[serde(default)]

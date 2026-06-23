@@ -29,6 +29,10 @@ tab.general:
   ru: "Общие"
   en: "General"
   es: "General"
+tab.hotkeys:
+  ru: "Хоткеи"
+  en: "Hotkeys"
+  es: "Atajos"
 tab.interface:
   ru: "Интерфейс"
   en: "Interface"

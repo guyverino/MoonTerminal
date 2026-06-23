@@ -5,6 +5,7 @@
 //! переименование сервера больше НЕ теряет его галки (привязка идёт по uid).
 
 use super::groups::GroupConfig;
+use super::hotkeys::HotkeysConfig;
 use super::lang::Language;
 use super::schema::{
     clamp_chart_memory_percent, clamp_chart_stack_height, ServerEntry, ServerMeta, ServersFile,
@@ -40,6 +41,8 @@ pub struct Merged {
     pub ui_scale: f32,
     /// Множитель бюджета retained chart history.
     pub chart_memory_percent: u16,
+    /// Горячие клавиши терминала.
+    pub hotkeys: HotkeysConfig,
     /// Нужно пере-сохранить на диск: присвоены новые uid и/или версия схемы
     /// устарела (надо дослоить дефолты новых полей в settings.toml).
     pub dirty: bool,
@@ -61,6 +64,7 @@ pub fn merge(sf: ServersFile, meta: SettingsFile) -> Merged {
     let ui_font_delta = meta.ui_font_delta;
     let ui_scale = meta.ui_scale;
     let chart_memory_percent = clamp_chart_memory_percent(meta.chart_memory_percent);
+    let hotkeys = meta.hotkeys;
 
     let servers = sf
         .servers
@@ -118,6 +122,7 @@ pub fn merge(sf: ServersFile, meta: SettingsFile) -> Merged {
         ui_font_delta,
         ui_scale,
         chart_memory_percent,
+        hotkeys,
         dirty,
     }
 }
@@ -138,6 +143,7 @@ pub fn split(
     ui_font_delta: f32,
     ui_scale: f32,
     chart_memory_percent: u16,
+    hotkeys: HotkeysConfig,
 ) -> (ServersFile, SettingsFile) {
     let sf = ServersFile {
         servers: servers
@@ -162,6 +168,7 @@ pub fn split(
         ui_font_delta,
         ui_scale,
         chart_memory_percent: clamp_chart_memory_percent(chart_memory_percent),
+        hotkeys,
         groups: groups.to_vec(),
         servers: servers
             .iter()
