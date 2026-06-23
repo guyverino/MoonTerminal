@@ -23,8 +23,8 @@ use anyhow::{anyhow, Result};
 use crate::config::AppConfig;
 use crate::db::ReportTx;
 use crate::feed::{
-    self, ConnStatus, CoreCmd, ExchangeId, FeedHandle, FeedMsg, FeedWakeTx, NewStrategySpec,
-    WalletKind,
+    self, ClientSettingsEdit, ConnStatus, CoreCmd, ExchangeId, FeedHandle, FeedMsg, FeedWakeTx,
+    LevManageEdit, NewStrategySpec, WalletKind,
 };
 use crate::market::{MarketDataMode, MarketDataSource, MarketStore, MarketView, SharedMarketStore};
 
@@ -541,6 +541,26 @@ impl SessionManager {
     /// Отменить ордер ядра по `uid`.
     pub fn cancel_order(&self, core: CoreId, uid: u64) -> Result<()> {
         self.send_core_cmd(core, CoreCmd::CancelOrder { uid }, "cancel order")
+    }
+
+    /// Точечная правка `ClientSettings` ядра из тулбара (TP/SL/выбор sell-пресета). feed
+    /// патчит удержанный снимок и шлёт его целиком в ядро.
+    pub fn edit_client_settings(&self, core: CoreId, edit: ClientSettingsEdit) -> Result<()> {
+        self.send_core_cmd(
+            core,
+            CoreCmd::EditClientSettings(edit),
+            "edit client settings",
+        )
+    }
+
+    /// Точечная правка управления плечом ядра (фикс. плечо из тулбара).
+    pub fn edit_lev_manage(&self, core: CoreId, edit: LevManageEdit) -> Result<()> {
+        self.send_core_cmd(core, CoreCmd::EditLevManage(edit), "edit lev manage")
+    }
+
+    /// Переключить hedge-mode аккаунта ядра (dual-side позиции). Реальное действие на бирже.
+    pub fn set_hedge_mode(&self, core: CoreId, on: bool) -> Result<()> {
+        self.send_core_cmd(core, CoreCmd::SetHedgeMode(on), "set hedge mode")
     }
 
     /// Read-only доступ к аккаунтному плану (статусы/ордера/детекты/стратегии).

@@ -127,6 +127,10 @@ struct Backend {
     /// Main fullscreen chart target by group. Panels such as Orders use this for
     /// "current market"; AddToChart stacks are deliberately not part of that filter.
     main_chart_targets: HashMap<String, (CoreId, String)>,
+    /// Ручной выбор «активного торгового ядра» в шапке (группа → ядро). Sticky-override:
+    /// перекрывает авто-следование за ядром фуллскрин-чарта, пока ядро в группе и юзер не
+    /// открыл фуллскрином чарт ДРУГОГО ядра (тогда сбрасывается в авто). См. `active_trade_core`.
+    trade_core_override: HashMap<String, CoreId>,
     /// Закоммиченный конфиг (тема/ордер-стиль/серверы) — то, что сохранено на диск.
     config: AppConfig,
     /// Черновик окна настроек (draft) — Some, пока окно открыто. Группы-окна, если
@@ -339,6 +343,15 @@ impl Backend {
     }
 
     fn set_main_chart_target(&mut self, group: &str, target: Option<(CoreId, String)>) {
+        // Открытие фуллскрином чарта ДРУГОГО ядра = «явная смена» → сбрасываем sticky-override,
+        // чтобы шапка вернулась к авто-следованию за фуллскрином. Тот же core / снятие фуллскрина
+        // override не трогают.
+        if let Some((new_core, _)) = &target {
+            let prev_core = self.main_chart_targets.get(group).map(|(c, _)| *c);
+            if prev_core != Some(*new_core) {
+                self.trade_core_override.remove(group);
+            }
+        }
         match target {
             Some(target) => {
                 self.main_chart_targets.insert(group.to_string(), target);
@@ -351,6 +364,38 @@ impl Backend {
 
     fn main_chart_target(&self, group: &str) -> Option<(CoreId, String)> {
         self.main_chart_targets.get(group).cloned()
+    }
+
+    /// Активное торговое ядро группы для шапки/тулбара: sticky-override (ручной выбор в
+    /// шапке), если он ещё валиден (ядро в группе), иначе ядро фуллскрин-чарта. None — нет
+    /// ни override, ни открытого фуллскрина.
+    fn active_trade_core(&self, group: &str) -> Option<CoreId> {
+        if let Some(&core) = self.trade_core_override.get(group) {
+            let in_group = self
+                .session
+                .sessions()
+                .iter()
+                .any(|s| s.id == core && s.group == group);
+            if in_group {
+                return Some(core);
+            }
+        }
+        self.main_chart_target(group).map(|(core, _)| core)
+    }
+
+    /// Записать ручной выбор активного торгового ядра (клик в селекторе шапки).
+    fn set_trade_core_override(&mut self, group: &str, core: CoreId) {
+        self.trade_core_override.insert(group.to_string(), core);
+    }
+
+    /// Ядра группы (id, имя) для селектора в шапке. Порядок — как в конфиге/сессиях.
+    fn group_cores(&self, group: &str) -> Vec<(CoreId, String)> {
+        self.session
+            .sessions()
+            .iter()
+            .filter(|s| s.group == group)
+            .map(|s| (s.id, s.name.clone()))
+            .collect()
     }
 
     fn retain_chart_market(&mut self, core: CoreId, market: &str) {
@@ -634,6 +679,7 @@ fn main() -> anyhow::Result<()> {
             desired_open_dirty: true,
             last_open_sync: Instant::now() - Duration::from_secs(10),
             main_chart_targets: HashMap::new(),
+            trade_core_override: HashMap::new(),
             config: cfg.clone(),
             preview: None,
             open_request: None,

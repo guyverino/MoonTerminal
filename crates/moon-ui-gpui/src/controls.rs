@@ -7,14 +7,95 @@ use gpui::*;
 use rust_i18n::t;
 
 use moon_ui::{
-    MoonAccent, MoonButton, MoonButtonSegment, MoonButtonSize, MoonButtonVariant, MoonDropdown,
-    MoonInput, MoonInputState, MoonMenuItem, MoonMenuSize, MoonPalette, MoonSegmentItem,
-    MoonSegmentedControl, MoonTooltipView, h_flex,
+    MoonAccent, MoonButton, MoonButtonSegment, MoonButtonSize, MoonButtonVariant, MoonCheckbox,
+    MoonCheckboxSize, MoonDropdown, MoonInput, MoonInputState, MoonMenuItem, MoonMenuSize,
+    MoonPalette, MoonSegmentItem, MoonSegmentedControl, MoonSlider, MoonSliderState,
+    MoonTooltipView, h_flex, v_flex,
 };
 
+use moon_core::feed::ClientSettingsEdit;
 use moon_core::session::CoreId;
 
+use crate::shell::Shell;
 use crate::{Backend, design};
+
+/// Границы слайдеров торговых метрик `(min, max, step)` (по смыслу ядра). Использует и
+/// `Shell` при создании состояний слайдеров.
+pub const TP_NORMAL: (f32, f32, f32) = (1.0, 100.0, 1.0); // x_tmode off: 1..100%
+pub const TP_EXT: (f32, f32, f32) = (100.0, 900.0, 10.0); // x_tmode on («s9»): 100..900%
+pub const SL_BOUNDS: (f32, f32, f32) = (-20.0, 1.0, 0.01); // знаковый: -20..+1%
+pub const LEV_BOUNDS: (f32, f32, f32) = (1.0, 125.0, 1.0);
+
+/// Формат значения с сотыми и запятой-разделителем (локаль): `50` → "50,00".
+pub fn fmt_field2(v: f32) -> String {
+    format!("{v:.2}").replace('.', ",")
+}
+
+/// Со знаком (для SL, который может быть и +, и −): `1` → "+1,00", `-20` → "-20,00".
+pub fn fmt_field2_signed(v: f32) -> String {
+    format!("{v:+.2}").replace('.', ",")
+}
+
+/// Торговая метрика тулбара с собственным попапом (слайдер + поле ввода).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum TradeMetric {
+    Tp,
+    Sl,
+    Lev,
+}
+
+impl TradeMetric {
+    fn id(self) -> &'static str {
+        match self {
+            TradeMetric::Tp => "toolbar-tp",
+            TradeMetric::Sl => "toolbar-sl",
+            TradeMetric::Lev => "toolbar-lev",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            TradeMetric::Tp => "TP",
+            TradeMetric::Sl => "SL",
+            TradeMetric::Lev => "Lev",
+        }
+    }
+
+    fn unit(self) -> &'static str {
+        match self {
+            TradeMetric::Lev => "×",
+            _ => "%",
+        }
+    }
+
+    fn title(self) -> String {
+        match self {
+            TradeMetric::Tp => t!("toolbar.tp_title").to_string(),
+            TradeMetric::Sl => t!("toolbar.sl_title").to_string(),
+            TradeMetric::Lev => t!("toolbar.lev_title").to_string(),
+        }
+    }
+
+    /// Текущее значение метрики активного ядра (для сидирования слайдера/инпута при открытии).
+    /// Lev зависит ОТ ЯДРА И ТЕКУЩЕЙ МОНЕТЫ: плечо рынка main-чарта из ассетов активного ядра.
+    pub fn current(self, b: &Backend, group: &str) -> Option<f32> {
+        let core = b.active_trade_core(group)?;
+        let cd = b.session.store().core(core)?;
+        match self {
+            TradeMetric::Tp => cd.client_settings.as_ref().map(|s| s.take_profit_pct as f32),
+            TradeMetric::Sl => cd.client_settings.as_ref().map(|s| s.stop_loss_pct),
+            TradeMetric::Lev => {
+                let (_, market) = b.main_chart_target(group)?;
+                cd.assets
+                    .rows
+                    .iter()
+                    .find(|r| r.market == market)
+                    .map(|r| r.leverage as f32)
+            }
+        }
+    }
+
+}
 
 /// Высота полосы тулбара: 2-я строка header из HTML-эталона.
 pub const TOOLBAR_H: f32 = design::TOOLBAR_H;
@@ -33,25 +114,154 @@ const SCALES: [(&str, Option<f32>); 6] = [
 const SIZE_KEYS: [&str; 6] = ["F1", "F2", "F3", "F4", "F5", "F6"];
 const SELL_KEYS: [&str; 6] = ["S1", "S2", "S3", "S4", "S5", "S6"];
 
-fn toolbar_metric(
-    id: &'static str,
-    label: &'static str,
-    value: &'static str,
+/// Кнопка-триггер торговой метрики. Клик открывает/закрывает её попап в `Shell` (overlay со
+/// слайдером/полем; закрытие по клику вне/уводе мыши — как у попапа раскладки чарта, т.к.
+/// `MoonPopover` форка не закрывается по клику вне — `appearance(false)`, см. FORK_BUGS).
+fn metric_button(
+    metric: TradeMetric,
+    value_str: String,
     color: u32,
     width: f32,
+    open: bool,
+    shell: Entity<Shell>,
     p: MoonPalette,
 ) -> impl IntoElement {
-    MoonButton::new(id)
+    MoonButton::new(metric.id())
         .width(width)
-        .variant(MoonButtonVariant::Neutral)
+        .variant(if open {
+            MoonButtonVariant::Blue
+        } else {
+            MoonButtonVariant::Neutral
+        })
         .size(MoonButtonSize::Toolbar)
+        .selected(open)
         .segment(
-            MoonButtonSegment::new(label)
+            MoonButtonSegment::new(metric.label())
                 .color(p.text_muted)
                 .weight(400.0),
         )
-        .text_segment(value, color, 500.0)
+        .text_segment(value_str, color, 500.0)
+        .on_click(move |_, window, app| {
+            shell.update(app, |this, cx| this.toggle_metric_popup(metric, window, cx));
+        })
         .render()
+}
+
+/// Контент попапа метрики (overlay-бокс со своим фоном/рамкой): заголовок + слайдер + поле;
+/// для TP — ещё чекбокс расширенного диапазона `x_tmode`/«s9». Рисуется `Shell` поверх дока
+/// на абсолютной позиции под кнопкой. `slider` уже выбран вызывающим (для TP — обычный/
+/// расширенный по `extended`).
+#[allow(clippy::too_many_arguments)]
+pub fn metric_popup_content(
+    metric: TradeMetric,
+    slider: &Entity<MoonSliderState>,
+    fine_slider: &Entity<MoonSliderState>,
+    input: &Entity<MoonInputState>,
+    extended: bool,
+    hedge_on: bool,
+    backend: &Entity<Backend>,
+    group: &str,
+    p: MoonPalette,
+    cx: &App,
+) -> AnyElement {
+    let mut content = v_flex()
+        .w(px(220.0))
+        .p(design::ui_px(cx, 8.0))
+        .gap(design::ui_px(cx, 8.0))
+        .bg(rgb(p.panel_high))
+        .border_1()
+        .border_color(rgb(p.border))
+        .child(
+            div()
+                .text_size(design::t_caption(cx))
+                .text_color(rgb(p.text_muted))
+                .child(metric.title()),
+        )
+        .child(
+            MoonSlider::new(slider)
+                .id(format!("{}-slider", metric.id()))
+                .height(18.0),
+        )
+        .child(
+            h_flex()
+                .gap(design::ui_px(cx, 6.0))
+                .items_center()
+                .child(
+                    div().w(px(72.0)).child(
+                        MoonInput::new(SharedString::from(format!("{}-input", metric.id())))
+                            .state(input)
+                            .small(),
+                    ),
+                )
+                .child(div().text_color(rgb(p.text_muted)).child(metric.unit())),
+        );
+
+    if matches!(metric, TradeMetric::Tp) {
+        let backend = backend.clone();
+        let group = group.to_string();
+        content = content.child(
+            MoonCheckbox::new("toolbar-tp-ext")
+                .label(t!("toolbar.tp_ext").to_string())
+                .checked(extended)
+                .size(MoonCheckboxSize::Compact)
+                .on_change(move |ch: &bool, _w, app| {
+                    let ext = *ch;
+                    let b = backend.read(app);
+                    let Some(core) = b.active_trade_core(&group) else {
+                        return;
+                    };
+                    let cur = b
+                        .session
+                        .store()
+                        .core(core)
+                        .and_then(|d| d.client_settings.as_ref())
+                        .map(|s| s.take_profit_pct)
+                        .unwrap_or(0.0);
+                    if let Err(error) = b.session.edit_client_settings(
+                        core,
+                        ClientSettingsEdit::TakeProfit { pct: cur, extended: ext },
+                    ) {
+                        log::warn!("tp extended toggle failed: {error}");
+                    }
+                }),
+        );
+        // Файн-слайдер: суб-процентный TP (0..основной_TP, шаг 0.01) через scalp. Диапазон
+        // задаёт `Shell` пересозданием `fine_slider` при открытии (границы слайдера фикс.).
+        content = content
+            .child(
+                div()
+                    .text_size(design::t_caption(cx))
+                    .text_color(rgb(p.text_muted))
+                    .child(t!("toolbar.tp_fine").to_string()),
+            )
+            .child(
+                MoonSlider::new(fine_slider)
+                    .id("toolbar-tp-fine-slider")
+                    .height(18.0),
+            );
+    }
+
+    if matches!(metric, TradeMetric::Lev) {
+        let backend = backend.clone();
+        let group = group.to_string();
+        content = content.child(
+            MoonCheckbox::new("toolbar-hedge")
+                .label(t!("toolbar.hedge").to_string())
+                .checked(hedge_on)
+                .size(MoonCheckboxSize::Compact)
+                .on_change(move |ch: &bool, _w, app| {
+                    let on = *ch;
+                    let b = backend.read(app);
+                    let Some(core) = b.active_trade_core(&group) else {
+                        return;
+                    };
+                    if let Err(error) = b.session.set_hedge_mode(core, on) {
+                        log::warn!("set hedge mode failed: {error}");
+                    }
+                }),
+        );
+    }
+    content.into_any_element()
 }
 
 /// Мелкая тусклая подпись группы (`size`/`sell`/`МАСШТАБ`) — стендовый `.strip-label`.
@@ -145,20 +355,49 @@ fn size_strip(
     root
 }
 
-fn sell_strip() -> impl IntoElement {
+/// Ширины кнопок продажи (визуал как был).
+const SELL_W: [f32; 6] = [62.0, 62.0, 62.0, 62.0, 56.0, 52.0];
+
+/// Полоса fixed-sell пресетов (S1-S6). Значения — из `ClientSettings` активного ядра
+/// (видимые проценты), выбранный пресет подсвечен (`fixed_sell_slot`). Нет ядра/настроек —
+/// прочерки. Запись (смена пресета) — Этап 4: пока клик логируется.
+fn sell_strip(
+    pcts: Option<[f64; 6]>,
+    sel_slot: Option<usize>,
+    backend: Entity<Backend>,
+    group: &str,
+) -> impl IntoElement {
+    let items: Vec<MoonSegmentItem> = (0..6)
+        .map(|i| {
+            let value = match pcts {
+                Some(p) => format!("+{:.1}%", p[i]),
+                None => "—".to_string(),
+            };
+            let mut it = MoonSegmentItem::new(SELL_KEYS[i], value).width(SELL_W[i]);
+            if sel_slot == Some(i + 1) {
+                it = it.selected(true);
+            }
+            it
+        })
+        .collect();
+    let group = group.to_string();
     MoonSegmentedControl::new("toolbar-sell-presets")
         .accent(MoonAccent::Blue)
-        .items([
-            MoonSegmentItem::new("S1", "+1.0%").width(62.0),
-            MoonSegmentItem::new("S2", "+2.0%").width(62.0),
-            MoonSegmentItem::new("S3", "+3.0%")
-                .width(62.0)
-                .selected(true),
-            MoonSegmentItem::new("S4", "+5.0%").width(62.0),
-            MoonSegmentItem::new("S5", "+10%").width(56.0),
-            MoonSegmentItem::new("S6", "mk%").width(52.0),
-        ])
-        .on_click(|ix, _, _, _| log::info!("[ui] sell {} (todo)", SELL_KEYS[ix]))
+        .items(items)
+        .on_click(move |ix, _, _, cx| {
+            // Клик S1-S6 = выбрать fixed-sell слот (1-based) активного ядра.
+            backend.update(cx, |b, _| {
+                let Some(core) = b.active_trade_core(&group) else {
+                    return;
+                };
+                if let Err(error) = b
+                    .session
+                    .edit_client_settings(core, ClientSettingsEdit::SelectFixedSellSlot(ix + 1))
+                {
+                    log::warn!("select fixed-sell slot failed: {error}");
+                }
+            });
+        })
         .render()
 }
 
@@ -288,19 +527,22 @@ pub(crate) fn scale_dropdown_for_add_stack(
 
 /// Полоса тулбара: рисуется как обычный child `Shell` (между шапкой и доком), не dock-панель.
 /// Читает текущий масштаб/follow из `backend`, клики пишут обратно (+notify → перерисовка).
+#[allow(clippy::too_many_arguments)]
 pub fn toolbar(
     backend: &Entity<Backend>,
     group: &str,
     size_edit: Option<(CoreId, usize)>,
     size_input: &Entity<MoonInputState>,
+    shell: &Entity<Shell>,
+    open_metric: Option<TradeMetric>,
     cx: &App,
 ) -> impl IntoElement {
-    let (scale, follow, focus_core, size_values, size_sel) = {
+    let (scale, follow, focus_core, size_values, size_sel, tp_str, sl_str, lev_str, sell_pcts, sell_slot) = {
         let b = backend.read(cx);
-        // Фокусное ядро = ядро ОТКРЫТОГО ФУЛСКРИНОМ Main-чарта этой группы. Размеры показываем
-        // и редактируем для него (открыл монету на байбите → размеры байбита, на бинансе →
-        // бинанса). Нет открытого фулскрина → нет ядра (дефолтные значения, клики игнор).
-        let focus_core = b.main_chart_target(group).map(|(core, _)| core);
+        // Активное торговое ядро = выбор в селекторе шапки (sticky-override) ИЛИ ядро
+        // открытого фуллскрином Main-чарта. Все торговые контролы (размеры/TP/SL/Lev/sell)
+        // читают ЕГО. Нет ядра → дефолтные размеры, прочерки, клики игнор.
+        let focus_core = b.active_trade_core(group);
         let (size_values, size_sel) = match focus_core {
             Some(core) => b.manual_order_size_state(core),
             None => (
@@ -308,7 +550,35 @@ pub fn toolbar(
                 SIZE_SEL_DEFAULT,
             ),
         };
-        (b.price_scale, b.follow, focus_core, size_values, size_sel)
+        let core_data = focus_core.and_then(|c| b.session.store().core(c));
+        let cs = core_data.and_then(|d| d.client_settings.as_ref());
+        let tp_str = cs
+            .map(|s| format!("{}%", fmt_field2(s.take_profit_pct as f32)))
+            .unwrap_or_else(|| "—".to_string());
+        // SL знаковый: «+1,00%» / «-20,00%» (а не «--» из ручного минуса перед отрицательным).
+        let sl_str = cs
+            .map(|s| format!("{}%", fmt_field2_signed(s.stop_loss_pct)))
+            .unwrap_or_else(|| "—".to_string());
+        let sell_pcts = cs.map(|s| s.fixed_sell_pcts);
+        let sell_slot = cs.map(|s| s.fixed_sell_slot);
+        // Lev = плечо монеты main-чарта на активном ядре (per-core, per-coin) из ассетов.
+        let lev_str = TradeMetric::Lev
+            .current(b, group)
+            .filter(|l| *l > 0.0)
+            .map(|l| format!("×{}", l as i32))
+            .unwrap_or_else(|| "—".to_string());
+        (
+            b.price_scale,
+            b.follow,
+            focus_core,
+            size_values,
+            size_sel,
+            tp_str,
+            sl_str,
+            lev_str,
+            sell_pcts,
+            sell_slot,
+        )
     };
     let p = MoonPalette::active(cx);
 
@@ -324,9 +594,33 @@ pub fn toolbar(
         .border_color(rgb(p.border));
 
     row = row
-        .child(toolbar_metric("toolbar-tp", "TP", "+3.0%", p.blue, 74.6, p))
-        .child(toolbar_metric("toolbar-sl", "SL", "-2.0%", p.red, 74.6, p))
-        .child(toolbar_metric("toolbar-lev", "Lev", "×1", p.text, 61.6, p))
+        .child(metric_button(
+            TradeMetric::Tp,
+            tp_str,
+            p.blue,
+            74.6,
+            open_metric == Some(TradeMetric::Tp),
+            shell.clone(),
+            p,
+        ))
+        .child(metric_button(
+            TradeMetric::Sl,
+            sl_str,
+            p.red,
+            74.6,
+            open_metric == Some(TradeMetric::Sl),
+            shell.clone(),
+            p,
+        ))
+        .child(metric_button(
+            TradeMetric::Lev,
+            lev_str,
+            p.text,
+            61.6,
+            open_metric == Some(TradeMetric::Lev),
+            shell.clone(),
+            p,
+        ))
         .child(divider(p))
         .child(strip_label("size", p, cx))
         .child(size_strip(
@@ -342,7 +636,7 @@ pub fn toolbar(
         ))
         .child(divider(p))
         .child(strip_label("sell", p, cx))
-        .child(sell_strip())
+        .child(sell_strip(sell_pcts, sell_slot, backend.clone(), group))
         .child(divider(p))
         .child(scale_dropdown(scale, group, backend.clone(), p));
 

@@ -307,6 +307,9 @@ pub struct AssetRow {
     pub pos_price: f64,
     /// Цена ликвидации позиции (liq_price; 0 если нет).
     pub liq_price: f64,
+    /// Плечо рынка на ЭТОМ ядре (`Market.leverage_x`). Per-core account-поле — показывается
+    /// в тулбаре (Lev зависит от ядра и монеты). 0 = неизвестно.
+    pub leverage: i32,
     /// Профит позиции: b (баланс) / l (long) / s (short) — как в ядре.
     pub profit_b: f64,
     pub profit_l: f64,
@@ -387,6 +390,87 @@ pub struct LicenseState {
     pub moon_credits_hold: i32,
     pub moon_credits_auction: i32,
     pub can_use_watcher: bool,
+}
+
+/// Снимок настроек клиента ядра (moonproto `ClientSettings`) — плоская проекция для UI
+/// (TP/SL/sell-пресеты в тулбаре). Декаплено от moonproto: raw-поля `s_price`/`sb_num`/…
+/// в проде `pub(crate)`, поэтому читаем их ТОЛЬКО через публичные хелперы команды.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClientSettings {
+    /// Эффективный тейк-профит, % (`effective_take_profit_percent`).
+    pub take_profit_pct: f64,
+    /// Расширенный диапазон TP (флаг `x_tmode`, «s9»): off = 0..100%, on = 100..900%
+    /// (на проводе хранится как `x_sell` ×10). Определяет диапазон слайдера и галку в попапе.
+    pub take_profit_extended: bool,
+    /// Режим fixed-sell включён.
+    pub fixed_sell_mode: bool,
+    /// Stop-loss / price-drop level, % (`price_drop_level`).
+    pub stop_loss_pct: f32,
+    /// Трейлинг-стоп, % (`trailing_drop`).
+    pub trailing_drop_pct: f32,
+    /// Глобальный тейк-профит включён (`use_g_take_profit`) + значение, % (`g_take_profit`).
+    pub use_global_take_profit: bool,
+    pub global_take_profit_pct: f64,
+    /// Паника при падении цены (`panic_if_price_drop`).
+    pub panic_if_price_drop: bool,
+    /// Режим эмулятора (`emu_mode`).
+    pub emu_mode: bool,
+    pub buy_iceberg: bool,
+    pub sell_iceberg: bool,
+    pub sign_orders: bool,
+    pub use_stop_market: bool,
+    /// 6 fixed-sell пресетов как видимые проценты (кнопки S1-S6).
+    pub fixed_sell_pcts: [f64; 6],
+    /// Выбранный fixed-sell слот, 1..=6 (`selected_fixed_sell_slot`).
+    pub fixed_sell_slot: usize,
+}
+
+/// Настройки управления плечом ядра (moonproto `LevManage`). Отдельный снимок, как в MoonBot.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct LevManageState {
+    pub auto_max_order: bool,
+    pub auto_lev_up: bool,
+    pub auto_isolated: bool,
+    pub auto_cross: bool,
+    pub auto_fix_lev: bool,
+    pub fix_lev: i32,
+    pub tlg_report: bool,
+    pub lev_control: String,
+}
+
+/// Runtime-состояние ядра (moonproto `RuntimeState`): запущен ли рынок-рантайм и активна
+/// ли авто-детекция (false = passive mode).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RuntimeState {
+    pub is_started: bool,
+    pub auto_detect_active: bool,
+}
+
+/// Точечная правка `ClientSettings` из тулбара. Применяется на фид-стороне к УДЕРЖАННОМУ
+/// moonproto-снимку (`client.snapshot().settings().client_settings`) через его хелперы —
+/// так сохраняются append-only tail/AutoStart-blob'ы, которые UI не видит. Затем снимок
+/// целиком уходит обратно в ядро (`settings().send`).
+#[derive(Debug, Clone, Copy)]
+pub enum ClientSettingsEdit {
+    /// Главный тейк-профит, % + режим расширенного диапазона (`x_tmode`/«s9»). При
+    /// `extended` пишем `x_tmode=true`, `x_sell=round(pct/10)` (100..900%); иначе
+    /// `x_tmode=false`, `x_sell=round(pct)` (1..100%). Снимает fixed-sell/scalp.
+    TakeProfit { pct: f64, extended: bool },
+    /// Stop-loss / price-drop level, % (знаковый: -20..+1 на ядре).
+    StopLossPct(f32),
+    /// Скальп-тейк (суб-процентный TP через `x_sell_scalp`, x_sell=0): файн-слайдер TP.
+    /// На ядре шаг реально 1/50 = 0.02%. Снимает fixed-sell.
+    ScalpTakeProfit(f64),
+    /// Выбрать fixed-sell слот 1..=6 (клик по S1-S6).
+    SelectFixedSellSlot(usize),
+}
+
+/// Точечная правка управления плечом (moonproto `LevManage`). Применяется к удержанному
+/// снимку и уходит через `settings().manage_leverage`.
+#[derive(Debug, Clone, Copy)]
+pub enum LevManageEdit {
+    /// Зафиксировать целевое плечо: `auto_fix_lev=true` + `fix_lev=n`.
+    FixLev(i32),
 }
 
 /// Статус соединения с ядром.
@@ -483,4 +567,12 @@ pub enum FeedMsg {
     TransferAssets(TransferAssetsSnapshot),
     /// License/Free-PRO/MoonCredits state ядра.
     License(LicenseState),
+    /// Снимок настроек клиента ядра (TP/SL/sell/iceberg/…). Шлётся при `ClientSettingsUpdated`.
+    ClientSettings(ClientSettings),
+    /// Снимок управления плечом ядра. Шлётся при `LevManageUpdated`.
+    LevManage(LevManageState),
+    /// Runtime/passive-mode state ядра. Шлётся при `RuntimeStateUpdated`.
+    RuntimeState(RuntimeState),
+    /// Hedge-mode аккаунта ядра (dual-side позиции вкл/выкл). Шлётся при `HedgeModeUpdated`.
+    HedgeMode(bool),
 }

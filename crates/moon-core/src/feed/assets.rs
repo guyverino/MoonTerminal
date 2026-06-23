@@ -103,7 +103,7 @@ pub(super) fn build_assets(
         // coin = канонический токен (fallback market_currency); quote = base_currency;
         // listed выводим как `Market::listed_type()` (SPOT если futures_type=EMPTY,
         // иначе BOTH) — сам `ListedType` не реэкспортится из moonproto.
-        let (coin, quote, listed) = h.with(|m| {
+        let (coin, quote, listed, leverage) = h.with(|m| {
             let canon = m.market_currency_canonic.trim();
             let coin = if canon.is_empty() {
                 m.market_currency.clone()
@@ -115,7 +115,7 @@ pub(super) fn build_assets(
             } else {
                 3u8
             };
-            (coin, m.base_currency.clone(), listed)
+            (coin, m.base_currency.clone(), listed, m.leverage_x)
         });
         let rate = quote_to_usdt(markets, &quote);
         let value_usdt = bp.asset_balance.abs() * price.p_last * rate;
@@ -132,6 +132,7 @@ pub(super) fn build_assets(
             pos_size: bp.pos_size,
             pos_price: bp.pos_price,
             liq_price: bp.liq_price,
+            leverage,
             profit_b: bp.total_profit_b,
             profit_l: bp.total_profit_l,
             profit_s: bp.total_profit_s,

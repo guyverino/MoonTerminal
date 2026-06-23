@@ -10,8 +10,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use moonproto::state::{
-    MarketHistorySizing, MarketsEvent, OrderBookEvent, OrderTraceChartPoint, OrderTraceLine,
-    SettingsEvent, TradesEvent,
+    AccountEvent, MarketHistorySizing, MarketsEvent, OrderBookEvent, OrderTraceChartPoint,
+    OrderTraceLine, SettingsEvent, TradesEvent,
 };
 use moonproto::{
     ClientConfig, ConnectConfig, Event, InitConfig, InitialStrategies, LifecycleEvent, MoonClient,
@@ -25,9 +25,9 @@ use super::strategies::{
     alert_params, build_schema_model, fmt_field, fv_from_str, strat_kind_name,
 };
 use super::{
-    ConnStatus, CoreCmd, CoreLogLine, DetectRow, ExchangeId, FeedMsg, FeedTx, LicenseState,
-    MarketDirty, MarketDirtyFlags, OrderRow, OrderTrace, OrderTracePoint, SharedMoonClient,
-    StrategyRow,
+    ClientSettings, ClientSettingsEdit, ConnStatus, CoreCmd, CoreLogLine, DetectRow, ExchangeId,
+    FeedMsg, FeedTx, LevManageEdit, LevManageState, LicenseState, MarketDirty, MarketDirtyFlags,
+    OrderRow, OrderTrace, OrderTracePoint, RuntimeState, SharedMoonClient, StrategyRow,
 };
 use crate::config::ServerConfig;
 use crate::db::ReportTx;
@@ -87,6 +87,80 @@ fn license_state_from_proto(license: moonproto::KernelLicenseStateCommand) -> Li
         moon_credits_hold: license.moon_credits_hold,
         moon_credits_auction: license.moon_credits_auction,
         can_use_watcher: license.can_use_watcher,
+    }
+}
+
+/// Плоская проекция moonproto `ClientSettings` → терминальный снимок. Raw-поля
+/// (`s_price`/`sb_num`/…) в проде `pub(crate)`, поэтому читаем ТОЛЬКО через хелперы.
+fn client_settings_from_proto(c: &moonproto::ClientSettingsCommand) -> ClientSettings {
+    let fixed_sell_pcts = std::array::from_fn(|i| c.fixed_sell_preset_percent(i + 1).unwrap_or(0.0));
+    ClientSettings {
+        take_profit_pct: c.effective_take_profit_percent(),
+        take_profit_extended: c.x_tmode,
+        fixed_sell_mode: c.fixed_sell_mode,
+        stop_loss_pct: c.price_drop_level,
+        trailing_drop_pct: c.trailing_drop,
+        use_global_take_profit: c.use_g_take_profit,
+        global_take_profit_pct: c.g_take_profit,
+        panic_if_price_drop: c.panic_if_price_drop,
+        emu_mode: c.emu_mode,
+        buy_iceberg: c.buy_iceberg,
+        sell_iceberg: c.sell_iceberg,
+        sign_orders: c.sign_orders,
+        use_stop_market: c.use_stop_market,
+        fixed_sell_pcts,
+        fixed_sell_slot: c.selected_fixed_sell_slot(),
+    }
+}
+
+fn lev_manage_from_proto(l: &moonproto::LevManage) -> LevManageState {
+    LevManageState {
+        auto_max_order: l.auto_max_order,
+        auto_lev_up: l.auto_lev_up,
+        auto_isolated: l.auto_isolated,
+        auto_cross: l.auto_cross,
+        auto_fix_lev: l.auto_fix_lev,
+        fix_lev: l.fix_lev,
+        tlg_report: l.tlg_report,
+        lev_control: l.lev_control.clone(),
+    }
+}
+
+fn runtime_state_from_proto(s: &moonproto::RuntimeStateCommand) -> RuntimeState {
+    RuntimeState {
+        is_started: s.is_started,
+        auto_detect_active: s.auto_detect_active,
+    }
+}
+
+/// Применяет точечную правку тулбара к удержанному снимку настроек ЧЕРЕЗ хелперы команды
+/// (raw-поля `s_price`/`sb_num` в проде `pub(crate)`; `price_drop_level` — pub).
+fn apply_client_settings_edit(s: &mut moonproto::ClientSettingsCommand, edit: ClientSettingsEdit) {
+    match edit {
+        ClientSettingsEdit::TakeProfit { pct, extended } => {
+            // x_tmode/«s9»: on → x_sell хранит pct/10 (видимые 100..900%); off → x_sell=pct
+            // напрямую (1..100%). Ядро без флага само режет TP до 100, поэтому пишем оба поля.
+            s.fixed_sell_mode = false;
+            if extended {
+                s.x_tmode = true;
+                s.x_sell = (pct / 10.0).round().clamp(10.0, 90.0) as i32;
+            } else {
+                s.x_tmode = false;
+                s.x_sell = pct.round().clamp(1.0, 100.0) as i32;
+            }
+        }
+        ClientSettingsEdit::StopLossPct(pct) => s.price_drop_level = pct,
+        ClientSettingsEdit::ScalpTakeProfit(pct) => s.set_scalp_take_profit_percent(pct),
+        ClientSettingsEdit::SelectFixedSellSlot(slot) => s.set_selected_fixed_sell_slot(slot),
+    }
+}
+
+fn apply_lev_manage_edit(l: &mut moonproto::LevManage, edit: LevManageEdit) {
+    match edit {
+        LevManageEdit::FixLev(n) => {
+            l.auto_fix_lev = true;
+            l.fix_lev = n;
+        }
     }
 }
 
@@ -533,6 +607,56 @@ pub fn run(
                 Ok(CoreCmd::CancelOrder { uid }) => {
                     super::trade::cancel_order(&client, server.id, uid);
                 }
+                Ok(CoreCmd::EditClientSettings(edit)) => {
+                    // Правим УДЕРЖАННЫЙ снимок (moonproto хранит последний в SettingsState),
+                    // сохраняя tail/blob'ы, и шлём его целиком. Нет снимка → нечего слать.
+                    match client
+                        .snapshot()
+                        .and_then(|s| s.settings().client_settings.clone())
+                    {
+                        Some(mut settings) => {
+                            apply_client_settings_edit(&mut settings, edit);
+                            if let Err(error) = client.settings().send(settings) {
+                                log::warn!(
+                                    "core {} send client settings failed: {error}",
+                                    server.id
+                                );
+                            } else {
+                                log::info!("core {} client settings edit {edit:?} sent", server.id);
+                            }
+                        }
+                        None => log::warn!(
+                            "core {} edit client settings ignored: no snapshot yet",
+                            server.id
+                        ),
+                    }
+                }
+                Ok(CoreCmd::EditLevManage(edit)) => {
+                    match client.snapshot().and_then(|s| s.settings().lev_manage.clone()) {
+                        Some(mut lev) => {
+                            apply_lev_manage_edit(&mut lev, edit);
+                            if let Err(error) = client.settings().manage_leverage(&lev) {
+                                log::warn!("core {} manage leverage failed: {error}", server.id);
+                            } else {
+                                log::info!("core {} lev edit {edit:?} sent", server.id);
+                            }
+                        }
+                        None => log::warn!(
+                            "core {} edit lev manage ignored: no snapshot yet",
+                            server.id
+                        ),
+                    }
+                }
+                Ok(CoreCmd::SetHedgeMode(on)) => {
+                    // РЕАЛЬНОЕ действие на бирже (Engine API). Тикет игнорируем — итог придёт
+                    // событием HedgeModeUpdated, которое обновит стор.
+                    match client.account().set_hedge_mode(on) {
+                        Ok(_ticket) => log::info!("core {} set hedge mode -> {on}", server.id),
+                        Err(error) => {
+                            log::warn!("core {} set hedge mode -> {on} failed: {error}", server.id)
+                        }
+                    }
+                }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
                     let _ = client.disconnect();
@@ -615,6 +739,15 @@ pub fn run(
                         server.id
                     );
                 }
+                // Полный снимок ClientSettings (TP/SL/sell/…). LevManage/RuntimeState ядро
+                // присылает само после connect; здесь дёргаем только settings-refresh.
+                if let Err(error) = client.settings().refresh() {
+                    log::warn!("core {} request client settings failed: {error}", server.id);
+                }
+                // Hedge-mode аккаунта (для тоггла в тулбаре).
+                if let Err(error) = client.account().refresh_hedge_mode() {
+                    log::warn!("core {} request hedge mode failed: {error}", server.id);
+                }
             }
         }
         // Терминальный отказ старта → наружу как Err: пусть app-level цикл пересоздаст
@@ -643,6 +776,70 @@ pub fn run(
         };
         if let Some(license) = license_state {
             if tx.send(FeedMsg::License(license)).is_err() {
+                break;
+            }
+        }
+        // ClientSettings/LevManage/RuntimeState — снимки настроек ядра. Каждый тянем из
+        // snapshot ТОЛЬКО когда пришло его событие (а не каждый тик), как и license выше.
+        let client_settings = if events.iter().any(|ev| {
+            matches!(ev, &Event::Settings(SettingsEvent::ClientSettingsUpdated))
+        }) {
+            client.snapshot().and_then(|state| {
+                state
+                    .settings()
+                    .client_settings
+                    .as_ref()
+                    .map(client_settings_from_proto)
+            })
+        } else {
+            None
+        };
+        if let Some(settings) = client_settings {
+            if tx.send(FeedMsg::ClientSettings(settings)).is_err() {
+                break;
+            }
+        }
+        let lev_manage = if events
+            .iter()
+            .any(|ev| matches!(ev, &Event::Settings(SettingsEvent::LevManageUpdated)))
+        {
+            client.snapshot().and_then(|state| {
+                state.settings().lev_manage.as_ref().map(lev_manage_from_proto)
+            })
+        } else {
+            None
+        };
+        if let Some(lev) = lev_manage {
+            if tx.send(FeedMsg::LevManage(lev)).is_err() {
+                break;
+            }
+        }
+        let runtime_state = if events
+            .iter()
+            .any(|ev| matches!(ev, &Event::Settings(SettingsEvent::RuntimeStateUpdated)))
+        {
+            client.snapshot().and_then(|state| {
+                state
+                    .settings()
+                    .runtime_state
+                    .as_ref()
+                    .map(runtime_state_from_proto)
+            })
+        } else {
+            None
+        };
+        if let Some(state) = runtime_state {
+            if tx.send(FeedMsg::RuntimeState(state)).is_err() {
+                break;
+            }
+        }
+        // Hedge-mode: значение приходит прямо в событии (Engine API ответ).
+        let hedge_mode = events.iter().find_map(|ev| match ev {
+            Event::Account(AccountEvent::HedgeModeUpdated { hedge_mode, .. }) => Some(*hedge_mode),
+            _ => None,
+        });
+        if let Some(on) = hedge_mode {
+            if tx.send(FeedMsg::HedgeMode(on)).is_err() {
                 break;
             }
         }

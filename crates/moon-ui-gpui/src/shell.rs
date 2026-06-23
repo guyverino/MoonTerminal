@@ -10,12 +10,12 @@ use rust_i18n::t;
 
 use moon_ui::{
     DockArea, DockEvent, DockItem, DockPlacement, MoonBackgroundPolicy, MoonInputEvent,
-    MoonInputState, MoonPalette, MoonStatusBar, MoonStatusIndicator, MoonStatusItem,
-    MoonTooltipView, MoonWindowFrame, PanelView, v_flex,
+    MoonInputState, MoonPalette, MoonSliderEvent, MoonSliderState, MoonStatusBar,
+    MoonStatusIndicator, MoonStatusItem, MoonTooltipView, MoonWindowFrame, PanelView, v_flex,
 };
 
 use moon_core::config::GroupLayout;
-use moon_core::feed::ConnStatus;
+use moon_core::feed::{ClientSettingsEdit, ConnStatus, LevManageEdit};
 use moon_core::metrics::MetricsSnapshot;
 use moon_core::session::{ConnSummary, CoreId, LicenseSummary};
 
@@ -54,6 +54,26 @@ pub(crate) struct Shell {
     size_input: Entity<MoonInputState>,
     /// Что сейчас редактируется в тулбаре: `(ядро, индекс F1-F6)`. None = не редактируем.
     size_edit: Option<(CoreId, usize)>,
+    /// Слайдер+поле попапов торговых метрик (TP/SL/Lev). Персистентны (значения переживают
+    /// рендеры; при открытии попапа сидируются значением активного ядра). Коммит в ядро —
+    /// подписками в `new`. Один набор на окно: одновременно открыт лишь один попап. У TP два
+    /// слайдера (1..100 и 100..900) под флаг `x_tmode` — границы в рантайме не меняются.
+    tp_slider_normal: Entity<MoonSliderState>,
+    tp_slider_ext: Entity<MoonSliderState>,
+    /// Файн-слайдер TP (суб-процент через scalp). Пересоздаётся при открытии TP-попапа с
+    /// диапазоном 0..основной_TP (границы слайдера в рантайме не меняются).
+    tp_fine_slider: Entity<MoonSliderState>,
+    sl_slider: Entity<MoonSliderState>,
+    lev_slider: Entity<MoonSliderState>,
+    tp_input: Entity<MoonInputState>,
+    sl_input: Entity<MoonInputState>,
+    lev_input: Entity<MoonInputState>,
+    /// Какой попап метрики тулбара открыт (TP/SL/Lev). Overlay рисуется поверх дока, закрытие
+    /// по клику вне (dismiss-слой), уводу мыши или повторному клику по кнопке. None = закрыт.
+    open_metric_popup: Option<controls::TradeMetric>,
+    /// Был ли курсор уже над попапом метрики (как `layout_popup_hovered`): авто-выход по
+    /// уводу мыши только после реального захода внутрь.
+    metric_popup_hovered: bool,
 }
 
 /// Имена dock-панелей нижней строки в порядке их «домашних» позиций. Возврат
@@ -291,6 +311,100 @@ impl Shell {
         })
         .detach();
 
+        // Попапы торговых метрик: слайдер (быстрый выбор) + поле (точный ввод). Границы — из
+        // `controls` (по смыслу ядра). TP — два слайдера (обычный/расширенный под `x_tmode`).
+        // Значение сидируется при открытии попапа (on_open_change), здесь — лишь дефолт.
+        let mk_slider = |cx: &mut Context<Self>, (min, max, step): (f32, f32, f32), def: f32| {
+            cx.new(|_| {
+                MoonSliderState::new()
+                    .min(min)
+                    .max(max)
+                    .step(step)
+                    .default_value(def)
+            })
+        };
+        let tp_slider_normal = mk_slider(cx, controls::TP_NORMAL, 1.0);
+        let tp_slider_ext = mk_slider(cx, controls::TP_EXT, 100.0);
+        // Файн-слайдер TP: дефолтный диапазон 0..2 (пересоздаётся при открытии под основной TP).
+        let tp_fine_slider = Self::make_tp_fine_slider(2.0, 0.0, cx);
+        let sl_slider = mk_slider(cx, controls::SL_BOUNDS, 0.0);
+        let lev_slider = mk_slider(cx, controls::LEV_BOUNDS, 1.0);
+        let tp_input = cx.new(|cx| MoonInputState::new(window, cx));
+        let sl_input = cx.new(|cx| MoonInputState::new(window, cx));
+        let lev_input = cx.new(|cx| MoonInputState::new(window, cx));
+
+        // Слайдеры: на каждое изменение шлём правку активному ядру И обновляем поле попапа
+        // (живой numeric-фидбэк). moonproto коалесит pending settings → драг не штормит провод.
+        cx.subscribe(&tp_slider_normal, |this, _e, ev: &MoonSliderEvent, cx| {
+            if let MoonSliderEvent::Change(v) = ev {
+                let v = v.end();
+                this.commit_client_edit(
+                    ClientSettingsEdit::TakeProfit { pct: v as f64, extended: false },
+                    cx,
+                );
+                this.live_set_field(this.tp_input.clone(), controls::fmt_field2(v), cx);
+            }
+        })
+        .detach();
+        cx.subscribe(&tp_slider_ext, |this, _e, ev: &MoonSliderEvent, cx| {
+            if let MoonSliderEvent::Change(v) = ev {
+                let v = v.end();
+                this.commit_client_edit(
+                    ClientSettingsEdit::TakeProfit { pct: v as f64, extended: true },
+                    cx,
+                );
+                this.live_set_field(this.tp_input.clone(), controls::fmt_field2(v), cx);
+            }
+        })
+        .detach();
+        cx.subscribe(&sl_slider, |this, _e, ev: &MoonSliderEvent, cx| {
+            if let MoonSliderEvent::Change(v) = ev {
+                let v = v.end();
+                this.commit_client_edit(ClientSettingsEdit::StopLossPct(v), cx);
+                this.live_set_field(this.sl_input.clone(), controls::fmt_field2_signed(v), cx);
+            }
+        })
+        .detach();
+        cx.subscribe(&lev_slider, |this, _e, ev: &MoonSliderEvent, cx| {
+            if let MoonSliderEvent::Change(v) = ev {
+                let v = v.end();
+                this.commit_lev_edit(LevManageEdit::FixLev(v as i32), cx);
+                this.live_set_field(this.lev_input.clone(), format!("{}", v as i32), cx);
+            }
+        })
+        .detach();
+
+        // Поля ввода: коммит по Blur/Enter (точное значение). Пустой/нечисловой ввод — игнор.
+        // TP читает текущий режим x_tmode активного ядра, чтобы отправить правку в тот же диапазон.
+        cx.subscribe(&tp_input, |this, inp, ev: &MoonInputEvent, cx| {
+            if !matches!(ev, MoonInputEvent::Blur | MoonInputEvent::PressEnter { .. }) {
+                return;
+            }
+            if let Ok(v) = inp.read(cx).value().trim().replace(',', ".").parse::<f64>() {
+                let extended = this.active_tp_extended(cx);
+                this.commit_client_edit(ClientSettingsEdit::TakeProfit { pct: v, extended }, cx);
+            }
+        })
+        .detach();
+        cx.subscribe(&sl_input, |this, inp, ev: &MoonInputEvent, cx| {
+            if !matches!(ev, MoonInputEvent::Blur | MoonInputEvent::PressEnter { .. }) {
+                return;
+            }
+            if let Ok(v) = inp.read(cx).value().trim().replace(',', ".").parse::<f32>() {
+                this.commit_client_edit(ClientSettingsEdit::StopLossPct(v), cx);
+            }
+        })
+        .detach();
+        cx.subscribe(&lev_input, |this, inp, ev: &MoonInputEvent, cx| {
+            if !matches!(ev, MoonInputEvent::Blur | MoonInputEvent::PressEnter { .. }) {
+                return;
+            }
+            if let Ok(v) = inp.read(cx).value().trim().parse::<i32>() {
+                this.commit_lev_edit(LevManageEdit::FixLev(v), cx);
+            }
+        })
+        .detach();
+
         Self {
             backend,
             group,
@@ -304,6 +418,175 @@ impl Shell {
             window_handle,
             size_input,
             size_edit: None,
+            tp_slider_normal,
+            tp_slider_ext,
+            tp_fine_slider,
+            sl_slider,
+            lev_slider,
+            tp_input,
+            sl_input,
+            lev_input,
+            open_metric_popup: None,
+            metric_popup_hovered: false,
+        }
+    }
+
+    /// Открыть/закрыть попап метрики тулбара (клик по кнопке TP/SL/Lev). При открытии сидирует
+    /// слайдер/поле текущим значением активного ядра (Context есть — без backend-замыканий).
+    pub(crate) fn toggle_metric_popup(
+        &mut self,
+        metric: controls::TradeMetric,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.open_metric_popup == Some(metric) {
+            self.open_metric_popup = None;
+        } else {
+            self.open_metric_popup = Some(metric);
+            self.metric_popup_hovered = false;
+            // TP: пересоздаём файн-слайдер с диапазоном 0..основной_TP (границы фиксируются при
+            // создании). Основной TP = текущее значение ядра, минимум 0.02 чтобы был ход.
+            if metric == controls::TradeMetric::Tp {
+                let main_tp = controls::TradeMetric::Tp
+                    .current(self.backend.read(cx), &self.group)
+                    .unwrap_or(2.0)
+                    .max(0.02);
+                self.tp_fine_slider = Self::make_tp_fine_slider(main_tp, 0.0, cx);
+            }
+            self.seed_metric_popup(metric, window, cx);
+        }
+        cx.notify();
+    }
+
+    /// Создать файн-слайдер TP (0..max, шаг 0.01) с подпиской: на изменение шлёт суб-процентный
+    /// TP через scalp и живо обновляет поле. Пересоздаётся при открытии TP-попапа (динам. max).
+    fn make_tp_fine_slider(max: f32, init: f32, cx: &mut Context<Self>) -> Entity<MoonSliderState> {
+        let s = cx.new(|_| {
+            MoonSliderState::new()
+                .min(0.0)
+                .max(max)
+                .step(0.01)
+                .default_value(init)
+        });
+        cx.subscribe(&s, |this, _e, ev: &MoonSliderEvent, cx| {
+            if let MoonSliderEvent::Change(v) = ev {
+                let v = v.end();
+                this.commit_client_edit(ClientSettingsEdit::ScalpTakeProfit(v as f64), cx);
+                this.live_set_field(this.tp_input.clone(), controls::fmt_field2(v), cx);
+            }
+        })
+        .detach();
+        s
+    }
+
+    /// Левый/верхний отступ overlay-попапа метрики: под её кнопкой в тулбаре. Ширины метрик
+    /// фиксированы (TP/SL=74.6, Lev=61.6); top = высота шапки + тулбара (те же fit-формулы).
+    fn metric_popup_pos(&self, metric: controls::TradeMetric, cx: &App) -> (Pixels, Pixels) {
+        use controls::TradeMetric;
+        let pad = f32::from(design::ui_px(cx, 12.0));
+        let gap = f32::from(design::ui_px(cx, 6.0));
+        let left = pad
+            + match metric {
+                TradeMetric::Tp => 0.0,
+                TradeMetric::Sl => 74.6 + gap,
+                TradeMetric::Lev => 74.6 + gap + 74.6 + gap,
+            };
+        let header_h = f32::from(design::fit_h_px(cx, design::HEADER_TOP_H, 14.0, 9.0));
+        let toolbar_h = f32::from(design::fit_h_px(cx, controls::TOOLBAR_H, 13.0, 9.5));
+        (px(left), px(header_h + toolbar_h))
+    }
+
+    fn close_metric_popup(&mut self, cx: &mut Context<Self>) {
+        if self.open_metric_popup.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    /// Засеять слайдер+поле попапа значением активного ядра. Для TP выбирает обычный/
+    /// расширенный слайдер по текущему `x_tmode`.
+    fn seed_metric_popup(
+        &self,
+        metric: controls::TradeMetric,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use controls::TradeMetric;
+        // Значение тянем заранее (отдельный read), чтобы не держать заём backend при update сущностей.
+        let val = metric.current(self.backend.read(cx), &self.group);
+        let Some(val) = val else { return };
+        match metric {
+            TradeMetric::Tp => {
+                let extended = self.active_tp_extended(cx);
+                let slider = if extended {
+                    &self.tp_slider_ext
+                } else {
+                    &self.tp_slider_normal
+                };
+                slider.update(cx, |st, c| st.set_value(val, window, c));
+                self.tp_input
+                    .update(cx, |st, c| st.set_value(controls::fmt_field2(val), window, c));
+            }
+            TradeMetric::Sl => {
+                self.sl_slider.update(cx, |st, c| st.set_value(val, window, c));
+                self.sl_input
+                    .update(cx, |st, c| st.set_value(controls::fmt_field2_signed(val), window, c));
+            }
+            TradeMetric::Lev => {
+                self.lev_slider
+                    .update(cx, |st, c| st.set_value(val, window, c));
+                self.lev_input
+                    .update(cx, |st, c| st.set_value(format!("{}", val as i32), window, c));
+            }
+        }
+    }
+
+    /// Текущий режим расширенного диапазона TP (`x_tmode`) активного ядра — для отправки
+    /// правки TP из поля в нужный диапазон. Нет ядра/настроек → false (обычный 1..100%).
+    fn active_tp_extended(&self, cx: &App) -> bool {
+        let b = self.backend.read(cx);
+        b.active_trade_core(&self.group)
+            .and_then(|c| b.session.store().core(c))
+            .and_then(|d| d.client_settings.as_ref())
+            .map(|s| s.take_profit_extended)
+            .unwrap_or(false)
+    }
+
+    /// Живо обновить поле попапа значением слайдера (drag → numeric-фидбэк). Через
+    /// `defer` + window-handle, т.к. `MoonInputState::set_value` требует `&mut Window`.
+    fn live_set_field(
+        &self,
+        input: Entity<MoonInputState>,
+        text: String,
+        cx: &mut Context<Self>,
+    ) {
+        let handle = self.window_handle;
+        cx.defer(move |app| {
+            let _ = handle.update(app, move |_, window, app| {
+                input.update(app, |st, c| st.set_value(text, window, c));
+            });
+        });
+    }
+
+    /// Отправить правку `ClientSettings` активному торговому ядру окна (из попапа тулбара).
+    /// Нет активного ядра — no-op.
+    fn commit_client_edit(&self, edit: ClientSettingsEdit, cx: &mut Context<Self>) {
+        let b = self.backend.read(cx);
+        let Some(core) = b.active_trade_core(&self.group) else {
+            return;
+        };
+        if let Err(error) = b.session.edit_client_settings(core, edit) {
+            log::warn!("toolbar client settings edit failed: {error:#}");
+        }
+    }
+
+    /// Отправить правку управления плечом активному ядру.
+    fn commit_lev_edit(&self, edit: LevManageEdit, cx: &mut Context<Self>) {
+        let b = self.backend.read(cx);
+        let Some(core) = b.active_trade_core(&self.group) else {
+            return;
+        };
+        if let Err(error) = b.session.edit_lev_manage(core, edit) {
+            log::warn!("toolbar lev manage edit failed: {error:#}");
         }
     }
 
@@ -540,6 +823,79 @@ impl Render for Shell {
         let chrome_width = f32::from(window.viewport_size().width);
         let p = MoonPalette::active(cx);
 
+        // Overlay-попап активной метрики тулбара (TP/SL/Lev): абсолютный бокс под кнопкой +
+        // полноэкранный dismiss-слой (как попап раскладки чарта). Клик внутри не закрывает
+        // (stop_propagation), клик вне или увод мыши — закрывает.
+        let metric_overlay = self.open_metric_popup.map(|metric| {
+            use controls::TradeMetric;
+            let extended = self.active_tp_extended(cx);
+            let (slider, input) = match metric {
+                TradeMetric::Tp => (
+                    if extended {
+                        &self.tp_slider_ext
+                    } else {
+                        &self.tp_slider_normal
+                    },
+                    &self.tp_input,
+                ),
+                TradeMetric::Sl => (&self.sl_slider, &self.sl_input),
+                TradeMetric::Lev => (&self.lev_slider, &self.lev_input),
+            };
+            let hedge_on = {
+                let b = self.backend.read(cx);
+                b.active_trade_core(&self.group)
+                    .and_then(|c| b.session.store().core(c))
+                    .and_then(|d| d.hedge_mode)
+                    .unwrap_or(false)
+            };
+            let content = controls::metric_popup_content(
+                metric,
+                slider,
+                &self.tp_fine_slider,
+                input,
+                extended,
+                hedge_on,
+                &self.backend,
+                &self.group,
+                p,
+                cx,
+            );
+            let (left, top) = self.metric_popup_pos(metric, cx);
+            div()
+                .id("metric-popup")
+                .absolute()
+                .left(left)
+                .top(top)
+                // Клик/драг внутри попапа НЕ закрывает (иначе нельзя тянуть слайдер): гасим
+                // на mouse_down, чтобы не дошло до dismiss-слоя. Закрытие — клик вне или по кнопке.
+                .on_mouse_down(MouseButton::Left, |_, _w, app| app.stop_propagation())
+                // Авто-выход по уводу мыши — НО не во время drag слайдера: gpui на время
+                // `on_drag` слайдера гасит hover родителя (hovered=false), и без этой проверки
+                // попап закрывался бы прямо при перетаскивании ползунка. `has_active_drag()` —
+                // штатный публичный запрос gpui (форк править не нужно).
+                .on_hover(cx.listener(|this, hovered: &bool, _w, cx| {
+                    if *hovered {
+                        this.metric_popup_hovered = true;
+                    } else if this.metric_popup_hovered && !cx.has_active_drag() {
+                        this.close_metric_popup(cx);
+                    }
+                }))
+                .child(content)
+        });
+        let metric_dismiss = self.open_metric_popup.map(|_| {
+            div()
+                .id("metric-popup-dismiss")
+                .absolute()
+                .inset_0()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _ev, _w, cx| {
+                        this.close_metric_popup(cx);
+                        cx.stop_propagation();
+                    }),
+                )
+        });
+
         v_flex()
             .size_full()
             .relative() // для absolute-позиционирования демо-попапа поверх дока
@@ -592,6 +948,8 @@ impl Render for Shell {
                 &self.group,
                 self.size_edit,
                 &self.size_input,
+                &cx.entity(),
+                self.open_metric_popup,
                 cx,
             ))
             // ── Центр: единый DockArea (чарт=center, детекты+ордер=right, вкладки=bottom) ──
@@ -621,6 +979,9 @@ impl Render for Shell {
                     .show_controls(design::show_custom_window_controls())
                     .hit_overlay(),
             )
+            // Попап метрики поверх всего: dismiss-слой (ловит клик вне) под самим попапом.
+            .children(metric_dismiss)
+            .children(metric_overlay)
     }
 }
 

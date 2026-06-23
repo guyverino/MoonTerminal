@@ -147,6 +147,15 @@ pub enum CoreCmd {
     MoveOrder { uid: u64, new_price: f64 },
     /// Отменить ордер ядра по `uid`. Транслируется в moonproto `orders().cancel`.
     CancelOrder { uid: u64 },
+    /// Точечная правка `ClientSettings` (TP/SL/выбор sell-пресета) из тулбара. feed берёт
+    /// УДЕРЖАННЫЙ снимок настроек, патчит его хелпером и шлёт целиком (`settings().send`).
+    EditClientSettings(ClientSettingsEdit),
+    /// Точечная правка управления плечом. feed патчит удержанный снимок и шлёт
+    /// (`settings().manage_leverage`).
+    EditLevManage(LevManageEdit),
+    /// Переключить hedge-mode аккаунта (dual-side позиции). РЕАЛЬНОЕ действие на бирже
+    /// через Engine API (`account().set_hedge_mode`).
+    SetHedgeMode(bool),
 }
 
 #[derive(Clone)]

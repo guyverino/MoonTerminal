@@ -7,10 +7,12 @@
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use moon_ui::{
-    MoonButton, MoonButtonSize, MoonButtonVariant, MoonPalette, MoonProgress, MoonTag,
-    MoonWindowFrame, h_flex,
+    MoonButton, MoonButtonSegment, MoonButtonSize, MoonButtonVariant, MoonDropdown, MoonMenuItem,
+    MoonMenuSize, MoonPalette, MoonProgress, MoonTag, MoonWindowFrame, h_flex,
 };
 use rust_i18n::t;
+
+use moon_core::feed::ConnStatus;
 
 use crate::{Backend, design, settings, strategies};
 
@@ -65,7 +67,7 @@ pub fn header(
                 .flex_none()
                 .gap(design::ui_px(cx, 12.0))
                 .items_center()
-                .child(exchange_pill(p, cx))
+                .child(core_selector(group, &backend, p, cx))
                 .child(balance_label(p, cx))
                 .child(design::vline(16.0, p))
                 .child(header_action(
@@ -155,13 +157,68 @@ fn risk_meter(p: MoonPalette, cx: &App) -> impl IntoElement {
         .child(div().text_color(rgb(p.green)).child("18%"))
 }
 
-fn exchange_pill(p: MoonPalette, cx: &App) -> impl IntoElement {
-    MoonTag::new()
-        .outline()
-        .rounded_full()
-        .child(design::status_dot(p.green, cx))
-        .child("Binance Futures")
-        .child(div().text_color(rgb(p.text_muted)).child("▾"))
+/// Селектор «активного торгового ядра» группы. Список ядер группы; текущий выбор =
+/// `Backend::active_trade_core` (авто-следование за фуллскрин-чартом + sticky-override
+/// при ручном выборе). Все торговые контролы тулбара/шапки читают это же ядро.
+fn core_selector(
+    group: &str,
+    backend: &Entity<Backend>,
+    p: MoonPalette,
+    cx: &App,
+) -> AnyElement {
+    let b = backend.read(cx);
+    let cores = b.group_cores(group);
+    let active = b.active_trade_core(group);
+    let store = b.session.store();
+
+    // Нет ядер в группе — статичная заглушка вместо пустого дропдауна.
+    if cores.is_empty() {
+        return MoonTag::new()
+            .outline()
+            .rounded_full()
+            .child(design::status_dot(p.text_muted, cx))
+            .child(t!("header.no_cores").to_string())
+            .into_any_element();
+    }
+
+    let active_ready = active
+        .and_then(|id| store.core(id))
+        .map(|c| c.status == ConnStatus::Ready)
+        .unwrap_or(false);
+    let dot_color = if active_ready { p.green } else { p.red };
+    let active_name = active
+        .and_then(|id| cores.iter().find(|(cid, _)| *cid == id))
+        .map(|(_, n)| n.clone())
+        .unwrap_or_else(|| "—".to_string());
+
+    let mut items = Vec::with_capacity(cores.len());
+    for (id, name) in &cores {
+        let id = *id;
+        let backend = backend.clone();
+        let group = group.to_string();
+        items.push(
+            MoonMenuItem::with_key(format!("core-{id}"), name.clone())
+                .selected(active == Some(id))
+                .checked(active == Some(id))
+                .on_click(move |_, _, cx| {
+                    backend.update(cx, |b, bcx| {
+                        b.set_trade_core_override(&group, id);
+                        bcx.notify();
+                    });
+                }),
+        );
+    }
+
+    MoonDropdown::new("header-core-selector")
+        .trigger_variant(MoonButtonVariant::Panel)
+        .trigger_size(MoonButtonSize::Action)
+        .menu_width(180.0)
+        .menu_size(MoonMenuSize::Compact)
+        .segment(MoonButtonSegment::new("●").color(dot_color).weight(400.0))
+        .segment(MoonButtonSegment::new(active_name).color(p.text).weight(500.0))
+        .segment(MoonButtonSegment::new("▾").color(p.text_muted).weight(400.0))
+        .items(items)
+        .into_any_element()
 }
 
 fn balance_label(p: MoonPalette, cx: &App) -> impl IntoElement {

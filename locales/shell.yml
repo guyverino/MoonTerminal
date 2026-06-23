@@ -25,6 +25,11 @@ status.connected_count:
   ru: "подключено"
   en: "connected"
   es: "conectado"
+# Селектор активного торгового ядра в шапке: текст, когда в группе нет ядер.
+header.no_cores:
+  ru: "нет ядер"
+  en: "no cores"
+  es: "sin núcleos"
 
 # --- Тулбар ---
 toolbar.size:
@@ -68,6 +73,33 @@ toolbar.strategies:
   ru: "Стратегии"
   en: "Strategies"
   es: "Estrategias"
+# Заголовки попапов торговых метрик (слайдер + поле ввода).
+toolbar.tp_title:
+  ru: "Тейк-профит"
+  en: "Take profit"
+  es: "Take profit"
+toolbar.sl_title:
+  ru: "Стоп-лосс"
+  en: "Stop loss"
+  es: "Stop loss"
+toolbar.lev_title:
+  ru: "Плечо"
+  en: "Leverage"
+  es: "Apalancamiento"
+# Чекбокс расширенного диапазона TP (флаг x_tmode / «s9»): 100..900% вместо 0..100%.
+toolbar.tp_ext:
+  ru: "×10 (100–900%)"
+  en: "×10 (100–900%)"
+  es: "×10 (100–900%)"
+# Файн-слайдер TP (суб-процент через scalp) и тоггл hedge-mode (dual-side позиции).
+toolbar.tp_fine:
+  ru: "Точно (0,01%)"
+  en: "Fine (0.01%)"
+  es: "Fino (0,01%)"
+toolbar.hedge:
+  ru: "Hedge Mode"
+  en: "Hedge Mode"
+  es: "Hedge Mode"
 
 # --- Чарт-вкладка / откреплённое чарт-окно ---
 chartwin.tab_title:

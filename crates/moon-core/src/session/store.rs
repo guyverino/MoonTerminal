@@ -9,8 +9,8 @@ use std::collections::{HashMap, VecDeque};
 
 use crate::applog::LogLine;
 use crate::feed::{
-    AssetsSnapshot, ConnStatus, DetectRow, FeedMsg, LicenseState, OrderRow, StrategyRow,
-    StrategySchemaModel, TransferAssetsSnapshot,
+    AssetsSnapshot, ClientSettings, ConnStatus, DetectRow, FeedMsg, LevManageState, LicenseState,
+    OrderRow, RuntimeState, StrategyRow, StrategySchemaModel, TransferAssetsSnapshot,
 };
 use crate::session::order_lines::OrderLineStore;
 
@@ -41,6 +41,14 @@ pub struct CoreData {
     pub transfer_assets: TransferAssetsSnapshot,
     /// License/Free-PRO/MoonCredits state ядра. None, пока ядро не ответило.
     pub license: Option<LicenseState>,
+    /// Снимок настроек клиента ядра (TP/SL/sell/iceberg/…). None, пока не пришёл.
+    pub client_settings: Option<ClientSettings>,
+    /// Снимок управления плечом ядра. None, пока не пришёл.
+    pub lev_manage: Option<LevManageState>,
+    /// Runtime/passive-mode state ядра. None, пока не пришёл.
+    pub runtime_state: Option<RuntimeState>,
+    /// Hedge-mode аккаунта (dual-side позиции). None, пока ядро не ответило.
+    pub hedge_mode: Option<bool>,
     /// Последние строки серверного лога ядра (кольцо, обрезается до MAX_LOG).
     pub log: VecDeque<LogLine>,
     /// Растёт при изменении ордеров / детектов / стратегий / схемы / лога / активов.
@@ -51,6 +59,10 @@ pub struct CoreData {
     pub assets_rev: u64,
     pub transfer_rev: u64,
     pub license_rev: u64,
+    pub client_settings_rev: u64,
+    pub lev_manage_rev: u64,
+    pub runtime_state_rev: u64,
+    pub hedge_mode_rev: u64,
     pub log_rev: u64,
 }
 
@@ -66,6 +78,10 @@ impl CoreData {
             assets: AssetsSnapshot::default(),
             transfer_assets: TransferAssetsSnapshot::default(),
             license: None,
+            client_settings: None,
+            lev_manage: None,
+            runtime_state: None,
+            hedge_mode: None,
             log: VecDeque::new(),
             orders_rev: 0,
             detects_rev: 0,
@@ -74,6 +90,10 @@ impl CoreData {
             assets_rev: 0,
             transfer_rev: 0,
             license_rev: 0,
+            client_settings_rev: 0,
+            lev_manage_rev: 0,
+            runtime_state_rev: 0,
+            hedge_mode_rev: 0,
             log_rev: 0,
         }
     }
@@ -142,6 +162,30 @@ impl CoreData {
                 if self.license != Some(license) {
                     self.license = Some(license);
                     self.license_rev = self.license_rev.wrapping_add(1);
+                }
+            }
+            FeedMsg::ClientSettings(settings) => {
+                if self.client_settings.as_ref() != Some(&settings) {
+                    self.client_settings = Some(settings);
+                    self.client_settings_rev = self.client_settings_rev.wrapping_add(1);
+                }
+            }
+            FeedMsg::LevManage(lev) => {
+                if self.lev_manage.as_ref() != Some(&lev) {
+                    self.lev_manage = Some(lev);
+                    self.lev_manage_rev = self.lev_manage_rev.wrapping_add(1);
+                }
+            }
+            FeedMsg::RuntimeState(state) => {
+                if self.runtime_state != Some(state) {
+                    self.runtime_state = Some(state);
+                    self.runtime_state_rev = self.runtime_state_rev.wrapping_add(1);
+                }
+            }
+            FeedMsg::HedgeMode(on) => {
+                if self.hedge_mode != Some(on) {
+                    self.hedge_mode = Some(on);
+                    self.hedge_mode_rev = self.hedge_mode_rev.wrapping_add(1);
                 }
             }
             FeedMsg::ServerLog(lines) => {
