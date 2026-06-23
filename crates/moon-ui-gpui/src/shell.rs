@@ -325,8 +325,8 @@ impl Shell {
         };
         let tp_slider_normal = mk_slider(cx, controls::TP_NORMAL, 1.0);
         let tp_slider_ext = mk_slider(cx, controls::TP_EXT, 100.0);
-        // Файн-слайдер TP: дефолтный диапазон 0..2 (пересоздаётся при открытии под основной TP).
-        let tp_fine_slider = Self::make_tp_fine_slider(2.0, 0.0, cx);
+        // Файн-слайдер TP: фиксированный 0..2 (активен только когда верхний TP = 2).
+        let tp_fine_slider = Self::make_tp_fine_slider(cx);
         let sl_slider = mk_slider(cx, controls::SL_BOUNDS, 0.0);
         let lev_slider = mk_slider(cx, controls::LEV_BOUNDS, 1.0);
         let tp_input = cx.new(|cx| MoonInputState::new(window, cx));
@@ -343,6 +343,10 @@ impl Shell {
                     cx,
                 );
                 this.live_set_field(this.tp_input.clone(), controls::fmt_field2(v), cx);
+                // Верхний дошёл до минимума (2) → нижний (файн) становится активным и равным 2.
+                if v <= controls::TP_FINE_MAX {
+                    this.defer_set_slider(this.tp_fine_slider.clone(), controls::TP_FINE_MAX, cx);
+                }
             }
         })
         .detach();
@@ -444,29 +448,20 @@ impl Shell {
         } else {
             self.open_metric_popup = Some(metric);
             self.metric_popup_hovered = false;
-            // TP: пересоздаём файн-слайдер с диапазоном 0..основной_TP (границы фиксируются при
-            // создании). Основной TP = текущее значение ядра, минимум 0.02 чтобы был ход.
-            if metric == controls::TradeMetric::Tp {
-                let main_tp = controls::TradeMetric::Tp
-                    .current(self.backend.read(cx), &self.group)
-                    .unwrap_or(2.0)
-                    .max(0.02);
-                self.tp_fine_slider = Self::make_tp_fine_slider(main_tp, 0.0, cx);
-            }
             self.seed_metric_popup(metric, window, cx);
         }
         cx.notify();
     }
 
-    /// Создать файн-слайдер TP (0..max, шаг 0.01) с подпиской: на изменение шлёт суб-процентный
-    /// TP через scalp и живо обновляет поле. Пересоздаётся при открытии TP-попапа (динам. max).
-    fn make_tp_fine_slider(max: f32, init: f32, cx: &mut Context<Self>) -> Entity<MoonSliderState> {
+    /// Создать файн-слайдер TP (0..2, шаг 0.01) с подпиской: на изменение шлёт суб-процентный
+    /// TP через scalp и живо обновляет поле. Активность (disabled) — на стороне рендера попапа.
+    fn make_tp_fine_slider(cx: &mut Context<Self>) -> Entity<MoonSliderState> {
         let s = cx.new(|_| {
             MoonSliderState::new()
                 .min(0.0)
-                .max(max)
+                .max(controls::TP_FINE_MAX)
                 .step(0.01)
-                .default_value(init)
+                .default_value(0.0)
         });
         cx.subscribe(&s, |this, _e, ev: &MoonSliderEvent, cx| {
             if let MoonSliderEvent::Change(v) = ev {
@@ -525,6 +520,10 @@ impl Shell {
                 slider.update(cx, |st, c| st.set_value(val, window, c));
                 self.tp_input
                     .update(cx, |st, c| st.set_value(controls::fmt_field2(val), window, c));
+                // Нижний (файн) слайдер 0..2: ставим на текущий TP в этом диапазоне.
+                let fine = val.clamp(0.0, controls::TP_FINE_MAX);
+                self.tp_fine_slider
+                    .update(cx, |st, c| st.set_value(fine, window, c));
             }
             TradeMetric::Sl => {
                 self.sl_slider.update(cx, |st, c| st.set_value(val, window, c));
@@ -563,6 +562,21 @@ impl Shell {
         cx.defer(move |app| {
             let _ = handle.update(app, move |_, window, app| {
                 input.update(app, |st, c| st.set_value(text, window, c));
+            });
+        });
+    }
+
+    /// Программно выставить значение слайдера (нужен `&mut Window` → через defer+window-handle).
+    fn defer_set_slider(
+        &self,
+        slider: Entity<MoonSliderState>,
+        val: f32,
+        cx: &mut Context<Self>,
+    ) {
+        let handle = self.window_handle;
+        cx.defer(move |app| {
+            let _ = handle.update(app, move |_, window, app| {
+                slider.update(app, |st, c| st.set_value(val, window, c));
             });
         });
     }

@@ -21,7 +21,10 @@ use crate::{Backend, design};
 
 /// Границы слайдеров торговых метрик `(min, max, step)` (по смыслу ядра). Использует и
 /// `Shell` при создании состояний слайдеров.
-pub const TP_NORMAL: (f32, f32, f32) = (1.0, 100.0, 1.0); // x_tmode off: 1..100%
+pub const TP_NORMAL: (f32, f32, f32) = (2.0, 100.0, 1.0); // x_tmode off: 2..100% (мин = 2)
+/// Граница, ниже которой работает файн-слайдер (суб-процент через scalp). Верхний TP на 2
+/// = на минимуме → нижний слайдер активен (0..2). Выше — нижний disabled.
+pub const TP_FINE_MAX: f32 = 2.0;
 pub const TP_EXT: (f32, f32, f32) = (100.0, 900.0, 10.0); // x_tmode on («s9»): 100..900%
 pub const SL_BOUNDS: (f32, f32, f32) = (-20.0, 1.0, 0.01); // знаковый: -20..+1%
 pub const LEV_BOUNDS: (f32, f32, f32) = (1.0, 125.0, 1.0);
@@ -225,18 +228,22 @@ pub fn metric_popup_content(
                     }
                 }),
         );
-        // Файн-слайдер: суб-процентный TP (0..основной_TP, шаг 0.01) через scalp. Диапазон
-        // задаёт `Shell` пересозданием `fine_slider` при открытии (границы слайдера фикс.).
+        // Файн-слайдер: суб-процентный TP (0..2, шаг 0.01) через scalp. Активен ТОЛЬКО когда
+        // верхний TP на минимуме (=2, без галки ×10); поднял верхний выше 2 — нижний disabled.
+        let coarse_tp = slider.read(cx).value().end();
+        let fine_enabled = !extended && coarse_tp <= TP_FINE_MAX + 0.001;
         content = content
             .child(
                 div()
                     .text_size(design::t_caption(cx))
                     .text_color(rgb(p.text_muted))
+                    .opacity(if fine_enabled { 1.0 } else { 0.4 })
                     .child(t!("toolbar.tp_fine").to_string()),
             )
             .child(
                 MoonSlider::new(fine_slider)
                     .id("toolbar-tp-fine-slider")
+                    .disabled(!fine_enabled)
                     .height(18.0),
             );
     }
