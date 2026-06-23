@@ -191,6 +191,9 @@ struct Backend {
     /// `(ядро, индекс F1-F6)`. Shell забирает его в render, открывает инпут поверх кнопки
     /// и фокусирует; по Blur/Enter пишет значение в `ServerConfig.order_sizes` + save.
     order_size_edit_req: Option<(CoreId, usize)>,
+    /// Запрос инлайн-редактирования значения fixed-sell пресета (дабл-клик по S-кнопке):
+    /// `(ядро, индекс S1-S6)`. По Blur/Enter Shell шлёт `SetFixedSellPct` в ядро.
+    sell_edit_req: Option<(CoreId, usize)>,
     /// Backend-level notify is only for slow GPUI chrome/status/overlays. High-rate chart
     /// data goes straight into retained chart handles and must not dirty the whole tree.
     backend_dirty_since_notify: bool,
@@ -240,6 +243,9 @@ struct Backend {
     /// Дебаунс-сейв делает дренаж по `chart_specs_dirty`. См. `chart_persist`.
     chart_specs: Vec<chart_persist::ChartTabSpec>,
     chart_specs_dirty: bool,
+    /// Конфиг изменён в памяти и ждёт дебаунс-сейва (правка размеров ордера колесом мыши —
+    /// часто; на диск пишем раз за дренаж-тик). Дренаж зовёт `config.save()` и сбрасывает.
+    config_dirty: bool,
     /// Приложение завершается (on_app_quit). На выходе закрытие откреп-окон НЕ должно репинить
     /// их (иначе detached сбросится в None и не восстановится) — дренаж репина это проверяет.
     quitting: bool,
@@ -269,6 +275,39 @@ impl Backend {
     fn manual_order_size(&self, core: CoreId) -> f64 {
         let (sizes, sel) = self.manual_order_size_state(core);
         sizes[sel]
+    }
+
+    /// Значение пресета размера `ix` (F1-F6) ядра — из конфига (или дефолт по базе).
+    fn order_size_value(&self, core: CoreId, ix: usize) -> f64 {
+        let (sizes, _) = self.manual_order_size_state(core);
+        sizes[ix.min(sizes.len().saturating_sub(1))]
+    }
+
+    /// Записать значение пресета размера `ix` ядра в конфиг (правка колесом/инпутом). На диск
+    /// НЕ сохраняем сразу — ставим `config_dirty`, дренаж сделает дебаунс-сейв.
+    fn set_order_size_value(&mut self, core: CoreId, ix: usize, v: f64) {
+        if ix >= 6 || !(v > 0.0) {
+            return;
+        }
+        let base = self.session.core_base(core).unwrap_or("").to_string();
+        if let Some(s) = self.config.servers.iter_mut().find(|s| s.id == core) {
+            let mut arr = s
+                .order_sizes
+                .unwrap_or_else(|| moon_core::config::servers::default_order_sizes(&base));
+            arr[ix] = v;
+            s.order_sizes = Some(arr);
+            self.config_dirty = true;
+        }
+    }
+
+    /// Текущий видимый процент fixed-sell пресета `ix` (S1-S6) ядра. 0 если настроек ещё нет.
+    fn fixed_sell_pct(&self, core: CoreId, ix: usize) -> f64 {
+        self.session
+            .store()
+            .core(core)
+            .and_then(|d| d.client_settings.as_ref())
+            .map(|s| s.fixed_sell_pcts[ix.min(5)])
+            .unwrap_or(0.0)
     }
 
     fn cancel_buy_for_main_chart(&self, group: &str) -> usize {
@@ -709,6 +748,7 @@ fn main() -> anyhow::Result<()> {
             order_size_sel: HashMap::new(),
             order_size_rev: 0,
             order_size_edit_req: None,
+            sell_edit_req: None,
             backend_dirty_since_notify: false,
             last_backend_notify: None,
             reconnect_request: Vec::new(),
@@ -731,6 +771,7 @@ fn main() -> anyhow::Result<()> {
             chart_consumers: Vec::new(),
             chart_specs: chart_persist::load_all(),
             chart_specs_dirty: false,
+            config_dirty: false,
             quitting: false,
         });
 
@@ -889,6 +930,14 @@ fn main() -> anyhow::Result<()> {
                         if b.chart_specs_dirty {
                             chart_persist::save_all(&b.chart_specs);
                             b.chart_specs_dirty = false;
+                        }
+                        if b.config_dirty {
+                            // Дебаунс-сейв конфига (правка размеров колесом мыши пишет в память
+                            // часто; на диск — раз за дренаж-тик, а не на каждый тик колеса).
+                            if let Err(e) = b.config.save() {
+                                log::warn!("config save (debounced) failed: {e}");
+                            }
+                            b.config_dirty = false;
                         }
                         b.flush_backend_notify(cx);
                         let reqs = std::mem::take(&mut b.show_group_request);

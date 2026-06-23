@@ -467,6 +467,8 @@ pub enum ClientSettingsEdit {
     ScalpTakeProfit(f64),
     /// Выбрать fixed-sell слот 1..=6 (клик по S1-S6).
     SelectFixedSellSlot(usize),
+    /// Значение fixed-sell пресета: слот 1..=6, видимый процент (колесо/инлайн-правка S-кнопки).
+    SetFixedSellPct { slot: usize, pct: f64 },
 }
 
 /// Точечная правка управления плечом (moonproto `LevManage`). Применяется к удержанному

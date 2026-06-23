@@ -18,7 +18,6 @@ use crate::{Backend, design, settings, strategies};
 
 pub fn header(
     group: &str,
-    market_label: impl Into<SharedString>,
     backend: Entity<Backend>,
     p: MoonPalette,
     cx: &App,
@@ -36,6 +35,16 @@ pub fn header(
                 .flex_none()
                 .h_full(),
         )
+        // Селектор активного ядра (на месте бывшего названия монеты) + баланс. Интерактивные →
+        // НЕ drag-зона (иначе клик по селектору таскал бы окно). Монету (`group · market`) убрали.
+        .child(
+            h_flex()
+                .flex_none()
+                .gap(design::ui_px(cx, 10.0))
+                .items_center()
+                .child(core_selector(group, &backend, p, cx))
+                .child(balance_label(p, cx)),
+        )
         .child(
             MoonWindowFrame::main("terminal-header-metrics-drag", 0.0)
                 .drag_handle()
@@ -44,12 +53,6 @@ pub fn header(
                 .items_center()
                 .min_w_0()
                 .overflow_hidden()
-                .child(design::top_pill(
-                    "strat-pill",
-                    format!("{} · {}", group, market_label.into()),
-                    p,
-                    cx,
-                ))
                 .child(metric("Session", "+$24.30", p.green, p, cx))
                 .child(metric("Real", "+$104.20", p.green, p, cx))
                 .child(metric("Unreal", "−$8.10", p.orange, p, cx))
@@ -67,9 +70,6 @@ pub fn header(
                 .flex_none()
                 .gap(design::ui_px(cx, 12.0))
                 .items_center()
-                .child(core_selector(group, &backend, p, cx))
-                .child(balance_label(p, cx))
-                .child(design::vline(16.0, p))
                 .child(header_action(
                     "strategies",
                     t!("toolbar.strategies").to_string(),

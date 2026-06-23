@@ -177,29 +177,6 @@ pub fn vline(height: f32, p: MoonPalette) -> impl IntoElement {
     div().w(px(1.0)).h(px(height)).bg(rgb(p.border))
 }
 
-pub fn top_pill(
-    id: impl Into<SharedString>,
-    label: impl Into<SharedString>,
-    p: MoonPalette,
-    cx: &App,
-) -> Stateful<Div> {
-    div()
-        .id(id.into())
-        .h(fit_h_px(cx, 24.0, 13.0, 5.5))
-        .flex()
-        .items_center()
-        .gap(ui_px(cx, 6.0))
-        .px(ui_px(cx, 10.0))
-        .rounded(ui_px(cx, 999.0))
-        .border_1()
-        .border_color(rgb(p.border))
-        .bg(rgb(p.panel))
-        .text_size(t_body(cx))
-        .font_family(mono())
-        .text_color(rgb(p.text_soft))
-        .child(label.into())
-}
-
 pub fn status_dot(color: u32, cx: &App) -> impl IntoElement {
     div()
         .w(ui_px(cx, 5.0))

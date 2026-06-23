@@ -18,7 +18,7 @@ use moon_core::config::paths;
 
 use crate::Backend;
 use crate::chart_tabs::ChartTabs;
-use crate::group_window::default_focus_market;
+use moon_core::session::CoreId;
 use crate::panels::{AssetsView, DetectsPanel, LogPanel, OrderPanel, OrdersPanel, ReportPanel};
 
 /// Версия схемы раскладки доков. Поднимаем при несовместимом изменении структуры
@@ -84,7 +84,8 @@ pub fn register_panels(cx: &mut App, backend: Entity<Backend>, epoch: f64) {
             let group = group_of(info);
             let theme = backend.read(cx).config.theme.clone();
             let backend = backend.clone();
-            let focus = default_focus_market(&backend.read(cx).config, &group);
+            // Main стартует пустым — монету не открываем автоматически (см. group_window).
+            let focus: Option<(CoreId, String)> = None;
             Rc::new(cx.new(|cx| ChartTabs::new(backend, group, focus, epoch, theme, window, cx)))
         });
     }

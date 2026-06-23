@@ -151,7 +151,22 @@ fn apply_client_settings_edit(s: &mut moonproto::ClientSettingsCommand, edit: Cl
         }
         ClientSettingsEdit::StopLossPct(pct) => s.price_drop_level = pct,
         ClientSettingsEdit::ScalpTakeProfit(pct) => s.set_scalp_take_profit_percent(pct),
-        ClientSettingsEdit::SelectFixedSellSlot(slot) => s.set_selected_fixed_sell_slot(slot),
+        ClientSettingsEdit::SelectFixedSellSlot(slot) => {
+            // Включаем fixed-sell режим — иначе effective TP остаётся на x_sell и не меняется.
+            // С ним effective_take_profit_percent() = процент выбранного пресета → TP в тулбаре
+            // становится равным значению S-кнопки.
+            s.fixed_sell_mode = true;
+            s.set_selected_fixed_sell_slot(slot);
+        }
+        ClientSettingsEdit::SetFixedSellPct { slot, pct } => {
+            // Видимый процент = s_price · (x_tmode? 10 : 1); пишем s_price обратным пересчётом.
+            let price = if s.x_tmode {
+                (pct / 10.0) as f32
+            } else {
+                pct as f32
+            };
+            s.set_fixed_sell_preset_price(slot, price);
+        }
     }
 }
 

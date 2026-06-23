@@ -93,9 +93,9 @@ toolbar.tp_ext:
   es: "×10 (100–900%)"
 # Файн-слайдер TP (суб-процент через scalp) и тоггл hedge-mode (dual-side позиции).
 toolbar.tp_fine:
-  ru: "Точно (0,01%)"
+  ru: "Точно (0.01%)"
   en: "Fine (0.01%)"
-  es: "Fino (0,01%)"
+  es: "Fino (0.01%)"
 toolbar.hedge:
   ru: "Hedge Mode"
   en: "Hedge Mode"

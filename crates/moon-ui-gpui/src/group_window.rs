@@ -26,18 +26,6 @@ pub(crate) fn groups(cfg: &AppConfig) -> Vec<String> {
     out
 }
 
-pub(crate) fn default_focus_market(cfg: &AppConfig, group: &str) -> Option<(CoreId, String)> {
-    cfg.servers.iter().find_map(|server| {
-        let market = server.market.trim();
-        (server.active
-            && server.show_window
-            && server.group == group
-            && cfg.group(&server.group).active
-            && !market.is_empty())
-        .then(|| (server.id, market.to_string()))
-    })
-}
-
 /// Открыть (или сфокусировать, если уже открыто) окно группы. Используется на старте
 /// по окну на группу и по кнопке 👁 «показать группу» в настройках (порт egui
 /// `App::show_group`). Геометрия — из сохранённой раскладки, иначе каскад по `offset`.
@@ -59,7 +47,9 @@ pub(crate) fn spawn_group_window(
             return;
         }
     }
-    let focus = default_focus_market(cfg, &group);
+    // НЕ открываем монету на Main автоматически при старте — Main стартует пустым (юзер сам
+    // открывает монету). (Раньше брали `server.market`, дефолт BTCUSDT.)
+    let focus: Option<(CoreId, String)> = None;
     let saved = layout.groups.get(&group);
     let win_bounds = match saved {
         Some(g) => Bounds {

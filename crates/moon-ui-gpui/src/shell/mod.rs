@@ -59,6 +59,10 @@ pub(crate) struct Shell {
     size_input: Entity<MoonInputState>,
     /// Что сейчас редактируется в тулбаре: `(ядро, индекс F1-F6)`. None = не редактируем.
     size_edit: Option<(CoreId, usize)>,
+    /// Инпут инлайн-редактирования процента fixed-sell пресета (дабл-клик по S-кнопке) + что
+    /// редактируется `(ядро, индекс S1-S6)`. По Blur/Enter шлём `SetFixedSellPct` в ядро.
+    sell_input: Entity<MoonInputState>,
+    sell_edit: Option<(CoreId, usize)>,
     /// Слайдер+поле попапов торговых метрик (TP/SL/Lev). Персистентны (значения переживают
     /// рендеры; при открытии попапа сидируются значением активного ядра). Коммит в ядро —
     /// подписками в `new`. Один набор на окно: одновременно открыт лишь один попап. У TP два
@@ -79,6 +83,10 @@ pub(crate) struct Shell {
     /// Был ли курсор уже над попапом метрики (как `layout_popup_hovered`): авто-выход по
     /// уводу мыши только после реального захода внутрь.
     metric_popup_hovered: bool,
+    /// Фокус корня окна — чтобы хоткеи (`on_key_down` на корне) ловились даже когда ничего
+    /// другого не сфокусировано (пустой Main). Фокусируем на старте; клик по чарту/инпуту
+    /// уводит фокус туда, но F-клавиши всплывают обратно к корню.
+    focus: FocusHandle,
 }
 
 impl Shell {
@@ -207,6 +215,7 @@ impl Shell {
         cx.observe(&backend, |this, backend, cx| {
             crate::diag::bump(&crate::diag::SHELL_OBS_FIRE);
             this.drain_order_size_edit_request(cx);
+            this.drain_sell_edit_request(cx);
             this.drain_repin_requests(cx);
             let now = Instant::now();
             // Follow/Live и Scale меняются по КЛИКУ юзера — отражаем мгновенно,
@@ -294,6 +303,32 @@ impl Shell {
                             }
                         }
                         bcx.notify();
+                    });
+                }
+            }
+            cx.notify();
+        })
+        .detach();
+
+        // Инпут инлайн-редактирования процента fixed-sell пресета (дабл-клик по S-кнопке). По
+        // Blur/Enter шлём `SetFixedSellPct` активному ядру. Пустой/нечисловой ввод — отмена.
+        let sell_input = cx.new(|cx| MoonInputState::new(window, cx));
+        cx.subscribe(&sell_input, |this, inp, ev: &MoonInputEvent, cx| {
+            if !matches!(ev, MoonInputEvent::Blur | MoonInputEvent::PressEnter { .. }) {
+                return;
+            }
+            let Some((core, ix)) = this.sell_edit.take() else {
+                return;
+            };
+            if let Ok(v) = inp.read(cx).value().trim().replace(',', ".").parse::<f64>() {
+                if v >= 0.0 && ix < 6 {
+                    this.backend.update(cx, |b, _| {
+                        if let Err(error) = b.session.edit_client_settings(
+                            core,
+                            ClientSettingsEdit::SetFixedSellPct { slot: ix + 1, pct: v },
+                        ) {
+                            log::warn!("set fixed-sell pct failed: {error}");
+                        }
                     });
                 }
             }
@@ -399,6 +434,11 @@ impl Shell {
         })
         .detach();
 
+        // Фокус корня окна для хоткеев (см. поле `focus`). Фокусируем сразу, чтобы F-клавиши
+        // работали даже при пустом Main (когда фокусировать в доке нечего).
+        let focus = cx.focus_handle();
+        window.focus(&focus, cx);
+
         Self {
             backend,
             group,
@@ -412,6 +452,8 @@ impl Shell {
             window_handle,
             size_input,
             size_edit: None,
+            sell_input,
+            sell_edit: None,
             tp_slider_normal,
             tp_slider_ext,
             tp_fine_slider,
@@ -422,6 +464,7 @@ impl Shell {
             lev_input,
             open_metric_popup: None,
             metric_popup_hovered: false,
+            focus,
         }
     }
 
@@ -453,6 +496,28 @@ impl Shell {
             });
         });
     }
+
+    /// Дабл-клик по S-кнопке: открыть инпут поверх неё с текущим процентом пресета и
+    /// сфокусировать (аналог `drain_order_size_edit_request`, но значение — из ядра).
+    fn drain_sell_edit_request(&mut self, cx: &mut Context<Self>) {
+        let edit_req = self.backend.update(cx, |b, _| b.sell_edit_req.take());
+        let Some((core, ix)) = edit_req.filter(|(_, i)| *i < 6) else {
+            return;
+        };
+        let cur = self.backend.read(cx).fixed_sell_pct(core, ix);
+        self.sell_edit = Some((core, ix));
+        let input = self.sell_input.clone();
+        let value = format!("{cur}");
+        let handle = self.window_handle;
+        cx.defer(move |app| {
+            let _ = handle.update(app, move |_, window, app| {
+                input.update(app, |st, cx| {
+                    st.set_value(value, window, cx);
+                    st.focus(window, cx);
+                });
+            });
+        });
+    }
 }
 
 impl Render for Shell {
@@ -470,30 +535,19 @@ impl Render for Shell {
         self.last_frame = Some(now_inst);
         let fps = self.fps;
 
-        let (conn, license, snap, market_label, _price_label, book_levels) = {
+        let (conn, license, snap, book_levels) = {
             let b = self.backend.read(cx);
             let conn = b.session.conn_summary_group(&self.group);
             let license = b.session.license_summary_group(&self.group);
             let snap = b.snap;
-            let (market_label, price_label, book_levels) = {
-                match b.main_chart_target(&self.group) {
-                    Some((core, m)) => b.session.with_market_view(core, &m, |data| {
-                        let label = m.clone();
-                        match data {
-                            Some(v) => (
-                                label,
-                                v.last_price
-                                    .map(|p| format!("{p:.2}"))
-                                    .unwrap_or_else(|| "—".into()),
-                                v.book.len(),
-                            ),
-                            None => (label, "—".into(), 0),
-                        }
-                    }),
-                    None => ("—".into(), "—".into(), 0),
-                }
+            // Для статус-бара нужно лишь число уровней стакана текущего Main-чарта.
+            let book_levels = match b.main_chart_target(&self.group) {
+                Some((core, m)) => b
+                    .session
+                    .with_market_view(core, &m, |data| data.map(|v| v.book.len()).unwrap_or(0)),
+                None => 0,
             };
-            (conn, license, snap, market_label, price_label, book_levels)
+            (conn, license, snap, book_levels)
         };
         let chrome_width = f32::from(window.viewport_size().width);
         let p = MoonPalette::active(cx);
@@ -574,6 +628,8 @@ impl Render for Shell {
         v_flex()
             .size_full()
             .relative() // для absolute-позиционирования демо-попапа поверх дока
+            // Фокусируемый корень → хоткеи (`on_key_down`) ловятся даже при пустом Main.
+            .track_focus(&self.focus)
             // НЕТ корневого .bg(): чарт-регион (центр дока) держим прозрачным «окном» под
             // own-pass (UnderScene). Хром (хедер/тулбар/панели/статус) красит свой фон сам.
             .font_family(design::mono())
@@ -581,27 +637,50 @@ impl Render for Shell {
             .text_size(design::t_body(cx))
             .on_key_down(cx.listener(|this, ev: &KeyDownEvent, _window, cx| {
                 let group = this.group.clone();
-                let handled = this.backend.update(cx, |b, _| {
-                    let raw = b
-                        .preview
-                        .as_ref()
-                        .unwrap_or(&b.config)
-                        .hotkeys
-                        .cancel_buy
-                        .trim();
-                    if raw.is_empty() {
-                        return false;
-                    }
-                    match Keystroke::parse(raw) {
-                        Ok(key) if key == ev.keystroke => {
-                            b.cancel_buy_for_main_chart(&group);
-                            true
+                let handled = this.backend.update(cx, |b, bcx| {
+                    // Фаза 1 (только чтение cfg): какой хоткей совпал. Сравниваем нажатую
+                    // клавишу с каждым настроенным сочетанием (gpui Keystroke).
+                    let (size_ix, sell_ix, is_cancel) = {
+                        let cfg = b.preview.as_ref().unwrap_or(&b.config);
+                        let pressed = |raw: &str| {
+                            let raw = raw.trim();
+                            !raw.is_empty()
+                                && matches!(Keystroke::parse(raw), Ok(k) if k == ev.keystroke)
+                        };
+                        let size_ix = cfg.hotkeys.order_size.iter().position(|r| pressed(r));
+                        let sell_ix = cfg.hotkeys.sell_preset.iter().position(|r| pressed(r));
+                        (size_ix, sell_ix, pressed(&cfg.hotkeys.cancel_buy))
+                    };
+                    // Фаза 2 (мутация): F1-F6 = выбрать пресет размера активного ядра; S1-S6 =
+                    // выбрать fixed-sell слот (меняет TP); cancel_buy — отмена покупок Main.
+                    if let Some(i) = size_ix {
+                        match b.active_trade_core(&group) {
+                            Some(core) => {
+                                b.order_size_sel.insert(core, i);
+                                b.order_size_rev = b.order_size_rev.wrapping_add(1);
+                                bcx.notify();
+                                true
+                            }
+                            None => false,
                         }
-                        Ok(_) => false,
-                        Err(err) => {
-                            log::warn!("invalid cancel_buy hotkey {raw:?}: {err}");
-                            false
+                    } else if let Some(i) = sell_ix {
+                        match b.active_trade_core(&group) {
+                            Some(core) => {
+                                if let Err(error) = b.session.edit_client_settings(
+                                    core,
+                                    ClientSettingsEdit::SelectFixedSellSlot(i + 1),
+                                ) {
+                                    log::warn!("hotkey select fixed-sell slot failed: {error}");
+                                }
+                                true
+                            }
+                            None => false,
                         }
+                    } else if is_cancel {
+                        b.cancel_buy_for_main_chart(&group);
+                        true
+                    } else {
+                        false
                     }
                 });
                 if handled {
@@ -611,7 +690,6 @@ impl Render for Shell {
             // ── Header ──────────────────────────────────────────────
             .child(terminal_chrome::header(
                 &self.group,
-                market_label,
                 self.backend.clone(),
                 p,
                 cx,
@@ -623,6 +701,8 @@ impl Render for Shell {
                 &self.group,
                 self.size_edit,
                 &self.size_input,
+                self.sell_edit,
+                &self.sell_input,
                 &cx.entity(),
                 self.open_metric_popup,
                 cx,

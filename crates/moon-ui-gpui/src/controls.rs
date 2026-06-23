@@ -29,14 +29,14 @@ pub const TP_EXT: (f32, f32, f32) = (100.0, 900.0, 10.0); // x_tmode on («s9»)
 pub const SL_BOUNDS: (f32, f32, f32) = (-20.0, 1.0, 0.01); // знаковый: -20..+1%
 pub const LEV_BOUNDS: (f32, f32, f32) = (1.0, 125.0, 1.0);
 
-/// Формат значения с сотыми и запятой-разделителем (локаль): `50` → "50,00".
+/// Формат значения с сотыми, точка-разделитель: `50` → "50.00".
 pub fn fmt_field2(v: f32) -> String {
-    format!("{v:.2}").replace('.', ",")
+    format!("{v:.2}")
 }
 
-/// Со знаком (для SL, который может быть и +, и −): `1` → "+1,00", `-20` → "-20,00".
+/// Со знаком (для SL, который может быть и +, и −): `1` → "+1.00", `-20` → "-20.00".
 pub fn fmt_field2_signed(v: f32) -> String {
-    format!("{v:+.2}").replace('.', ",")
+    format!("{v:+.2}")
 }
 
 /// Торговая метрика тулбара с собственным попапом (слайдер + поле ввода).
@@ -111,9 +111,6 @@ const SCALES: [(&str, Option<f32>); 6] = [
     ("2%", Some(0.02)),
 ];
 
-/// Подписи полосок `size` / `sell` (как на стенде).
-const SIZE_KEYS: [&str; 6] = ["F1", "F2", "F3", "F4", "F5", "F6"];
-const SELL_KEYS: [&str; 6] = ["S1", "S2", "S3", "S4", "S5", "S6"];
 
 /// Кнопка-триггер торговой метрики. Клик открывает/закрывает её попап в `Shell` (overlay со
 /// слайдером/полем; закрытие по клику вне/уводе мыши — как у попапа раскладки чарта, т.к.
@@ -300,11 +297,47 @@ fn fmt_size(v: f64) -> String {
     }
 }
 
-/// Полоса пресетов размера ордера (F1-F6). Значения — из конфига ядра (или дефолт по
-/// базе BTC/USDT), выбор хранится per-core в `Backend::order_size_sel`. Одиночный клик —
-/// выбор; дабл-клик — запрос инлайн-редактирования значения (`order_size_edit_req`), Shell
-/// открывает инпут поверх кнопки. `edit_ix` — индекс редактируемой сейчас кнопки (рисуем
-/// поверх неё `input`). `core=None` (нет ядра группы) → клики игнорируются.
+/// Шаг колеса по порядку величины: `step = frac · 10^floor(log10(v))`. `frac=1.0` — полный
+/// разряд (размер: 18→20→30; 93→100→200; 980→1000→2000; 0.001→0.002). `frac=0.5` — полразряда
+/// (sell: 10→15→20→25; 0.1→0.15→0.2). Вверх — следующий кратный, вниз — предыдущий; на точной
+/// степени 10 шаг вниз падает на разряд ниже (111→100→90→80, а не стоп на 100).
+fn wheel_step(value: f64, up: bool, frac: f64) -> f64 {
+    if !(value > 0.0) {
+        return value;
+    }
+    let step = frac * 10f64.powf(value.log10().floor());
+    let raw = if up {
+        ((value / step + 1e-9).floor() + 1.0) * step
+    } else {
+        let mut down = ((value / step - 1e-9).ceil() - 1.0) * step;
+        if down <= 0.0 {
+            // value на точной ступени (например 100 при frac=1) → один шаг разрядом ниже.
+            let lower = frac * 10f64.powf((value * (1.0 - 1e-9)).log10().floor());
+            down = value - lower;
+        }
+        if down <= 0.0 {
+            return value;
+        }
+        down
+    };
+    (raw * 1e8).round() / 1e8
+}
+
+/// Направление колеса (вверх = +Y). Если в реале инвертировано — поменять знак сравнения.
+fn scroll_up(ev: &ScrollWheelEvent) -> bool {
+    let y = match ev.delta {
+        ScrollDelta::Lines(p) => p.y,
+        ScrollDelta::Pixels(p) => f32::from(p.y),
+    };
+    y > 0.0
+}
+
+/// Полоса пресетов размера ордера (значения, без подписей F1-F6). Значения — из конфига ядра
+/// (или дефолт по базе BTC/USDT), выбор хранится per-core в `Backend::order_size_sel`.
+/// Взаимодействие — прозрачным overlay поверх каждой кнопки (MoonSegmentedControl сам колесо
+/// не умеет): одиночный клик = выбор; дабл-клик = инлайн-правка (`order_size_edit_req`); КОЛЕСО
+/// = ±значение с шагом по порядку величины (наведи и крути, не нажимая). `core=None` → без
+/// взаимодействия.
 fn size_strip(
     values: [f64; 6],
     sel: usize,
@@ -315,7 +348,7 @@ fn size_strip(
 ) -> impl IntoElement {
     let items: Vec<MoonSegmentItem> = (0..6)
         .map(|i| {
-            let mut it = MoonSegmentItem::new(SIZE_KEYS[i], fmt_size(values[i])).width(SIZE_W[i]);
+            let mut it = MoonSegmentItem::new("", fmt_size(values[i])).width(SIZE_W[i]);
             if i == sel {
                 it = it.selected(true);
             }
@@ -325,26 +358,53 @@ fn size_strip(
     let seg = MoonSegmentedControl::new("toolbar-size-presets")
         .accent(MoonAccent::Amber)
         .items(items)
-        .on_click(move |ix, event, _w, cx| {
-            let Some(core) = core else {
-                return;
-            };
-            // Дабл-клик → редактирование значения кнопки; одиночный → выбор пресета.
-            let dbl = matches!(event, ClickEvent::Mouse(m) if m.up.click_count >= 2);
-            backend.update(cx, |b, bcx| {
-                if dbl {
-                    b.order_size_edit_req = Some((core, ix));
-                } else {
-                    b.order_size_sel.insert(core, ix);
-                }
-                b.order_size_rev = b.order_size_rev.wrapping_add(1);
-                bcx.notify();
-            });
-        })
         .render();
 
     let mut root = div().relative().flex().items_center().child(seg);
-    // Инпут поверх редактируемой кнопки (absolute по сумме ширин предыдущих).
+
+    // Overlay взаимодействия по каждой кнопке (клик/дабл/колесо). Прозрачный, поверх сегментов.
+    if let Some(core) = core {
+        for i in 0..6 {
+            let left: f32 = SIZE_W.iter().take(i).sum();
+            let backend_click = backend.clone();
+            let backend_wheel = backend.clone();
+            root = root.child(
+                div()
+                    .id(SharedString::from(format!("size-hit-{i}")))
+                    .absolute()
+                    .left(px(left))
+                    .top(px(0.0))
+                    .w(px(SIZE_W[i]))
+                    .h_full()
+                    .on_mouse_down(MouseButton::Left, move |ev, _w, cx| {
+                        let dbl = ev.click_count >= 2;
+                        backend_click.update(cx, |b, bcx| {
+                            if dbl {
+                                b.order_size_edit_req = Some((core, i));
+                            } else {
+                                b.order_size_sel.insert(core, i);
+                            }
+                            b.order_size_rev = b.order_size_rev.wrapping_add(1);
+                            bcx.notify();
+                        });
+                    })
+                    .on_scroll_wheel(move |ev, _w, cx| {
+                        let up = scroll_up(ev);
+                        backend_wheel.update(cx, |b, bcx| {
+                            let cur = b.order_size_value(core, i);
+                            let next = wheel_step(cur, up, 1.0);
+                            if next != cur {
+                                b.set_order_size_value(core, i, next);
+                                b.order_size_rev = b.order_size_rev.wrapping_add(1);
+                                bcx.notify();
+                            }
+                        });
+                    }),
+            );
+        }
+    }
+
+    // Инпут поверх редактируемой кнопки (absolute по сумме ширин предыдущих), на самом верху.
     if let Some(ix) = edit_ix.filter(|i| *i < 6) {
         let left: f32 = SIZE_W.iter().take(ix).sum();
         root = root.child(
@@ -369,8 +429,10 @@ const SELL_W: [f32; 6] = [62.0, 62.0, 62.0, 62.0, 56.0, 52.0];
 fn sell_strip(
     pcts: Option<[f64; 6]>,
     sel_slot: Option<usize>,
+    edit_ix: Option<usize>,
+    input: &Entity<MoonInputState>,
     backend: Entity<Backend>,
-    group: &str,
+    core: Option<CoreId>,
 ) -> impl IntoElement {
     let items: Vec<MoonSegmentItem> = (0..6)
         .map(|i| {
@@ -378,32 +440,85 @@ fn sell_strip(
                 Some(p) => format!("+{:.1}%", p[i]),
                 None => "—".to_string(),
             };
-            let mut it = MoonSegmentItem::new(SELL_KEYS[i], value).width(SELL_W[i]);
+            let mut it = MoonSegmentItem::new("", value).width(SELL_W[i]);
             if sel_slot == Some(i + 1) {
                 it = it.selected(true);
             }
             it
         })
         .collect();
-    let group = group.to_string();
-    MoonSegmentedControl::new("toolbar-sell-presets")
+    let seg = MoonSegmentedControl::new("toolbar-sell-presets")
         .accent(MoonAccent::Blue)
         .items(items)
-        .on_click(move |ix, _, _, cx| {
-            // Клик S1-S6 = выбрать fixed-sell слот (1-based) активного ядра.
-            backend.update(cx, |b, _| {
-                let Some(core) = b.active_trade_core(&group) else {
-                    return;
-                };
-                if let Err(error) = b
-                    .session
-                    .edit_client_settings(core, ClientSettingsEdit::SelectFixedSellSlot(ix + 1))
-                {
-                    log::warn!("select fixed-sell slot failed: {error}");
-                }
-            });
-        })
-        .render()
+        .render();
+
+    let mut root = div().relative().flex().items_center().child(seg);
+
+    // Overlay взаимодействия: одиночный клик = выбрать слот (меняет TP); дабл = инлайн-правка
+    // %; КОЛЕСО = ±% полразрядом (frac 0.5). Значение % — на ядре, читаем из снимка ClientSettings.
+    if let Some(core) = core {
+        for i in 0..6 {
+            let left: f32 = SELL_W.iter().take(i).sum();
+            let backend_click = backend.clone();
+            let backend_wheel = backend.clone();
+            root = root.child(
+                div()
+                    .id(SharedString::from(format!("sell-hit-{i}")))
+                    .absolute()
+                    .left(px(left))
+                    .top(px(0.0))
+                    .w(px(SELL_W[i]))
+                    .h_full()
+                    .on_mouse_down(MouseButton::Left, move |ev, _w, cx| {
+                        let dbl = ev.click_count >= 2;
+                        backend_click.update(cx, |b, bcx| {
+                            if dbl {
+                                b.sell_edit_req = Some((core, i));
+                            } else if let Err(error) = b.session.edit_client_settings(
+                                core,
+                                ClientSettingsEdit::SelectFixedSellSlot(i + 1),
+                            ) {
+                                log::warn!("select fixed-sell slot failed: {error}");
+                            }
+                            bcx.notify();
+                        });
+                    })
+                    .on_scroll_wheel(move |ev, _w, cx| {
+                        let up = scroll_up(ev);
+                        backend_wheel.update(cx, |b, _| {
+                            let cur = b.fixed_sell_pct(core, i);
+                            let next = wheel_step(cur, up, 0.5);
+                            if next != cur {
+                                if let Err(error) = b.session.edit_client_settings(
+                                    core,
+                                    ClientSettingsEdit::SetFixedSellPct {
+                                        slot: i + 1,
+                                        pct: next,
+                                    },
+                                ) {
+                                    log::warn!("set fixed-sell pct (wheel) failed: {error}");
+                                }
+                            }
+                        });
+                    }),
+            );
+        }
+    }
+
+    // Инпут поверх редактируемой S-кнопки (на самом верху).
+    if let Some(ix) = edit_ix.filter(|i| *i < 6) {
+        let left: f32 = SELL_W.iter().take(ix).sum();
+        root = root.child(
+            div()
+                .absolute()
+                .left(px(left))
+                .top(px(0.0))
+                .w(px(SELL_W[ix]))
+                .h_full()
+                .child(MoonInput::new("toolbar-sell-edit").state(input).small()),
+        );
+    }
+    root
 }
 
 fn scale_label(scale: Option<f32>) -> &'static str {
@@ -533,11 +648,14 @@ pub(crate) fn scale_dropdown_for_add_stack(
 /// Полоса тулбара: рисуется как обычный child `Shell` (между шапкой и доком), не dock-панель.
 /// Читает текущий масштаб/follow из `backend`, клики пишут обратно (+notify → перерисовка).
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 pub fn toolbar(
     backend: &Entity<Backend>,
     group: &str,
     size_edit: Option<(CoreId, usize)>,
     size_input: &Entity<MoonInputState>,
+    sell_edit: Option<(CoreId, usize)>,
+    sell_input: &Entity<MoonInputState>,
     shell: &Entity<Shell>,
     open_metric: Option<TradeMetric>,
     cx: &App,
@@ -641,7 +759,17 @@ pub fn toolbar(
         ))
         .child(divider(p))
         .child(strip_label("sell", p, cx))
-        .child(sell_strip(sell_pcts, sell_slot, backend.clone(), group))
+        .child(sell_strip(
+            sell_pcts,
+            sell_slot,
+            // Редактируем S-инпутом только если запрос относится к ФОКУСНОМУ ядру тулбара.
+            sell_edit
+                .filter(|(c, _)| Some(*c) == focus_core)
+                .map(|(_, i)| i),
+            sell_input,
+            backend.clone(),
+            focus_core,
+        ))
         .child(divider(p))
         .child(scale_dropdown(scale, group, backend.clone(), p));
 
