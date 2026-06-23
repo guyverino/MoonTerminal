@@ -129,39 +129,56 @@ impl Render for ChartTabs {
             .count();
         let gather_btn = (detached_count > 0).then(|| {
             let entity = cx.entity();
-            div().absolute().right(px(34.0)).top(px(4.0)).child(
-                MoonButton::new("chart-gather-windows")
-                    .label("▦")
-                    .size(MoonButtonSize::Micro)
-                    .variant(MoonButtonVariant::Ghost)
-                    .on_click(move |_, _w, app| {
-                        entity.update(app, |this, cx| this.gather_windows(cx));
-                    })
-                    .render(),
-            )
+            MoonButton::new("chart-gather-windows")
+                .label("▦")
+                .size(MoonButtonSize::Micro)
+                .variant(MoonButtonVariant::Ghost)
+                .on_click(move |_, _w, app| {
+                    entity.update(app, |this, cx| this.gather_windows(cx));
+                })
+                .render()
         });
 
-        // Кнопка настроек раскладки активной вкладки (⚙). Попап — обычный in-scene overlay:
+        // Кнопка настроек раскладки активной вкладки (⚙) + дропдаун масштаба активной
+        // вкладки (рядом, слева) — оба per-вкладочные. Попап — обычный in-scene overlay:
         // chart text рисуется under-scene и не пробивает UI-слои.
         let popup_open = self.layout_popup_open;
+        let p_strip = MoonPalette::active(cx);
+        let scale_dropdown = crate::controls::scale_dropdown_for_tabs(
+            self.active_scale_value(cx),
+            cx.entity(),
+            p_strip,
+        );
         let settings_btn = {
             let entity = cx.entity();
-            div().absolute().right(px(6.0)).top(px(4.0)).child(
-                MoonButton::new("chart-layout-settings")
-                    .label("⚙")
-                    .size(MoonButtonSize::Micro)
-                    .variant(if popup_open {
-                        MoonButtonVariant::Blue
-                    } else {
-                        MoonButtonVariant::Ghost
-                    })
-                    .selected(popup_open)
-                    .on_click(move |_, window, app| {
-                        entity.update(app, |this, cx| this.toggle_layout_popup(window, cx));
-                    })
-                    .render(),
-            )
+            MoonButton::new("chart-layout-settings")
+                .label("⚙")
+                .size(MoonButtonSize::Micro)
+                .variant(if popup_open {
+                    MoonButtonVariant::Blue
+                } else {
+                    MoonButtonVariant::Ghost
+                })
+                .selected(popup_open)
+                .on_click(move |_, window, app| {
+                    entity.update(app, |this, cx| this.toggle_layout_popup(window, cx));
+                })
+                .render()
         };
+        // Правый кластер полосы вкладок: [масштаб] [▦?] [⚙]. ⚙ держим у правого края
+        // (right≈6px) — попап раскладки якорится именно к нему (right(6) ниже).
+        let right_cluster = div()
+            .absolute()
+            .right(px(6.0))
+            .top(px(4.0))
+            .child(
+                moon_ui::h_flex()
+                    .items_center()
+                    .gap(px(4.0))
+                    .child(scale_dropdown)
+                    .children(gather_btn)
+                    .child(settings_btn),
+            );
         let layout_popup = self.layout_popup_open.then(|| {
             let p = MoonPalette::active(cx);
             let mode = self.active_layout_mode(cx).unwrap_or(StackLayoutMode::Fit);
@@ -218,7 +235,10 @@ impl Render for ChartTabs {
                             let hs = this.read_layout_height(StackLayoutMode::Scroll, cx);
                             let mode =
                                 Some(this.active_layout_mode(cx).unwrap_or(StackLayoutMode::Fit));
-                            this.apply_layout_to_all(include_main, mode, hf, hs, cx);
+                            // Копируем ВСЕ настройки активной вкладки: + масштаб + галку стакана.
+                            let scale = this.active_scale_value(cx);
+                            let ob = Some(this.active_orderbook_enabled(cx));
+                            this.apply_layout_to_all(include_main, mode, hf, hs, scale, ob, cx);
                         });
                     },
                     move |checked, app| {
@@ -248,8 +268,7 @@ impl Render for ChartTabs {
                     .relative()
                     .overflow_hidden()
                     .child(strip)
-                    .children(gather_btn)
-                    .child(settings_btn),
+                    .child(right_cluster),
             )
             .child(
                 div()

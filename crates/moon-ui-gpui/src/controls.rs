@@ -553,51 +553,44 @@ fn scale_label(scale: Option<f32>) -> &'static str {
         .unwrap_or("Авто")
 }
 
-pub(crate) fn scale_dropdown(
+/// Дропдаун масштаба для полоски чарт-вкладок главного окна: применяет масштаб ТОЛЬКО к
+/// АКТИВНОЙ вкладке (Main или конкретный AddToChart), не трогая другие вкладки/окна, и
+/// сохраняет (per-вкладочный масштаб). Стоит рядом с кнопкой ⚙ настроек раскладки.
+pub(crate) fn scale_dropdown_for_tabs(
     scale: Option<f32>,
-    group: &str,
-    backend: Entity<Backend>,
+    tabs: Entity<crate::chart_tabs::ChartTabs>,
     p: MoonPalette,
 ) -> impl IntoElement {
     let selected_label = scale_label(scale);
     let mut items = Vec::with_capacity(SCALES.len());
     for (label, pct) in SCALES {
-        let backend = backend.clone();
-        let group = group.to_string();
+        let tabs = tabs.clone();
         items.push(
-            MoonMenuItem::with_key(format!("scale-{label}"), label)
+            MoonMenuItem::with_key(format!("scale-tab-{label}"), label)
                 .selected(scale == pct)
                 .checked(scale == pct)
                 .on_click(move |_, _, cx| {
-                    backend.update(cx, |b, bcx| {
-                        // Масштаб ПО-ВКЛАДОЧНЫЙ: тулбар лишь запрашивает (++rev) — ChartTabs
-                        // применит к АКТИВНОЙ панели. price_scale тут = желаемое значение.
-                        b.price_scale = pct;
-                        b.price_scale_group = Some(group.clone());
-                        b.price_scale_rev = b.price_scale_rev.wrapping_add(1);
-                        bcx.notify();
-                    });
+                    tabs.update(cx, |t, tcx| t.pick_active_scale(pct, tcx));
                 }),
         );
     }
 
-    // Лупа вместо слова «МАСШТАБ» + «А» для Авто (компактнее); подсказка «Масштаб» — тултипом.
     let trigger_val = if scale.is_none() {
         "А"
     } else {
         selected_label
     };
     div()
-        .id("toolbar-scale-tip")
+        .id("tabs-scale-tip")
         .tooltip(|_window, cx| {
             cx.new(|_| MoonTooltipView::new(t!("toolbar.scale").to_string()))
                 .into()
         })
         .child(
-            MoonDropdown::new("toolbar-scale-dropdown")
+            MoonDropdown::new("tabs-scale-dropdown")
                 .trigger_width(72.0)
                 .trigger_variant(MoonButtonVariant::Neutral)
-                .trigger_size(MoonButtonSize::Toolbar)
+                .trigger_size(MoonButtonSize::Micro)
                 .menu_width(116.0)
                 .menu_size(MoonMenuSize::Compact)
                 .segment(
@@ -685,7 +678,6 @@ pub fn toolbar(
     cx: &App,
 ) -> impl IntoElement {
     let (
-        scale,
         follow,
         focus_core,
         size_values,
@@ -731,7 +723,6 @@ pub fn toolbar(
             .map(|l| format!("×{}", l as i32))
             .unwrap_or_else(|| "—".to_string());
         (
-            b.price_scale,
             b.follow,
             focus_core,
             size_values,
@@ -810,8 +801,9 @@ pub fn toolbar(
             backend.clone(),
             focus_core,
         ))
-        .child(divider(p))
-        .child(scale_dropdown(scale, group, backend.clone(), p));
+        .child(divider(p));
+    // Масштаб переехал в полоску чарт-вкладок (рядом с ⚙) и теперь per-вкладочный —
+    // см. controls::scale_dropdown_for_tabs / chart_tabs::ChartTabs::pick_active_scale.
 
     let backend = backend.clone();
     row.child(

@@ -31,6 +31,8 @@ pub struct Merged {
     pub charts_stack_compress: bool,
     /// Скролл-стек: высота одного графика (лог. px).
     pub chart_stack_height: u16,
+    /// Раздельные зоны управления (ордера/линии только в зоне стакана).
+    pub separate_control_zones: bool,
     /// Писать лог в файлы logs/.
     pub log_to_file: bool,
     /// Срок хранения файлов лога (дней; 0 = хранить всё).
@@ -59,6 +61,7 @@ pub fn merge(sf: ServersFile, meta: SettingsFile) -> Merged {
     let charts_stack_scroll = meta.charts_stack_scroll;
     let charts_stack_compress = meta.charts_stack_compress;
     let chart_stack_height = clamp_chart_stack_height(meta.chart_stack_height);
+    let separate_control_zones = meta.separate_control_zones;
     let log_to_file = meta.log_to_file;
     let log_retention_days = meta.log_retention_days;
     let ui_font_delta = meta.ui_font_delta;
@@ -117,6 +120,7 @@ pub fn merge(sf: ServersFile, meta: SettingsFile) -> Merged {
         charts_stack_scroll,
         charts_stack_compress,
         chart_stack_height,
+        separate_control_zones,
         log_to_file,
         log_retention_days,
         ui_font_delta,
@@ -138,6 +142,7 @@ pub fn split(
     charts_stack_scroll: bool,
     charts_stack_compress: bool,
     chart_stack_height: u16,
+    separate_control_zones: bool,
     log_to_file: bool,
     log_retention_days: u32,
     ui_font_delta: f32,
@@ -163,6 +168,7 @@ pub fn split(
         charts_stack_scroll,
         charts_stack_compress,
         chart_stack_height: clamp_chart_stack_height(chart_stack_height),
+        separate_control_zones,
         log_to_file,
         log_retention_days,
         ui_font_delta,

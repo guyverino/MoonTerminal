@@ -18,6 +18,14 @@ general.charts_split_by_core_hint:
   ru: "AddToChart по умолчанию: вкл — своя вкладка на ядро, выкл — все ядра группы в одной. Колонка «Связка» у ядра (Подключения) переопределяет это: ядра с одинаковым именем связки сводятся в одну вкладку."
   en: "AddToChart default: on — a tab per core, off — all cores of a group in one. The core's “Bundle” column (Connections) overrides this: cores sharing a bundle name merge into one tab."
   es: "AddToChart por defecto: act — una pestaña por núcleo, des — todos los núcleos del grupo en una. La columna «Conjunto» del núcleo (Conexiones) lo anula: los núcleos con el mismo nombre de conjunto se unen en una pestaña."
+general.separate_control_zones:
+  ru: "Раздельные зоны управления"
+  en: "Separate control zones"
+  es: "Zonas de control separadas"
+general.separate_control_zones_hint:
+  ru: "Вкл — выставлять ордера и двигать линии можно ТОЛЬКО в зоне стакана; выкл — по всей области графика."
+  en: "On — orders can be placed and lines dragged ONLY in the order-book zone; off — anywhere on the chart."
+  es: "Act — las órdenes y el arrastre de líneas SOLO en la zona del libro de órdenes; des — en todo el gráfico."
 general.charts_scroll:
   ru: "Показывать графики со скроллом"
   en: "Show charts with scrolling"

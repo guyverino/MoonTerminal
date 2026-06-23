@@ -95,6 +95,9 @@ pub(crate) struct ChartApplyAll {
     pub mode: Option<chart_persist::StackLayoutMode>,
     pub height_fit: Option<u16>,
     pub height_scroll: Option<u16>,
+    /// Копируем ВСЕ настройки вкладки-источника: масштаб цены + галка стакана.
+    pub scale: Option<f32>,
+    pub orderbook: Option<bool>,
 }
 
 /// Общий backend: живёт в одном `Entity`, дренится таймером, будит окна по notify.

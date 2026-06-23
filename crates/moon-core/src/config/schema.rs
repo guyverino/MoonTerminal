@@ -132,6 +132,10 @@ pub struct SettingsFile {
     /// Скролл-режим: высота одного графика в логических px. Дефолт 360.
     #[serde(default = "default_chart_stack_height")]
     pub chart_stack_height: u16,
+    /// Раздельные зоны управления: true = ставить ордера и двигать линии ТОЛЬКО в зоне стакана;
+    /// false = по всей области графика. Дефолт false.
+    #[serde(default)]
+    pub separate_control_zones: bool,
     /// Писать лог (приложения и ядер) в файлы logs/<дата>_<источник>.log. Дефолт on.
     #[serde(default = "servers::default_true")]
     pub log_to_file: bool,

@@ -536,6 +536,9 @@ impl DetachedChartHost {
         cx: &mut Context<Self>,
     ) {
         let group = self.group.clone();
+        // Копируем ВСЕ настройки этого окна: + масштаб + галку стакана.
+        let scale = self.panel.read(cx).scale();
+        let orderbook = Some(self.panel.read(cx).orderbook_enabled().unwrap_or(true));
         self.backend.update(cx, |bk, bcx| {
             bk.chart_apply_all.push(crate::ChartApplyAll {
                 group,
@@ -543,6 +546,8 @@ impl DetachedChartHost {
                 mode,
                 height_fit,
                 height_scroll,
+                scale,
+                orderbook,
             });
             bcx.notify();
         });

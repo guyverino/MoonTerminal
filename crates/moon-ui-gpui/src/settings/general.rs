@@ -38,10 +38,15 @@ impl SettingsView {
     pub(super) fn general_tab(&self, cx: &Context<Self>) -> impl IntoElement {
         let p = MoonPalette::active(cx);
         let muted = rgba_from(p.text_muted, 1.0);
-        let (split, logf, ret) = {
+        let (split, scz, logf, ret) = {
             let b = self.backend.read(cx);
             let d = b.preview.as_ref().unwrap_or(&b.config);
-            (d.charts_split_by_core, d.log_to_file, d.log_retention_days)
+            (
+                d.charts_split_by_core,
+                d.separate_control_zones,
+                d.log_to_file,
+                d.log_retention_days,
+            )
         };
         let hint = |s: &str| div().text_color(muted).child(s.to_string());
 
@@ -79,6 +84,21 @@ impl SettingsView {
                 .size(MoonCheckboxSize::Normal),
             )
             .child(hint(&t!("general.charts_split_by_core_hint")))
+            .child(super::separator(p, cx))
+            // Раздельные зоны управления: ордера/линии только в зоне стакана.
+            .child(
+                self.draft_checkbox(cx, "separate-zones", scz, |p, v| {
+                    if p.separate_control_zones != v {
+                        p.separate_control_zones = v;
+                        true
+                    } else {
+                        false
+                    }
+                })
+                .label(t!("general.separate_control_zones").to_string())
+                .size(MoonCheckboxSize::Normal),
+            )
+            .child(hint(&t!("general.separate_control_zones_hint")))
             .child(super::separator(p, cx))
             // Раскладка стека (FIT/SCROLL/COMPRESS + высота) теперь per-вкладка — кнопка ⚙
             // в полоске вкладок / шапке выносного окна (см. chart_tabs::layout_popup).

@@ -428,6 +428,18 @@ impl ChartTabs {
         v.unwrap_or(true)
     }
 
+    /// Масштаб цены активной вкладки (None = Авто).
+    fn active_scale_value(&self, cx: &App) -> Option<f32> {
+        match &self.active {
+            Tab::Main => self.main.read(cx).scale(),
+            Tab::Add(n, b) => self
+                .add
+                .iter()
+                .find(|(num, bk, _)| num == n && bk == b)
+                .and_then(|(_, _, p)| p.read(cx).scale()),
+        }
+    }
+
     /// Вкл/выкл стакан на АКТИВНОЙ вкладке + persist.
     fn apply_orderbook(&mut self, enabled: bool, cx: &mut Context<Self>) {
         match self.active.clone() {
@@ -479,23 +491,33 @@ impl ChartTabs {
         cx.notify();
     }
 
-    /// Применить раскладку ко ВСЕМ стекам группы. `include_main`: трогать ли Main (true — из попапа
-    /// Main → ко всем окнам; false — из чартов → Main не трогаем). Персист каждой вкладки.
+    /// Применить ВСЕ настройки вкладки-источника ко ВСЕМ стекам группы: режим+высоты раскладки,
+    /// масштаб цены и галку стакана. `include_main`: трогать ли Main (true — из попапа Main → ко
+    /// всем окнам; false — из чартов → Main не трогаем). Персист каждой вкладки.
+    #[allow(clippy::too_many_arguments)]
     fn apply_layout_to_all(
         &mut self,
         include_main: bool,
         mode: Option<StackLayoutMode>,
         height_fit: Option<u16>,
         height_scroll: Option<u16>,
+        scale: Option<f32>,
+        orderbook: Option<bool>,
         cx: &mut Context<Self>,
     ) {
+        let ob = orderbook.unwrap_or(true);
         if include_main {
-            self.main
-                .update(cx, |s, c| s.set_layout(mode, height_fit, height_scroll, c));
+            self.main.update(cx, |s, c| {
+                s.set_layout(mode, height_fit, height_scroll, c);
+                s.set_scale(scale, c);
+                s.set_orderbook_enabled(Some(ob), c);
+            });
             self.upsert_spec(cx, 0, &ChartBucket::Shared, |s| {
                 s.layout_mode = mode;
                 s.layout_height_fit = height_fit;
                 s.layout_height_scroll = height_scroll;
+                s.scale = scale;
+                s.orderbook_enabled = Some(ob);
             });
         }
         // «Чарты» = add-вкладки в стрипе + откреплённые в окна (их стеки держим в self.detached).
@@ -506,13 +528,20 @@ impl ChartTabs {
             .map(|(n, b, p)| (*n, b.clone(), p.clone()))
             .collect();
         for (num, bucket, panel) in targets {
-            panel.update(cx, |s, c| s.set_layout(mode, height_fit, height_scroll, c));
+            panel.update(cx, |s, c| {
+                s.set_layout(mode, height_fit, height_scroll, c);
+                s.set_scale(scale, c);
+                s.set_orderbook_enabled(Some(ob), c);
+            });
             self.upsert_spec(cx, num, &bucket, |s| {
                 s.layout_mode = mode;
                 s.layout_height_fit = height_fit;
                 s.layout_height_scroll = height_scroll;
+                s.scale = scale;
+                s.orderbook_enabled = Some(ob);
             });
         }
+        self.backend.update(cx, |b, _| b.rebuild_orderbook_wanted());
         cx.notify();
     }
 
@@ -527,7 +556,15 @@ impl ChartTabs {
             mine
         });
         for r in reqs {
-            self.apply_layout_to_all(r.include_main, r.mode, r.height_fit, r.height_scroll, cx);
+            self.apply_layout_to_all(
+                r.include_main,
+                r.mode,
+                r.height_fit,
+                r.height_scroll,
+                r.scale,
+                r.orderbook,
+                cx,
+            );
         }
     }
 
@@ -723,6 +760,16 @@ impl ChartTabs {
                 }
             }
         }
+    }
+
+    /// Выбор масштаба из дропдауна в полоске вкладок (рядом с ⚙): применяется ТОЛЬКО к
+    /// активной вкладке этого окна (Main — к Main) и сохраняется per-вкладочно. В отличие
+    /// от старого тулбар-дропдауна не трогает глобальный `price_scale_rev` → другие вкладки
+    /// и выносные окна не затрагиваются.
+    pub(crate) fn pick_active_scale(&mut self, pct: Option<f32>, cx: &mut Context<Self>) {
+        self.set_active_scale(pct, cx);
+        self.persist_scales(cx);
+        cx.notify();
     }
 
     /// Метка вкладки (П.4): «номер-группа», «номер-группа-ядро» (своё ядро) или

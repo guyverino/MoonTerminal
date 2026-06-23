@@ -641,6 +641,15 @@ impl ChartPanel {
         self.chart.chart_local_from_window_pos(pos)
     }
 
+    /// Настройка «Раздельные зоны управления»: ордера/линии только в зоне стакана.
+    fn separate_zones(&self, cx: &App) -> bool {
+        let b = self.backend.read(cx);
+        b.preview
+            .as_ref()
+            .unwrap_or(&b.config)
+            .separate_control_zones
+    }
+
     pub(crate) fn window_pos_in_glass_zone(&self, pos: Point<Pixels>) -> bool {
         let Some(((x, y), within)) = self.chart_local(pos) else {
             return false;
@@ -818,7 +827,13 @@ impl ChartPanel {
         pos: (f32, f32),
         cx: &mut Context<Self>,
     ) -> bool {
-        let Some(pane) = self.glass_pane_at(pos) else {
+        // Раздельные зоны: ордер ставим только в стакане; иначе — по любой pane-области графика.
+        let pane = if self.separate_zones(cx) {
+            self.glass_pane_at(pos)
+        } else {
+            self.input.pane_at(pos.0, pos.1)
+        };
+        let Some(pane) = pane else {
             return false;
         };
         let Some(price) = self.price_at_pane_y(pane, pos.1) else {
@@ -961,6 +976,10 @@ impl ChartPanel {
     }
 
     fn sync_order_hover(&mut self, pos: (f32, f32), cx: &mut Context<Self>) -> bool {
+        // Раздельные зоны: за линии цепляемся только в стакане → и подсветку даём только там.
+        if self.separate_zones(cx) && self.glass_pane_at(pos).is_none() {
+            return self.set_order_interaction(None, cx);
+        }
         let next = self.hit_order_line(pos, cx).map(|hit| OrderHoverKey {
             core: hit.core,
             uid: hit.uid,
@@ -969,6 +988,10 @@ impl ChartPanel {
     }
 
     fn try_start_order_drag(&mut self, pos: (f32, f32), cx: &mut Context<Self>) -> bool {
+        // Раздельные зоны: тянуть линию ордера можно только в зоне стакана.
+        if self.separate_zones(cx) && self.glass_pane_at(pos).is_none() {
+            return false;
+        }
         let Some(hit) = self.hit_order_line(pos, cx) else {
             return false;
         };
