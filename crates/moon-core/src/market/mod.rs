@@ -17,7 +17,10 @@ use crate::data::OrderBookModel;
 use crate::feed::{OrderBook, Tick};
 use crate::session::CoreId;
 
-pub use source::{ChartHistoryBuffers, ChartHistoryCursor, ChartHistoryRead, MarketDataSource};
+pub use source::{
+    ChartHistoryBuffers, ChartHistoryCursor, ChartHistoryRead, LatestPriceError, MarketDataSource,
+    MarketRevisions,
+};
 
 /// Shared market buffer owned by moon-core, not by a GPUI entity. Live feeds only wake
 /// consumers; `SessionManager` pulls provider snapshots into this buffer for visible
@@ -66,16 +69,18 @@ impl<'de> Deserialize<'de> for MarketDataMode {
     }
 }
 
-/// Рыночные данные одного рынка от одного провайдера: крестики + стакан.
-/// Поля совпадают по имени с тем, что читает chart-рендер (раньше брал из CoreData).
+/// Внутренний legacy/synth store одного рынка от одного провайдера.
+///
+/// Production UI не должен читать отсюда latest price/history напрямую: история и
+/// latest-price идут через `MarketDataSource::read_chart_history_into/latest_price`,
+/// стакан — через `MarketDataSource::with_orderbook_view`.
 pub struct MarketView {
-    pub book: OrderBookModel,
-    pub last_price: Option<f32>,
+    book: OrderBookModel,
+    last_price: Option<f32>,
     /// Время последнего тика (unix ms) — правый край графика следует за ним.
-    pub last_tick_ms: Option<f64>,
-    pub ticks_rev: u64,
-    pub price_lines_rev: u64,
-    pub book_rev: u64,
+    last_tick_ms: Option<f64>,
+    ticks_rev: u64,
+    book_rev: u64,
 }
 
 impl MarketView {
@@ -85,7 +90,6 @@ impl MarketView {
             last_price: None,
             last_tick_ms: None,
             ticks_rev: 0,
-            price_lines_rev: 0,
             book_rev: 0,
         }
     }

@@ -13,6 +13,7 @@ use crate::feed::{
     OrderRow, RuntimeState, StrategyRow, StrategySchemaModel, TransferAssetsSnapshot,
 };
 use crate::session::order_lines::OrderLineStore;
+use crate::util::now_unix_ms_i64;
 
 /// Сколько последних детектов держим в памяти на ядро.
 const MAX_DETECTS: usize = 2000;
@@ -51,8 +52,15 @@ pub struct CoreData {
     pub hedge_mode: Option<bool>,
     /// Последние строки серверного лога ядра (кольцо, обрезается до MAX_LOG).
     pub log: VecDeque<LogLine>,
-    /// Растёт при изменении ордеров / детектов / стратегий / схемы / лога / активов.
-    pub orders_rev: u64,
+    /// Сырые строки серверного лога с временем приёма терминалом. Нужны diagnostic/FireTest
+    /// замерам; UI продолжает читать форматированный `log`.
+    pub server_log_raw: VecDeque<crate::feed::CoreLogLine>,
+    /// Растёт при каждом новом снимке открытых ордеров; этим гейтится таблица Orders.
+    pub orders_table_rev: u64,
+    /// Растёт только при изменении геометрии/состояния ордерных линий на графике.
+    pub order_lines_rev: u64,
+    /// Локальное время последнего bump `order_lines_rev`.
+    pub order_lines_rev_ms: i64,
     pub detects_rev: u64,
     pub strategies_rev: u64,
     pub schema_rev: u64,
@@ -83,7 +91,10 @@ impl CoreData {
             runtime_state: None,
             hedge_mode: None,
             log: VecDeque::new(),
-            orders_rev: 0,
+            server_log_raw: VecDeque::new(),
+            orders_table_rev: 0,
+            order_lines_rev: 0,
+            order_lines_rev_ms: 0,
             detects_rev: 0,
             strategies_rev: 0,
             schema_rev: 0,
@@ -104,6 +115,12 @@ impl CoreData {
         self.log.iter().skip(start).cloned().collect()
     }
 
+    /// Снимок сырых строк серверного лога (старые→новые) для diagnostic замеров.
+    pub fn raw_server_log_snapshot(&self, max: usize) -> Vec<crate::feed::CoreLogLine> {
+        let start = self.server_log_raw.len().saturating_sub(max);
+        self.server_log_raw.iter().skip(start).cloned().collect()
+    }
+
     /// Применяет только аккаунтные сообщения. Identity/CoreBase/MarketDataChanged
     /// маршрутизируются координатором мимо CoreData.
     pub fn apply(&mut self, msg: FeedMsg) {
@@ -111,15 +128,15 @@ impl CoreData {
             FeedMsg::Status(s) => self.status = s,
             FeedMsg::Orders(orders) => {
                 // Сначала обновляем ретейн-стор линий (трассы/узлы/закрытия) по
-                // свежему снимку, затем перемещаем его в список для дока.
-                // orders_rev бампим ТОЛЬКО при реальном изменении (update вернул true):
-                // тождественный снимок 4 Гц иначе зря дёргал бы и таблицу Orders, и
-                // пересборку userdata чарта. Числовые price/fill% в таблице ловит 1 Гц-тик
-                // самой панели (там данные читаются из свежего self.orders каждый рендер).
+                // свежему снимку, затем перемещаем его в список для таблицы.
+                // Таблица и график гейтятся разными revision: таблице важен любой
+                // новый snapshot, графику — только изменение линий.
                 let changed = self.order_lines.update(&orders);
                 self.orders = orders;
+                self.orders_table_rev = self.orders_table_rev.wrapping_add(1);
                 if changed {
-                    self.orders_rev = self.orders_rev.wrapping_add(1);
+                    self.order_lines_rev = self.order_lines_rev.wrapping_add(1);
+                    self.order_lines_rev_ms = now_unix_ms_i64();
                 }
             }
             FeedMsg::Detects(detects) => {
@@ -191,11 +208,16 @@ impl CoreData {
             FeedMsg::ServerLog(lines) => {
                 if !lines.is_empty() {
                     for l in lines {
+                        self.server_log_raw.push_back(l.clone());
                         self.log.push_back(LogLine::core(l.time_ms, l.msg));
                     }
                     if self.log.len() > MAX_LOG {
                         let drop = self.log.len() - MAX_LOG;
                         self.log.drain(0..drop);
+                    }
+                    if self.server_log_raw.len() > MAX_LOG {
+                        let drop = self.server_log_raw.len() - MAX_LOG;
+                        self.server_log_raw.drain(0..drop);
                     }
                     self.log_rev = self.log_rev.wrapping_add(1);
                 }

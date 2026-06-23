@@ -13,7 +13,9 @@ Remove-Item -ErrorAction SilentlyContinue firetest.log, render_diag.log
 .\target\x86_64-pc-windows-msvc\debug\moonterminal.exe --debug-script chart-smoke
 ```
 
-`chart-smoke` — один связный поведенческий прогон. Он ждёт старт приложения, открывает BTC-график, находит реальные bounds графика, даёт live-графику короткую settle-фазу, прогревает high-present baseline без курсора, а потом 5 секунд двигает системную мышь по графику частым native mousemove storm. После этого включает static text stress на графике и повторяет mouse storm. Только после горячего chart path FireTest проверяет runtime-контракт ошибок доставки команд в core, открывает tool-окна Settings/Strategies/Assets и проверяет их dedup, проверяет Root-owned overlay слой на реальном окне, затем переключает язык интерфейса живым apply-путём (`rust_i18n::set_locale` + `refresh_windows`) и проверяет его долёт без пересоздания tool-окон, после чего проверяет прохождение масштаба `50% → 20% → Auto` до активного chart state. На Windows storm делается через реальный `SetCursorPos` в client-area окна, на macOS — через CoreGraphics mouse move events. В обоих случаях это настоящий оконный input path, а не прямой вызов chart API.
+`chart-smoke` — один связный поведенческий прогон. Он ждёт старт приложения, открывает BTC-график, находит реальные bounds графика, даёт live-графику короткую settle-фазу, прогревает high-present baseline без курсора, а потом 5 секунд двигает системную мышь по графику частым native mousemove storm. После этого включает static text stress на графике и повторяет mouse storm. Только после горячего chart path FireTest проверяет runtime-контракт ошибок доставки команд в core, открывает tool-окна Settings/Strategies/Assets и проверяет их dedup, проверяет Root-owned overlay слой на реальном окне, затем переключает язык интерфейса живым apply-путём (`rust_i18n::set_locale` + `refresh_windows`) и проверяет его долёт без пересоздания tool-окон, проверяет прохождение масштаба `50% → 20% → Auto` до активного chart state, а затем может выполнить opt-in тест постановки и отмены реального BTC-ордера. На Windows storm делается через реальный `SetCursorPos` в client-area окна, на macOS — через CoreGraphics mouse move events. В обоих случаях это настоящий оконный input path, а не прямой вызов chart API.
+
+`order-cancel-lag` — отдельный узкий сценарий для расследования только пути ордера. Он делает `start → open_chart → wait_chart_probe → settle → order_cancel_lag → cooldown` и автоматически включает реальный place/cancel test без mouse storm, static text и tool-window стадий. Использовать только осознанно: сценарий отправляет торговую команду в выбранное ядро.
 
 На macOS тестовой машине может понадобиться выдать терминалу/приложению право Accessibility или Input Monitoring: это политика macOS для программной отправки событий мыши.
 
@@ -23,13 +25,18 @@ Remove-Item -ErrorAction SilentlyContinue firetest.log, render_diag.log
 - `MOON_FIRETEST_MOUSE_HZ` — целевая частота mousemove storm, по умолчанию `5000`.
 - `MOON_FIRETEST_STORM_MS` — длительность storm, по умолчанию `5000`.
 - `MOON_FIRETEST_TEXT_LABELS` — число retained text labels в static text stress, по умолчанию `10000`.
+- `MOON_FIRETEST_ORDER_CANCEL=1` — включает реальный тест place/cancel ордера на открытом BTC-графике. По умолчанию выключен, чтобы обычный FireTest не отправлял торговые команды.
+- `MOON_FIRETEST_ORDER_SIZE` — размер тестового ордера. Если не задан, берётся текущий ручной размер ордера выбранного ядра.
+- `MOON_FIRETEST_ORDER_PRICE_MULT` — множитель к последней цене для тестового long-limit ордера, по умолчанию `0.98`. Ордер ставится ниже рынка, чтобы тест проверял отображение/отмену, а не случайное исполнение.
+- `MOON_FIRETEST_ORDER_CANCEL_MAX_DISPLAY_MS` — допустимая задержка от применения cancelled order в store до первого chart present/draw с этой order-line revision, по умолчанию `750`.
 Static text stress входит в стандартный `chart-smoke`: FireTest сам включает
 `10000` retained text labels после первого mouse storm. Это не означает
 “нарисовать все строки поверх одного viewport-а”: слой bake-ит весь набор,
 а present-кадры draw-ят только видимый label-range. Так тест проверяет именно
 retained buffer + culling, а не бессмысленную заливку GPU тысячами нечитаемых
-надписей. Новые проверки добавляются как stages в этот же прогон, а не отдельными
-`--debug-script`.
+надписей. Новые общие проверки добавляются как stages в этот же прогон. Узкие
+диагностические сценарии допустимы только когда общий прогон мешает изолировать
+другую проблему, как `order-cancel-lag` для задержки отображения отмены ордера.
 
 ## Что тест обязан ловить
 
@@ -39,6 +46,7 @@ retained buffer + culling, а не бессмысленную заливку GPU
 - Root-owned overlay слой должен открывать context menu, закрывать его при открытии dialog, заменять unique dialog по id, показывать notification и очищаться без висящих оверлеев;
 - смена языка интерфейса должна живо доходить до глобальной локали rust-i18n и НЕ пересоздавать tool-окна (только redraw);
 - выбор масштаба из toolbar-path должен дойти до активного chart state: `50%`, затем `20%`, затем `Auto`;
+- opt-in place/cancel order test должен измерять путь `cancel_order` → входящий orders/server-log → `OrderLineStore` → chart userdata → GPU prepare → chart present/draw, и краснеть, если отменённый ордер дошёл до store, но график долго продолжает показывать старое состояние;
 - cursor-only mousemove не должен делать `cx.notify()` для chart input/canvas;
 - static text stress поверх графика не должен ломать mouse/input hot path и GPU frame budget;
 - Shell/Orders/Chart GPUI render не должны улетать в сотни render/s;
@@ -80,6 +88,7 @@ retained buffer + culling, а не бессмысленную заливку GPU
 [firetest] stage=price_scale_20
 [firetest] stage=price_scale_auto
 [firetest] stage=price_scale_verify_auto
+[firetest] stage=order_cancel_lag
 [firetest] stage=cooldown
 ```
 

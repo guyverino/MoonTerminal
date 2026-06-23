@@ -29,6 +29,23 @@ pub enum LineKind {
     PendingCond = 6,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OrderCloseReason {
+    Cancel,
+    Filled,
+    BackstopMissing,
+    Unknown,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OrderLineState {
+    pub uid: u64,
+    pub closed_reason: Option<OrderCloseReason>,
+    pub closed_store_ms: Option<f64>,
+    pub closed_rev: Option<u64>,
+    pub active: bool,
+}
+
 /// Кап кольца ЗАКРЫТЫХ ордеров на ядро (= верх слайдера `max_closed_orders`): свежие
 /// толкаем в хвост, старейшие выпадают из головы сами — без сорта и прун-скана.
 /// Открытые НЕ капаются (живут пока активны). Единственный кап на закрытые.
@@ -139,6 +156,9 @@ pub struct RetainedOrder {
     pub create_ms: f64,
     /// Время закрытия (отмена/исполнение); None = ордер активен.
     pub closed_ms: Option<f64>,
+    pub closed_reason: Option<OrderCloseReason>,
+    pub closed_store_ms: Option<f64>,
+    pub closed_rev: Option<u64>,
     /// Когда ордер в последний раз был в снимке (для грейса закрытия).
     last_seen_ms: f64,
     /// Порядок появления (для cap-обрезки старых закрытых).
@@ -169,6 +189,9 @@ impl RetainedOrder {
             corridor_price_up: r.corridor_price_up,
             create_ms,
             closed_ms: None,
+            closed_reason: None,
+            closed_store_ms: None,
+            closed_rev: None,
             last_seen_ms: now_ms,
             seq,
             lines: Default::default(),
@@ -203,6 +226,7 @@ impl OrderLineStore {
         // uid'ы, закрытые в этом апдейте по ЯВНОМУ флагу job_is_done — remember_closed
         // после цикла (внутри цикла держим &mut-заём self.orders через entry).
         let mut close_now: Vec<u64> = Vec::new();
+        let mut closed_this_update: Vec<u64> = Vec::new();
 
         for r in rows {
             seen.insert(r.uid);
@@ -221,6 +245,9 @@ impl OrderLineStore {
             // ядра — его НЕ воскрешаем, иначе линия мигала бы closed→open каждый апдейт.
             if order.closed_ms.is_some() && !r.job_is_done {
                 order.closed_ms = None;
+                order.closed_reason = None;
+                order.closed_store_ms = None;
+                order.closed_rev = None;
                 changed = true;
             }
             order.is_short = r.is_short;
@@ -283,7 +310,10 @@ impl OrderLineStore {
             // снимке — не дожидаясь исчезновения + грейса (см. ЕБАНИНА Пример 4).
             if r.job_is_done && order.closed_ms.is_none() {
                 order.closed_ms = Some(now_ms);
+                order.closed_reason = Some(explicit_close_reason(r));
+                order.closed_store_ms = Some(now_ms);
                 close_now.push(r.uid);
+                closed_this_update.push(r.uid);
                 changed = true;
             }
         }
@@ -303,7 +333,10 @@ impl OrderLineStore {
                 && now_ms - ord.last_seen_ms > CLOSE_GRACE_MS
             {
                 ord.closed_ms = Some(ord.last_seen_ms);
+                ord.closed_reason = Some(OrderCloseReason::BackstopMissing);
+                ord.closed_store_ms = Some(now_ms);
                 newly_closed.push(*uid);
+                closed_this_update.push(*uid);
                 changed = true;
             }
         }
@@ -314,6 +347,11 @@ impl OrderLineStore {
         }
         if changed {
             self.rev = self.rev.wrapping_add(1);
+            for uid in closed_this_update {
+                if let Some(order) = self.orders.get_mut(&uid) {
+                    order.closed_rev = Some(self.rev);
+                }
+            }
             self.rebuild_buy_sell_ranges();
         }
         changed
@@ -402,5 +440,26 @@ impl OrderLineStore {
     /// Готовый кэш (`rebuild_buy_sell_ranges` при изменении ордеров), не скан per-prepare.
     pub fn buy_sell_range(&self, market: &str) -> Option<(f32, f32)> {
         self.buy_sell_ranges.get(market).copied()
+    }
+
+    pub fn order_state(&self, uid: u64) -> Option<OrderLineState> {
+        let order = self.orders.get(&uid)?;
+        Some(OrderLineState {
+            uid,
+            closed_reason: order.closed_reason,
+            closed_store_ms: order.closed_store_ms,
+            closed_rev: order.closed_rev,
+            active: order.closed_ms.is_none(),
+        })
+    }
+}
+
+fn explicit_close_reason(row: &OrderRow) -> OrderCloseReason {
+    if row.filled || row.fill_pct >= 99.95 {
+        OrderCloseReason::Filled
+    } else if row.job_is_done {
+        OrderCloseReason::Cancel
+    } else {
+        OrderCloseReason::Unknown
     }
 }

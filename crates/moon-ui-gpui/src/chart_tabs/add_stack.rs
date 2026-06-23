@@ -280,8 +280,7 @@ impl Render for AddChartStack {
         // Запиненные наверх кластером — ТОЛЬКО НЕ в COMPRESS (там слоты позиционно стабильны,
         // сортировка их бы двигала). В FIT-stretch/Scroll пин поднимает график к запиненным.
         if !compress {
-            self.charts
-                .sort_by_key(|e| !e.panel.read(cx).is_pinned());
+            self.charts.sort_by_key(|e| !e.panel.read(cx).is_pinned());
         }
         let count = self.charts.len();
         let border = rgb(palette.border);
@@ -299,7 +298,12 @@ impl Render for AddChartStack {
             &self.scroll,
             border,
             // Пустой (держащийся) COMPRESS-слот → None: render покажет прозрачную плашку.
-            |s, ix| s.charts.get(ix).filter(|e| !e.vacated).map(|e| e.panel.clone()),
+            |s, ix| {
+                s.charts
+                    .get(ix)
+                    .filter(|e| !e.vacated)
+                    .map(|e| e.panel.clone())
+            },
             move |s, ix, panel, height, flex, border, _ent| {
                 let (id, fresh) = match s.charts.get(ix) {
                     Some(e) => (

@@ -19,14 +19,16 @@ use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 use anyhow::{anyhow, Result};
+use moonproto::state::OrderBookKind;
 
 use crate::config::AppConfig;
+use crate::data::OrderBookModel;
 use crate::db::ReportTx;
 use crate::feed::{
     self, ClientSettingsEdit, ConnStatus, CoreCmd, ExchangeId, FeedHandle, FeedMsg, FeedWakeTx,
     LevManageEdit, NewStrategySpec, WalletKind,
 };
-use crate::market::{MarketDataMode, MarketDataSource, MarketStore, MarketView, SharedMarketStore};
+use crate::market::{MarketDataMode, MarketDataSource, MarketStore, SharedMarketStore};
 
 pub struct CoreSession {
     pub id: CoreId,
@@ -93,9 +95,6 @@ pub struct DrainStats {
     pub any: bool,
     /// Data visible to chart GPU state changed: market ticks/book/price-lines or order lines.
     pub chart_data: bool,
-    /// Provider-local market targets that need a compatibility refresh outside
-    /// the native chart frame path.
-    pub chart_markets: Vec<(CoreId, String)>,
     /// Slow GPUI chrome/account state changed and the Backend entity should be notified.
     pub ui_state: bool,
 }
@@ -172,6 +171,8 @@ impl SessionManager {
                 match msg {
                     FeedMsg::Identity(ex) => {
                         self.core_key.insert(sess.id, ex);
+                        self.market_source
+                            .set_orderbook_kind(sess.id, orderbook_kind_for_exchange(ex));
                         stats.ui_state = true;
                     }
                     FeedMsg::CoreBase { base } => {
@@ -181,17 +182,14 @@ impl SessionManager {
                     FeedMsg::MarketDataChanged(markets) => {
                         if !markets.is_empty() {
                             self.market_source.mark_dirty(sess.id, &markets);
-                            stats
-                                .chart_markets
-                                .extend(markets.into_iter().map(|dirty| (sess.id, dirty.market)));
                             stats.chart_data = true;
                         }
                     }
                     FeedMsg::Orders(orders) => {
                         if let Some(core) = self.store.core_mut(sess.id) {
-                            let before = core.orders_rev;
+                            let before = core.order_lines_rev;
                             core.apply(FeedMsg::Orders(orders));
-                            stats.chart_data |= core.orders_rev != before;
+                            stats.chart_data |= core.order_lines_rev != before;
                             stats.ui_state = true;
                         }
                     }
@@ -205,17 +203,6 @@ impl SessionManager {
             }
         }
         stats
-    }
-
-    /// Compatibility pull for non-frame consumers. Native chart frames call the same
-    /// `MarketDataSource` directly, so a data event cannot miss the current platform tick.
-    pub fn refresh_market_data_for_open(&self, desired: &[(CoreId, String)]) -> bool {
-        self.market_source.refresh_for_open(desired)
-    }
-
-    pub fn refresh_market_data_for_dirty(&self, dirty: &[(CoreId, String)]) -> bool {
-        self.market_source
-            .refresh_markets(dirty.iter().map(|(core, market)| (*core, market.as_str())))
     }
 
     /// Debug-only stress fixture for the dev panel fill button.
@@ -584,15 +571,15 @@ impl SessionManager {
         self.feed_wake.clone()
     }
 
-    /// Рыночные данные для чарта ядра `core` на рынке `market`: резолвим провайдера
-    /// ядра и читаем его view. None, пока провайдер не избран или данные не пришли.
-    pub fn with_market_view<R>(
+    /// Стакан для ядра `core` на рынке `market`: резолвим провайдера ядра и читаем
+    /// только book-view. История/last-price идут через retained-history API, не отсюда.
+    pub fn with_orderbook_view<R>(
         &self,
         core: CoreId,
         market: &str,
-        f: impl FnOnce(Option<&MarketView>) -> R,
+        f: impl FnOnce(Option<(&OrderBookModel, u64)>) -> R,
     ) -> R {
-        self.market_source.with_market_view(core, market, f)
+        self.market_source.with_orderbook_view(core, market, f)
     }
 
     pub fn market_source(&self) -> MarketDataSource {
@@ -614,5 +601,15 @@ impl SessionManager {
         self.wanted.clear();
         self.pending_drop.clear();
         self.last_cmd.clear();
+    }
+}
+
+fn orderbook_kind_for_exchange(ex: ExchangeId) -> OrderBookKind {
+    match ex.0 {
+        // Spot exchanges.
+        3 | 5 | 7 | 8 | 10 | 12 => OrderBookKind::Spot,
+        // Futures/quarterly derivatives.
+        2 | 4 | 6 | 9 | 11 | 13 => OrderBookKind::Futures,
+        _ => OrderBookKind::Futures,
     }
 }

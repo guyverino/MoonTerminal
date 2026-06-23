@@ -248,7 +248,7 @@ impl ChartPanel {
             orderbook_enabled: true,
             num: None,
             registered_markets,
-            registered_orderbook: HashSet::new(),
+            registered_orderbook,
             market_ref_epoch,
             data_sig: 0,
             settings_sig,

@@ -3,11 +3,15 @@
 //! `moonterminal --debug-script chart-smoke` opens a chart, injects a short native mouse storm
 //! over it and fails the process if cursor movement wakes expensive GPUI paths or burns CPU.
 
+use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 use gpui::{Context, IntoElement, ParentElement, div, px};
 use moon_core::config::{ChartBucket, Language};
+use moon_core::feed::CoreLogLine;
 use moon_core::metrics::MetricsSnapshot;
+use moon_core::session::order_lines::OrderCloseReason;
+use moon_core::util::now_unix_ms_i64;
 use moon_ui::MoonNotification;
 
 use crate::{Backend, diag};
@@ -19,6 +23,7 @@ const BASELINE: Duration = Duration::from_millis(5000);
 const BASELINE_WARMUP: Duration = Duration::from_millis(1500);
 const COOLDOWN: Duration = Duration::from_millis(1200);
 const TEXT_WARMUP: Duration = Duration::from_millis(2500);
+const ORDER_CANCEL_TIMEOUT: Duration = Duration::from_millis(15_000);
 const OPEN_TIMEOUT: Duration = Duration::from_millis(10_000);
 const PROBE_TIMEOUT: Duration = Duration::from_millis(10_000);
 const DEFAULT_MOUSE_HZ: f64 = 5000.0;
@@ -49,6 +54,7 @@ enum Phase {
     PriceScale20,
     PriceScaleAuto,
     PriceScaleVerifyAuto,
+    OrderCancelLag,
     Cooldown,
     Done,
     // Keep this last: cargo tests use it to catch unplanned FireTest phases.
@@ -57,7 +63,7 @@ enum Phase {
 }
 
 #[cfg(test)]
-const STAGE_PLAN: [Phase; 23] = [
+const STAGE_PLAN: [Phase; 24] = [
     Phase::WaitStartup,
     Phase::WaitOpen,
     Phase::WaitProbe,
@@ -79,6 +85,7 @@ const STAGE_PLAN: [Phase; 23] = [
     Phase::PriceScale20,
     Phase::PriceScaleAuto,
     Phase::PriceScaleVerifyAuto,
+    Phase::OrderCancelLag,
     Phase::Cooldown,
     Phase::Done,
 ];
@@ -107,6 +114,7 @@ impl Phase {
             Phase::PriceScale20 => "price_scale_20",
             Phase::PriceScaleAuto => "price_scale_auto",
             Phase::PriceScaleVerifyAuto => "price_scale_verify_auto",
+            Phase::OrderCancelLag => "order_cancel_lag",
             Phase::Cooldown => "cooldown",
             Phase::Done => "result",
             Phase::StageCount => "__invalid_count",
@@ -117,6 +125,29 @@ impl Phase {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Script {
     ChartSmoke,
+    OrderCancelLag,
+}
+
+#[cfg(test)]
+const ORDER_CANCEL_LAG_STAGE_PLAN: &[Phase] = &[
+    Phase::WaitStartup,
+    Phase::WaitOpen,
+    Phase::WaitProbe,
+    Phase::Settle,
+    Phase::OrderCancelLag,
+    Phase::Cooldown,
+    Phase::Done,
+];
+
+fn script_enables_order_cancel(script: Script, env_enabled: bool) -> bool {
+    env_enabled || matches!(script, Script::OrderCancelLag)
+}
+
+fn phase_after_settle(script: Script) -> Phase {
+    match script {
+        Script::ChartSmoke => Phase::Baseline,
+        Script::OrderCancelLag => Phase::OrderCancelLag,
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -126,6 +157,10 @@ pub(crate) struct Config {
     storm: Duration,
     mouse_hz: f64,
     text_labels: usize,
+    order_cancel_lag: bool,
+    order_cancel_size: Option<f64>,
+    order_cancel_price_mult: f64,
+    order_cancel_max_display_lag_ms: f64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -157,6 +192,29 @@ struct MouseStorm {
     done: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OrderCancelStep {
+    WaitOrder,
+    WaitClosed,
+}
+
+struct OrderCancelRun {
+    core: u64,
+    market: String,
+    before_uids: HashSet<u64>,
+    price: f64,
+    size: f64,
+    place_submit_ms: i64,
+    uid: Option<u64>,
+    order_seen_ms: Option<i64>,
+    cancel_submit_ms: Option<i64>,
+    closed_store_ms: Option<i64>,
+    closed_order_lines_rev: Option<u64>,
+    closed_reason: Option<OrderCloseReason>,
+    server_log: Option<CoreLogLine>,
+    step: OrderCancelStep,
+}
+
 pub(crate) struct Runtime {
     config: Config,
     started: Instant,
@@ -168,6 +226,7 @@ pub(crate) struct Runtime {
     opened_group: Option<String>,
     tool_window_ids: Option<(String, String, String)>,
     locale_switch: Option<(Language, Language)>,
+    order_cancel: Option<OrderCancelRun>,
     text_overlay_enabled: bool,
     present_pressure_enabled: bool,
     last_wait_log: Instant,
@@ -189,6 +248,7 @@ impl Config {
             };
             script = Some(match value.as_str() {
                 "chart-smoke" => Script::ChartSmoke,
+                "order-cancel-lag" => Script::OrderCancelLag,
                 other => anyhow::bail!("unknown --debug-script {other:?}"),
             });
         }
@@ -215,12 +275,33 @@ impl Config {
             .ok()
             .and_then(|s| s.parse::<usize>().ok())
             .unwrap_or(STATIC_TEXT_LABELS);
+        let order_cancel_lag =
+            script_enables_order_cancel(script, env_flag("MOON_FIRETEST_ORDER_CANCEL"));
+        let order_cancel_size = std::env::var("MOON_FIRETEST_ORDER_SIZE")
+            .ok()
+            .and_then(|s| s.parse::<f64>().ok())
+            .filter(|v| v.is_finite() && *v > 0.0);
+        let order_cancel_price_mult = std::env::var("MOON_FIRETEST_ORDER_PRICE_MULT")
+            .ok()
+            .and_then(|s| s.parse::<f64>().ok())
+            .filter(|v| v.is_finite() && *v > 0.0 && *v < 1.0)
+            .unwrap_or(0.98);
+        let order_cancel_max_display_lag_ms =
+            std::env::var("MOON_FIRETEST_ORDER_CANCEL_MAX_DISPLAY_MS")
+                .ok()
+                .and_then(|s| s.parse::<f64>().ok())
+                .filter(|v| v.is_finite() && *v > 0.0)
+                .unwrap_or(750.0);
         Ok(Some(Self {
             script,
             market,
             storm,
             mouse_hz,
             text_labels,
+            order_cancel_lag,
+            order_cancel_size,
+            order_cancel_price_mult,
+            order_cancel_max_display_lag_ms,
         }))
     }
 }
@@ -259,12 +340,13 @@ impl Runtime {
         diag::force_enable();
         let now = Instant::now();
         firetest_info(&format!(
-            "[firetest] script={:?} market={} storm_ms={} mouse_hz={:.0} text_labels={}",
+            "[firetest] script={:?} market={} storm_ms={} mouse_hz={:.0} text_labels={} order_cancel_lag={}",
             config.script,
             config.market,
             config.storm.as_millis(),
             config.mouse_hz,
-            config.text_labels
+            config.text_labels,
+            config.order_cancel_lag
         ));
         firetest_info("[firetest] stage=start");
         Self {
@@ -278,6 +360,7 @@ impl Runtime {
             opened_group: None,
             tool_window_ids: None,
             locale_switch: None,
+            order_cancel: None,
             text_overlay_enabled: false,
             present_pressure_enabled: false,
             last_wait_log: now,
@@ -358,7 +441,11 @@ impl Runtime {
             Phase::Settle => {
                 self.set_present_pressure(backend, true);
                 if self.phase_since.elapsed() >= SETTLE {
-                    self.set_phase(Phase::Baseline);
+                    let next_phase = phase_after_settle(self.config.script);
+                    if matches!(self.config.script, Script::OrderCancelLag) {
+                        self.set_present_pressure(backend, false);
+                    }
+                    self.set_phase(next_phase);
                 }
             }
             Phase::Baseline => {
@@ -509,8 +596,19 @@ impl Runtime {
                     if let Err(error) = self.verify_price_scale(backend, None) {
                         self.fail(&error);
                     } else {
-                        self.set_phase(Phase::Cooldown);
+                        self.set_phase(Phase::OrderCancelLag);
                     }
+                }
+            }
+            Phase::OrderCancelLag => {
+                if self.phase_since.elapsed() >= ORDER_CANCEL_TIMEOUT {
+                    self.fail("order_cancel_lag timed out");
+                    return;
+                }
+                match self.tick_order_cancel_lag(backend) {
+                    Ok(true) => self.set_phase(Phase::Cooldown),
+                    Ok(false) => {}
+                    Err(error) => self.fail(&error),
                 }
             }
             Phase::Cooldown => {
@@ -712,6 +810,239 @@ impl Runtime {
         }
     }
 
+    fn start_order_cancel_lag(&self, backend: &Backend) -> Result<OrderCancelRun, String> {
+        let group = self
+            .opened_group
+            .as_ref()
+            .ok_or_else(|| "order_cancel_lag has no opened chart group".to_string())?;
+        let (core, market) = backend.main_chart_target(group).ok_or_else(|| {
+            format!("order_cancel_lag has no main chart target for group={group}")
+        })?;
+        let latest_price = backend
+            .session
+            .market_source()
+            .latest_price(core, &market)
+            .map_err(|reason| {
+                format!("order_cancel_lag has no live-correct latest price for {market}: {reason}")
+            })?;
+        let price = (latest_price as f64 * self.config.order_cancel_price_mult).max(1e-8);
+        let size = self
+            .config
+            .order_cancel_size
+            .unwrap_or_else(|| backend.manual_order_size(core));
+        if !(size.is_finite() && size > 0.0) {
+            return Err(format!("order_cancel_lag invalid order size {size}"));
+        }
+        let before_uids: HashSet<u64> = backend
+            .session
+            .store()
+            .core(core)
+            .map(|core| core.orders.iter().map(|order| order.uid).collect())
+            .unwrap_or_default();
+        let feed_log_enabled = backend
+            .config
+            .servers
+            .iter()
+            .find(|server| server.id == core)
+            .is_some_and(|server| server.feed.log);
+        if !feed_log_enabled {
+            firetest_info(&format!(
+                "[firetest] order_cancel_lag warning core={core} feed.log=false server_log_metrics=missing"
+            ));
+        }
+        let place_submit_ms = now_unix_ms_i64();
+        backend
+            .session
+            .place_order(core, market.clone(), false, price, size, None)
+            .map_err(|error| format!("order_cancel_lag place order failed: {error:#}"))?;
+        firetest_info(&format!(
+            "[firetest] order_cancel_lag place core={core} market={market} price={price:.8} size={size} latest_price={latest_price:.8}"
+        ));
+        Ok(OrderCancelRun {
+            core,
+            market,
+            before_uids,
+            price,
+            size,
+            place_submit_ms,
+            uid: None,
+            order_seen_ms: None,
+            cancel_submit_ms: None,
+            closed_store_ms: None,
+            closed_order_lines_rev: None,
+            closed_reason: None,
+            server_log: None,
+            step: OrderCancelStep::WaitOrder,
+        })
+    }
+
+    fn tick_order_cancel_lag(&mut self, backend: &mut Backend) -> Result<bool, String> {
+        if !self.config.order_cancel_lag {
+            firetest_info(
+                "[firetest] order_cancel_lag skipped (set MOON_FIRETEST_ORDER_CANCEL=1 to enable real order test)",
+            );
+            return Ok(true);
+        }
+
+        let mut run = match self.order_cancel.take() {
+            Some(run) => run,
+            None => {
+                self.order_cancel = Some(self.start_order_cancel_lag(backend)?);
+                return Ok(false);
+            }
+        };
+        match run.step {
+            OrderCancelStep::WaitOrder => {
+                let Some(core) = backend.session.store().core(run.core) else {
+                    return Err(format!("order_cancel_lag core={} disappeared", run.core));
+                };
+                let found = core
+                    .orders
+                    .iter()
+                    .filter(|order| {
+                        order.market == run.market
+                            && !run.before_uids.contains(&order.uid)
+                            && !order.is_short
+                            && !order.job_is_done
+                            && (order.buy_price - run.price).abs()
+                                <= run.price.abs().mul_add(0.03, 1e-8)
+                    })
+                    .max_by_key(|order| order.uid)
+                    .map(|order| order.uid);
+                let Some(uid) = found else {
+                    self.wait_log("order_cancel_lag waiting for placed order snapshot");
+                    self.order_cancel = Some(run);
+                    return Ok(false);
+                };
+                let now = now_unix_ms_i64();
+                backend
+                    .session
+                    .cancel_order(run.core, uid)
+                    .map_err(|error| {
+                        format!("order_cancel_lag cancel order {uid} failed: {error:#}")
+                    })?;
+                run.uid = Some(uid);
+                run.order_seen_ms = Some(now);
+                run.cancel_submit_ms = Some(now_unix_ms_i64());
+                run.step = OrderCancelStep::WaitClosed;
+                firetest_info(&format!(
+                    "[firetest] order_cancel_lag cancel uid={uid} place_to_seen_ms={} core={} market={}",
+                    now - run.place_submit_ms,
+                    run.core,
+                    run.market
+                ));
+            }
+            OrderCancelStep::WaitClosed => {
+                let uid = run
+                    .uid
+                    .ok_or_else(|| "order_cancel_lag waiting closed without uid".to_string())?;
+                let Some(core) = backend.session.store().core(run.core) else {
+                    return Err(format!("order_cancel_lag core={} disappeared", run.core));
+                };
+                if run.server_log.is_none() {
+                    run.server_log = find_order_cancel_log(
+                        core.raw_server_log_snapshot(300),
+                        uid,
+                        run.cancel_submit_ms.unwrap_or_default(),
+                    );
+                }
+                if run.closed_store_ms.is_none() {
+                    if let Some(state) = core.order_lines.order_state(uid) {
+                        if let (Some(closed_store_ms), Some(closed_rev)) =
+                            (state.closed_store_ms, state.closed_rev)
+                        {
+                            let closed_ms_i64 = closed_store_ms.round() as i64;
+                            run.closed_store_ms = Some(closed_ms_i64);
+                            run.closed_order_lines_rev = Some(closed_rev);
+                            run.closed_reason = state.closed_reason;
+                            firetest_info(&format!(
+                                "[firetest] order_cancel_lag closed uid={uid} order_lines_rev={} reason={:?} cancel_to_order_lines_ms={}",
+                                closed_rev,
+                                state.closed_reason,
+                                closed_ms_i64 - run.cancel_submit_ms.unwrap_or(closed_ms_i64)
+                            ));
+                        }
+                    }
+                }
+                let Some(closed_rev) = run.closed_order_lines_rev else {
+                    self.wait_log("order_cancel_lag waiting for cancelled order snapshot");
+                    self.order_cancel = Some(run);
+                    return Ok(false);
+                };
+                let Some(group) = self.opened_group.as_ref() else {
+                    return Err("order_cancel_lag has no opened group".into());
+                };
+                #[cfg(any(debug_assertions, moon_profile_debug, feature = "debug-tools"))]
+                let probe = backend
+                    .debug_main_chart_handles
+                    .get(group)
+                    .and_then(|chart| chart.order_render_probe(run.core, &run.market));
+                #[cfg(not(any(debug_assertions, moon_profile_debug, feature = "debug-tools")))]
+                let probe = {
+                    let _ = (backend, group);
+                    None
+                };
+                let Some(probe) = probe else {
+                    self.wait_log("order_cancel_lag waiting for chart order render probe");
+                    self.order_cancel = Some(run);
+                    return Ok(false);
+                };
+                if probe.gpu_rev != closed_rev {
+                    self.wait_log("order_cancel_lag waiting for chart GPU userdata revision");
+                    self.order_cancel = Some(run);
+                    return Ok(false);
+                }
+                if probe.present_rev != closed_rev {
+                    self.wait_log(
+                        "order_cancel_lag waiting for chart present after order revision",
+                    );
+                    self.order_cancel = Some(run);
+                    return Ok(false);
+                }
+                if run.closed_reason != Some(OrderCloseReason::Cancel) {
+                    return Err(format!(
+                        "order_cancel_lag uid={uid} closed with {:?}, expected explicit Cancel",
+                        run.closed_reason
+                    ));
+                }
+
+                let closed_store_ms = run.closed_store_ms.unwrap_or_default() as f64;
+                let display_lag_ms = (probe.present_ms - closed_store_ms).max(0.0);
+                let sync_to_gpu_ms = (probe.gpu_ms - probe.order_lines_sync_ms).max(0.0);
+                let gpu_to_present_ms = (probe.present_ms - probe.gpu_ms).max(0.0);
+                let cancel_to_chart_ms =
+                    (probe.present_ms - run.cancel_submit_ms.unwrap_or_default() as f64).max(0.0);
+                let server_log = run.server_log.as_ref();
+                let server_to_recv_ms = server_log.map(|line| line.recv_ms - line.time_ms);
+                let log_recv_to_chart_ms =
+                    server_log.map(|line| (probe.gpu_ms - line.recv_ms as f64).max(0.0));
+                firetest_info(&format!(
+                    "[firetest] order_cancel_lag result uid={uid} core={} market={} price={:.8} size={} closed_order_lines_rev={} probe_order_lines_rev={} display_lag_ms={display_lag_ms:.1} sync_to_gpu_ms={sync_to_gpu_ms:.1} gpu_to_present_ms={gpu_to_present_ms:.1} cancel_to_visible_ms={cancel_to_chart_ms:.1} server_to_recv_ms={} log_recv_to_chart_ms={} server_log={}",
+                    run.core,
+                    run.market,
+                    run.price,
+                    run.size,
+                    closed_rev,
+                    probe.order_lines_rev,
+                    opt_i64(server_to_recv_ms),
+                    opt_f64(log_recv_to_chart_ms),
+                    server_log
+                        .map(|line| line.msg.replace('\n', " ⏎ "))
+                        .unwrap_or_else(|| "missing".to_string())
+                ));
+                if display_lag_ms > self.config.order_cancel_max_display_lag_ms {
+                    return Err(format!(
+                        "order_cancel_lag display_lag_ms {display_lag_ms:.1} > {:.1}",
+                        self.config.order_cancel_max_display_lag_ms
+                    ));
+                }
+                return Ok(true);
+            }
+        }
+        self.order_cancel = Some(run);
+        Ok(false)
+    }
+
     fn wait_log(&mut self, msg: &str) {
         if self.last_wait_log.elapsed() < Duration::from_millis(1000) {
             return;
@@ -902,6 +1233,10 @@ impl Runtime {
 
     fn evaluate_and_exit(&mut self) {
         self.set_phase(Phase::Done);
+        if matches!(self.config.script, Script::OrderCancelLag) {
+            firetest_info("[firetest] result=PASS FIRETEST PASS order_cancel_lag");
+            std::process::exit(0);
+        }
         let baseline: Vec<&Sample> = self
             .samples
             .iter()
@@ -1313,6 +1648,41 @@ fn write_firetest_line(line: &str) {
     }
 }
 
+fn env_flag(name: &str) -> bool {
+    std::env::var(name)
+        .ok()
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn find_order_cancel_log(lines: Vec<CoreLogLine>, uid: u64, since_ms: i64) -> Option<CoreLogLine> {
+    let uid_text = uid.to_string();
+    lines.into_iter().rev().find(|line| {
+        if line.recv_ms < since_ms.saturating_sub(500) {
+            return false;
+        }
+        let msg = line.msg.to_ascii_lowercase();
+        line.msg.contains(&uid_text) || msg.contains("cancel") || msg.contains("отмен")
+    })
+}
+
+fn opt_i64(value: Option<i64>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "NA".to_string())
+}
+
+fn opt_f64(value: Option<f64>) -> String {
+    value
+        .map(|value| format!("{value:.1}"))
+        .unwrap_or_else(|| "NA".to_string())
+}
+
 impl MouseStorm {
     fn is_done(&self) -> bool {
         self.done.load(std::sync::atomic::Ordering::Relaxed)
@@ -1422,10 +1792,57 @@ mod tests {
                 "price_scale_20",
                 "price_scale_auto",
                 "price_scale_verify_auto",
+                "order_cancel_lag",
                 "cooldown",
                 "result",
             ],
             "chart-smoke must remain one ordered run; do not add side tests outside this stage plan"
+        );
+    }
+
+    #[test]
+    fn order_cancel_lag_script_is_a_narrow_order_only_run() {
+        let config = Config::from_args([
+            "moonterminal".to_string(),
+            "--debug-script".to_string(),
+            "order-cancel-lag".to_string(),
+        ])
+        .expect("order-cancel-lag args must parse")
+        .expect("order-cancel-lag must create FireTest config");
+
+        assert_eq!(config.script, Script::OrderCancelLag);
+        assert!(
+            config.order_cancel_lag,
+            "order-cancel-lag must enable the real order-lag stage itself"
+        );
+        assert_eq!(
+            phase_after_settle(config.script),
+            Phase::OrderCancelLag,
+            "order-cancel-lag must skip mouse/static/tool-window stages"
+        );
+
+        let names: Vec<&'static str> = ORDER_CANCEL_LAG_STAGE_PLAN
+            .iter()
+            .map(|phase| phase.stage_name())
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "start",
+                "open_chart",
+                "wait_chart_probe",
+                "settle_live_chart",
+                "order_cancel_lag",
+                "cooldown",
+                "result",
+            ],
+            "order-cancel-lag must remain a focused order-path diagnostic"
+        );
+        assert!(
+            !ORDER_CANCEL_LAG_STAGE_PLAN.contains(&Phase::Storm)
+                && !ORDER_CANCEL_LAG_STAGE_PLAN.contains(&Phase::StaticTextStorm)
+                && !ORDER_CANCEL_LAG_STAGE_PLAN.contains(&Phase::ToolWindowsOpen),
+            "order-cancel-lag must not pull in unrelated cursor/text/tool-window stages"
         );
     }
 }
@@ -1460,11 +1877,11 @@ fn start_mouse_storm(
 ) -> Result<MouseStorm, String> {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
-    use windows::Win32::Foundation::{HWND, POINT};
+    use windows::Win32::Foundation::{HWND, LPARAM, POINT, WPARAM};
     use windows::Win32::Graphics::Gdi::ClientToScreen;
     use windows::Win32::UI::WindowsAndMessaging::{
-        GetCursorPos, HWND_TOP, SW_RESTORE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SetCursorPos,
-        SetForegroundWindow, SetWindowPos, ShowWindow,
+        GetCursorPos, HWND_TOP, PostMessageW, SW_RESTORE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW,
+        SetCursorPos, SetForegroundWindow, SetWindowPos, ShowWindow, WM_MOUSEMOVE,
     };
 
     let hwnd = probe
@@ -1514,8 +1931,16 @@ fn start_mouse_storm(
                 let y = (cy + angle.sin() * r).round() as i32;
                 let mut point = POINT { x, y };
                 let moved = unsafe {
-                    ClientToScreen(hwnd, &mut point).as_bool()
-                        && SetCursorPos(point.x, point.y).is_ok()
+                    let posted = PostMessageW(
+                        Some(hwnd),
+                        WM_MOUSEMOVE,
+                        WPARAM(0),
+                        LPARAM(((y as isize) << 16) | (x as u16 as isize)),
+                    )
+                    .is_ok();
+                    let cursor_moved = ClientToScreen(hwnd, &mut point).as_bool()
+                        && SetCursorPos(point.x, point.y).is_ok();
+                    posted || cursor_moved
                 };
                 if moved {
                     diag::bump(&diag::FIRETEST_MOUSE_SENT);

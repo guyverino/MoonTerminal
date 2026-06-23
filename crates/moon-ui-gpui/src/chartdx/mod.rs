@@ -152,6 +152,10 @@ struct PaneRender {
     readout_price_width: f32,
     history_cursor: ChartHistoryCursor,
     history_buffers: ChartHistoryBuffers,
+    /// Last source slice signature used to decide if retained chart history must be read.
+    source_history_sig: u64,
+    /// Last provider generation seen by this pane. Changed generation means source replacement.
+    source_generation: u64,
     cross_upload: Vec<ChartCross>,
     last_line_upload: Vec<PriceLinePoint>,
     mark_line_upload: Vec<PriceLinePoint>,
@@ -168,7 +172,19 @@ struct PaneRender {
     last_book_lo: f32,
     last_book_hi: f32,
     /// Последняя ревизия ордеров, по которой залит userdata-буфер.
-    last_orders_rev: u64,
+    last_order_lines_rev: u64,
+    /// Локальное время, когда userdata-буфер был пересобран из `order_lines_rev`.
+    last_order_lines_sync_ms: f64,
+    /// Ревизия order userdata, которая ждёт ближайшего GPU prepare.
+    pending_order_gpu_rev: Option<u64>,
+    /// Последняя order revision, дошедшая до GPU prepare.
+    last_order_gpu_rev: u64,
+    /// Локальное время ближайшего GPU prepare для `last_order_gpu_rev`.
+    last_order_gpu_ms: f64,
+    /// Последняя order revision, реально попавшая в own-pass draw.
+    last_order_present_rev: u64,
+    /// Локальное время первого draw для `last_order_present_rev`.
+    last_order_present_ms: f64,
     /// Последний uid ордера, который был подсвечен при сборке userdata.
     last_order_highlight_uid: Option<u64>,
     /// Последний preview drag, который был зашит в userdata.
@@ -184,6 +200,7 @@ struct PaneRender {
     /// он валиден. Пересканируем лишь на пиксель-кроссе (рубильник, см. prepare).
     scan_cam_px: i64,
     cached_tick_price: Option<(f32, f32)>,
+    cached_last_price: Option<f32>,
     /// Последний диапазон live-ордеров для auto-Y. Обновляется полным session-sync;
     /// market-only frame-sync использует этот кэш, не трогая CoreStore из frame().
     cached_order_price: Option<(f32, f32)>,
@@ -213,6 +230,8 @@ impl PaneRender {
             readout_price_width: 0.0,
             history_cursor: ChartHistoryCursor::default(),
             history_buffers: ChartHistoryBuffers::default(),
+            source_history_sig: u64::MAX,
+            source_generation: u64::MAX,
             cross_upload: Vec::new(),
             last_line_upload: Vec::new(),
             mark_line_upload: Vec::new(),
@@ -226,7 +245,13 @@ impl PaneRender {
             last_book_rev: u64::MAX,
             last_book_lo: f32::NAN,
             last_book_hi: f32::NAN,
-            last_orders_rev: u64::MAX,
+            last_order_lines_rev: u64::MAX,
+            last_order_lines_sync_ms: 0.0,
+            pending_order_gpu_rev: None,
+            last_order_gpu_rev: u64::MAX,
+            last_order_gpu_ms: 0.0,
+            last_order_present_rev: u64::MAX,
+            last_order_present_ms: 0.0,
             last_order_highlight_uid: None,
             last_order_drag_preview: None,
             epoch_ms: 0.0,
@@ -235,10 +260,25 @@ impl PaneRender {
             last_edge_px: i64::MIN,
             scan_cam_px: i64::MIN,
             cached_tick_price: None,
+            cached_last_price: None,
             cached_order_price: None,
             active: false,
             orderbook_enabled: true,
             gpu_prepare_dirty: true,
+        }
+    }
+
+    fn finish_order_gpu_prepare(&mut self, now_ms: f64) {
+        if let Some(rev) = self.pending_order_gpu_rev.take() {
+            self.last_order_gpu_rev = rev;
+            self.last_order_gpu_ms = now_ms;
+        }
+    }
+
+    fn finish_order_present(&mut self, now_ms: f64) {
+        if self.last_order_present_rev != self.last_order_gpu_rev {
+            self.last_order_present_rev = self.last_order_gpu_rev;
+            self.last_order_present_ms = now_ms;
         }
     }
 
@@ -323,6 +363,16 @@ pub struct ChartDataHandle {
     inner: Weak<RefCell<ChartDataState>>,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct OrderRenderProbe {
+    pub order_lines_rev: u64,
+    pub order_lines_sync_ms: f64,
+    pub gpu_rev: u64,
+    pub gpu_ms: f64,
+    pub present_rev: u64,
+    pub present_ms: f64,
+}
+
 impl PartialEq for ChartDataHandle {
     fn eq(&self, other: &Self) -> bool {
         self.inner.ptr_eq(&other.inner)
@@ -360,6 +410,24 @@ impl ChartDataHandle {
         };
         let render = inner.borrow().render.clone();
         render.borrow_mut().set_firetest_force_present(enabled)
+    }
+
+    pub fn order_render_probe(&self, core: CoreId, market: &str) -> Option<OrderRenderProbe> {
+        let inner = self.inner.upgrade()?;
+        let render = inner.borrow().render.clone();
+        render
+            .borrow()
+            .panes
+            .iter()
+            .find(|pane| pane.core == Some(core) && pane.market == market)
+            .map(|pane| OrderRenderProbe {
+                order_lines_rev: pane.last_order_lines_rev,
+                order_lines_sync_ms: pane.last_order_lines_sync_ms,
+                gpu_rev: pane.last_order_gpu_rev,
+                gpu_ms: pane.last_order_gpu_ms,
+                present_rev: pane.last_order_present_rev,
+                present_ms: pane.last_order_present_ms,
+            })
     }
 
     #[cfg(any(debug_assertions, moon_profile_debug, feature = "debug-tools"))]

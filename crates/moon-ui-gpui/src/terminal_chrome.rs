@@ -16,12 +16,7 @@ use moon_core::feed::ConnStatus;
 
 use crate::{Backend, design, settings, strategies};
 
-pub fn header(
-    group: &str,
-    backend: Entity<Backend>,
-    p: MoonPalette,
-    cx: &App,
-) -> impl IntoElement {
+pub fn header(group: &str, backend: Entity<Backend>, p: MoonPalette, cx: &App) -> impl IntoElement {
     h_flex()
         .w_full()
         .h(design::fit_h_px(cx, design::HEADER_TOP_H, 14.0, 9.0))
@@ -160,12 +155,7 @@ fn risk_meter(p: MoonPalette, cx: &App) -> impl IntoElement {
 /// Селектор «активного торгового ядра» группы. Список ядер группы; текущий выбор =
 /// `Backend::active_trade_core` (авто-следование за фуллскрин-чартом + sticky-override
 /// при ручном выборе). Все торговые контролы тулбара/шапки читают это же ядро.
-fn core_selector(
-    group: &str,
-    backend: &Entity<Backend>,
-    p: MoonPalette,
-    cx: &App,
-) -> AnyElement {
+fn core_selector(group: &str, backend: &Entity<Backend>, p: MoonPalette, cx: &App) -> AnyElement {
     let b = backend.read(cx);
     let cores = b.group_cores(group);
     let active = b.active_trade_core(group);
@@ -215,8 +205,16 @@ fn core_selector(
         .menu_width(180.0)
         .menu_size(MoonMenuSize::Compact)
         .segment(MoonButtonSegment::new("●").color(dot_color).weight(400.0))
-        .segment(MoonButtonSegment::new(active_name).color(p.text).weight(500.0))
-        .segment(MoonButtonSegment::new("▾").color(p.text_muted).weight(400.0))
+        .segment(
+            MoonButtonSegment::new(active_name)
+                .color(p.text)
+                .weight(500.0),
+        )
+        .segment(
+            MoonButtonSegment::new("▾")
+                .color(p.text_muted)
+                .weight(400.0),
+        )
         .items(items)
         .into_any_element()
 }

@@ -101,23 +101,27 @@ impl Shell {
                     &self.tp_slider_normal
                 };
                 slider.update(cx, |st, c| st.set_value(val, window, c));
-                self.tp_input
-                    .update(cx, |st, c| st.set_value(controls::fmt_field2(val), window, c));
+                self.tp_input.update(cx, |st, c| {
+                    st.set_value(controls::fmt_field2(val), window, c)
+                });
                 // Нижний (файн) слайдер 0..2: ставим на текущий TP в этом диапазоне.
                 let fine = val.clamp(0.0, controls::TP_FINE_MAX);
                 self.tp_fine_slider
                     .update(cx, |st, c| st.set_value(fine, window, c));
             }
             TradeMetric::Sl => {
-                self.sl_slider.update(cx, |st, c| st.set_value(val, window, c));
-                self.sl_input
-                    .update(cx, |st, c| st.set_value(controls::fmt_field2_signed(val), window, c));
+                self.sl_slider
+                    .update(cx, |st, c| st.set_value(val, window, c));
+                self.sl_input.update(cx, |st, c| {
+                    st.set_value(controls::fmt_field2_signed(val), window, c)
+                });
             }
             TradeMetric::Lev => {
                 self.lev_slider
                     .update(cx, |st, c| st.set_value(val, window, c));
-                self.lev_input
-                    .update(cx, |st, c| st.set_value(format!("{}", val as i32), window, c));
+                self.lev_input.update(cx, |st, c| {
+                    st.set_value(format!("{}", val as i32), window, c)
+                });
             }
         }
     }

@@ -50,7 +50,7 @@ impl ChartDataState {
         let mut sig = 0u64;
         if let Some((core, _market)) = self.container.borrow().target_ref(0) {
             if let Some(core_st) = session.store().core(core) {
-                sig = sig.wrapping_add(core_st.orders_rev);
+                sig = sig.wrapping_add(core_st.order_lines_rev);
             }
         }
         sig
@@ -71,18 +71,7 @@ impl ChartDataState {
     }
 
     pub(super) fn market_signature(&self, source: &MarketDataSource) -> u64 {
-        let mut sig = 0u64;
-        if let Some((core, market)) = self.container.borrow().target_ref(0) {
-            source.with_market_view(core, &market, |data| {
-                if let Some(v) = data {
-                    sig = sig
-                        .wrapping_add(v.ticks_rev)
-                        .wrapping_add(v.price_lines_rev)
-                        .wrapping_add(v.book_rev);
-                }
-            });
-        }
-        sig
+        self.source_market_signature(source)
     }
 
     pub(super) fn source_market_signature(&self, source: &MarketDataSource) -> u64 {
@@ -94,21 +83,12 @@ impl ChartDataState {
         let mut sig = 0xcbf29ce484222325;
         sig = mix_sig(sig, core);
         sig = mix_sig(sig, str_sig(&market));
-        if let Some((provider, revision)) = source.market_revision(core, &market) {
-            sig = mix_sig(sig, provider);
-            sig = mix_sig(sig, revision);
-        } else {
-            let store_revision = source.with_market_view(core, &market, |data| {
-                data.map(|v| {
-                    v.ticks_rev
-                        .wrapping_mul(31)
-                        .wrapping_add(v.price_lines_rev)
-                        .wrapping_mul(31)
-                        .wrapping_add(v.book_rev)
-                })
-                .unwrap_or(0)
-            });
-            sig = mix_sig(sig, store_revision);
+        if let Some(revs) = source.market_revisions(core, &market) {
+            sig = mix_sig(sig, revs.provider);
+            sig = mix_sig(sig, revs.generation);
+            sig = mix_sig(sig, revs.history);
+            sig = mix_sig(sig, revs.book);
+            sig = mix_sig(sig, revs.meta);
         }
         sig
     }
@@ -139,7 +119,7 @@ impl ChartDataState {
         for pr in &mut st.panes {
             pr.last_order_highlight_uid = None;
             pr.last_order_drag_preview = None;
-            pr.last_orders_rev = u64::MAX;
+            pr.last_order_lines_rev = u64::MAX;
             pr.gpu_prepare_dirty = true;
         }
         st.needs_present = true;
@@ -257,9 +237,13 @@ impl ChartDataState {
             return false;
         }
         let source_changed = source_sig != self.last_source_market_sig;
-        let pulled = source_changed && self.refresh_visible_markets(&source);
-        let sig = self.market_signature(&source);
-        if !self.view_dirty && !source_changed && !pulled && sig == self.last_prepared_market_sig {
+        let pulled_book = source_changed && self.refresh_visible_markets(&source);
+        let sig = source_sig;
+        if !self.view_dirty
+            && !source_changed
+            && !pulled_book
+            && sig == self.last_prepared_market_sig
+        {
             self.last_source_market_sig = source_sig;
             return false;
         }
@@ -319,7 +303,7 @@ impl ChartDataState {
             let device_gen = pr.layers.device_gen();
             let device_lost = pr.last_device_gen != device_gen;
             if device_lost {
-                pr.last_orders_rev = u64::MAX;
+                pr.last_order_lines_rev = u64::MAX;
                 pr.gpu_prepare_dirty = true;
                 pixels_changed = true;
             }
@@ -346,7 +330,7 @@ impl ChartDataState {
                 let drag_preview_sig =
                     drag_preview.map(|(uid, kind, price)| (uid, kind, price.to_bits()));
                 if force
-                    || pr.last_orders_rev != core_st.orders_rev
+                    || pr.last_order_lines_rev != core_st.order_lines_rev
                     || pr.last_order_highlight_uid != highlight_uid
                     || pr.last_order_drag_preview != drag_preview_sig
                 {
@@ -371,15 +355,19 @@ impl ChartDataState {
                         &mut markers,
                     );
                     pr.layers.set_userdata(&zones, &hlines, &segs, &markers);
-                    pr.last_orders_rev = core_st.orders_rev;
+                    pr.last_order_lines_rev = core_st.order_lines_rev;
+                    pr.last_order_lines_sync_ms = now;
+                    pr.pending_order_gpu_rev = Some(core_st.order_lines_rev);
                     pr.last_order_highlight_uid = highlight_uid;
                     pr.last_order_drag_preview = drag_preview_sig;
                     pr.gpu_prepare_dirty = true;
                     pixels_changed = true;
                 }
-            } else if force || pr.last_orders_rev != u64::MAX {
+            } else if force || pr.last_order_lines_rev != u64::MAX {
                 pr.layers.set_userdata(&[], &[], &[], &[]);
-                pr.last_orders_rev = u64::MAX;
+                pr.last_order_lines_rev = u64::MAX;
+                pr.last_order_lines_sync_ms = now;
+                pr.pending_order_gpu_rev = Some(u64::MAX);
                 pr.last_order_highlight_uid = None;
                 pr.last_order_drag_preview = None;
                 pr.gpu_prepare_dirty = true;
@@ -460,7 +448,7 @@ impl ChartDataState {
             let device_lost = pr.last_device_gen != device_gen;
             if device_lost {
                 pr.last_book_rev = u64::MAX;
-                pr.last_orders_rev = u64::MAX;
+                pr.last_order_lines_rev = u64::MAX;
                 pr.gpu_prepare_dirty = true;
                 pixels_changed = true;
             }
@@ -506,27 +494,49 @@ impl ChartDataState {
             let history_from = view_time0 - history_prefetch;
             let history_to = view_time0 + window_ms + history_prefetch;
             let scan_price = device_lost || cam_px != pr.scan_cam_px;
+            let source_revs = source.market_revisions(pane.core, &pane.market);
+            let source_generation = source_revs.map(|revs| revs.generation).unwrap_or(0);
+            let source_generation_changed = source_generation != pr.source_generation;
+            let mut history_source_sig = 0xcbf29ce4_84222325u64;
+            if let Some(revs) = source_revs {
+                history_source_sig = mix_sig(history_source_sig, revs.provider);
+                history_source_sig = mix_sig(history_source_sig, revs.generation);
+                history_source_sig = mix_sig(history_source_sig, revs.history);
+                history_source_sig = mix_sig(history_source_sig, revs.meta);
+            }
+            let history_source_changed = history_source_sig != pr.source_history_sig;
             let force_history_reset = device_lost
+                || source_generation_changed
                 || pr.resident_left_rel.is_nan()
                 || history_from < pr.resident_left_rel
                 || (!pane.view.follow && scan_price);
-            let history_read_started = force_history_reset.then(std::time::Instant::now);
-            let mut history = source.read_chart_history_into(
-                pane.core,
-                &pane.market,
-                pane.view.epoch_ms,
-                history_from,
-                history_to,
-                force_history_reset,
-                scan_price,
-                &mut pr.history_cursor,
-                &mut pr.history_buffers,
-            );
-            if let Some(started) = history_read_started {
-                crate::diag::bump_by(
-                    &crate::diag::CHART_HISTORY_RESET_MS,
-                    started.elapsed().as_millis().max(1) as u64,
+            let read_history = history_source_changed || force_history_reset;
+            let mut history = if read_history {
+                let history_read_started = force_history_reset.then(std::time::Instant::now);
+                let history = source.read_chart_history_into(
+                    pane.core,
+                    &pane.market,
+                    pane.view.epoch_ms,
+                    history_from,
+                    history_to,
+                    force_history_reset,
+                    scan_price,
+                    &mut pr.history_cursor,
+                    &mut pr.history_buffers,
                 );
+                if let Some(started) = history_read_started {
+                    crate::diag::bump_by(
+                        &crate::diag::CHART_HISTORY_RESET_MS,
+                        started.elapsed().as_millis().max(1) as u64,
+                    );
+                }
+                history
+            } else {
+                None
+            };
+            if read_history {
+                pr.source_history_sig = history_source_sig;
+                pr.source_generation = source_generation;
             }
             let capacity_changed = history.as_ref().is_some_and(|h| {
                 (h.combo_capacity > 0 && h.combo_capacity != pr.combo_cross_capacity)
@@ -646,14 +656,16 @@ impl ChartDataState {
                         pr.view.bounds
                     ));
                 }
+                pr.cached_last_price = last_price;
                 last_price
-            } else {
+            } else if read_history {
                 if pr.resident_left_rel.is_finite() {
                     pr.layers.reset_combo(Vec::new());
                     pr.layers.set_price_lines(&[], &[]);
                     pr.history_cursor.reset();
                     pr.resident_left_rel = f32::NAN;
                     pr.cached_tick_price = None;
+                    pr.cached_last_price = None;
                     pr.gpu_prepare_dirty = true;
                     pixels_changed = true;
                 }
@@ -661,9 +673,11 @@ impl ChartDataState {
                     pr.cached_tick_price = None;
                     pr.scan_cam_px = cam_px;
                 }
-                source.with_market_view(pane.core, &pane.market, |data| {
-                    data.and_then(|d| d.last_price)
-                })
+                let latest = source.latest_price(pane.core, &pane.market).ok();
+                pr.cached_last_price = latest;
+                latest
+            } else {
+                pr.cached_last_price
             };
             let tick_price = pr.cached_tick_price;
             let visible_price = union_range(
@@ -763,23 +777,23 @@ impl ChartDataState {
                     pixels_changed = true;
                 }
             } else {
-                source.with_market_view(pane.core, &pane.market, |data| {
-                    if let Some(d) = data {
+                source.with_orderbook_view(pane.core, &pane.market, |data| {
+                    if let Some((book, book_rev)) = data {
                         let half = pane.view.render_range.max(1e-9) * 0.5;
                         let (lo, hi) = (
                             pane.view.render_center - half,
                             pane.view.render_center + half,
                         );
                         let mut diag_levels_len = None;
-                        if pr.last_book_rev != d.book_rev
+                        if pr.last_book_rev != book_rev
                             || pr.last_book_lo != lo
                             || pr.last_book_hi != hi
                         {
                             let mut levels = Vec::new();
-                            d.book.build_instances(lo, hi, &mut levels);
+                            book.build_instances(lo, hi, &mut levels);
                             diag_levels_len = Some(levels.len());
                             pr.layers.set_orderbook(levels);
-                            pr.last_book_rev = d.book_rev;
+                            pr.last_book_rev = book_rev;
                             pr.last_book_lo = lo;
                             pr.last_book_hi = hi;
                             pr.gpu_prepare_dirty = true;
@@ -797,8 +811,8 @@ impl ChartDataState {
                                 idx,
                                 pane.core,
                                 pane.market,
-                                d.book_rev,
-                                d.book.len(),
+                                book_rev,
+                                book.len(),
                                 diag_levels_len,
                                 pane.view.render_center,
                                 pane.view.render_range,
@@ -846,7 +860,7 @@ impl ChartDataState {
         drop(container);
         drop(st);
         self.last_prepared_market_sig =
-            prepared_sig.unwrap_or_else(|| self.market_signature(source));
+            prepared_sig.unwrap_or_else(|| self.source_market_signature(source));
         self.view_dirty = false;
     }
 }

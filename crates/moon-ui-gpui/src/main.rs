@@ -897,8 +897,6 @@ fn main() -> anyhow::Result<()> {
                             return;
                         }
                         if drain.chart_data {
-                            b.session
-                                .refresh_market_data_for_dirty(&drain.chart_markets);
                             if drain.ui_state {
                                 let chart_consumers = b.live_chart_consumers();
                                 for chart in chart_consumers {

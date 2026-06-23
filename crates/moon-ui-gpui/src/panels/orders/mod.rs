@@ -499,8 +499,8 @@ impl Render for OrdersPanel {
     }
 }
 
-/// Сигнатура ордеров группы (сумма orders_rev ядер) — растёт при любом изменении
-/// ордеров. Не сменилась → таблицу можно не перестраивать (экономим UI-поток).
+/// Сигнатура таблицы ордеров группы. Это именно table-rev, не rev линий графика:
+/// числовые поля/статусы в таблице должны обновляться независимо от userdata чарта.
 fn orders_sig(b: &Backend, group: &str) -> u64 {
     let store = b.session.store();
     b.session
@@ -508,5 +508,7 @@ fn orders_sig(b: &Backend, group: &str) -> u64 {
         .iter()
         .filter(|s| s.group == group)
         .filter_map(|s| store.core(s.id))
-        .fold(0u64, |a, c| a.wrapping_mul(31).wrapping_add(c.orders_rev))
+        .fold(0u64, |a, c| {
+            a.wrapping_mul(31).wrapping_add(c.orders_table_rev)
+        })
 }

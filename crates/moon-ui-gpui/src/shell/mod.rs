@@ -329,7 +329,10 @@ impl Shell {
                         bcx.notify();
                         if let Err(error) = b.session.edit_client_settings(
                             core,
-                            ClientSettingsEdit::SetFixedSellPct { slot: ix + 1, pct: v },
+                            ClientSettingsEdit::SetFixedSellPct {
+                                slot: ix + 1,
+                                pct: v,
+                            },
                         ) {
                             log::warn!("set fixed-sell pct failed: {error}");
                         }
@@ -368,7 +371,10 @@ impl Shell {
             if let MoonSliderEvent::Change(v) = ev {
                 let v = v.end();
                 this.commit_client_edit(
-                    ClientSettingsEdit::TakeProfit { pct: v as f64, extended: false },
+                    ClientSettingsEdit::TakeProfit {
+                        pct: v as f64,
+                        extended: false,
+                    },
                     cx,
                 );
                 this.live_set_field(this.tp_input.clone(), controls::fmt_field2(v), cx);
@@ -383,7 +389,10 @@ impl Shell {
             if let MoonSliderEvent::Change(v) = ev {
                 let v = v.end();
                 this.commit_client_edit(
-                    ClientSettingsEdit::TakeProfit { pct: v as f64, extended: true },
+                    ClientSettingsEdit::TakeProfit {
+                        pct: v as f64,
+                        extended: true,
+                    },
                     cx,
                 );
                 this.live_set_field(this.tp_input.clone(), controls::fmt_field2(v), cx);
@@ -546,9 +555,9 @@ impl Render for Shell {
             let snap = b.snap;
             // Для статус-бара нужно лишь число уровней стакана текущего Main-чарта.
             let book_levels = match b.main_chart_target(&self.group) {
-                Some((core, m)) => b
-                    .session
-                    .with_market_view(core, &m, |data| data.map(|v| v.book.len()).unwrap_or(0)),
+                Some((core, m)) => b.session.with_orderbook_view(core, &m, |data| {
+                    data.map(|(book, _)| book.len()).unwrap_or(0)
+                }),
                 None => 0,
             };
             (conn, license, snap, book_levels)

@@ -374,6 +374,7 @@ impl RenderState {
                         &context,
                         gpu,
                     );
+                    pr.finish_order_gpu_prepare(now_unix_ms());
                     pr.gpu_prepare_dirty = false;
                 }
                 Ok(())
@@ -411,6 +412,7 @@ impl RenderState {
                         gpu,
                         needs_base,
                     )?;
+                    pr.finish_order_gpu_prepare(now_unix_ms());
                     pr.gpu_prepare_dirty = false;
                 }
                 if rebuild_base {
@@ -451,6 +453,7 @@ impl RenderState {
                         gpu,
                         needs_base,
                     )?;
+                    pr.finish_order_gpu_prepare(now_unix_ms());
                     pr.gpu_prepare_dirty = false;
                 }
                 if rebuild_base {
@@ -542,6 +545,7 @@ impl RenderState {
         }
 
         crate::diag::bump(&crate::diag::CHART_PRESENT);
+        let present_ms = now_unix_ms();
 
         match gpu.backend() {
             #[cfg(windows)]
@@ -613,6 +617,7 @@ impl RenderState {
                         &rtv,
                         gpu,
                     );
+                    pr.finish_order_present(present_ms);
                 }
                 unsafe {
                     context.RSSetState(prev_rs.as_ref());
@@ -645,6 +650,7 @@ impl RenderState {
                             &orderbook_view,
                             gpu,
                         )?;
+                        pr.finish_order_present(present_ms);
                     }
                 }
                 Ok(())
@@ -675,6 +681,7 @@ impl RenderState {
                             &orderbook_view,
                             gpu,
                         )?;
+                        pr.finish_order_present(present_ms);
                     }
                 }
                 Ok(())

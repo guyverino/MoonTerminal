@@ -166,6 +166,8 @@ pub struct DetectRow {
 pub struct CoreLogLine {
     /// Unix-время строки, мс (из `ServerLogEvent::unix_millis`).
     pub time_ms: i64,
+    /// Локальное время терминала, когда feed-поток принял эту строку, мс unix.
+    pub recv_ms: i64,
     pub msg: String,
 }
 

@@ -482,7 +482,9 @@ impl DetachedChartHost {
         // рестарта поля высоты пустые, без цифр.
         let (_, hf, hs) = self.panel_layout(cx);
         let fit = hf.unwrap_or(0).to_string();
-        let scroll = hs.unwrap_or(super::stack::DEFAULT_SCROLL_HEIGHT).to_string();
+        let scroll = hs
+            .unwrap_or(super::stack::DEFAULT_SCROLL_HEIGHT)
+            .to_string();
         self.layout_fit_input
             .update(cx, |input, c| input.set_value(fit, window, c));
         self.layout_scroll_input

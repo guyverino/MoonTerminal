@@ -32,7 +32,7 @@ use super::{
 use crate::config::ServerConfig;
 use crate::db::ReportTx;
 
-use crate::util::now_unix_ms as now_ms;
+use crate::util::{now_unix_ms as now_ms, now_unix_ms_i64 as now_ms_i64};
 
 /// Общий путь синка стратегий: берём ПОЛНЫЙ текущий набор, даём его `build` на правку
 /// (патч полей / смена пути / добавление новых), и если что-то изменилось — шлём ОДИН
@@ -93,7 +93,8 @@ fn license_state_from_proto(license: moonproto::KernelLicenseStateCommand) -> Li
 /// Плоская проекция moonproto `ClientSettings` → терминальный снимок. Raw-поля
 /// (`s_price`/`sb_num`/…) в проде `pub(crate)`, поэтому читаем ТОЛЬКО через хелперы.
 fn client_settings_from_proto(c: &moonproto::ClientSettingsCommand) -> ClientSettings {
-    let fixed_sell_pcts = std::array::from_fn(|i| c.fixed_sell_preset_percent(i + 1).unwrap_or(0.0));
+    let fixed_sell_pcts =
+        std::array::from_fn(|i| c.fixed_sell_preset_percent(i + 1).unwrap_or(0.0));
     ClientSettings {
         take_profit_pct: c.effective_take_profit_percent(),
         take_profit_extended: c.x_tmode,
@@ -647,7 +648,10 @@ pub fn run(
                     }
                 }
                 Ok(CoreCmd::EditLevManage(edit)) => {
-                    match client.snapshot().and_then(|s| s.settings().lev_manage.clone()) {
+                    match client
+                        .snapshot()
+                        .and_then(|s| s.settings().lev_manage.clone())
+                    {
                         Some(mut lev) => {
                             apply_lev_manage_edit(&mut lev, edit);
                             if let Err(error) = client.settings().manage_leverage(&lev) {
@@ -796,9 +800,10 @@ pub fn run(
         }
         // ClientSettings/LevManage/RuntimeState — снимки настроек ядра. Каждый тянем из
         // snapshot ТОЛЬКО когда пришло его событие (а не каждый тик), как и license выше.
-        let client_settings = if events.iter().any(|ev| {
-            matches!(ev, &Event::Settings(SettingsEvent::ClientSettingsUpdated))
-        }) {
+        let client_settings = if events
+            .iter()
+            .any(|ev| matches!(ev, &Event::Settings(SettingsEvent::ClientSettingsUpdated)))
+        {
             client.snapshot().and_then(|state| {
                 state
                     .settings()
@@ -819,7 +824,11 @@ pub fn run(
             .any(|ev| matches!(ev, &Event::Settings(SettingsEvent::LevManageUpdated)))
         {
             client.snapshot().and_then(|state| {
-                state.settings().lev_manage.as_ref().map(lev_manage_from_proto)
+                state
+                    .settings()
+                    .lev_manage
+                    .as_ref()
+                    .map(lev_manage_from_proto)
             })
         } else {
             None
@@ -886,11 +895,13 @@ pub fn run(
                 match ev {
                     Event::ServerLog(l) if want_log => {
                         let ms = l.unix_millis();
+                        let recv_ms = now_ms_i64();
                         // На диск — сразу (буферизованно); время бьём на дату+часы.
                         let (date, hms) = crate::applog::split_unix_ms(ms);
                         log_writer.write(&date, &hms, "INFO", "", &l.msg);
                         logs.push(CoreLogLine {
                             time_ms: ms,
+                            recv_ms,
                             msg: l.msg,
                         });
                     }

@@ -109,7 +109,11 @@ impl Shell {
         });
     }
 
-    pub(super) fn defer_restore_closed_panel(&mut self, panel_name: String, cx: &mut Context<Self>) {
+    pub(super) fn defer_restore_closed_panel(
+        &mut self,
+        panel_name: String,
+        cx: &mut Context<Self>,
+    ) {
         if !detached::supports_panel(&panel_name) {
             return;
         }

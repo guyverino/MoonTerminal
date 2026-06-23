@@ -7,10 +7,13 @@ use moonproto::state::{
 };
 use moonproto::MoonTime;
 
-use crate::feed::{Level, MarketDirty, OrderBook, PricePoint, SharedMoonClient, Side, Tick};
+use crate::data::OrderBookModel;
+use crate::feed::{
+    Level, MarketDirty, MarketDirtyFlags, OrderBook, PricePoint, SharedMoonClient, Side, Tick,
+};
 use crate::session::CoreId;
 
-use super::{MarketView, SharedMarketStore};
+use super::SharedMarketStore;
 
 const ORDERBOOK_PULL_PERIOD_MS: u64 = 200;
 const MARKET_DIAG_FLOOR: Duration = Duration::from_millis(1000);
@@ -50,13 +53,22 @@ fn bump_generation(revisions: &mut HashMap<CoreId, u64>, provider: CoreId) {
     *entry = entry.wrapping_add(1);
 }
 
-fn bump_market_revision(
-    revisions: &mut HashMap<(CoreId, String), u64>,
+fn bump_market_revisions(
+    revisions: &mut HashMap<(CoreId, String), MarketRevisionCounters>,
     provider: CoreId,
     market: &str,
+    flags: MarketDirtyFlags,
 ) {
-    let entry = revisions.entry((provider, market.to_string())).or_insert(0);
-    *entry = entry.wrapping_add(1);
+    let entry = revisions.entry((provider, market.to_string())).or_default();
+    if flags.contains(MarketDirtyFlags::HISTORY) {
+        entry.history = entry.history.wrapping_add(1);
+    }
+    if flags.contains(MarketDirtyFlags::ORDERBOOK) {
+        entry.book = entry.book.wrapping_add(1);
+    }
+    if flags.contains(MarketDirtyFlags::MARKET_META) {
+        entry.meta = entry.meta.wrapping_add(1);
+    }
 }
 
 fn mix_pair(a: u64, b: u64) -> u64 {
@@ -67,7 +79,56 @@ fn mix_pair(a: u64, b: u64) -> u64 {
 struct MarketPullCursor {
     book_phase_ms: Option<u64>,
     last_book_slot: Option<u64>,
+    last_book_dirty_revision: u64,
     last_book_revision: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct MarketRevisionCounters {
+    history: u64,
+    book: u64,
+    meta: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MarketRevisions {
+    pub provider: CoreId,
+    pub generation: u64,
+    pub history: u64,
+    pub book: u64,
+    pub meta: u64,
+}
+
+impl MarketRevisions {
+    pub fn combined_signature(self) -> u64 {
+        let mut sig = 0xcbf29ce4_84222325u64;
+        sig = mix_pair(sig, self.provider);
+        sig = mix_pair(sig, self.generation);
+        sig = mix_pair(sig, self.history);
+        sig = mix_pair(sig, self.book);
+        mix_pair(sig, self.meta)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LatestPriceError {
+    NoProvider,
+    NoClient,
+    NoSnapshot,
+    NoHistoryReaders,
+    NoPrice,
+}
+
+impl std::fmt::Display for LatestPriceError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoProvider => f.write_str("no provider"),
+            Self::NoClient => f.write_str("no client"),
+            Self::NoSnapshot => f.write_str("no snapshot"),
+            Self::NoHistoryReaders => f.write_str("no history readers"),
+            Self::NoPrice => f.write_str("no price"),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -129,8 +190,9 @@ struct MarketDataSourceInner {
     store: SharedMarketStore,
     clients: HashMap<CoreId, SharedMoonClient>,
     core_provider: HashMap<CoreId, CoreId>,
+    provider_orderbook_kind: HashMap<CoreId, OrderBookKind>,
     cursors: HashMap<(CoreId, String), MarketPullCursor>,
-    market_revisions: HashMap<(CoreId, String), u64>,
+    market_revisions: HashMap<(CoreId, String), MarketRevisionCounters>,
     provider_generations: HashMap<CoreId, u64>,
     started_at: Instant,
 }
@@ -153,6 +215,7 @@ impl MarketDataSource {
                 store,
                 clients: HashMap::new(),
                 core_provider: HashMap::new(),
+                provider_orderbook_kind: HashMap::new(),
                 cursors: HashMap::new(),
                 market_revisions: HashMap::new(),
                 provider_generations: HashMap::new(),
@@ -191,13 +254,26 @@ impl MarketDataSource {
         inner
             .market_revisions
             .retain(|(provider, _), _| active_providers.contains(provider));
+        inner
+            .provider_orderbook_kind
+            .retain(|provider, _| active_providers.contains(provider));
+    }
+
+    pub fn set_orderbook_kind(&self, core: CoreId, kind: OrderBookKind) {
+        let mut inner = self.inner.write().expect("market source poisoned");
+        inner.provider_orderbook_kind.insert(core, kind);
     }
 
     pub fn reset_market(&self, provider: CoreId, market: &str) {
         let store = {
             let mut inner = self.inner.write().expect("market source poisoned");
             inner.cursors.remove(&(provider, market.to_string()));
-            bump_market_revision(&mut inner.market_revisions, provider, market);
+            bump_market_revisions(
+                &mut inner.market_revisions,
+                provider,
+                market,
+                MarketDirtyFlags::ALL,
+            );
             inner.store.clone()
         };
         market_diag(format!("reset_market provider={provider} market={market}"));
@@ -211,7 +287,12 @@ impl MarketDataSource {
         let store = {
             let mut inner = self.inner.write().expect("market source poisoned");
             inner.cursors.remove(&(provider, market.to_string()));
-            bump_market_revision(&mut inner.market_revisions, provider, market);
+            bump_market_revisions(
+                &mut inner.market_revisions,
+                provider,
+                market,
+                MarketDirtyFlags::ALL,
+            );
             inner.store.clone()
         };
         store
@@ -225,6 +306,7 @@ impl MarketDataSource {
             let mut inner = self.inner.write().expect("market source poisoned");
             inner.cursors.retain(|(p, _), _| *p != provider);
             bump_generation(&mut inner.provider_generations, provider);
+            inner.provider_orderbook_kind.remove(&provider);
             inner.store.clone()
         };
         store
@@ -240,6 +322,7 @@ impl MarketDataSource {
             inner.cursors.clear();
             inner.market_revisions.clear();
             inner.provider_generations.clear();
+            inner.provider_orderbook_kind.clear();
             inner.store.clone()
         };
         store.write().expect("market store poisoned").clear();
@@ -251,37 +334,17 @@ impl MarketDataSource {
         }
         let mut inner = self.inner.write().expect("market source poisoned");
         for item in dirty {
-            bump_market_revision(&mut inner.market_revisions, provider, &item.market);
+            bump_market_revisions(
+                &mut inner.market_revisions,
+                provider,
+                &item.market,
+                item.flags,
+            );
         }
-    }
-
-    pub fn refresh_for_open(&self, desired: &[(CoreId, String)]) -> bool {
-        let mut changed = false;
-        let mut seen = HashSet::<(CoreId, String)>::new();
-        for (core, market) in desired {
-            if seen.insert((*core, market.clone())) {
-                changed |= self.refresh_market(*core, market);
-            }
-        }
-        changed
-    }
-
-    pub fn refresh_markets<'a>(
-        &self,
-        markets: impl IntoIterator<Item = (CoreId, &'a str)>,
-    ) -> bool {
-        let mut changed = false;
-        let mut seen = HashSet::<(CoreId, String)>::new();
-        for (core, market) in markets {
-            if seen.insert((core, market.to_string())) {
-                changed |= self.refresh_market(core, market);
-            }
-        }
-        changed
     }
 
     pub fn refresh_market(&self, core: CoreId, market: &str) -> bool {
-        let (provider, client, store, elapsed_ms) = {
+        let (provider, client, store, elapsed_ms, orderbook_kind) = {
             let inner = self.inner.read().expect("market source poisoned");
             let Some(provider) = inner.core_provider.get(&core).copied() else {
                 if market_diag_enabled()
@@ -306,6 +369,11 @@ impl MarketDataSource {
                 client,
                 inner.store.clone(),
                 inner.started_at.elapsed().as_millis() as u64,
+                inner
+                    .provider_orderbook_kind
+                    .get(&provider)
+                    .copied()
+                    .unwrap_or(OrderBookKind::Futures),
             )
         };
 
@@ -326,21 +394,30 @@ impl MarketDataSource {
         let key = (provider, market.to_string());
         let mut book_update: Option<OrderBook> = None;
         let mut has_book_snapshot = false;
+        let book_dirty_revision: u64;
+        let book_due: bool;
 
         {
             let mut inner = self.inner.write().expect("market source poisoned");
             if inner.core_provider.get(&core).copied() != Some(provider) {
                 return false;
             }
+            book_dirty_revision = inner
+                .market_revisions
+                .get(&key)
+                .map(|revs| revs.book)
+                .unwrap_or(0);
             let cursor = inner.cursors.entry(key).or_default();
 
             let phase_ms = *cursor.book_phase_ms.get_or_insert_with(|| {
                 cadence_phase_ms(provider, market, ORDERBOOK_PULL_PERIOD_MS)
             });
             let book_slot = cadence_slot(elapsed_ms, phase_ms, ORDERBOOK_PULL_PERIOD_MS);
-            let book_due = book_slot.is_some_and(|slot| cursor.last_book_slot != Some(slot));
+            let book_dirty = cursor.last_book_dirty_revision != book_dirty_revision;
+            book_due =
+                book_dirty || book_slot.is_some_and(|slot| cursor.last_book_slot != Some(slot));
             if book_due {
-                if let Some(book) = snapshot.order_book(market, OrderBookKind::Futures) {
+                if let Some(book) = snapshot.order_book(market, orderbook_kind) {
                     has_book_snapshot = true;
                     let revision = book.revision();
                     if cursor.last_book_revision != Some(revision) {
@@ -366,6 +443,7 @@ impl MarketDataSource {
                     }
                 }
                 cursor.last_book_slot = book_slot;
+                cursor.last_book_dirty_revision = book_dirty_revision;
             }
         }
 
@@ -376,17 +454,15 @@ impl MarketDataSource {
             {
                 market_diag(format!(
                     "refresh core={core} provider={provider} market={market}: no store view \
-                     readers trades=false last=false mark=false \
-                     book={has_book_snapshot} pulled ticks={} last={} mark={} book={:?}",
-                    0,
-                    0,
-                    0,
+                     kind={orderbook_kind:?} book_dirty_rev={book_dirty_revision} \
+                     book_due={book_due} snapshot_book={has_book_snapshot} pulled_book={:?}",
                     book_update.as_ref().map(|b| (b.bids.len(), b.asks.len()))
                 ));
             }
             return false;
         }
 
+        let pulled_book_shape = book_update.as_ref().map(|b| (b.bids.len(), b.asks.len()));
         let mut changed = false;
         if let Some(book) = book_update {
             store.apply_book(provider, market, &book);
@@ -395,18 +471,15 @@ impl MarketDataSource {
         if market_diag_enabled()
             && market_diag_due(format!("refresh:{provider}:{market}"), MARKET_DIAG_FLOOR)
         {
-            let (ring_len, ring_total, book_len, last_price) = store
+            let book_len = store
                 .view(provider, market)
-                .map(|v| (0, 0, v.book.len(), v.last_price))
-                .unwrap_or((0, 0, 0, None));
+                .map(|v| v.book.len())
+                .unwrap_or(0);
             market_diag(format!(
                 "refresh core={core} provider={provider} market={market}: changed={changed} \
-                 readers trades=false last=false mark=false \
-                 book={has_book_snapshot} pulled ticks={} last={} mark={} \
-                 view ring_len={ring_len} ring_total={ring_total} book_len={book_len} last_price={last_price:?}",
-                0,
-                0,
-                0
+                 kind={orderbook_kind:?} book_dirty_rev={book_dirty_revision} \
+                 book_due={book_due} snapshot_book={has_book_snapshot} \
+                 pulled_book={pulled_book_shape:?} view_book_len={book_len}",
             ));
         }
         changed
@@ -429,7 +502,7 @@ impl MarketDataSource {
     /// This is terminal-owned causality, not a MoonProto storage policy:
     /// feed threads mark the markets touched by domain events, and visible
     /// charts compare this one number before pulling retained rows or books.
-    pub fn market_revision(&self, core: CoreId, market: &str) -> Option<(CoreId, u64)> {
+    pub fn market_revisions(&self, core: CoreId, market: &str) -> Option<MarketRevisions> {
         let inner = self.inner.read().expect("market source poisoned");
         let provider = inner.core_provider.get(&core).copied()?;
         let generation = inner
@@ -437,12 +510,71 @@ impl MarketDataSource {
             .get(&provider)
             .copied()
             .unwrap_or(0);
-        let revision = inner
+        let counters = inner
             .market_revisions
             .get(&(provider, market.to_string()))
             .copied()
-            .unwrap_or(0);
-        Some((provider, mix_pair(generation, revision)))
+            .unwrap_or_default();
+        Some(MarketRevisions {
+            provider,
+            generation,
+            history: counters.history,
+            book: counters.book,
+            meta: counters.meta,
+        })
+    }
+
+    pub fn latest_price(&self, core: CoreId, market: &str) -> Result<f32, LatestPriceError> {
+        let (provider, client) = {
+            let inner = self.inner.read().expect("market source poisoned");
+            let provider = inner
+                .core_provider
+                .get(&core)
+                .copied()
+                .ok_or(LatestPriceError::NoProvider)?;
+            let client = inner
+                .clients
+                .get(&provider)
+                .and_then(SharedMoonClient::get)
+                .ok_or(LatestPriceError::NoClient)?;
+            (provider, client)
+        };
+        let _ = provider;
+        let snapshot = client
+            .snapshot_versioned()
+            .ok_or(LatestPriceError::NoSnapshot)?;
+        let readers = snapshot
+            .market_history_readers(market)
+            .ok_or(LatestPriceError::NoHistoryReaders)?;
+
+        let mut trades = Vec::new();
+        if let Some(reader) = readers.futures_trades.or(readers.spot_trades) {
+            reader.copy_last(1, &mut trades);
+            if let Some(row) = trades.last() {
+                if row.price.is_finite() && row.price > 0.0 {
+                    return Ok(row.price);
+                }
+            }
+        }
+
+        let mut last_prices = Vec::new();
+        if let Some(reader) = readers.last_prices {
+            reader.copy_last(1, &mut last_prices);
+            if let Some(row) = last_prices.last() {
+                let price = row.price();
+                if price.is_finite() && price > 0.0 {
+                    return Ok(price);
+                }
+            }
+        }
+
+        let price = snapshot
+            .markets()
+            .price(market)
+            .map(|p| p.p_last as f32)
+            .filter(|p| p.is_finite() && *p > 0.0)
+            .ok_or(LatestPriceError::NoPrice)?;
+        Ok(price)
     }
 
     pub fn read_chart_history_into(
@@ -591,18 +723,20 @@ impl MarketDataSource {
         Some(read)
     }
 
-    pub fn with_market_view<R>(
+    pub fn with_orderbook_view<R>(
         &self,
         core: CoreId,
         market: &str,
-        f: impl FnOnce(Option<&MarketView>) -> R,
+        f: impl FnOnce(Option<(&OrderBookModel, u64)>) -> R,
     ) -> R {
         let (provider, store) = {
             let inner = self.inner.read().expect("market source poisoned");
             (inner.core_provider.get(&core).copied(), inner.store.clone())
         };
         let store = store.read().expect("market store poisoned");
-        f(provider.and_then(|p| store.view(p, market)))
+        f(provider
+            .and_then(|p| store.view(p, market))
+            .map(|view| (&view.book, view.book_rev)))
     }
 }
 
@@ -673,6 +807,10 @@ fn cadence_slot(elapsed_ms: u64, phase_ms: u64, period_ms: u64) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
+    use crate::market::MarketStore;
+
     use super::*;
 
     #[test]
@@ -692,5 +830,43 @@ mod tests {
         assert_eq!(cadence_slot(100, 100, 200), Some(0));
         assert_eq!(cadence_slot(299, 100, 200), Some(0));
         assert_eq!(cadence_slot(300, 100, 200), Some(1));
+    }
+
+    #[test]
+    fn market_dirty_flags_bump_only_their_slice_revisions() {
+        let source = MarketDataSource::new(MarketStore::shared(0.0));
+        let mut providers = HashMap::new();
+        providers.insert(7, 42);
+        source.set_provider_map(&providers);
+
+        let initial = source.market_revisions(7, "BTCUSDT").unwrap();
+        assert_eq!((initial.history, initial.book, initial.meta), (0, 0, 0));
+
+        source.mark_dirty(
+            42,
+            &[MarketDirty::new("BTCUSDT", MarketDirtyFlags::ORDERBOOK)],
+        );
+        let after_book = source.market_revisions(7, "BTCUSDT").unwrap();
+        assert_eq!(
+            (after_book.history, after_book.book, after_book.meta),
+            (0, 1, 0)
+        );
+
+        source.mark_dirty(
+            42,
+            &[MarketDirty::new(
+                "BTCUSDT",
+                MarketDirtyFlags::HISTORY | MarketDirtyFlags::MARKET_META,
+            )],
+        );
+        let after_history_meta = source.market_revisions(7, "BTCUSDT").unwrap();
+        assert_eq!(
+            (
+                after_history_meta.history,
+                after_history_meta.book,
+                after_history_meta.meta
+            ),
+            (1, 1, 1)
+        );
     }
 }

@@ -18,8 +18,8 @@ use moon_core::config::paths;
 
 use crate::Backend;
 use crate::chart_tabs::ChartTabs;
-use moon_core::session::CoreId;
 use crate::panels::{AssetsView, DetectsPanel, LogPanel, OrderPanel, OrdersPanel, ReportPanel};
+use moon_core::session::CoreId;
 
 /// Версия схемы раскладки доков. Поднимаем при несовместимом изменении структуры
 /// панелей → старый `docks.json` игнорируется (откат к дефолтной раскладке).

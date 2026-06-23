@@ -85,7 +85,10 @@ impl TradeMetric {
         let core = b.active_trade_core(group)?;
         let cd = b.session.store().core(core)?;
         match self {
-            TradeMetric::Tp => cd.client_settings.as_ref().map(|s| s.take_profit_pct as f32),
+            TradeMetric::Tp => cd
+                .client_settings
+                .as_ref()
+                .map(|s| s.take_profit_pct as f32),
             TradeMetric::Sl => cd.client_settings.as_ref().map(|s| s.stop_loss_pct),
             TradeMetric::Lev => {
                 // Плечо монеты main-чарта из per-core карты (любой отслеживаемый рынок, не
@@ -95,7 +98,6 @@ impl TradeMetric {
             }
         }
     }
-
 }
 
 /// Высота полосы тулбара: 2-я строка header из HTML-эталона.
@@ -110,7 +112,6 @@ const SCALES: [(&str, Option<f32>); 6] = [
     ("5%", Some(0.05)),
     ("2%", Some(0.02)),
 ];
-
 
 /// Кнопка-триггер торговой метрики. Клик открывает/закрывает её попап в `Shell` (overlay со
 /// слайдером/полем; закрытие по клику вне/уводе мыши — как у попапа раскладки чарта, т.к.
@@ -217,7 +218,10 @@ pub fn metric_popup_content(
                         .unwrap_or(0.0);
                     if let Err(error) = b.session.edit_client_settings(
                         core,
-                        ClientSettingsEdit::TakeProfit { pct: cur, extended: ext },
+                        ClientSettingsEdit::TakeProfit {
+                            pct: cur,
+                            extended: ext,
+                        },
                     ) {
                         log::warn!("tp extended toggle failed: {error}");
                     }
@@ -680,7 +684,18 @@ pub fn toolbar(
     open_metric: Option<TradeMetric>,
     cx: &App,
 ) -> impl IntoElement {
-    let (scale, follow, focus_core, size_values, size_sel, tp_str, sl_str, lev_str, sell_pcts, sell_slot) = {
+    let (
+        scale,
+        follow,
+        focus_core,
+        size_values,
+        size_sel,
+        tp_str,
+        sl_str,
+        lev_str,
+        sell_pcts,
+        sell_slot,
+    ) = {
         let b = backend.read(cx);
         // Активное торговое ядро = выбор в селекторе шапки (sticky-override) ИЛИ ядро
         // открытого фуллскрином Main-чарта. Все торговые контролы (размеры/TP/SL/Lev/sell)

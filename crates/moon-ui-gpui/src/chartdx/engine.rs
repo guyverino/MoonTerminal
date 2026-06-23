@@ -245,7 +245,7 @@ impl ChartEngine {
             data.mark_view_dirty();
             drop(data);
             for pr in &mut self.state.borrow_mut().panes {
-                pr.last_orders_rev = u64::MAX;
+                pr.last_order_lines_rev = u64::MAX;
             }
             true
         } else {
