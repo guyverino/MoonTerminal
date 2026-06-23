@@ -9,8 +9,8 @@ use std::collections::{HashMap, VecDeque};
 
 use crate::applog::LogLine;
 use crate::feed::{
-    AssetsSnapshot, ConnStatus, DetectRow, FeedMsg, OrderRow, StrategyRow, StrategySchemaModel,
-    TransferAssetsSnapshot,
+    AssetsSnapshot, ConnStatus, DetectRow, FeedMsg, LicenseState, OrderRow, StrategyRow,
+    StrategySchemaModel, TransferAssetsSnapshot,
 };
 use crate::session::order_lines::OrderLineStore;
 
@@ -39,6 +39,8 @@ pub struct CoreData {
     pub assets: AssetsSnapshot,
     /// Transfer-активы ядра по кошелькам (для дерева переноса). Пусто, пока не запрошено.
     pub transfer_assets: TransferAssetsSnapshot,
+    /// License/Free-PRO/MoonCredits state ядра. None, пока ядро не ответило.
+    pub license: Option<LicenseState>,
     /// Последние строки серверного лога ядра (кольцо, обрезается до MAX_LOG).
     pub log: VecDeque<LogLine>,
     /// Растёт при изменении ордеров / детектов / стратегий / схемы / лога / активов.
@@ -48,6 +50,7 @@ pub struct CoreData {
     pub schema_rev: u64,
     pub assets_rev: u64,
     pub transfer_rev: u64,
+    pub license_rev: u64,
     pub log_rev: u64,
 }
 
@@ -62,6 +65,7 @@ impl CoreData {
             schema: None,
             assets: AssetsSnapshot::default(),
             transfer_assets: TransferAssetsSnapshot::default(),
+            license: None,
             log: VecDeque::new(),
             orders_rev: 0,
             detects_rev: 0,
@@ -69,6 +73,7 @@ impl CoreData {
             schema_rev: 0,
             assets_rev: 0,
             transfer_rev: 0,
+            license_rev: 0,
             log_rev: 0,
         }
     }
@@ -132,6 +137,12 @@ impl CoreData {
             FeedMsg::TransferAssets(transfer) => {
                 self.transfer_assets = transfer;
                 self.transfer_rev = self.transfer_rev.wrapping_add(1);
+            }
+            FeedMsg::License(license) => {
+                if self.license != Some(license) {
+                    self.license = Some(license);
+                    self.license_rev = self.license_rev.wrapping_add(1);
+                }
             }
             FeedMsg::ServerLog(lines) => {
                 if !lines.is_empty() {

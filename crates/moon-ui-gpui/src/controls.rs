@@ -302,23 +302,7 @@ pub fn toolbar(
         // бинанса). Нет открытого фулскрина → нет ядра (дефолтные значения, клики игнор).
         let focus_core = b.main_chart_target(group).map(|(core, _)| core);
         let (size_values, size_sel) = match focus_core {
-            Some(core) => {
-                let base = b.session.core_base(core).unwrap_or("");
-                let sizes = b
-                    .config
-                    .servers
-                    .iter()
-                    .find(|s| s.id == core)
-                    .map(|s| s.order_sizes_or_default(base))
-                    .unwrap_or_else(|| moon_core::config::servers::default_order_sizes(base));
-                let sel = b
-                    .order_size_sel
-                    .get(&core)
-                    .copied()
-                    .unwrap_or(SIZE_SEL_DEFAULT)
-                    .min(5);
-                (sizes, sel)
-            }
+            Some(core) => b.manual_order_size_state(core),
             None => (
                 moon_core::config::servers::default_order_sizes(""),
                 SIZE_SEL_DEFAULT,

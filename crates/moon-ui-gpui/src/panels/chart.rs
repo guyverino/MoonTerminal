@@ -22,8 +22,9 @@ use crate::chartdx::ChartEngine;
 use crate::{Backend, axes, input};
 use moon_chart::container::ContainerKind;
 use moon_chart::paint::now_unix_ms;
-use moon_core::config::{ChartBucket, ChartTheme, OrdersStyle};
+use moon_core::config::{ChartBucket, ChartTheme, MouseGestureBinding, OrdersStyle};
 use moon_core::session::CoreId;
+use moon_core::session::order_lines::LineKind;
 
 #[cfg(windows)]
 use windows::Win32::Graphics::Gdi::{DEVMODEW, ENUM_CURRENT_SETTINGS, EnumDisplaySettingsW};
@@ -62,6 +63,36 @@ struct ChartSettingsSig {
     theme: ChartTheme,
     orders: OrdersStyle,
     follow: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TradeMouseButton {
+    Left,
+    Middle,
+    Right,
+}
+
+struct OrderDrag {
+    core: CoreId,
+    uid: u64,
+    kind: LineKind,
+    pane: usize,
+    start_price: f64,
+    current_price: f64,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct OrderHoverKey {
+    core: CoreId,
+    uid: u64,
+}
+
+struct OrderHit {
+    core: CoreId,
+    uid: u64,
+    kind: LineKind,
+    pane: usize,
+    price: f32,
 }
 
 fn chart_settings_sig(backend: &Backend) -> ChartSettingsSig {
@@ -123,6 +154,8 @@ pub struct ChartPanel {
     /// One-shot timer авто-возврата в live после пана (П.9). Тоже time-based: prepare в
     /// покое не тикает (камеру двигает own-pass), поэтому возврат нужен по таймеру.
     auto_live_timer_armed: bool,
+    order_drag: Option<OrderDrag>,
+    order_hover: Option<OrderHoverKey>,
     focus: FocusHandle,
 }
 
@@ -228,6 +261,8 @@ impl ChartPanel {
             last_ppp: 1.0,
             ttl_timer_armed: false,
             auto_live_timer_armed: false,
+            order_drag: None,
+            order_hover: None,
             focus: cx.focus_handle(),
         }
     }
@@ -309,6 +344,8 @@ impl ChartPanel {
             last_ppp: 1.0,
             ttl_timer_armed: false,
             auto_live_timer_armed: false,
+            order_drag: None,
+            order_hover: None,
             focus: cx.focus_handle(),
         }
     }
@@ -642,6 +679,371 @@ impl ChartPanel {
         self.input.rmb_moved()
     }
 
+    fn local_pane_rect(&self, pane: usize) -> Option<moon_chart::view::Rect> {
+        self.input
+            .pane_rects
+            .iter()
+            .find(|(idx, _)| *idx == pane)
+            .map(|(_, rect)| *rect)
+            .or_else(|| {
+                self.chart
+                    .pane_rects()
+                    .into_iter()
+                    .find(|(idx, _)| *idx == pane)
+                    .map(|(_, rect)| rect)
+            })
+    }
+
+    fn local_pane_areas(
+        &self,
+        pane: usize,
+    ) -> Option<(moon_chart::view::Rect, moon_chart::view::Rect)> {
+        let rect = self.local_pane_rect(pane)?;
+        let price_axis_w = moon_chart::PRICE_AXIS_W * self.last_ppp;
+        let time_axis_h = moon_chart::TIME_AXIS_H * self.last_ppp;
+        let plot_h = (rect.h - time_axis_h).max(1.0);
+        let glass_cap = rect.w * 0.5;
+        let glass_base = moon_chart::GLASS_ZONE_PX.min(glass_cap);
+        let chart_w_base = rect.w - price_axis_w - glass_base;
+        let glass_w = if !self.orderbook_enabled {
+            0.0
+        } else if chart_w_base < glass_base * 2.0 {
+            (moon_chart::GLASS_ZONE_PX * 0.8).min(glass_cap)
+        } else {
+            glass_base
+        };
+        let plot = moon_chart::view::Rect {
+            x: rect.x + price_axis_w,
+            y: rect.y,
+            w: (rect.w - price_axis_w - glass_w).max(1.0),
+            h: plot_h,
+        };
+        let glass = moon_chart::view::Rect {
+            x: rect.x + (rect.w - glass_w).max(1.0),
+            y: rect.y,
+            w: glass_w,
+            h: plot_h,
+        };
+        Some((plot, glass))
+    }
+
+    fn local_plot_rect(&self, pane: usize) -> Option<moon_chart::view::Rect> {
+        self.local_pane_areas(pane).map(|(plot, _)| plot)
+    }
+
+    fn local_glass_rect(&self, pane: usize) -> Option<moon_chart::view::Rect> {
+        self.local_pane_areas(pane).map(|(_, glass)| glass)
+    }
+
+    fn glass_pane_at(&self, pos: (f32, f32)) -> Option<usize> {
+        let pane = self.input.pane_at(pos.0, pos.1)?;
+        let glass = self.local_glass_rect(pane)?;
+        (glass.w > 0.0
+            && pos.0 >= glass.x
+            && pos.0 <= glass.x + glass.w
+            && pos.1 >= glass.y
+            && pos.1 <= glass.y + glass.h)
+            .then_some(pane)
+    }
+
+    fn price_at_pane_y(&self, pane: usize, y: f32) -> Option<f64> {
+        let plot = self.local_plot_rect(pane)?;
+        if plot.h <= 1.0 {
+            return None;
+        }
+        let (center, range) = self.chart.with_container(|container| {
+            container
+                .pane(pane)
+                .map(|pane| (pane.view.render_center, pane.view.render_range))
+        })?;
+        if !(range > 0.0) || !center.is_finite() {
+            return None;
+        }
+        let rel_y = ((y - plot.y) / plot.h).clamp(0.0, 1.0);
+        let price = center + (0.5 - rel_y) * range;
+        (price.is_finite() && price > 0.0).then_some(price as f64)
+    }
+
+    fn gesture_matches(
+        binding: MouseGestureBinding,
+        button: TradeMouseButton,
+        modifiers: Modifiers,
+        click_count: usize,
+    ) -> bool {
+        let dbl = click_count >= 2;
+        let clear = !modifiers.modified();
+        match binding {
+            MouseGestureBinding::None => false,
+            MouseGestureBinding::LeftDouble => button == TradeMouseButton::Left && dbl && clear,
+            MouseGestureBinding::LeftCtrl => button == TradeMouseButton::Left && modifiers.control,
+            MouseGestureBinding::LeftShift => button == TradeMouseButton::Left && modifiers.shift,
+            MouseGestureBinding::LeftAlt => button == TradeMouseButton::Left && modifiers.alt,
+            MouseGestureBinding::Middle => button == TradeMouseButton::Middle && clear,
+            MouseGestureBinding::MiddleCtrl => {
+                button == TradeMouseButton::Middle && modifiers.control
+            }
+            MouseGestureBinding::MiddleShift => {
+                button == TradeMouseButton::Middle && modifiers.shift
+            }
+            MouseGestureBinding::MiddleAlt => button == TradeMouseButton::Middle && modifiers.alt,
+            MouseGestureBinding::RightDouble => button == TradeMouseButton::Right && dbl && clear,
+            MouseGestureBinding::RightCtrl => {
+                button == TradeMouseButton::Right && modifiers.control
+            }
+            MouseGestureBinding::RightShift => button == TradeMouseButton::Right && modifiers.shift,
+            MouseGestureBinding::RightAlt => button == TradeMouseButton::Right && modifiers.alt,
+            MouseGestureBinding::LeftCtrlDouble => {
+                button == TradeMouseButton::Left && dbl && modifiers.control
+            }
+            MouseGestureBinding::LeftShiftDouble => {
+                button == TradeMouseButton::Left && dbl && modifiers.shift
+            }
+            MouseGestureBinding::LeftAltDouble => {
+                button == TradeMouseButton::Left && dbl && modifiers.alt
+            }
+        }
+    }
+
+    fn try_place_order_click(
+        &mut self,
+        button: TradeMouseButton,
+        modifiers: Modifiers,
+        click_count: usize,
+        pos: (f32, f32),
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(pane) = self.glass_pane_at(pos) else {
+            return false;
+        };
+        let Some(price) = self.price_at_pane_y(pane, pos.1) else {
+            return false;
+        };
+        let Some((core, market)) = self
+            .chart
+            .with_container(|container| container.target(pane))
+        else {
+            return false;
+        };
+
+        self.backend.update(cx, |b, _| {
+            let cfg = b.preview.as_ref().unwrap_or(&b.config);
+            let short = if Self::gesture_matches(
+                cfg.hotkeys.buy_set_click,
+                button,
+                modifiers,
+                click_count,
+            ) {
+                Some(false)
+            } else if Self::gesture_matches(
+                cfg.hotkeys.short_set_click,
+                button,
+                modifiers,
+                click_count,
+            ) {
+                Some(true)
+            } else {
+                None
+            };
+            let Some(short) = short else {
+                return false;
+            };
+            let size = b.manual_order_size(core);
+            match b
+                .session
+                .place_order(core, market.clone(), short, price, size, None)
+            {
+                Ok(()) => {
+                    log::info!(
+                        "manual chart order: core={core} market={market} side={} price={price:.8} size={size}",
+                        if short { "short" } else { "long" }
+                    );
+                    true
+                }
+                Err(err) => {
+                    log::warn!(
+                        "manual chart order failed: core={core} market={market} price={price:.8}: {err:#}"
+                    );
+                    false
+                }
+            }
+        })
+    }
+
+    fn hit_order_line(&self, pos: (f32, f32), cx: &mut Context<Self>) -> Option<OrderHit> {
+        let Some(pane) = self.input.pane_at(pos.0, pos.1) else {
+            return None;
+        };
+        let Some((core, market)) = self
+            .chart
+            .with_container(|container| container.target(pane))
+        else {
+            return None;
+        };
+        let Some(plot) = self.local_plot_rect(pane) else {
+            return None;
+        };
+        let Some((center, range)) = self.chart.with_container(|container| {
+            container
+                .pane(pane)
+                .map(|pane| (pane.view.render_center, pane.view.render_range))
+        }) else {
+            return None;
+        };
+        if plot.h <= 1.0 || !(range > 0.0) {
+            return None;
+        }
+        let threshold = (6.0 * self.last_ppp).max(6.0);
+        let mut best: Option<(u64, LineKind, f32, f32)> = None;
+        if let Some(core_data) = self.backend.read(cx).session.store().core(core) {
+            for order in core_data
+                .order_lines
+                .market_draw_orders(&market, 0)
+                .into_iter()
+                .filter(|order| order.closed_ms.is_none())
+            {
+                for kind in [LineKind::Buy, LineKind::Sell] {
+                    let Some(price) = order.lines[kind as usize]
+                        .current_price()
+                        .filter(|p| p.is_finite() && *p > 0.0)
+                    else {
+                        continue;
+                    };
+                    let rel_y = 0.5 - (price - center) / range;
+                    let y = plot.y + rel_y * plot.h;
+                    let dist = (y - pos.1).abs();
+                    if dist <= threshold && best.is_none_or(|(_, _, _, best_dist)| dist < best_dist)
+                    {
+                        best = Some((order.uid, kind, price, dist));
+                    }
+                }
+            }
+        }
+        let (uid, kind, price, _) = best?;
+        Some(OrderHit {
+            core,
+            uid,
+            kind,
+            pane,
+            price,
+        })
+    }
+
+    fn set_order_interaction(
+        &mut self,
+        next: Option<OrderHoverKey>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.order_hover == next {
+            return false;
+        }
+        self.order_hover = next;
+        self.apply_order_visual(cx)
+    }
+
+    fn apply_order_visual(&mut self, cx: &mut Context<Self>) -> bool {
+        let highlight = self.order_hover.map(|hover| (hover.core, hover.uid));
+        let drag_preview = self
+            .order_drag
+            .as_ref()
+            .map(|drag| (drag.core, drag.uid, drag.kind, drag.current_price as f32));
+        if self.chart.set_order_visual(highlight, drag_preview) {
+            self.sync_orders_if_visible(cx, true);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn sync_order_hover(&mut self, pos: (f32, f32), cx: &mut Context<Self>) -> bool {
+        let next = self.hit_order_line(pos, cx).map(|hit| OrderHoverKey {
+            core: hit.core,
+            uid: hit.uid,
+        });
+        self.set_order_interaction(next, cx)
+    }
+
+    fn try_start_order_drag(&mut self, pos: (f32, f32), cx: &mut Context<Self>) -> bool {
+        let Some(hit) = self.hit_order_line(pos, cx) else {
+            return false;
+        };
+        let price = hit.price as f64;
+        self.order_drag = Some(OrderDrag {
+            core: hit.core,
+            uid: hit.uid,
+            kind: hit.kind,
+            pane: hit.pane,
+            start_price: price,
+            current_price: price,
+        });
+        let visual_changed = self.set_order_interaction(
+            Some(OrderHoverKey {
+                core: hit.core,
+                uid: hit.uid,
+            }),
+            cx,
+        );
+        if !visual_changed {
+            self.apply_order_visual(cx);
+        }
+        true
+    }
+
+    fn update_order_drag(&mut self, pos: (f32, f32), cx: &mut Context<Self>) -> bool {
+        let Some((pane, price)) = self.order_drag.as_ref().and_then(|drag| {
+            self.price_at_pane_y(drag.pane, pos.1)
+                .map(|price| (drag.pane, price))
+        }) else {
+            return false;
+        };
+        let mut price_changed = false;
+        if let Some(drag) = &mut self.order_drag {
+            price_changed = (drag.current_price - price).abs() > 1e-9;
+            drag.current_price = price;
+        }
+        if price_changed {
+            self.apply_order_visual(cx);
+        }
+        self.input.cursor = Some(pos);
+        self.input.hovered_pane = Some(pane);
+        self.sync_native_cursor()
+    }
+
+    fn finish_order_drag(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(drag) = self.order_drag.take() else {
+            return false;
+        };
+        self.apply_order_visual(cx);
+        let eps = drag.start_price.abs() * 1e-8 + 1e-8;
+        if (drag.current_price - drag.start_price).abs() <= eps {
+            return true;
+        }
+        self.backend.update(cx, |b, _| {
+            match b
+                .session
+                .move_order(drag.core, drag.uid, drag.current_price)
+            {
+                Ok(()) => {
+                    log::info!(
+                        "manual chart move_order: core={} uid={} price={:.8}",
+                        drag.core,
+                        drag.uid,
+                        drag.current_price
+                    );
+                    true
+                }
+                Err(err) => {
+                    log::warn!(
+                        "manual chart move_order failed: core={} uid={} price={:.8}: {err:#}",
+                        drag.core,
+                        drag.uid,
+                        drag.current_price
+                    );
+                    false
+                }
+            }
+        })
+    }
+
     fn sync_native_cursor(&mut self) -> bool {
         let cursor = self
             .input
@@ -813,6 +1215,11 @@ impl Render for ChartPanel {
             .overflow_hidden()
             .relative()
             .track_focus(&self.focus)
+            .when(self.order_drag.is_some(), |this| this.cursor_grabbing())
+            .when(
+                self.order_drag.is_none() && self.order_hover.is_some(),
+                |this| this.cursor_grab(),
+            )
             .on_scroll_wheel(cx.listener(|this, e: &ScrollWheelEvent, window, cx| {
                 if cx.has_active_drag() {
                     return;
@@ -879,6 +1286,24 @@ impl Render for ChartPanel {
                         None
                     };
                     this.sync_native_cursor();
+                    if within
+                        && this.try_place_order_click(
+                            TradeMouseButton::Left,
+                            e.modifiers,
+                            e.click_count,
+                            pos,
+                            cx,
+                        )
+                    {
+                        cx.stop_propagation();
+                        return;
+                    }
+                    if within && e.click_count <= 1 && this.try_start_order_drag(pos, cx) {
+                        this.sync_native_cursor();
+                        cx.notify();
+                        cx.stop_propagation();
+                        return;
+                    }
                     // На AddToChart-вкладках дабл-клик по ЧАРТУ → открыть монету на Main (fullscreen).
                     let allow_to_main = this.num.is_some();
                     let fb = this.chart.slot_dev_width();
@@ -916,6 +1341,12 @@ impl Render for ChartPanel {
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|this, _e: &MouseUpEvent, window, cx| {
+                    if this.finish_order_drag(cx) {
+                        this.sync_native_cursor();
+                        cx.notify();
+                        cx.stop_propagation();
+                        return;
+                    }
                     let sf = window.scale_factor();
                     let fb = this.chart.slot_dev_width();
                     let changed = {
@@ -942,9 +1373,6 @@ impl Render for ChartPanel {
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(|this, e: &MouseDownEvent, window, cx| {
-                    if this.num.is_none() && this.window_pos_in_glass_zone(e.position) {
-                        return;
-                    }
                     let sf = window.scale_factor();
                     let Some((pos, within)) = this.chart_local(e.position) else {
                         return;
@@ -957,6 +1385,21 @@ impl Render for ChartPanel {
                         None
                     };
                     this.sync_native_cursor();
+                    if within
+                        && this.try_place_order_click(
+                            TradeMouseButton::Right,
+                            e.modifiers,
+                            e.click_count,
+                            pos,
+                            cx,
+                        )
+                    {
+                        cx.stop_propagation();
+                        return;
+                    }
+                    if this.num.is_none() && this.window_pos_in_glass_zone(e.position) {
+                        return;
+                    }
                     let fb = this.chart.slot_dev_width();
                     let changed = {
                         let input = &mut this.input;
@@ -1007,6 +1450,33 @@ impl Render for ChartPanel {
                     }
                 }),
             )
+            .on_mouse_down(
+                MouseButton::Middle,
+                cx.listener(|this, e: &MouseDownEvent, _window, cx| {
+                    let Some((pos, within)) = this.chart_local(e.position) else {
+                        return;
+                    };
+                    this.input.last_ptr = pos;
+                    this.input.cursor = if within { Some(pos) } else { None };
+                    this.input.hovered_pane = if within {
+                        this.input.pane_at(pos.0, pos.1)
+                    } else {
+                        None
+                    };
+                    this.sync_native_cursor();
+                    if within
+                        && this.try_place_order_click(
+                            TradeMouseButton::Middle,
+                            e.modifiers,
+                            e.click_count,
+                            pos,
+                            cx,
+                        )
+                    {
+                        cx.stop_propagation();
+                    }
+                }),
+            )
             .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, window, cx| {
                 if cx.has_active_drag() {
                     return;
@@ -1016,6 +1486,11 @@ impl Render for ChartPanel {
                 };
                 crate::diag::bump(&crate::diag::CHART_MOUSE_MOVE);
                 if e.pressed_button.is_none() {
+                    if this.order_drag.take().is_some() {
+                        this.apply_order_visual(cx);
+                        this.sync_native_cursor();
+                        cx.notify();
+                    }
                     crate::diag::bump(&crate::diag::CHART_MOUSE_MOVE_FAST);
                     let prev_cursor = this.input.cursor;
                     let prev_hovered = this.input.hovered_pane;
@@ -1030,6 +1505,14 @@ impl Render for ChartPanel {
                     if cursor_changed && this.sync_native_cursor() {
                         crate::diag::bump(&crate::diag::CHART_CURSOR_UPDATE);
                     }
+                    let order_hover_changed = if within {
+                        this.sync_order_hover(pos, cx)
+                    } else {
+                        this.set_order_interaction(None, cx)
+                    };
+                    if order_hover_changed {
+                        cx.notify();
+                    }
                     if within {
                         crate::diag::bump(&crate::diag::CHART_MOUSE_FAST_STOP);
                         cx.stop_propagation();
@@ -1042,6 +1525,11 @@ impl Render for ChartPanel {
                     e.pressed_button == Some(MouseButton::Left),
                     e.pressed_button == Some(MouseButton::Right),
                 );
+                if this.order_drag.is_some() {
+                    this.update_order_drag(pos, cx);
+                    cx.stop_propagation();
+                    return;
+                }
                 let prev_cursor = this.input.cursor;
                 let prev_hovered = this.input.hovered_pane;
                 this.input.cursor = if within { Some(pos) } else { None };
@@ -1076,6 +1564,12 @@ impl Render for ChartPanel {
             }))
             .on_hover(cx.listener(|this, hovered: &bool, _window, _cx| {
                 if !*hovered {
+                    let had_order_drag = this.order_drag.take().is_some();
+                    let had_order_hover = this.order_hover.take().is_some();
+                    if had_order_drag || had_order_hover {
+                        this.apply_order_visual(_cx);
+                        _cx.notify();
+                    }
                     let changed = this.input.cursor.take().is_some()
                         || this.input.hovered_pane.take().is_some();
                     if changed {

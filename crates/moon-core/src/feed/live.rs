@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use moonproto::state::{
     MarketHistorySizing, MarketsEvent, OrderBookEvent, OrderTraceChartPoint, OrderTraceLine,
-    TradesEvent,
+    SettingsEvent, TradesEvent,
 };
 use moonproto::{
     ClientConfig, ConnectConfig, Event, InitConfig, InitialStrategies, LifecycleEvent, MoonClient,
@@ -25,8 +25,9 @@ use super::strategies::{
     alert_params, build_schema_model, fmt_field, fv_from_str, strat_kind_name,
 };
 use super::{
-    ConnStatus, CoreCmd, CoreLogLine, DetectRow, ExchangeId, FeedMsg, FeedTx, MarketDirty,
-    MarketDirtyFlags, OrderRow, OrderTrace, OrderTracePoint, SharedMoonClient, StrategyRow,
+    ConnStatus, CoreCmd, CoreLogLine, DetectRow, ExchangeId, FeedMsg, FeedTx, LicenseState,
+    MarketDirty, MarketDirtyFlags, OrderRow, OrderTrace, OrderTracePoint, SharedMoonClient,
+    StrategyRow,
 };
 use crate::config::ServerConfig;
 use crate::db::ReportTx;
@@ -75,6 +76,17 @@ fn moon_time_to_unix_millis_f64(time: moonproto::MoonTime) -> f64 {
         millis as f64
     } else {
         0.0
+    }
+}
+
+fn license_state_from_proto(license: moonproto::KernelLicenseStateCommand) -> LicenseState {
+    LicenseState {
+        paid_version: license.paid_version,
+        reg_id: license.reg_id,
+        moon_credits: license.moon_credits,
+        moon_credits_hold: license.moon_credits_hold,
+        moon_credits_auction: license.moon_credits_auction,
+        can_use_watcher: license.can_use_watcher,
     }
 }
 
@@ -558,6 +570,11 @@ pub fn run(
         event_queue.drain_lifecycle_events_into(&mut lifecycle_events);
         for ev in lifecycle_events.drain(..) {
             log::info!("lifecycle: {ev:?}");
+            let request_license_state = match &ev {
+                LifecycleEvent::Ready => true,
+                LifecycleEvent::Connected { fresh } => !*fresh,
+                _ => false,
+            };
             let st = match ev {
                 LifecycleEvent::Connecting => ConnStatus::Stage("connecting…".into()),
                 LifecycleEvent::Connected { fresh } => {
@@ -591,6 +608,14 @@ pub fn run(
                 LifecycleEvent::Disconnected => ConnStatus::Disconnected,
             };
             let _ = tx.send(FeedMsg::Status(st));
+            if request_license_state {
+                if let Err(error) = client.settings().request_kernel_license_state() {
+                    log::warn!(
+                        "core {} request kernel license state failed: {error}",
+                        server.id
+                    );
+                }
+            }
         }
         // Терминальный отказ старта → наружу как Err: пусть app-level цикл пересоздаст
         // клиент (moonproto сам этот рантайм уже не оживит).
@@ -603,6 +628,24 @@ pub fn run(
         events.clear();
         event_queue.drain_events_into(&mut events);
         let had_domain_event = !events.is_empty();
+        let license_state = if events.iter().any(|ev| {
+            matches!(
+                ev,
+                &Event::Settings(SettingsEvent::KernelLicenseStateUpdated)
+            )
+        }) {
+            client
+                .snapshot()
+                .and_then(|state| state.settings().kernel_license_state)
+                .map(license_state_from_proto)
+        } else {
+            None
+        };
+        if let Some(license) = license_state {
+            if tx.send(FeedMsg::License(license)).is_err() {
+                break;
+            }
+        }
         let dirty_markets = if is_provider && !wanted.is_empty() {
             market_dirty_from_events(&events, &wanted, force_market_sample)
         } else {

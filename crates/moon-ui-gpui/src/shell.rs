@@ -17,7 +17,7 @@ use moon_ui::{
 use moon_core::config::GroupLayout;
 use moon_core::feed::ConnStatus;
 use moon_core::metrics::MetricsSnapshot;
-use moon_core::session::{ConnSummary, CoreId};
+use moon_core::session::{ConnSummary, CoreId, LicenseSummary};
 
 use crate::chart_tabs::ChartTabs;
 use crate::dock_persist::DOCK_VERSION;
@@ -123,7 +123,7 @@ impl Shell {
                 )
             });
             let detects = cx.new(|cx| DetectsPanel::new(backend.clone(), group.clone(), cx));
-            let order = cx.new(|cx| OrderPanel::new(cx));
+            let order = cx.new(|cx| OrderPanel::new(backend.clone(), group.clone(), cx));
 
             // Нижние вкладки — собираем, ПРОПУСКАЯ откреплённые (их окна откроет старт):
             // панель убрана из дока при откреплении, dock_persist хранит док без неё.
@@ -512,9 +512,10 @@ impl Render for Shell {
         self.last_frame = Some(now_inst);
         let fps = self.fps;
 
-        let (conn, snap, market_label, _price_label, book_levels) = {
+        let (conn, license, snap, market_label, _price_label, book_levels) = {
             let b = self.backend.read(cx);
             let conn = b.session.conn_summary_group(&self.group);
+            let license = b.session.license_summary_group(&self.group);
             let snap = b.snap;
             let (market_label, price_label, book_levels) = {
                 match b.main_chart_target(&self.group) {
@@ -534,7 +535,7 @@ impl Render for Shell {
                     None => ("—".into(), "—".into(), 0),
                 }
             };
-            (conn, snap, market_label, price_label, book_levels)
+            (conn, license, snap, market_label, price_label, book_levels)
         };
         let chrome_width = f32::from(window.viewport_size().width);
         let p = MoonPalette::active(cx);
@@ -547,6 +548,35 @@ impl Render for Shell {
             .font_family(design::mono())
             .text_color(rgb(p.text))
             .text_size(design::t_body(cx))
+            .on_key_down(cx.listener(|this, ev: &KeyDownEvent, _window, cx| {
+                let group = this.group.clone();
+                let handled = this.backend.update(cx, |b, _| {
+                    let raw = b
+                        .preview
+                        .as_ref()
+                        .unwrap_or(&b.config)
+                        .hotkeys
+                        .cancel_buy
+                        .trim();
+                    if raw.is_empty() {
+                        return false;
+                    }
+                    match Keystroke::parse(raw) {
+                        Ok(key) if key == ev.keystroke => {
+                            b.cancel_buy_for_main_chart(&group);
+                            true
+                        }
+                        Ok(_) => false,
+                        Err(err) => {
+                            log::warn!("invalid cancel_buy hotkey {raw:?}: {err}");
+                            false
+                        }
+                    }
+                });
+                if handled {
+                    cx.stop_propagation();
+                }
+            }))
             // ── Header ──────────────────────────────────────────────
             .child(terminal_chrome::header(
                 &self.group,
@@ -583,7 +613,7 @@ impl Render for Shell {
                     ),
             )
             // ── Status bar (полный порт egui `shell::ui` нижней панели) ──
-            .child(self.status_bar(conn, snap, book_levels, fps, cx))
+            .child(self.status_bar(conn, license, snap, book_levels, fps, cx))
             .child(
                 MoonWindowFrame::main("moon-main-window-frame", chrome_width)
                     .header_height(design::HEADER_TOP_H)
@@ -601,6 +631,7 @@ impl Shell {
     fn status_bar(
         &self,
         conn: ConnSummary,
+        license: LicenseSummary,
         snap: MetricsSnapshot,
         book_levels: usize,
         fps: f32,
@@ -641,6 +672,20 @@ impl Shell {
         } else {
             format!("Connection: {}/{}", conn.ready, conn.total)
         };
+        let (license_text, license_color) = if license.total == 0 || license.known == 0 {
+            ("License: …".to_string(), p.text_muted)
+        } else if license.known < license.total {
+            (
+                format!("License: {}/{}", license.known, license.total),
+                p.amber,
+            )
+        } else if license.paid == license.total {
+            ("PRO".to_string(), p.green)
+        } else if license.free == license.total {
+            ("FREE".to_string(), p.amber)
+        } else {
+            (format!("PRO {}/{}", license.paid, license.total), p.amber)
+        };
 
         let mut host = div()
             .id("status-bar-host")
@@ -676,6 +721,11 @@ impl Shell {
                             .gap_after(6.0),
                         MoonStatusItem::new("Demo")
                             .color(p.text_soft)
+                            .gap_after(10.0),
+                        MoonStatusItem::separator().gap_after(10.0),
+                        MoonStatusItem::new(license_text)
+                            .color(license_color)
+                            .weight(600.0)
                             .gap_after(10.0),
                         MoonStatusItem::separator().gap_after(10.0),
                         MoonStatusItem::new("book")

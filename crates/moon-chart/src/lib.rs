@@ -56,6 +56,8 @@ pub fn build_order_geometry(
     store: &OrderLineStore,
     market: &str,
     style: &OrdersStyle,
+    highlight_uid: Option<u64>,
+    drag_preview: Option<(u64, LineKind, f32)>,
     epoch_ms: f64,
     now_ms: f64,
     left_rel: f32,
@@ -79,6 +81,13 @@ pub fn build_order_geometry(
         store.market_draw_orders(market, style.max_closed_orders as usize);
     for ord in visible {
         let closed = ord.closed_ms.is_some();
+        let highlighted = highlight_uid == Some(ord.uid) && !closed;
+        let drag_preview = drag_preview.filter(|(uid, _, price)| {
+            *uid == ord.uid && !closed && price.is_finite() && *price > 0.0
+        });
+        let highlight_alpha_mul = if highlighted { 1.45 } else { 1.0 };
+        let highlight_thickness_mul = if highlighted { 1.7 } else { 1.0 };
+        let highlight_marker_mul = if highlighted { 1.25 } else { 1.0 };
         let order_end = ord.closed_ms.unwrap_or(now_ms);
         // Куллинг по окну времени (rel ms).
         let start_rel = to_rel(ord.create_ms);
@@ -91,6 +100,7 @@ pub fn build_order_geometry(
         } else {
             style.active_alpha
         };
+        let line_alpha = (alpha * highlight_alpha_mul).min(1.0);
 
         if !closed {
             let mut push_zone = |a: f32, b: f32, color: [f32; 4]| {
@@ -123,9 +133,9 @@ pub fn build_order_geometry(
             let s = &style.liq;
             hlines.push(LineInstance {
                 price: p,
-                color: rgba(s.color, alpha),
+                color: rgba(s.color, line_alpha),
                 style: if s.dashed { 1.0 } else { 0.0 },
-                thickness: s.thickness,
+                thickness: s.thickness * highlight_thickness_mul,
             });
         }
 
@@ -135,13 +145,46 @@ pub fn build_order_geometry(
 
         for (st, idx) in kinds {
             let line = &ord.lines[idx];
-            if !line.server_points.is_empty() {
-                let ended = line.off_ms.is_some() || closed;
-                let dashed = st.dashed
-                    || (idx == LineKind::Buy as usize && ord.pending && style.pending_dashed);
-                let col = rgba(st.color, alpha);
-                let dash = if dashed { 1.0 } else { 0.0 };
+            let ended = line.off_ms.is_some() || closed;
+            let dashed =
+                st.dashed || (idx == LineKind::Buy as usize && ord.pending && style.pending_dashed);
+            let col = rgba(st.color, line_alpha);
+            let dash = if dashed { 1.0 } else { 0.0 };
+            let thickness = st.thickness * highlight_thickness_mul;
 
+            if let Some((_, _, preview_price)) =
+                drag_preview.filter(|(_, kind, _)| *kind as usize == idx)
+            {
+                let start_t = line
+                    .server_points
+                    .first()
+                    .map(|(t, _)| *t)
+                    .or_else(|| line.steps.first().map(|(t, _)| *t))
+                    .unwrap_or(ord.create_ms);
+                segs.push(SegInstance {
+                    t0_rel: to_rel(start_t),
+                    p0: preview_price,
+                    t1_rel: edge_rel,
+                    p1: preview_price,
+                    thickness,
+                    dashed: dash,
+                    extend: 1.0,
+                    color: col,
+                });
+                if st.start_marker {
+                    markers.push(MarkerInstance {
+                        t_rel: to_rel(start_t),
+                        price: preview_price,
+                        size: st.marker_size * highlight_marker_mul,
+                        thickness: st.marker_thickness * highlight_thickness_mul,
+                        shape: 0.0,
+                        color: col,
+                    });
+                }
+                continue;
+            }
+
+            if !line.server_points.is_empty() {
                 for pair in line.server_points.windows(2) {
                     let (t0, p0) = pair[0];
                     let (t1, p1) = pair[1];
@@ -159,7 +202,7 @@ pub fn build_order_geometry(
                         p0,
                         t1_rel,
                         p1: p0,
-                        thickness: st.thickness,
+                        thickness,
                         dashed: dash,
                         extend: 0.0,
                         color: col,
@@ -169,7 +212,7 @@ pub fn build_order_geometry(
                         p0,
                         t1_rel,
                         p1,
-                        thickness: st.thickness,
+                        thickness,
                         dashed: dash,
                         extend: 0.0,
                         color: col,
@@ -192,7 +235,7 @@ pub fn build_order_geometry(
                             p0: last_p,
                             t1_rel: tmp_rel,
                             p1: last_p,
-                            thickness: st.thickness,
+                            thickness,
                             dashed: 1.0,
                             extend: 0.0,
                             color: col,
@@ -202,7 +245,7 @@ pub fn build_order_geometry(
                             p0: last_p,
                             t1_rel: tmp_rel,
                             p1: tmp_p,
-                            thickness: st.thickness,
+                            thickness,
                             dashed: 1.0,
                             extend: 0.0,
                             color: col,
@@ -213,7 +256,7 @@ pub fn build_order_geometry(
                             p0: last_p,
                             t1_rel: 0.0,
                             p1: last_p,
-                            thickness: st.thickness,
+                            thickness,
                             dashed: dash,
                             extend: 1.0,
                             color: col,
@@ -226,8 +269,8 @@ pub fn build_order_geometry(
                     markers.push(MarkerInstance {
                         t_rel: to_rel(t),
                         price: p,
-                        size: st.marker_size,
-                        thickness: st.marker_thickness,
+                        size: st.marker_size * highlight_marker_mul,
+                        thickness: st.marker_thickness * highlight_thickness_mul,
                         shape: 0.0,
                         color: col,
                     });
@@ -237,8 +280,8 @@ pub fn build_order_geometry(
                         markers.push(MarkerInstance {
                             t_rel: to_rel(t),
                             price: p,
-                            size: st.knot_size,
-                            thickness: st.marker_thickness,
+                            size: st.knot_size * highlight_marker_mul,
+                            thickness: st.marker_thickness * highlight_thickness_mul,
                             shape: 1.0,
                             color: col,
                         });
@@ -249,8 +292,8 @@ pub fn build_order_geometry(
                         markers.push(MarkerInstance {
                             t_rel: to_rel(t),
                             price: p,
-                            size: st.marker_size,
-                            thickness: st.marker_thickness,
+                            size: st.marker_size * highlight_marker_mul,
+                            thickness: st.marker_thickness * highlight_thickness_mul,
                             shape: 0.0,
                             color: col,
                         });
@@ -266,12 +309,7 @@ pub fn build_order_geometry(
             // Линия завершена, если выключена сама или закрыт ордер. У активной
             // (незавершённой) линии КОНЦА НЕТ — она тянется до правого края plot
             // (через стакан), без креста конца. У завершённой конец = off/close время.
-            let ended = line.off_ms.is_some() || closed;
             let line_end = line.off_ms.unwrap_or(order_end);
-            let dashed =
-                st.dashed || (idx == LineKind::Buy as usize && ord.pending && style.pending_dashed);
-            let col = rgba(st.color, alpha);
-            let dash = if dashed { 1.0 } else { 0.0 };
 
             let start_t = line.steps[0].0;
             // Текущая цена — последняя ступень. Основная линия ПРЯМАЯ на текущей цене
@@ -326,7 +364,7 @@ pub fn build_order_geometry(
                 p0: cur_p,
                 t1_rel,
                 p1: cur_p,
-                thickness: st.thickness,
+                thickness,
                 dashed: dash,
                 extend: if ended { 0.0 } else { 1.0 },
                 color: col,
@@ -338,8 +376,8 @@ pub fn build_order_geometry(
                     markers.push(MarkerInstance {
                         t_rel: to_rel(line.steps[i].0),
                         price: cur_p,
-                        size: st.knot_size,
-                        thickness: st.marker_thickness,
+                        size: st.knot_size * highlight_marker_mul,
+                        thickness: st.marker_thickness * highlight_thickness_mul,
                         shape: 1.0,
                         color: col,
                     });
@@ -351,8 +389,8 @@ pub fn build_order_geometry(
                 markers.push(MarkerInstance {
                     t_rel: t0_rel,
                     price: cur_p,
-                    size: st.marker_size,
-                    thickness: st.marker_thickness,
+                    size: st.marker_size * highlight_marker_mul,
+                    thickness: st.marker_thickness * highlight_thickness_mul,
                     shape: 0.0,
                     color: col,
                 });
@@ -361,8 +399,8 @@ pub fn build_order_geometry(
                 markers.push(MarkerInstance {
                     t_rel: t1_rel,
                     price: cur_p,
-                    size: st.marker_size,
-                    thickness: st.marker_thickness,
+                    size: st.marker_size * highlight_marker_mul,
+                    thickness: st.marker_thickness * highlight_thickness_mul,
                     shape: 0.0,
                     color: col,
                 });

@@ -22,6 +22,8 @@ impl ChartDataState {
             origin: (0.0, 0.0),
             scene_visible: false,
             orderbook_enabled: true,
+            order_highlight: None,
+            order_drag_preview: None,
             market_source: None,
             last_frame_tick_ms: 0.0,
             present_rate_candidate_hz: 0.0,
@@ -121,6 +123,28 @@ impl ChartDataState {
 
     pub(super) fn mark_view_dirty(&mut self) {
         self.view_dirty = true;
+    }
+
+    pub(super) fn set_order_visual(
+        &mut self,
+        highlight: Option<(CoreId, u64)>,
+        drag_preview: Option<(CoreId, u64, LineKind, f32)>,
+    ) -> bool {
+        if self.order_highlight == highlight && self.order_drag_preview == drag_preview {
+            return false;
+        }
+        self.order_highlight = highlight;
+        self.order_drag_preview = drag_preview;
+        let mut st = self.render.borrow_mut();
+        for pr in &mut st.panes {
+            pr.last_order_highlight_uid = None;
+            pr.last_order_drag_preview = None;
+            pr.last_orders_rev = u64::MAX;
+            pr.gpu_prepare_dirty = true;
+        }
+        st.needs_present = true;
+        st.base_dirty = true;
+        true
     }
 
     /// Применить геометрию слота из bounds канваса (логич. px) к движку: размер/origin/pixel-scale.
@@ -311,7 +335,21 @@ impl ChartDataState {
             }
 
             if let Some(core_st) = session.store().core(pane.core) {
-                if force || pr.last_orders_rev != core_st.orders_rev {
+                let highlight_uid = self
+                    .order_highlight
+                    .and_then(|(core, uid)| (core == pane.core).then_some(uid));
+                let drag_preview = self
+                    .order_drag_preview
+                    .and_then(|(core, uid, kind, price)| {
+                        (core == pane.core).then_some((uid, kind, price))
+                    });
+                let drag_preview_sig =
+                    drag_preview.map(|(uid, kind, price)| (uid, kind, price.to_bits()));
+                if force
+                    || pr.last_orders_rev != core_st.orders_rev
+                    || pr.last_order_highlight_uid != highlight_uid
+                    || pr.last_order_drag_preview != drag_preview_sig
+                {
                     let mut hlines = Vec::new();
                     let mut segs = Vec::new();
                     let mut markers = Vec::new();
@@ -320,6 +358,8 @@ impl ChartDataState {
                         &core_st.order_lines,
                         &pane.market,
                         &self.orders,
+                        highlight_uid,
+                        drag_preview,
                         pane.view.epoch_ms,
                         now,
                         f32::NEG_INFINITY,
@@ -332,12 +372,16 @@ impl ChartDataState {
                     );
                     pr.layers.set_userdata(&zones, &hlines, &segs, &markers);
                     pr.last_orders_rev = core_st.orders_rev;
+                    pr.last_order_highlight_uid = highlight_uid;
+                    pr.last_order_drag_preview = drag_preview_sig;
                     pr.gpu_prepare_dirty = true;
                     pixels_changed = true;
                 }
             } else if force || pr.last_orders_rev != u64::MAX {
                 pr.layers.set_userdata(&[], &[], &[], &[]);
                 pr.last_orders_rev = u64::MAX;
+                pr.last_order_highlight_uid = None;
+                pr.last_order_drag_preview = None;
                 pr.gpu_prepare_dirty = true;
                 pixels_changed = true;
             }

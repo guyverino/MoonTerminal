@@ -57,6 +57,7 @@ use moon_chart::view::Rect;
 use moon_core::config::{ChartTheme, OrdersStyle};
 use moon_core::data::PriceLinePoint;
 use moon_core::market::{ChartHistoryBuffers, ChartHistoryCursor, MarketDataSource};
+use moon_core::session::order_lines::LineKind;
 use moon_core::session::{CoreId, SessionManager};
 #[cfg(windows)]
 use windows::Win32::Graphics::Direct3D11::{
@@ -168,6 +169,10 @@ struct PaneRender {
     last_book_hi: f32,
     /// Последняя ревизия ордеров, по которой залит userdata-буфер.
     last_orders_rev: u64,
+    /// Последний uid ордера, который был подсвечен при сборке userdata.
+    last_order_highlight_uid: Option<u64>,
+    /// Последний preview drag, который был зашит в userdata.
+    last_order_drag_preview: Option<(u64, LineKind, u32)>,
     /// Камера X для own-pass: эпоха времени, поле справа (доля «будущего»), флаг follow и
     /// последняя КВАНТОВАННАЯ пиксель-позиция правого края. Callback двигает камеру по этим
     /// полям на каждый present (vblank, целопиксельно) — живой скролл без отдельного таймера.
@@ -222,6 +227,8 @@ impl PaneRender {
             last_book_lo: f32::NAN,
             last_book_hi: f32::NAN,
             last_orders_rev: u64::MAX,
+            last_order_highlight_uid: None,
+            last_order_drag_preview: None,
             epoch_ms: 0.0,
             right_margin_frac: 0.10,
             follow: false,
@@ -377,6 +384,11 @@ struct ChartDataState {
     /// Показывать ли стакан (per-окно/панель). Выкл → glass_w=0, уровни не строятся, подпись не
     /// рисуется. Применяется ко всем панелям этого движка.
     orderbook_enabled: bool,
+    /// Интерактивная подсветка линии ордера (hover/drag). Это не меняет рыночные данные:
+    /// только заставляет редкую пересборку userdata при смене uid.
+    order_highlight: Option<(CoreId, u64)>,
+    /// Локальная preview-цена линии при drag. Ядру команда уходит только на mouse-up.
+    order_drag_preview: Option<(CoreId, u64, LineKind, f32)>,
     market_source: Option<MarketDataSource>,
     last_frame_tick_ms: f64,
     present_rate_candidate_hz: f32,

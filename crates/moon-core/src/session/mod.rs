@@ -44,6 +44,18 @@ pub struct ConnSummary {
     pub down: Vec<(String, ConnStatus)>,
 }
 
+/// Сводка лицензий ядер одной группы для статус-бара окна.
+#[derive(Clone, Debug, Default)]
+pub struct LicenseSummary {
+    pub total: usize,
+    pub known: usize,
+    pub paid: usize,
+    pub free: usize,
+    pub moon_credits: i64,
+    pub moon_credits_hold: i64,
+    pub moon_credits_auction: i64,
+}
+
 pub struct SessionManager {
     sessions: Vec<CoreSession>,
     feed_wake: Option<FeedWakeTx>,
@@ -296,6 +308,31 @@ impl SessionManager {
             }
         }
         ConnSummary { ready, total, down }
+    }
+
+    /// Сводка license state ядер ОДНОЙ группы. License приходит позже connect/init,
+    /// поэтому `known` может быть меньше `total`; UI обязан показывать это честно.
+    pub fn license_summary_group(&self, group: &str) -> LicenseSummary {
+        let mut out = LicenseSummary::default();
+        for s in self.sessions.iter().filter(|s| s.group == group) {
+            out.total += 1;
+            let Some(core) = self.store.core(s.id) else {
+                continue;
+            };
+            let Some(license) = core.license else {
+                continue;
+            };
+            out.known += 1;
+            if license.paid_version {
+                out.paid += 1;
+            } else {
+                out.free += 1;
+            }
+            out.moon_credits += i64::from(license.moon_credits);
+            out.moon_credits_hold += i64::from(license.moon_credits_hold);
+            out.moon_credits_auction += i64::from(license.moon_credits_auction);
+        }
+        out
     }
 
     /// Переподключить одно ядро: гасит старый backend-поток (дроп хэндла закрывает

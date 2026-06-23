@@ -253,6 +253,16 @@ impl ChartEngine {
         }
     }
 
+    pub fn set_order_visual(
+        &mut self,
+        highlight: Option<(CoreId, u64)>,
+        drag_preview: Option<(CoreId, u64, LineKind, f32)>,
+    ) -> bool {
+        self.data
+            .borrow_mut()
+            .set_order_visual(highlight, drag_preview)
+    }
+
     /// Масштаб цены (Y) ко ВСЕМ панелям. None=Авто. Запоминается в контейнере.
     pub fn set_scale(&mut self, pct: Option<f32>) -> bool {
         if self.scale == pct {
@@ -385,6 +395,10 @@ impl ChartEngine {
         let out = f(&mut self.container.borrow_mut());
         self.data.borrow_mut().mark_view_dirty();
         out
+    }
+
+    pub fn with_container<R>(&self, f: impl FnOnce(&Container) -> R) -> R {
+        f(&self.container.borrow())
     }
 
     pub fn remove_pane(&mut self, idx: usize) -> Option<(CoreId, String)> {

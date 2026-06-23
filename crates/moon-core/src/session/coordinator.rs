@@ -114,7 +114,7 @@ impl SessionManager {
                 Vec::new()
             };
             markets.sort(); // стабильный порядок для сравнения с last_cmd
-            // Стакан: подмножество markets, которым нужен стакан (без linger — снимаем сразу).
+                            // Стакан: подмножество markets, которым нужен стакан (без linger — снимаем сразу).
             let mut orderbook_markets: Vec<String> = if is_prov {
                 let obk = orderbook_pm.get(&id);
                 markets

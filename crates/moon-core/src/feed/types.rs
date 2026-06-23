@@ -377,6 +377,18 @@ impl TransferAssetsSnapshot {
     }
 }
 
+/// License/module/MoonCredits state of one MoonBot core.
+/// Декаплено от moonproto: UI видит только готовый аккаунтный snapshot.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LicenseState {
+    pub paid_version: bool,
+    pub reg_id: i32,
+    pub moon_credits: i32,
+    pub moon_credits_hold: i32,
+    pub moon_credits_auction: i32,
+    pub can_use_watcher: bool,
+}
+
 /// Статус соединения с ядром.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConnStatus {
@@ -469,4 +481,6 @@ pub enum FeedMsg {
     /// Снимок transfer-активов ядра по кошелькам (для дерева переноса). Шлётся при
     /// смене revision (обновляется по запросу `RefreshTransferAssets`).
     TransferAssets(TransferAssetsSnapshot),
+    /// License/Free-PRO/MoonCredits state ядра.
+    License(LicenseState),
 }

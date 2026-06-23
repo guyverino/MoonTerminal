@@ -242,6 +242,73 @@ struct Backend {
 }
 
 impl Backend {
+    fn manual_order_size_state(&self, core: CoreId) -> ([f64; 6], usize) {
+        const DEFAULT_SEL: usize = 2;
+
+        let base = self.session.core_base(core).unwrap_or("");
+        let sizes = self
+            .config
+            .servers
+            .iter()
+            .find(|s| s.id == core)
+            .map(|s| s.order_sizes_or_default(base))
+            .unwrap_or_else(|| moon_core::config::servers::default_order_sizes(base));
+        let sel = self
+            .order_size_sel
+            .get(&core)
+            .copied()
+            .unwrap_or(DEFAULT_SEL)
+            .min(sizes.len().saturating_sub(1));
+        (sizes, sel)
+    }
+
+    fn manual_order_size(&self, core: CoreId) -> f64 {
+        let (sizes, sel) = self.manual_order_size_state(core);
+        sizes[sel]
+    }
+
+    fn cancel_buy_for_main_chart(&self, group: &str) -> usize {
+        let Some((core, market)) = self.main_chart_target(group) else {
+            log::warn!("cancel buy ignored: no open main chart for group={group}");
+            return 0;
+        };
+        self.cancel_buy_orders(core, &market)
+    }
+
+    fn cancel_buy_orders(&self, core: CoreId, market: &str) -> usize {
+        let Some(data) = self.session.store().core(core) else {
+            log::warn!("cancel buy ignored: core={core} has no store");
+            return 0;
+        };
+
+        let uids: Vec<u64> = data
+            .orders
+            .iter()
+            .filter(|order| {
+                // MoonBot DoCancel = CancelAllBuys(market) + CancelPendings(market).
+                order.market == market
+                    && !order.job_is_done
+                    && ((!order.is_short && order.fill_pct < 99.95) || order.pending)
+            })
+            .map(|order| order.uid)
+            .collect();
+
+        for uid in &uids {
+            if let Err(err) = self.session.cancel_order(core, *uid) {
+                log::warn!("cancel buy failed: core={core} market={market} uid={uid}: {err:#}");
+            }
+        }
+        if uids.is_empty() {
+            log::info!("cancel buy: no active buy orders for core={core} market={market}");
+        } else {
+            log::info!(
+                "cancel buy: requested {} orders for core={core} market={market}",
+                uids.len()
+            );
+        }
+        uids.len()
+    }
+
     fn register_chart_consumer(&mut self, chart: ChartDataHandle) {
         if self
             .chart_consumers

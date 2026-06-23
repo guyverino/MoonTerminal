@@ -108,9 +108,14 @@ pub fn register_panels(cx: &mut App, backend: Entity<Backend>, epoch: f64) {
         });
     }
     // Ордер: без состояния.
-    register_panel(cx, "Order", move |_state, _info, _window, cx| {
-        Rc::new(cx.new(OrderPanel::new))
-    });
+    {
+        let backend = backend.clone();
+        register_panel(cx, "Order", move |_state, info, _window, cx| {
+            let group = group_of(info);
+            let backend = backend.clone();
+            Rc::new(cx.new(|cx| OrderPanel::new(backend, group, cx)))
+        });
+    }
     // Активы: группа из state; реальные данные ядер группы (таблица + дерево переноса).
     {
         let backend = backend.clone();
